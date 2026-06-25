@@ -1,0 +1,8 @@
+# Generated SSH tier keys (user/agent) — never commit
+tier-keys/
+
+# Per-instance state: persistent home seed, host keys, metadata — never commit
+instances/
+
+# Firecracker cache: downloaded binary, built kernel/rootfs, disk caches
+.fc-cache/

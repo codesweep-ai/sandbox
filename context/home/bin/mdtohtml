@@ -1,0 +1,123 @@
+#!/bin/bash
+# mdtohtml — convert Markdown to a standalone HTML file, with GitHub styling and
+# Mermaid diagram rendering (via pandoc). See mdview for a variant that renders to
+# a temp file and opens it in the browser right away.
+set -euo pipefail
+
+PROG="${0##*/}"
+VERSION="1.2.0"
+
+usage() {
+    cat <<EOF
+$PROG $VERSION — convert Markdown to standalone HTML (GitHub style + Mermaid)
+
+Usage:
+  $PROG [options] <input.md>
+
+Arguments:
+  <input.md>          Markdown file to convert. Use '-' to read from stdin.
+
+Options:
+  -o, --output FILE   Write HTML to FILE. Use '-' for stdout.
+                      Default: <input> with its extension replaced by .html
+                      (stdout when the input is '-').
+  -t, --title TITLE   Browser/tab <title> for the document.
+                      Default: the input file's base name.
+  -h, --help          Show this help and exit.
+  -V, --version       Print version and exit.
+
+Examples:
+  $PROG README.md                  # -> README.html
+  $PROG -o /tmp/out.html notes.md
+  $PROG -t "Design notes" design.md
+  cat notes.md | $PROG -            # stdin -> stdout
+
+See also: mdview — render and open in the browser straight away.
+
+Mermaid code fences (\`\`\`mermaid) are rendered as diagrams in the browser.
+Requires: pandoc.
+EOF
+}
+
+die() { echo "$PROG: $*" >&2; exit 1; }
+
+# --- parse arguments (options may appear before or after the input) ---
+output=""
+title=""
+inputs=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o|--output)  [ $# -ge 2 ] || die "$1 requires an argument"; output="$2"; shift 2 ;;
+        -t|--title)   [ $# -ge 2 ] || die "$1 requires an argument"; title="$2";  shift 2 ;;
+        -h|--help)    usage; exit 0 ;;
+        -V|--version) echo "$PROG $VERSION"; exit 0 ;;
+        --)           shift; while [ $# -gt 0 ]; do inputs+=("$1"); shift; done ;;
+        -?*)          die "unknown option: $1 (try '$PROG --help')" ;;
+        *)            inputs+=("$1"); shift ;;
+    esac
+done
+
+[ "${#inputs[@]}" -ne 0 ] || { usage >&2; exit 2; }
+[ "${#inputs[@]}" -eq 1 ] || die "expected exactly one input file, got ${#inputs[@]} (try '$PROG --help')"
+input="${inputs[0]}"
+
+command -v pandoc >/dev/null 2>&1 || die "pandoc not found on PATH — install it (Fedora: 'sudo dnf install pandoc')"
+
+# --- resolve input / output / title ---
+if [ "$input" = "-" ]; then
+    src="/dev/stdin"
+    [ -n "$output" ] || output="-"
+    [ -n "$title" ]  || title="document"
+else
+    [ -e "$input" ] || die "input file not found: $input"
+    [ -f "$input" ] || die "not a regular file: $input"
+    [ -r "$input" ] || die "input file not readable: $input"
+    src="$input"
+    [ -n "$output" ] || output="${input%.*}.html"
+    [ -n "$title" ]  || title="$(basename "${input%.*}")"
+fi
+
+# pandoc writes to stdout when -o is omitted.
+out_args=()
+[ "$output" != "-" ] && out_args=(-o "$output")
+
+pandoc "$src" -s \
+  -f markdown \
+  --metadata pagetitle="$title" \
+  --include-in-header=<(cat <<'HEADER'
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css/github-markdown.min.css">
+<style>
+  body {
+    box-sizing: border-box;
+    min-width: 200px;
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 45px;
+    background-color: #ffffff;
+  }
+  @media (max-width: 767px) {
+    body { padding: 15px; }
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background-color: #0d1117; }
+  }
+</style>
+HEADER
+) \
+  --include-before-body=<(echo '<article class="markdown-body">') \
+  --include-after-body=<(cat <<'FOOTER'
+</article>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>
+document.querySelectorAll('pre.mermaid > code').forEach(function(code) {
+    code.parentElement.textContent = code.textContent;
+});
+mermaid.initialize({startOnLoad: true});
+</script>
+FOOTER
+) \
+  ${out_args[@]+"${out_args[@]}"}
+
+# Report the output path (but not when streaming to stdout).
+[ "$output" != "-" ] && echo "$output"
+exit 0

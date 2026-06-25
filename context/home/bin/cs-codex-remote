@@ -1,0 +1,253 @@
+#!/bin/bash
+# Delegate a task to a Codex session on a remote SSH host (the Codex counterpart of
+# cs-claude-remote). The target host is resolved per session (--host / stored host /
+# $CS_CODEX_REMOTE_HOST / this machine's hostname). Uses the remote's Codex auth.
+#
+# Usage:
+#   cs-codex-remote --new --name <name> "prompt"      # start a new named session (required form)
+#   cs-codex-remote --resume <name> "prompt"          # resume a specific named session
+#   cs-codex-remote --resume <name> -d /path "prompt" # with a specific working directory
+#   cs-codex-remote --resume <name> -j "prompt"       # full JSON (the turn's raw session JSONL)
+#   cs-codex-remote --resume <name> -b "prompt"       # run in background (async), log locally
+#
+# A session name is MANDATORY on every call. Like cs-claude-remote, a turn is driven against an
+# INTERACTIVE codex kept warm in a tmux session on the remote (via cs-codex-turn), and output is
+# read from the codex session JSONL — never scraped from the pane.
+#
+# Difference from Claude: codex assigns its own session id, so the tmux session is named by a
+# stable local token and the codex session id is learned from the first turn (captured from the
+# driver's trailing sentinel) and stored for subsequent --resume.
+
+set -euo pipefail
+
+REMOTE_DRIVER="cs-codex-turn"
+DRIVER_SRC="${CS_CODEX_TURN_SRC:-$HOME/bin/cs-codex-turn}"
+SESSION_FILE="$HOME/.cs-codex-remote-session"
+SESSION_MAP_DIR="$HOME/.cs-codex-remote-sessions"
+LOG_DIR="$HOME/.cs-codex-remote-logs"
+PID_DIR="$HOME/.cs-codex-remote-pids"
+LOCK_DIR="$HOME/.cs-codex-remote-locks"
+mkdir -p "$SESSION_MAP_DIR" "$LOG_DIR" "$PID_DIR" "$LOCK_DIR"
+
+LOCK_WAIT="${CS_CODEX_LOCK_WAIT:-900}"
+MAX_LOG_BYTES="${CS_CODEX_MAX_LOG_BYTES:-1048576}"
+
+HOST_FLAG=""
+# Resolve the SSH target host: --host > the session's stored host > $CS_CODEX_REMOTE_HOST >
+# this machine's short hostname.
+resolve_remote_host() {
+    local name="${1:-}" h
+    if [[ -n "$HOST_FLAG" ]]; then printf '%s\n' "$HOST_FLAG"; return; fi
+    if [[ -n "$name" && -f "$SESSION_MAP_DIR/${name}.host" ]]; then
+        h="$(cat "$SESSION_MAP_DIR/${name}.host" 2>/dev/null)"
+        [[ -n "$h" ]] && { printf '%s\n' "$h"; return; }
+    fi
+    if [[ -n "${CS_CODEX_REMOTE_HOST:-}" ]]; then printf '%s\n' "$CS_CODEX_REMOTE_HOST"; return; fi
+    hostname -s
+}
+
+usage() {
+    cat <<'EOF'
+Usage: cs-codex-remote --new --name <name> "prompt" [options]
+       cs-codex-remote --resume <name> "prompt" [options]
+
+A session name is MANDATORY. Either start a new named session or resume an existing one.
+
+Options:
+  --resume <name>, -r <name>  Resume a specific named session
+  --new, -n                Start a new session (requires --name)
+  --name <name>            Session name (required with --new)
+  -d <dir>                 Working directory on the remote machine
+  -H, --host <host>        SSH target host or ssh_config alias for this session
+  -j                       Output the turn's raw session JSONL (instead of text)
+  -b, --bg                 Run in background: log output locally, return immediately
+  --redeploy               Force re-copy of the remote driver to the host
+
+Lifecycle actions (act immediately, no prompt needed):
+  --kill <name>            Kill the remote tmux session for <name> (frees the warm
+                           process; history is kept, next turn resumes)
+  --attach <name>          Attach your terminal to the remote tmux session (Ctrl-b d to detach)
+  -h, --help               Show this help
+EOF
+    exit 1
+}
+
+PROMPT=""; WORKDIR=""; SESSION_NAME=""; CUSTOM_NAME=""
+JSON=false; NEW_SESSION=false; BACKGROUND=false; REDEPLOY=false
+ACTION=""; ACTION_NAME=""
+NAME_RE='^[a-zA-Z0-9][a-zA-Z0-9\ ._-]*$'
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -d) WORKDIR="$2"; shift 2 ;;
+        -H|--host) HOST_FLAG="$2"; shift 2 ;;
+        --resume|-r)
+            [[ $# -ge 2 ]] || { echo "Error: --resume requires a session name" >&2; exit 1; }
+            [[ "$2" =~ $NAME_RE ]] || { echo "Error: --resume name '$2' has invalid characters" >&2; exit 1; }
+            SESSION_NAME="$2"; shift 2 ;;
+        --new|-n) NEW_SESSION=true; shift ;;
+        --name)
+            [[ $# -ge 2 ]] || { echo "Error: --name requires a value" >&2; exit 1; }
+            [[ "$2" =~ $NAME_RE ]] || { echo "Error: --name '$2' has invalid characters" >&2; exit 1; }
+            CUSTOM_NAME="$2"; shift 2 ;;
+        -j) JSON=true; shift ;;
+        -b|--bg) BACKGROUND=true; shift ;;
+        --redeploy) REDEPLOY=true; shift ;;
+        --kill)   [[ $# -ge 2 ]] || { echo "Error: --kill requires a name" >&2; exit 1; }; ACTION="kill"; ACTION_NAME="$2"; shift 2 ;;
+        --attach) [[ $# -ge 2 ]] || { echo "Error: --attach requires a name" >&2; exit 1; }; ACTION="attach"; ACTION_NAME="$2"; shift 2 ;;
+        -h|--help) usage ;;
+        *) if [[ -z "$PROMPT" ]]; then PROMPT="$1"; else PROMPT="$PROMPT $1"; fi; shift ;;
+    esac
+done
+
+# Read the tmux token for a session (the stable handle for its warm tmux session).
+token_of() { cat "$SESSION_MAP_DIR/${1}.token" 2>/dev/null; }
+
+# --- lifecycle actions (kill/attach): perform and exit ----------------------
+if [[ -n "$ACTION" ]]; then
+    TOKEN="$(token_of "$ACTION_NAME")"
+    [[ -n "$TOKEN" ]] || { echo "Error: no known session named '$ACTION_NAME'" >&2; echo "  List: cs-codex-remote-sessions" >&2; exit 1; }
+    TMUX_SESSION="cs-codex-$TOKEN"
+    REMOTE_HOST="$(resolve_remote_host "$ACTION_NAME")"
+    case "$ACTION" in
+        kill)
+            if ssh "$REMOTE_HOST" "tmux kill-session -t '$TMUX_SESSION' 2>/dev/null"; then
+                echo "Killed remote tmux session for '$ACTION_NAME' (history kept; next turn resumes)."
+            else
+                echo "No live tmux session for '$ACTION_NAME' (nothing to kill)."
+            fi
+            exit 0 ;;
+        attach)
+            echo "Attaching to '$ACTION_NAME' ($TMUX_SESSION). Detach with Ctrl-b d." >&2
+            exec ssh -t "$REMOTE_HOST" "tmux attach -t '$TMUX_SESSION'" ;;
+    esac
+fi
+
+[[ -n "$PROMPT" ]] || usage
+
+# A session name is mandatory — via --new --name <name> or --resume <name>.
+if $NEW_SESSION; then
+    [[ -n "$CUSTOM_NAME" ]] || { echo "Error: --new requires --name <name>" >&2; exit 1; }
+    SESSION_NAME="$CUSTOM_NAME"
+elif [[ -z "$SESSION_NAME" ]]; then
+    echo "Error: a session name is required (--new --name <name> | --resume <name>)" >&2; exit 1
+fi
+echo "$SESSION_NAME" > "$SESSION_FILE"   # reference only; never read back to target a session
+
+UUID_FILE="$SESSION_MAP_DIR/$SESSION_NAME"          # codex session id (learned after 1st turn)
+TOKEN_FILE="$SESSION_MAP_DIR/${SESSION_NAME}.token"  # stable tmux handle
+WORKDIR_FILE="$SESSION_MAP_DIR/${SESSION_NAME}.workdir"
+
+# tmux token: generated fresh for a new session, reused for resume. On --new, also tear down any
+# warm tmux for the previous token so it is not orphaned.
+if $NEW_SESSION; then
+    if [[ -f "$TOKEN_FILE" ]]; then
+        old="$(cat "$TOKEN_FILE")"
+        [[ -n "$old" ]] && ssh "$(resolve_remote_host "$SESSION_NAME")" "tmux kill-session -t 'cs-codex-$old' 2>/dev/null" >/dev/null 2>&1 || true
+    fi
+    : > "$UUID_FILE"   # clear any prior codex id; the new session learns its own
+    TOKEN="$(uuidgen | tr 'A-Z' 'a-z' | tr -d '-')"; echo "$TOKEN" > "$TOKEN_FILE"
+else
+    TOKEN="$(token_of "$SESSION_NAME")"
+    if [[ -z "$TOKEN" ]]; then TOKEN="$(uuidgen | tr 'A-Z' 'a-z' | tr -d '-')"; echo "$TOKEN" > "$TOKEN_FILE"; fi
+fi
+
+UUID="$(cat "$UUID_FILE" 2>/dev/null || true)"
+[[ -z "$WORKDIR" && -f "$WORKDIR_FILE" ]] && WORKDIR="$(cat "$WORKDIR_FILE")"
+[[ -n "$WORKDIR" ]] && echo "$WORKDIR" > "$WORKDIR_FILE"
+
+REMOTE_HOST="$(resolve_remote_host "$SESSION_NAME")"
+printf '%s\n' "$REMOTE_HOST" > "$SESSION_MAP_DIR/${SESSION_NAME}.host"
+
+# Copy the driver to the remote when missing or changed (or on --redeploy).
+deploy_driver() {
+    if [[ ! -f "$DRIVER_SRC" ]]; then
+        if ! $REDEPLOY && ssh "$REMOTE_HOST" "test -x \$HOME/bin/$REMOTE_DRIVER" 2>/dev/null; then return 0; fi
+        echo "Error: driver source not found at $DRIVER_SRC (set CS_CODEX_TURN_SRC)" >&2; exit 1
+    fi
+    local local_sum remote_sum
+    local_sum=$(md5sum "$DRIVER_SRC" | awk '{print $1}')
+    if $REDEPLOY; then remote_sum=""; else
+        remote_sum=$(ssh "$REMOTE_HOST" "md5sum ~/bin/$REMOTE_DRIVER 2>/dev/null | awk '{print \$1}'" 2>/dev/null | tr -d '\r')
+    fi
+    if [[ "$local_sum" != "$remote_sum" ]]; then
+        ssh "$REMOTE_HOST" "mkdir -p ~/bin" 2>/dev/null
+        scp -q "$DRIVER_SRC" "$REMOTE_HOST:bin/$REMOTE_DRIVER"
+        ssh "$REMOTE_HOST" "chmod +x ~/bin/$REMOTE_DRIVER"
+    fi
+}
+deploy_driver
+
+DRIVER_FMT="text"; $JSON && DRIVER_FMT="json"
+REMOTE_CMD="$REMOTE_DRIVER --tmux $TOKEN --format $DRIVER_FMT --name \"$SESSION_NAME\""
+[[ -n "$UUID" ]] && REMOTE_CMD="$REMOTE_CMD --uuid $UUID"
+[[ -n "$WORKDIR" ]] && REMOTE_CMD="$REMOTE_CMD --workdir \"$WORKDIR\""
+
+LOCK_FILE="$LOCK_DIR/${SESSION_NAME}.lock"
+UUID_CAPTURE="$(mktemp "${TMPDIR:-/tmp}/cs-codex-cap.XXXXXX")"
+trap 'rm -f "$UUID_CAPTURE"' EXIT
+
+# Stream the remote output, pulling out the session-id sentinel (so a new session learns its
+# codex id) and dropping that line from what the user sees.
+filter_sentinel() {
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+            "__CS_CODEX_SESSION_ID__ "*) printf '%s' "${line#__CS_CODEX_SESSION_ID__ }" > "$UUID_CAPTURE" ;;
+            *) printf '%s\n' "$line" ;;
+        esac
+    done
+}
+
+rotate_log() {
+    local f="$1" size
+    (( MAX_LOG_BYTES > 0 )) || return 0
+    [[ -f "$f" ]] || return 0
+    size="$(wc -c < "$f" 2>/dev/null | tr -d ' ')"
+    [[ -n "$size" ]] && (( size > MAX_LOG_BYTES )) && mv -f "$f" "$f.1" || true
+}
+
+# Persist the codex session id the driver reported (maps name -> id for future --resume).
+store_uuid() {
+    [[ -s "$UUID_CAPTURE" ]] || return 0
+    local cap; cap="$(cat "$UUID_CAPTURE")"
+    [[ "$cap" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] && echo "$cap" > "$UUID_FILE" || true
+}
+
+# Run one turn under the per-session lock (serializes turns to the same warm session).
+ssh_turn() {
+    exec 200>"$LOCK_FILE"
+    if ! flock -w "$LOCK_WAIT" 200; then
+        echo "Error: session '$SESSION_NAME' is busy — could not acquire its turn lock within ${LOCK_WAIT}s." >&2
+        echo "  If you are sure none is running, the lock is stale; remove it:" >&2
+        echo "    rm -f '$LOCK_FILE'" >&2
+        exec 200>&-; return 4
+    fi
+    local rc
+    echo "$PROMPT" | ssh "$REMOTE_HOST" "$REMOTE_CMD" | filter_sentinel
+    rc=${PIPESTATUS[1]}
+    flock -u 200; exec 200>&-
+    store_uuid
+    return $rc
+}
+
+if $BACKGROUND; then
+    LOG_FILE="$LOG_DIR/${SESSION_NAME}.log"
+    PID_FILE="$PID_DIR/${SESSION_NAME}.pid"
+    rotate_log "$LOG_FILE"
+    (
+        echo "--- $(date '+%Y-%m-%d %H:%M:%S') --- prompt: $PROMPT" >> "$LOG_FILE"
+        if ssh_turn >> "$LOG_FILE" 2>&1; then EXIT_CODE=0; else EXIT_CODE=$?; fi
+        echo "" >> "$LOG_FILE"
+        echo "--- $(date '+%Y-%m-%d %H:%M:%S') --- finished (exit $EXIT_CODE) ---" >> "$LOG_FILE"
+        rm -f "$PID_FILE"
+    ) &
+    BG_PID=$!
+    echo "$BG_PID" > "$PID_FILE"
+    echo "Session:  $SESSION_NAME"
+    echo "Running:  background (PID $BG_PID)"
+    echo "Log:      $LOG_FILE"
+    echo "Check:    cs-codex-remote-output $SESSION_NAME"
+else
+    ssh_turn
+fi

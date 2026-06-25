@@ -1,0 +1,131 @@
+#!/bin/bash
+# List available remote codex sessions.
+# Reads the local session map directory and shows session names, codex session ids, and working
+# directories. The `*` marker flags the last session any caller used locally (reference only).
+#
+# Usage:
+#   cs-codex-remote-sessions           # list all sessions
+#   cs-codex-remote-sessions -v        # verbose: check remote for last activity
+#   cs-codex-remote-sessions -q        # quiet: names only
+
+set -euo pipefail
+
+REMOTE_SESSIONS='.cs-codex/sessions'
+SESSION_FILE="$HOME/.cs-codex-remote-session"
+SESSION_MAP_DIR="$HOME/.cs-codex-remote-sessions"
+
+HOST_FLAG=""
+resolve_remote_host() {
+    local name="${1:-}" h
+    if [[ -n "$HOST_FLAG" ]]; then printf '%s\n' "$HOST_FLAG"; return; fi
+    if [[ -n "$name" && -f "$SESSION_MAP_DIR/${name}.host" ]]; then
+        h="$(cat "$SESSION_MAP_DIR/${name}.host" 2>/dev/null)"
+        [[ -n "$h" ]] && { printf '%s\n' "$h"; return; }
+    fi
+    if [[ -n "${CS_CODEX_REMOTE_HOST:-}" ]]; then printf '%s\n' "$CS_CODEX_REMOTE_HOST"; return; fi
+    hostname -s
+}
+
+VERBOSE=false; QUIET=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -v|--verbose) VERBOSE=true; shift ;;
+        -q|--quiet) QUIET=true; shift ;;
+        -H|--host) HOST_FLAG="$2"; shift 2 ;;
+        -h|--help)
+            echo "Usage: cs-codex-remote-sessions [-v] [-q]"
+            echo "  -v, --verbose      Check each session's remote host for last activity"
+            echo "  -q, --quiet        Print session names only (one per line)"
+            echo "  -H, --host <host>  Override the SSH host queried in verbose mode"
+            exit 0 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+CURRENT=""; [[ -f "$SESSION_FILE" ]] && CURRENT="$(cat "$SESSION_FILE")"
+[[ -d "$SESSION_MAP_DIR" ]] || { echo "No sessions found ($SESSION_MAP_DIR does not exist)" >&2; exit 1; }
+
+# Session names = map files with no metadata suffix.
+SESSIONS=()
+for f in "$SESSION_MAP_DIR"/*; do
+    [[ -f "$f" ]] || continue
+    name="$(basename "$f")"
+    case "$name" in *.workdir|*.host|*.token) continue ;; esac
+    SESSIONS+=("$name")
+done
+[[ ${#SESSIONS[@]} -eq 0 ]] && { echo "No sessions found in $SESSION_MAP_DIR" >&2; exit 1; }
+IFS=$'\n' SESSIONS=($(sort <<<"${SESSIONS[*]}")); unset IFS
+
+IS_TTY=false; [[ -t 1 ]] && IS_TTY=true
+dim()   { $IS_TTY && printf '\033[2m%s\033[0m' "$1" || printf '%s' "$1"; }
+green() { $IS_TTY && printf '\033[32m%s\033[0m' "$1" || printf '%s' "$1"; }
+
+# Verbose: query each session's remote host for its rollout file's last-modified time.
+declare -A REMOTE_TIMESTAMPS
+if $VERBOSE; then
+    declare -A HOST_UUIDS
+    for name in "${SESSIONS[@]}"; do
+        uuid="$(cat "$SESSION_MAP_DIR/$name" 2>/dev/null || true)"
+        [[ -n "$uuid" ]] || continue
+        h="$(resolve_remote_host "$name")"
+        HOST_UUIDS["$h"]="${HOST_UUIDS[$h]:-} $uuid"
+    done
+    for h in "${!HOST_UUIDS[@]}"; do
+        FIND_ARGS=""; first=true
+        for uuid in ${HOST_UUIDS[$h]}; do
+            if $first; then FIND_ARGS="-name '*${uuid}.jsonl'"; first=false
+            else FIND_ARGS="$FIND_ARGS -o -name '*${uuid}.jsonl'"; fi
+        done
+        [[ -z "$FIND_ARGS" ]] && continue
+        REMOTE_CMD="find \$HOME/$REMOTE_SESSIONS \\( $FIND_ARGS \\) -printf '%f %T@\n' 2>/dev/null"
+        while IFS=' ' read -r fname tstamp; do
+            [[ -z "$fname" ]] && continue
+            base="${fname%.jsonl}"
+            for uuid in ${HOST_UUIDS[$h]}; do
+                if [[ "$base" == *"$uuid" ]]; then
+                    epoch="${tstamp%.*}"
+                    [[ -n "$epoch" && "$epoch" != "0" ]] && REMOTE_TIMESTAMPS["$uuid"]="$(date -d "@$epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$epoch")"
+                    break
+                fi
+            done
+        done < <(ssh "$h" "$REMOTE_CMD" 2>/dev/null || true)
+    done
+fi
+
+ROWS=()
+for name in "${SESSIONS[@]}"; do
+    if $QUIET; then echo "$name"; continue; fi
+    uuid="$(cat "$SESSION_MAP_DIR/$name" 2>/dev/null || true)"
+    workdir="$(cat "$SESSION_MAP_DIR/${name}.workdir" 2>/dev/null || true)"
+    marker=" "; [[ "$name" == "$CURRENT" ]] && marker="*"
+    last=""
+    if $VERBOSE && [[ -n "$uuid" ]]; then
+        if [[ -n "${REMOTE_TIMESTAMPS[$uuid]+_}" ]]; then last="${REMOTE_TIMESTAMPS[$uuid]}"; else last="(not found on remote)"; fi
+    fi
+    [[ -z "$uuid" ]] && uuid="(pending first turn)"
+    ROWS+=("$marker|$name|$uuid|$workdir|$last")
+done
+$QUIET && exit 0
+
+W_NAME=4; W_DIR=3; W_LAST=4
+for row in "${ROWS[@]}"; do
+    IFS='|' read -r _ rname _ rdir rlast <<<"$row"
+    (( ${#rname} > W_NAME )) && W_NAME=${#rname}
+    (( ${#rdir} > W_DIR )) && W_DIR=${#rdir}
+    $VERBOSE && (( ${#rlast} > W_LAST )) && W_LAST=${#rlast}
+done
+
+if $VERBOSE; then hdr=$(printf "  %-${W_NAME}s  %-36s  %-${W_DIR}s  %-${W_LAST}s" "NAME" "CODEX SESSION ID" "DIR" "LAST")
+else hdr=$(printf "  %-${W_NAME}s  %-36s  %-${W_DIR}s" "NAME" "CODEX SESSION ID" "DIR"); fi
+dim "$hdr"; echo; sep="${hdr//?/-}"; dim "$sep"; echo
+
+for row in "${ROWS[@]}"; do
+    IFS='|' read -r marker rname ruuid rdir rlast <<<"$row"
+    if $VERBOSE; then line=$(printf "%-${W_NAME}s  %-36s  %-${W_DIR}s  %-${W_LAST}s" "$rname" "$ruuid" "$rdir" "$rlast")
+    else line=$(printf "%-${W_NAME}s  %-36s  %-${W_DIR}s" "$rname" "$ruuid" "$rdir"); fi
+    if [[ "$marker" == "*" ]]; then printf '* '; green "$line"; else printf '  '; printf '%s' "$line"; fi
+    echo
+done
+echo
+dim "* = last session used locally (reference only — tools always require the session name)"; echo
+echo "${#ROWS[@]} session(s) total"

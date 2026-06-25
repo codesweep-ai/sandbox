@@ -1,0 +1,129 @@
+#!/bin/bash
+# Remove one or more remote claude sessions from the local session list.
+# Tears down any live persistent-tmux session for those names (best-effort),
+# but does NOT delete session history on the remote machine — the JSONL stays,
+# so the same UUID can still be resumed later.
+#
+# Usage:
+#   cs-claude-remote-forget <name> [name2 ...]   # forget specific sessions
+#   cs-claude-remote-forget --all                 # forget all sessions
+
+set -euo pipefail
+
+SESSION_FILE="$HOME/.cs-claude-remote-session"
+SESSION_MAP_DIR="$HOME/.cs-claude-remote-sessions"
+
+HOST_FLAG=""
+# Resolve the SSH target host: --host flag > the session's stored host > the
+# CS_CLAUDE_REMOTE_HOST env var > this machine's short hostname.
+resolve_remote_host() {
+    local name="${1:-}" h
+    if [[ -n "$HOST_FLAG" ]]; then printf '%s\n' "$HOST_FLAG"; return; fi
+    if [[ -n "$name" && -f "$SESSION_MAP_DIR/${name}.host" ]]; then
+        h="$(cat "$SESSION_MAP_DIR/${name}.host" 2>/dev/null)"
+        [[ -n "$h" ]] && { printf '%s\n' "$h"; return; }
+    fi
+    if [[ -n "${CS_CLAUDE_REMOTE_HOST:-}" ]]; then printf '%s\n' "$CS_CLAUDE_REMOTE_HOST"; return; fi
+    hostname -s
+}
+
+usage() {
+    echo "Usage: cs-claude-remote-forget <name> [name2 ...]"
+    echo "       cs-claude-remote-forget --all"
+    echo
+    echo "Remove sessions from the local list. Does not delete remote history."
+    echo
+    echo "Options:"
+    echo "  --all              Forget all sessions"
+    echo "  -H, --host <host>  Override the SSH host used to tear down tmux sessions"
+    echo "  -h, --help         Show this help"
+    exit "${1:-1}"
+}
+
+ALL=false
+NAMES=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --all) ALL=true; shift ;;
+        -H|--host) HOST_FLAG="$2"; shift 2 ;;
+        -h|--help) usage 0 ;;
+        -*) echo "Unknown option: $1" >&2; exit 1 ;;
+        *) NAMES+=("$1"); shift ;;
+    esac
+done
+
+if ! $ALL && [[ ${#NAMES[@]} -eq 0 ]]; then
+    usage
+fi
+
+if [[ ! -d "$SESSION_MAP_DIR" ]]; then
+    echo "No sessions found (directory $SESSION_MAP_DIR does not exist)" >&2
+    exit 1
+fi
+
+# Get current session name
+CURRENT=""
+if [[ -f "$SESSION_FILE" ]]; then
+    CURRENT=$(cat "$SESSION_FILE")
+fi
+
+# Build list of sessions to forget
+TARGETS=()
+if $ALL; then
+    for f in "$SESSION_MAP_DIR"/*; do
+        [[ -f "$f" ]] || continue
+        name=$(basename "$f")
+        case "$name" in *.workdir|*.host) continue ;; esac
+        TARGETS+=("$name")
+    done
+else
+    for name in "${NAMES[@]}"; do
+        if [[ -f "$SESSION_MAP_DIR/$name" ]]; then
+            TARGETS+=("$name")
+        else
+            echo "Session '$name' not found, skipping" >&2
+        fi
+    done
+fi
+
+if [[ ${#TARGETS[@]} -eq 0 ]]; then
+    echo "No sessions to forget"
+    exit 0
+fi
+
+# Collect UUIDs before deleting the maps, so we can tear down any live tmux
+# sessions (persistent-tmux mode). This does NOT delete remote history — the
+# JSONL stays, so a future --new/--resume with the same UUID still resumes.
+# Capture each session's UUID and its resolved host BEFORE deleting the maps, so
+# we can tear down live tmux sessions on the right host (different sessions may
+# live on different hosts). Group the kill commands by host.
+declare -A HOST_KILLS
+for name in "${TARGETS[@]}"; do
+    uuid_file="$SESSION_MAP_DIR/$name"
+    [[ -f "$uuid_file" ]] || continue
+    u="$(cat "$uuid_file")"
+    h="$(resolve_remote_host "$name")"
+    HOST_KILLS["$h"]="${HOST_KILLS[$h]:-}tmux kill-session -t 'cs-claude-$u' 2>/dev/null; "
+done
+
+for name in "${TARGETS[@]}"; do
+    rm -f "$SESSION_MAP_DIR/$name" "$SESSION_MAP_DIR/${name}.workdir" "$SESSION_MAP_DIR/${name}.host"
+    echo "Forgot: $name"
+
+    # Clear current session pointer if it was the one we just forgot
+    if [[ "$name" == "$CURRENT" ]]; then
+        rm -f "$SESSION_FILE"
+        CURRENT=""
+    fi
+done
+
+# Best-effort: kill any live tmux sessions for the forgotten UUIDs, one SSH
+# round-trip per host. Silently ignored if a host is unreachable or no session exists.
+if [[ ${#HOST_KILLS[@]} -gt 0 ]]; then
+    for h in "${!HOST_KILLS[@]}"; do
+        ssh -o ConnectTimeout=5 "$h" "${HOST_KILLS[$h]}" >/dev/null 2>&1 || true
+    done
+fi
+
+echo "${#TARGETS[@]} session(s) forgotten"

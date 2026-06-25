@@ -1,0 +1,112 @@
+#!/bin/bash
+# Show progress of a remote codex session.
+# Reads the codex rollout JSONL on the session's remote host and summarizes recent activity.
+#
+# Usage:
+#   cs-codex-remote-status <name-or-id>         # session name or codex session id REQUIRED
+#   cs-codex-remote-status <name-or-id> -n 5    # last 5 agent messages
+#   cs-codex-remote-status <name-or-id> -t      # show tool/command calls too
+
+set -euo pipefail
+
+REMOTE_SESSIONS='.cs-codex/sessions'
+SESSION_MAP_DIR="$HOME/.cs-codex-remote-sessions"
+
+HOST_FLAG=""
+resolve_remote_host() {
+    local name="${1:-}" h
+    if [[ -n "$HOST_FLAG" ]]; then printf '%s\n' "$HOST_FLAG"; return; fi
+    if [[ -n "$name" && -f "$SESSION_MAP_DIR/${name}.host" ]]; then
+        h="$(cat "$SESSION_MAP_DIR/${name}.host" 2>/dev/null)"
+        [[ -n "$h" ]] && { printf '%s\n' "$h"; return; }
+    fi
+    if [[ -n "${CS_CODEX_REMOTE_HOST:-}" ]]; then printf '%s\n' "$CS_CODEX_REMOTE_HOST"; return; fi
+    hostname -s
+}
+
+NUM_MESSAGES=3; SESSION=""; SHOW_TOOLS=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -n) NUM_MESSAGES="$2"; shift 2 ;;
+        -t) SHOW_TOOLS=true; shift ;;
+        -H|--host) HOST_FLAG="$2"; shift 2 ;;
+        -h|--help)
+            echo "Usage: cs-codex-remote-status <name-or-session-id> [-n NUM] [-t]"
+            echo "  -n NUM   Show last NUM agent messages (default: 3)"
+            echo "  -t       Include tool/command calls"
+            echo "  -H, --host <host>  SSH target host (default: the session's stored host)"
+            exit 0 ;;
+        *) SESSION="$1"; shift ;;
+    esac
+done
+
+[[ -n "$SESSION" ]] || { echo "Error: session name or id is required" >&2; echo "  List: cs-codex-remote-sessions" >&2; exit 1; }
+
+ORIG_NAME=""
+if ! [[ "$SESSION" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    ORIG_NAME="$SESSION"
+    if [[ -f "$SESSION_MAP_DIR/$SESSION" ]]; then SESSION="$(cat "$SESSION_MAP_DIR/$SESSION")"; fi
+    [[ "$SESSION" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || { echo "No codex session id known for '$ORIG_NAME' yet (has it run a turn?)" >&2; exit 1; }
+fi
+
+REMOTE_HOST="$(resolve_remote_host "$ORIG_NAME")"
+JSONL_PATH=$(ssh "$REMOTE_HOST" "find \$HOME/$REMOTE_SESSIONS -name '*${SESSION}.jsonl' 2>/dev/null" | head -1 | tr -d '\r')
+[[ -n "$JSONL_PATH" ]] || { echo "Session $SESSION not found on $REMOTE_HOST" >&2; exit 1; }
+
+TAIL_LINES=$(( NUM_MESSAGES * 40 ))
+SHOW_TOOLS_PY=$( $SHOW_TOOLS && echo True || echo False )
+
+ssh "$REMOTE_HOST" "tail -n $TAIL_LINES '$JSONL_PATH'" 2>/dev/null \
+    | python3 -u -c "
+import sys, json
+NUM = $NUM_MESSAGES
+SHOW_TOOLS = $SHOW_TOOLS_PY
+IS_TTY = sys.stdout.isatty()
+def dim(t):  return f'\033[2m{t}\033[0m' if IS_TTY else t
+def cyan(t): return f'\033[36m{t}\033[0m' if IS_TTY else t
+
+# Build an ordered list of (timestamp, text, tools) grouped per agent message. codex writes
+# fine-grained events; we key display off agent_message (the agent's spoken text) and attach any
+# tool/command calls seen since the previous agent message.
+entries = []
+pending_tools = []
+def summarize_call(p):
+    t = p.get('type','')
+    if t == 'function_call':
+        name = p.get('name','tool'); args = p.get('arguments','')
+        if isinstance(args, (dict,list)): args = json.dumps(args)
+        args = (args or '')[:80]
+        return f'{name}({args})'
+    if t in ('local_shell_call','exec_command_begin'):
+        cmd = p.get('command') or (p.get('action') or {}).get('command') or ''
+        if isinstance(cmd, list): cmd = ' '.join(map(str, cmd))
+        cmd = (cmd or '')[:90]
+        return f'shell: {cmd}'
+    return None
+
+for raw in sys.stdin.buffer:
+    line = raw.decode('utf-8','replace').strip()
+    if not line: continue
+    try: o = json.loads(line)
+    except json.JSONDecodeError: continue
+    ts = o.get('timestamp','')
+    p = o.get('payload') if isinstance(o.get('payload'), dict) else {}
+    pt = p.get('type')
+    if SHOW_TOOLS:
+        s = summarize_call(p)
+        if s: pending_tools.append(s)
+    if pt == 'agent_message':
+        text = (p.get('message') or '').strip()
+        entries.append((ts, text, pending_tools)); pending_tools = []
+if pending_tools:
+    entries.append(('', '', pending_tools))
+
+for ts, text, tools in entries[-NUM:]:
+    ts_short = ts[:19].replace('T',' ') if ts else ''
+    print(dim(f'--- {ts_short} ---'))
+    for t in tools: print(cyan(f'  [tool] {t}'))
+    if text:
+        if len(text) > 2000: text = text[:2000] + '\n... (truncated)'
+        print(text)
+    print()
+"

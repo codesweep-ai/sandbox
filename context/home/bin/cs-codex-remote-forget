@@ -1,0 +1,94 @@
+#!/bin/bash
+# Remove one or more remote codex sessions from the local session list.
+# Tears down any live warm-tmux session for those names (best-effort), but does NOT delete
+# session history on the remote machine — the codex rollout JSONL stays, so the same session id
+# can still be resumed later.
+#
+# Usage:
+#   cs-codex-remote-forget <name> [name2 ...]   # forget specific sessions
+#   cs-codex-remote-forget --all                # forget all sessions
+
+set -euo pipefail
+
+SESSION_FILE="$HOME/.cs-codex-remote-session"
+SESSION_MAP_DIR="$HOME/.cs-codex-remote-sessions"
+
+HOST_FLAG=""
+resolve_remote_host() {
+    local name="${1:-}" h
+    if [[ -n "$HOST_FLAG" ]]; then printf '%s\n' "$HOST_FLAG"; return; fi
+    if [[ -n "$name" && -f "$SESSION_MAP_DIR/${name}.host" ]]; then
+        h="$(cat "$SESSION_MAP_DIR/${name}.host" 2>/dev/null)"
+        [[ -n "$h" ]] && { printf '%s\n' "$h"; return; }
+    fi
+    if [[ -n "${CS_CODEX_REMOTE_HOST:-}" ]]; then printf '%s\n' "$CS_CODEX_REMOTE_HOST"; return; fi
+    hostname -s
+}
+
+usage() {
+    echo "Usage: cs-codex-remote-forget <name> [name2 ...]"
+    echo "       cs-codex-remote-forget --all"
+    echo
+    echo "Remove sessions from the local list. Does not delete remote history."
+    echo "  --all              Forget all sessions"
+    echo "  -H, --host <host>  Override the SSH host used to tear down tmux sessions"
+    echo "  -h, --help         Show this help"
+    exit "${1:-1}"
+}
+
+ALL=false; NAMES=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --all) ALL=true; shift ;;
+        -H|--host) HOST_FLAG="$2"; shift 2 ;;
+        -h|--help) usage 0 ;;
+        -*) echo "Unknown option: $1" >&2; exit 1 ;;
+        *) NAMES+=("$1"); shift ;;
+    esac
+done
+
+! $ALL && [[ ${#NAMES[@]} -eq 0 ]] && usage
+[[ -d "$SESSION_MAP_DIR" ]] || { echo "No sessions found ($SESSION_MAP_DIR does not exist)" >&2; exit 1; }
+
+CURRENT=""; [[ -f "$SESSION_FILE" ]] && CURRENT="$(cat "$SESSION_FILE")"
+
+# Session names are the map files with no metadata suffix (.token/.host/.workdir).
+TARGETS=()
+if $ALL; then
+    for f in "$SESSION_MAP_DIR"/*; do
+        [[ -f "$f" ]] || continue
+        name="$(basename "$f")"
+        case "$name" in *.workdir|*.host|*.token) continue ;; esac
+        TARGETS+=("$name")
+    done
+else
+    for name in "${NAMES[@]}"; do
+        if [[ -e "$SESSION_MAP_DIR/$name" || -f "$SESSION_MAP_DIR/${name}.token" ]]; then TARGETS+=("$name")
+        else echo "Session '$name' not found, skipping" >&2; fi
+    done
+fi
+[[ ${#TARGETS[@]} -eq 0 ]] && { echo "No sessions to forget"; exit 0; }
+
+# Tear down each session's warm tmux (named by its token) on its own host. Group by host.
+declare -A HOST_KILLS
+for name in "${TARGETS[@]}"; do
+    tok="$(cat "$SESSION_MAP_DIR/${name}.token" 2>/dev/null || true)"
+    [[ -n "$tok" ]] || continue
+    h="$(resolve_remote_host "$name")"
+    HOST_KILLS["$h"]="${HOST_KILLS[$h]:-}tmux kill-session -t 'cs-codex-$tok' 2>/dev/null; "
+done
+
+for name in "${TARGETS[@]}"; do
+    rm -f "$SESSION_MAP_DIR/$name" "$SESSION_MAP_DIR/${name}.token" \
+          "$SESSION_MAP_DIR/${name}.workdir" "$SESSION_MAP_DIR/${name}.host"
+    echo "Forgot: $name"
+    [[ "$name" == "$CURRENT" ]] && { rm -f "$SESSION_FILE"; CURRENT=""; }
+done
+
+if [[ ${#HOST_KILLS[@]} -gt 0 ]]; then
+    for h in "${!HOST_KILLS[@]}"; do
+        ssh -o ConnectTimeout=5 "$h" "${HOST_KILLS[$h]}" >/dev/null 2>&1 || true
+    done
+fi
+
+echo "${#TARGETS[@]} session(s) forgotten"

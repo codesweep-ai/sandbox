@@ -1,0 +1,343 @@
+#!/bin/bash
+# Delegate a task to a Claude Code instance on a remote SSH host. The target host
+# is resolved per session (see resolve_remote_host / --host) and defaults to this
+# machine's own hostname. Uses the remote's API credentials.
+#
+# Usage:
+#   cs-claude-remote --new --name <name> "prompt"   # start a new named session (required form)
+#   cs-claude-remote --resume <name> "prompt"       # resume a specific named session
+#   cs-claude-remote --resume <name> -d /path "prompt"  # with a specific working directory
+#   cs-claude-remote --resume <name> -j "prompt"    # full JSON output (cost, session ID, etc.)
+#   cs-claude-remote --resume <name> -b "prompt"    # run in background (async), log output locally
+#
+# A session name is MANDATORY on every call — either via --new --name <name> or --resume <name>.
+# The name of the last session used is recorded at ~/.cs-claude-remote-session for reference
+# only; it is never read back to infer the session to target (that was racy under parallel callers).
+# Sessions are tracked by human-readable names. Output streams in real time as text; use -j for JSON.
+
+set -euo pipefail
+
+REMOTE_CLAUDE="cs-claude"
+SESSION_FILE="$HOME/.cs-claude-remote-session"
+SESSION_MAP_DIR="$HOME/.cs-claude-remote-sessions"
+LOG_DIR="$HOME/.cs-claude-remote-logs"
+PID_DIR="$HOME/.cs-claude-remote-pids"
+LOCK_DIR="$HOME/.cs-claude-remote-locks"
+mkdir -p "$SESSION_MAP_DIR" "$LOG_DIR" "$PID_DIR" "$LOCK_DIR"
+
+# How long (seconds) to wait to acquire the per-session turn lock before giving
+# up, so a stale lock left by a hard-killed turn can't block a caller forever.
+LOCK_WAIT="${CS_CLAUDE_LOCK_WAIT:-900}"
+# Rotate the per-session background log once it exceeds this many bytes, keeping
+# one previous generation as <log>.1. 0 disables rotation.
+MAX_LOG_BYTES="${CS_CLAUDE_MAX_LOG_BYTES:-1048576}"
+
+# Target host override from the -H/--host flag (empty = use the resolution chain).
+HOST_FLAG=""
+# Resolve the SSH target host: --host flag > the session's stored host > the
+# CS_CLAUDE_REMOTE_HOST env var > this machine's short hostname. The value
+# may be a hostname or an ssh_config alias (e.g. another cs-sandbox-<name> container).
+resolve_remote_host() {
+    local name="${1:-}" h
+    if [[ -n "$HOST_FLAG" ]]; then printf '%s\n' "$HOST_FLAG"; return; fi
+    if [[ -n "$name" && -f "$SESSION_MAP_DIR/${name}.host" ]]; then
+        h="$(cat "$SESSION_MAP_DIR/${name}.host" 2>/dev/null)"
+        [[ -n "$h" ]] && { printf '%s\n' "$h"; return; }
+    fi
+    if [[ -n "${CS_CLAUDE_REMOTE_HOST:-}" ]]; then printf '%s\n' "$CS_CLAUDE_REMOTE_HOST"; return; fi
+    hostname -s
+}
+
+# --- remote delegation driver -----------------------------------------------
+# A turn is driven against an interactive Claude Code that lives in a long-running tmux
+# session on the remote (via the cs-claude-turn driver), kept warm between turns. Output
+# is read from the session JSONL, never scraped from the tmux pane.
+REMOTE_DRIVER="cs-claude-turn"
+# Source of the driver, scp'd to the remote on demand. Override with
+# CS_CLAUDE_TURN_SRC if your checkout lives elsewhere.
+DRIVER_SRC="${CS_CLAUDE_TURN_SRC:-$HOME/bin/cs-claude-turn}"
+
+usage() {
+    cat <<'EOF'
+Usage: cs-claude-remote --new --name <name> "prompt" [options]
+       cs-claude-remote --resume <name> "prompt" [options]
+
+A session name is MANDATORY. You must either start a new named session or resume an existing one.
+
+Options:
+  --resume <name>, -r <name>  Resume a specific named session (name required)
+  --new, -n                Start a new session (requires --name)
+  --name <name>            Session name (required with --new)
+  -d <dir>                 Working directory on remote machine
+  -H, --host <host>        SSH target host or ssh_config alias for this session.
+                           Resolution: this flag > the session's stored host >
+                           $CS_CLAUDE_REMOTE_HOST > this machine's hostname.
+                           Stored per session, so companions reuse it.
+  -j                       Output full JSON (includes session_id, cost, etc.)
+  -b, --bg                 Run in background: log output locally, return immediately
+  --redeploy               Force re-copy of the remote driver to the host
+
+Lifecycle actions (act immediately, no prompt needed):
+  --kill <name>            Kill the remote tmux session for <name> (frees the warm
+                           process; history is kept, next turn resumes from JSONL)
+  --attach <name>          Attach your terminal to the remote tmux session for
+                           <name> to watch or intervene (Ctrl-b d to detach)
+  -h, --help               Show this help
+EOF
+    exit 1
+}
+
+PROMPT=""
+WORKDIR=""
+SESSION_NAME=""
+CUSTOM_NAME=""
+JSON=false
+NEW_SESSION=false
+BACKGROUND=false
+REDEPLOY=false
+ACTION=""        # "kill" | "attach" — performed immediately, no prompt needed
+ACTION_NAME=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -d) WORKDIR="$2"; shift 2 ;;
+        -H|--host) HOST_FLAG="$2"; shift 2 ;;
+        --resume|-r)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --resume requires a session name" >&2
+                echo "  Usage: cs-claude-remote --resume <name> \"prompt\"" >&2
+                exit 1
+            elif [[ ! "$2" =~ ^[a-zA-Z0-9][a-zA-Z0-9\ ._-]*$ ]]; then
+                echo "Error: --resume session name '$2' has invalid characters" >&2
+                echo "  Allowed: start with [A-Za-z0-9], then [A-Za-z0-9 ._-]" >&2
+                echo "  (no leading dots/dashes, no quotes, slashes, or shell metacharacters)" >&2
+                exit 1
+            fi
+            SESSION_NAME="$2"; shift 2
+            ;;
+        --new|-n) NEW_SESSION=true; shift ;;
+        --name)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --name requires a value" >&2
+                exit 1
+            elif [[ ! "$2" =~ ^[a-zA-Z0-9][a-zA-Z0-9\ ._-]*$ ]]; then
+                echo "Error: --name '$2' has invalid characters" >&2
+                echo "  Allowed: start with [A-Za-z0-9], then [A-Za-z0-9 ._-]" >&2
+                echo "  (no leading dots/dashes, no quotes, slashes, or shell metacharacters)" >&2
+                exit 1
+            fi
+            CUSTOM_NAME="$2"; shift 2 ;;
+        -j) JSON=true; shift ;;
+        -b|--bg) BACKGROUND=true; shift ;;
+        --redeploy) REDEPLOY=true; shift ;;
+        --kill)
+            if [[ $# -lt 2 ]]; then echo "Error: --kill requires a session name" >&2; exit 1; fi
+            ACTION="kill"; ACTION_NAME="$2"; shift 2 ;;
+        --attach)
+            if [[ $# -lt 2 ]]; then echo "Error: --attach requires a session name" >&2; exit 1; fi
+            ACTION="attach"; ACTION_NAME="$2"; shift 2 ;;
+        -h|--help) usage ;;
+        *)
+            if [[ -z "$PROMPT" ]]; then
+                PROMPT="$1"
+            else
+                PROMPT="$PROMPT $1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+# --- lifecycle actions (kill/attach): perform and exit, no prompt required ----
+if [[ -n "$ACTION" ]]; then
+    UUID_FILE="$SESSION_MAP_DIR/$ACTION_NAME"
+    if [[ ! -f "$UUID_FILE" ]]; then
+        echo "Error: no known session named '$ACTION_NAME'" >&2
+        echo "  List sessions: cs-claude-remote-sessions" >&2
+        exit 1
+    fi
+    ACTION_UUID=$(cat "$UUID_FILE")
+    TMUX_SESSION="cs-claude-$ACTION_UUID"
+    REMOTE_HOST="$(resolve_remote_host "$ACTION_NAME")"
+    case "$ACTION" in
+        kill)
+            if ssh "$REMOTE_HOST" "tmux kill-session -t '$TMUX_SESSION' 2>/dev/null"; then
+                echo "Killed remote tmux session for '$ACTION_NAME' (history kept; next turn resumes)."
+            else
+                echo "No live tmux session for '$ACTION_NAME' (nothing to kill)."
+            fi
+            exit 0
+            ;;
+        attach)
+            echo "Attaching to '$ACTION_NAME' ($TMUX_SESSION). Detach with Ctrl-b d." >&2
+            exec ssh -t "$REMOTE_HOST" "tmux attach -t '$TMUX_SESSION'"
+            ;;
+    esac
+fi
+
+if [[ -z "$PROMPT" ]]; then
+    usage
+fi
+
+# A session name is mandatory — either via --new --name <name> or --resume <name>.
+# We never fall back to reading SESSION_FILE: that pointer is shared across callers and
+# can be silently overwritten, causing the wrong session to be targeted.
+IS_NEW=false
+
+if $NEW_SESSION; then
+    if [[ -z "$CUSTOM_NAME" ]]; then
+        echo "Error: --new requires --name <name>" >&2
+        echo "  Usage: cs-claude-remote --new --name <name> \"prompt\"" >&2
+        exit 1
+    fi
+    SESSION_NAME="$CUSTOM_NAME"
+    IS_NEW=true
+elif [[ -n "$SESSION_NAME" ]]; then
+    IS_NEW=false
+else
+    echo "Error: a session name is required" >&2
+    echo "  Start new:  cs-claude-remote --new --name <name> \"prompt\"" >&2
+    echo "  Resume:     cs-claude-remote --resume <name> \"prompt\"" >&2
+    exit 1
+fi
+
+# Record the last session used, for reference only. This file is never read back
+# by any tool to infer the target session — the name must always be passed explicitly.
+echo "$SESSION_NAME" > "$SESSION_FILE"
+
+# Look up existing UUID and working directory for this session name
+SESSION_UUID=""
+UUID_FILE="$SESSION_MAP_DIR/$SESSION_NAME"
+WORKDIR_FILE="$SESSION_MAP_DIR/${SESSION_NAME}.workdir"
+if ! $IS_NEW && [[ -f "$UUID_FILE" ]]; then
+    SESSION_UUID=$(cat "$UUID_FILE")
+fi
+# If no workdir specified on command line, restore saved workdir for this session
+if [[ -z "$WORKDIR" && -f "$WORKDIR_FILE" ]]; then
+    WORKDIR=$(cat "$WORKDIR_FILE")
+fi
+
+# Build output format
+if $JSON; then
+    OUTPUT_FMT="json"
+else
+    OUTPUT_FMT="text"
+fi
+
+# Ensure we have a session UUID (generate for a new session, reuse for resume).
+# The UUID is what locates the JSONL and lets us resume.
+if $IS_NEW || [[ -z "$SESSION_UUID" ]]; then
+    SESSION_UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+    echo "$SESSION_UUID" > "$UUID_FILE"
+    if [[ -n "$WORKDIR" ]]; then
+        echo "$WORKDIR" > "$WORKDIR_FILE"
+    fi
+fi
+
+# Resolve and remember the SSH target host for this session, so the companion
+# tools (status/forget/sessions) target the same host without re-specifying it.
+REMOTE_HOST="$(resolve_remote_host "$SESSION_NAME")"
+printf '%s\n' "$REMOTE_HOST" > "$SESSION_MAP_DIR/${SESSION_NAME}.host"
+
+# Copy the driver to the remote when needed. Re-copies when missing or when the local
+# source differs (or --redeploy was given).
+deploy_driver() {
+    if [[ ! -f "$DRIVER_SRC" ]]; then
+        # Don't hard-fail just because the local source moved: if the remote already
+        # has a driver, use it as-is.
+        if ! $REDEPLOY && ssh "$REMOTE_HOST" "test -x \$HOME/bin/$REMOTE_DRIVER" 2>/dev/null; then
+            return 0
+        fi
+        echo "Error: driver source not found at $DRIVER_SRC" >&2
+        echo "  Set CS_CLAUDE_TURN_SRC to its path, or check out the repo." >&2
+        exit 1
+    fi
+    local local_sum remote_sum
+    local_sum=$(md5sum "$DRIVER_SRC" | awk '{print $1}')
+    if $REDEPLOY; then
+        remote_sum=""
+    else
+        remote_sum=$(ssh "$REMOTE_HOST" "md5sum ~/bin/$REMOTE_DRIVER 2>/dev/null | awk '{print \$1}'" 2>/dev/null | tr -d '\r')
+    fi
+    if [[ "$local_sum" != "$remote_sum" ]]; then
+        ssh "$REMOTE_HOST" "mkdir -p ~/bin" 2>/dev/null
+        scp -q "$DRIVER_SRC" "$REMOTE_HOST:bin/$REMOTE_DRIVER"
+        ssh "$REMOTE_HOST" "chmod +x ~/bin/$REMOTE_DRIVER"
+    fi
+}
+
+# Build the remote command.
+deploy_driver
+# The driver decides create (--session-id) vs resume (--resume) itself, based
+# on whether the JSONL already exists remotely. We just hand it the UUID.
+DRIVER_FMT="text"; $JSON && DRIVER_FMT="json"
+REMOTE_CMD="$REMOTE_DRIVER --uuid $SESSION_UUID --name \"$SESSION_NAME\" --format $DRIVER_FMT"
+if [[ -n "$WORKDIR" ]]; then
+    REMOTE_CMD="$REMOTE_CMD --workdir \"$WORKDIR\""
+fi
+
+# Per-session lock: serializes turns to the same interactive session so two callers
+# cannot interleave keystrokes.
+LOCK_FILE="$LOCK_DIR/${SESSION_NAME}.lock"
+
+# Roll the background log over to <log>.1 once it grows past MAX_LOG_BYTES, so a
+# long-lived session's log can't grow without bound.
+rotate_log() {
+    local f="$1" size
+    (( MAX_LOG_BYTES > 0 )) || return 0
+    [[ -f "$f" ]] || return 0
+    size="$(wc -c < "$f" 2>/dev/null | tr -d ' ')"
+    if [[ -n "$size" ]] && (( size > MAX_LOG_BYTES )); then
+        mv -f "$f" "$f.1"
+    fi
+}
+
+# Run one turn: pipe the prompt to the remote command, holding the session lock so
+# two callers cannot interleave keystrokes. The lock is acquired with a bounded wait
+# (LOCK_WAIT) so a stale lock from a hard-killed turn surfaces as a clear "busy" error
+# instead of hanging the caller forever.
+ssh_turn() {
+    exec 200>"$LOCK_FILE"
+    if ! flock -w "$LOCK_WAIT" 200; then
+        echo "Error: session '$SESSION_NAME' is busy — could not acquire its turn lock within ${LOCK_WAIT}s." >&2
+        echo "  Another turn may still be running. If you are sure none is, the lock is stale; remove it:" >&2
+        echo "    rm -f '$LOCK_FILE'" >&2
+        exec 200>&-
+        return 4
+    fi
+    local rc
+    if echo "$PROMPT" | ssh "$REMOTE_HOST" "$REMOTE_CMD"; then rc=0; else rc=$?; fi
+    flock -u 200
+    exec 200>&-
+    return $rc
+}
+
+if $BACKGROUND; then
+    # Background mode: log output locally, return immediately
+    LOG_FILE="$LOG_DIR/${SESSION_NAME}.log"
+    PID_FILE="$PID_DIR/${SESSION_NAME}.pid"
+
+    # Start SSH in background, logging output. The "finished (exit N)" footer is
+    # the authoritative completion signal read by `-output -s`, so it must be
+    # written even when the turn fails — capture the status via `if` (set -e safe)
+    # rather than a bare command whose failure would abort the subshell early.
+    rotate_log "$LOG_FILE"
+    (
+        echo "--- $(date '+%Y-%m-%d %H:%M:%S') --- prompt: $PROMPT" >> "$LOG_FILE"
+        if ssh_turn >> "$LOG_FILE" 2>&1; then EXIT_CODE=0; else EXIT_CODE=$?; fi
+        echo "" >> "$LOG_FILE"
+        echo "--- $(date '+%Y-%m-%d %H:%M:%S') --- finished (exit $EXIT_CODE) ---" >> "$LOG_FILE"
+        rm -f "$PID_FILE"
+    ) &
+    BG_PID=$!
+    echo "$BG_PID" > "$PID_FILE"
+
+    echo "Session:  $SESSION_NAME"
+    echo "Running:  background (PID $BG_PID)"
+    echo "Log:      $LOG_FILE"
+    echo "Check:    cs-claude-remote-output $SESSION_NAME"
+    echo "Status:   cs-claude-remote-status"
+else
+    # Foreground mode: stream output directly
+    ssh_turn
+fi

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# user-podman — run inner podman containers as your own uid:gid (with matching
+# user/group *names*), transparently. A thin wrapper over `podman` (which in
+# sandbox is itself rootful via the /usr/local/bin/podman wrapper — the nested
+# engine must run rootful) that, for `run`/`create` only, injects:
+#   --user UID:GID
+#   --passwd-entry NAME:*:UID:GID::/home/NAME:/bin/bash
+#   --group-entry  GROUP:x:GID:
+# so bind-mounted files come back owned by you (not the 524288 subuid) and your
+# identity inside the inner container is your user (not root). All other
+# subcommands pass through unchanged, and an explicit --user/-u you pass is
+# respected (no injection).
+#
+# Engine: defaults to `podman` (rootful via the PATH wrapper — required for nested
+# podman here). Override with CS_USER_PODMAN_ENGINE if you need a different engine.
+set -euo pipefail
+
+PODMAN=${CS_USER_PODMAN_ENGINE:-podman}
+
+# First non-flag token = the subcommand.
+sub=""
+for a in "$@"; do
+  case "$a" in -*) ;; *) sub="$a"; break ;; esac
+done
+
+inject=()
+case "$sub" in
+  run|create)
+    has_user=0
+    for a in "$@"; do
+      case "$a" in --user|--user=*|-u|-u=*) has_user=1; break ;; esac
+    done
+    if [ "$has_user" -eq 0 ]; then
+      u=$(id -u); g=$(id -g); un=$(id -un); gn=$(id -gn)
+      inject=(
+        --user "${u}:${g}"
+        --passwd-entry "${un}:*:${u}:${g}::/home/${un}:/bin/bash"
+        --group-entry  "${gn}:x:${g}:"
+      )
+    fi
+    ;;
+esac
+
+# Rebuild argv, splicing the injected flags in right after the subcommand token.
+out=(); spliced=0
+for a in "$@"; do
+  out+=("$a")
+  if [ "$spliced" -eq 0 ] && [ "$a" = "$sub" ] && [ "${#inject[@]}" -gt 0 ]; then
+    out+=("${inject[@]}"); spliced=1
+  fi
+done
+
+exec "$PODMAN" "${out[@]}"

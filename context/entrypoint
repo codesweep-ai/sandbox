@@ -1,0 +1,268 @@
+#!/bin/bash
+# sandbox entrypoint. The image is GENERIC (no baked-in developer user), so this
+# runs as ROOT and, on first boot, CREATES the container user from the identity cs-sandbox
+# passes in (CS_SANDBOX_USER/CS_SANDBOX_UID/CS_SANDBOX_GID/CS_SANDBOX_HOME — matching your host name/uid/gid/
+# home). It then seeds the home volume from the image skeleton, wires up ssh + Claude
+# auth + the nested-podman storage driver, starts sshd, and finally drops privileges
+# to that user for the container's main process. Under --userns=keep-id the created
+# uid maps to your host user, so files stay owned by you on both sides. See docs/design.md.
+set -u
+
+CS_SANDBOX_USER="${CS_SANDBOX_USER:-dev}"
+CS_SANDBOX_UID="${CS_SANDBOX_UID:-1000}"
+CS_SANDBOX_GID="${CS_SANDBOX_GID:-1000}"
+CS_SANDBOX_HOME="${CS_SANDBOX_HOME:-/home/$CS_SANDBOX_USER}"
+SEED="/run/cs-sandbox-seed"
+SSH_DIR="$CS_SANDBOX_HOME/.ssh"
+PORT="${CS_SANDBOX_SSH_PORT:-22}"
+
+# Reach the host by its own name from inside (ping / HTTP / ssh): pin the seeded host mapping
+# into /etc/hosts (NSS consults files before DNS, so it wins over the host's LAN/Tailscale
+# answer, which isn't routable from here). podman regenerates /etc/hosts each start, so append
+# idempotently. Guest-only — the host's /etc/hosts is never touched.
+if [ -f "$SEED/host_hosts" ]; then
+  _hh="$(cat "$SEED/host_hosts")"
+  grep -qxF "$_hh" /etc/hosts 2>/dev/null || echo "$_hh" >> /etc/hosts
+fi
+
+# Prefer IPv4. The sandbox net is IPv4-only (link-local IPv6 only, no v6 route), but the host's
+# resolver / Tailscale MagicDNS hands back AAAA records — which getaddrinfo would otherwise try
+# first, so naive single-address clients hang on an unreachable v6 and every dual-stack lookup eats
+# a v6 timeout. This makes the host's pinned IPv4 (and v4 generally) win. (host_hosts pins only an
+# A record, so it can't suppress the AAAA on its own.)
+printf 'precedence ::ffff:0:0/96 100\n' > /etc/gai.conf; chmod 644 /etc/gai.conf
+
+# --- ensure the developer group + user are correct (idempotent) -----------------
+# Under --userns=keep-id podman auto-injects the host user/group into /etc/passwd &
+# /etc/group, but with home=/ and shell=/bin/sh. Normalize (or create from scratch if
+# somehow absent) so the home path and login shell are right.
+if ! getent group "$CS_SANDBOX_GID" >/dev/null 2>&1; then
+  groupadd -g "$CS_SANDBOX_GID" "$CS_SANDBOX_USER" 2>/dev/null || true
+fi
+if id -u "$CS_SANDBOX_USER" >/dev/null 2>&1; then
+  usermod -d "$CS_SANDBOX_HOME" -s /bin/bash "$CS_SANDBOX_USER" 2>/dev/null || true
+else
+  useradd --no-create-home -u "$CS_SANDBOX_UID" -g "$CS_SANDBOX_GID" -d "$CS_SANDBOX_HOME" \
+          -s /bin/bash -p '*' "$CS_SANDBOX_USER" 2>/dev/null || true
+fi
+
+# passwordless sudo (the rootful `podman` wrapper / nested podman + general dev use)
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$CS_SANDBOX_USER" > /etc/sudoers.d/cs-sandbox
+chmod 440 /etc/sudoers.d/cs-sandbox
+
+# subuid/subgid for nested podman (idempotent)
+grep -q "^$CS_SANDBOX_USER:" /etc/subuid || echo "$CS_SANDBOX_USER:100000:65536" >> /etc/subuid
+grep -q "^$CS_SANDBOX_USER:" /etc/subgid || echo "$CS_SANDBOX_USER:100000:65536" >> /etc/subgid
+
+# --- home: ensure it exists, seed on first boot, fix ownership -------------------
+# IMPORTANT: never `chown -R "$CS_SANDBOX_HOME"` — repos are bind-mounted UNDER the home and
+# may contain files we can't (and must not) chown. Touch only the home dir itself and
+# the entries we actually seed from the image skeleton.
+mkdir -p "$CS_SANDBOX_HOME"
+chown "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CS_SANDBOX_HOME"
+if [ ! -f "$CS_SANDBOX_HOME/.cs-sandbox-initialized" ]; then
+  # skeleton dotfiles, bin, vendored claude tools, pre-built nvim plugins, etc.
+  cp -rn /sandbox/home/. "$CS_SANDBOX_HOME/" 2>/dev/null || true
+  if [ -d "$SEED/host_ssh" ]; then
+    mkdir -p "$SSH_DIR"
+    cp -a "$SEED/host_ssh/." "$SSH_DIR/" 2>/dev/null || true
+  fi
+  touch "$CS_SANDBOX_HOME/.cs-sandbox-initialized"
+  # chown ONLY the seeded skeleton entries (by name), so bind-mounted repos are skipped
+  for e in $(cd /sandbox/home && ls -A) .ssh .cs-sandbox-initialized; do
+    [ -e "$CS_SANDBOX_HOME/$e" ] && chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CS_SANDBOX_HOME/$e" 2>/dev/null || true
+  done
+fi
+
+mkdir -p "$SSH_DIR"
+chmod 700 "$SSH_DIR"
+# sshd refuses pubkey auth if the home is group/other-writable.
+chmod go-w "$CS_SANDBOX_HOME" 2>/dev/null || true
+
+# --- every boot: refresh cs-sandbox-managed ssh material from the (read-only) seed -----
+if [ -d "$SEED" ]; then
+  [ -f "$SEED/authorized_keys" ] && install -m 600 "$SEED/authorized_keys" "$SSH_DIR/authorized_keys"
+
+  # --env / --env-file: whole-environment injection. sshd (PermitUserEnvironment=yes) reads
+  # ~/.ssh/environment for every session — interactive and `ssh <name> cmd` alike.
+  if [ -f "$SEED/inject-env" ]; then
+    install -m 600 "$SEED/inject-env" "$SSH_DIR/environment"
+    chown "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$SSH_DIR/environment" 2>/dev/null || true
+  fi
+
+  for k in id_cs-sandbox_user id_cs-sandbox_agent; do
+    [ -f "$SEED/$k" ]     && install -m 600 "$SEED/$k"     "$SSH_DIR/$k"
+    [ -f "$SEED/$k.pub" ] && install -m 644 "$SEED/$k.pub" "$SSH_DIR/$k.pub"
+  done
+
+  # managed ssh client config, installed via an include
+  if [ -f "$SEED/ssh_config" ]; then
+    mkdir -p "$SSH_DIR/config.d"; chmod 700 "$SSH_DIR/config.d"
+    install -m 600 "$SEED/ssh_config" "$SSH_DIR/config.d/cs-sandbox"
+    touch "$SSH_DIR/config"
+    if ! grep -qxF 'Include ~/.ssh/config.d/cs-sandbox' "$SSH_DIR/config"; then
+      printf 'Include ~/.ssh/config.d/cs-sandbox\n\n%s\n' "$(cat "$SSH_DIR/config")" > "$SSH_DIR/config.tmp"
+      mv "$SSH_DIR/config.tmp" "$SSH_DIR/config"
+    fi
+    chmod 600 "$SSH_DIR/config"   # after the mv (which would inherit the umask) so ssh always accepts it
+  fi
+
+  # stable per-instance host keys
+  if ls "$SEED"/host_keys/ssh_host_*_key >/dev/null 2>&1; then
+    cp -a "$SEED"/host_keys/ssh_host_* /etc/ssh/ 2>/dev/null || true
+    chmod 600 /etc/ssh/ssh_host_*_key 2>/dev/null || true
+    chmod 644 /etc/ssh/ssh_host_*_key.pub 2>/dev/null || true
+  fi
+fi
+# the refreshed ssh material must be owned by the user
+chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$SSH_DIR" 2>/dev/null || true
+
+# Fallback: ensure host keys exist even without a seed.
+ssh-keygen -A >/dev/null 2>&1 || true
+
+# --- Claude subscription auth (cs-claude profile: CLAUDE_CONFIG_DIR=~/.cs-claude) ---
+CC_DIR="$CS_SANDBOX_HOME/.cs-claude"
+mkdir -p "$CC_DIR"; chmod 700 "$CC_DIR" 2>/dev/null || true
+# Install the seeded credentials on FIRST BOOT ONLY, so a token the container has
+# since refreshed isn't clobbered by the create-time snapshot.
+if [ -f "$SEED/claude/.credentials.json" ] && [ ! -f "$CC_DIR/.credentials.json" ]; then
+  install -m 600 "$SEED/claude/.credentials.json" "$CC_DIR/.credentials.json"
+fi
+# API-key / cloud-provider auth (first boot only): the seeded env (sourced by the cs-claude
+# wrapper) + any creds/ files (referenced from env by their stable ~/.cs-claude/... path).
+if [ -f "$SEED/claude/env" ] && [ ! -f "$CC_DIR/env" ]; then
+  install -m 600 "$SEED/claude/env" "$CC_DIR/env"
+fi
+if [ -d "$SEED/claude/creds" ] && [ ! -d "$CC_DIR/creds" ]; then
+  cp -a "$SEED/claude/creds" "$CC_DIR/creds"; chmod -R go-rwx "$CC_DIR/creds"
+fi
+# Skip the first-run onboarding wizard for this profile.
+if command -v jq >/dev/null 2>&1; then
+  if [ -f "$CC_DIR/.claude.json" ]; then
+    jq '.hasCompletedOnboarding=true' "$CC_DIR/.claude.json" > "$CC_DIR/.claude.json.tmp" 2>/dev/null \
+      && mv "$CC_DIR/.claude.json.tmp" "$CC_DIR/.claude.json" || rm -f "$CC_DIR/.claude.json.tmp"
+  else
+    echo '{"hasCompletedOnboarding":true}' > "$CC_DIR/.claude.json"
+  fi
+  chmod 600 "$CC_DIR/.claude.json" 2>/dev/null || true
+fi
+# YOLO marker: the cs-claude wrapper runs `claude --dangerously-skip-permissions`
+# when this file exists. Only for AGENT instances created with --yolo (cs-sandbox enforces the
+# agent-only rule; this is a defense-in-depth re-check so a user instance never gets it).
+if [ "${CS_SANDBOX_YOLO:-0}" = "1" ] && [ "${CS_SANDBOX_TYPE:-}" = "agent" ]; then
+  : > "$CC_DIR/.yolo"
+else
+  rm -f "$CC_DIR/.yolo" 2>/dev/null || true
+fi
+chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CC_DIR" 2>/dev/null || true
+
+# --- Codex subscription auth (cs-codex profile: CODEX_HOME=~/.cs-codex) ---
+# Same model as Claude above. config.toml ships in the home skeleton; auth.json is installed
+# from the seed first boot only (don't clobber a token the instance later refreshed).
+CODEX_DIR="$CS_SANDBOX_HOME/.cs-codex"
+mkdir -p "$CODEX_DIR"; chmod 700 "$CODEX_DIR" 2>/dev/null || true
+if [ -f "$SEED/codex/auth.json" ] && [ ! -f "$CODEX_DIR/auth.json" ]; then
+  install -m 600 "$SEED/codex/auth.json" "$CODEX_DIR/auth.json"
+fi
+# API-key / custom-provider auth (first boot only): the seeded env + creds/ (as for Claude above).
+if [ -f "$SEED/codex/env" ] && [ ! -f "$CODEX_DIR/env" ]; then
+  install -m 600 "$SEED/codex/env" "$CODEX_DIR/env"
+fi
+if [ -d "$SEED/codex/creds" ] && [ ! -d "$CODEX_DIR/creds" ]; then
+  cp -a "$SEED/codex/creds" "$CODEX_DIR/creds"; chmod -R go-rwx "$CODEX_DIR/creds"
+fi
+# YOLO marker for cs-codex (agent + --yolo only): the wrapper then runs codex with
+# --dangerously-bypass-approvals-and-sandbox. Mirrors the Claude marker above.
+if [ "${CS_SANDBOX_YOLO:-0}" = "1" ] && [ "${CS_SANDBOX_TYPE:-}" = "agent" ]; then
+  : > "$CODEX_DIR/.yolo"
+else
+  rm -f "$CODEX_DIR/.yolo" 2>/dev/null || true
+fi
+chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CODEX_DIR" 2>/dev/null || true
+
+# --- global git identity: seed ~/.gitconfig user.name/email from the host's global config, but
+# only if unset (so a change made later in the sandbox is never clobbered). Per-repo --repo
+# overrides are applied below. ----
+if [ -f "$SEED/git_identity" ]; then
+  gi_name="$(awk -F'\t' '$1=="name"{print $2}' "$SEED/git_identity")"
+  gi_email="$(awk -F'\t' '$1=="email"{print $2}' "$SEED/git_identity")"
+  [ -n "$gi_name" ] && [ -z "$(runuser -u "$CS_SANDBOX_USER" -- git config --global user.name 2>/dev/null)" ] \
+    && runuser -u "$CS_SANDBOX_USER" -- git config --global user.name "$gi_name" 2>/dev/null || true
+  [ -n "$gi_email" ] && [ -z "$(runuser -u "$CS_SANDBOX_USER" -- git config --global user.email 2>/dev/null)" ] \
+    && runuser -u "$CS_SANDBOX_USER" -- git config --global user.email "$gi_email" 2>/dev/null || true
+fi
+
+# --- first boot: clone --repo sources (alternates off the RO-mounted objects) ----
+# sandbox RO-mounts each --repo source at /run/cs-sandbox-repos/<dir> and lists them in the seed
+# 'repos' file (\x1f-separated fields: dir, source, branch, base, user.name, user.email — \x1f not
+# tab so an empty field like a missing base ref isn't collapsed). We `git clone --shared` so the
+# checkout borrows objects read-only via alternates (no copy) on its own branch; new commits stay
+# local and are retrieved with `cs-sandbox fetch`. The repo's host identity is set locally so its
+# commits match what that repo uses on the host.
+if [ -f "$SEED/repos" ] && [ ! -f "$CS_SANDBOX_HOME/.cs-sandbox-repos-done" ]; then
+  while IFS=$'\037' read -r r_dir r_src r_branch r_base r_uname r_uemail; do
+    [ -n "$r_dir" ] || continue
+    dest="$CS_SANDBOX_HOME/$r_dir"
+    [ -e "$dest" ] && continue
+    if runuser -u "$CS_SANDBOX_USER" -- git clone -q --shared "$r_src" "$dest"; then
+      runuser -u "$CS_SANDBOX_USER" -- git -C "$dest" config receive.denyCurrentBranch updateInstead
+      [ -n "$r_uname" ]  && runuser -u "$CS_SANDBOX_USER" -- git -C "$dest" config user.name  "$r_uname"
+      [ -n "$r_uemail" ] && runuser -u "$CS_SANDBOX_USER" -- git -C "$dest" config user.email "$r_uemail"
+      runuser -u "$CS_SANDBOX_USER" -- git -C "$dest" switch -q -c "$r_branch" ${r_base:+"$r_base"} \
+        || runuser -u "$CS_SANDBOX_USER" -- git -C "$dest" switch -q -c "$r_branch"
+    fi
+  done < "$SEED/repos"
+  touch "$CS_SANDBOX_HOME/.cs-sandbox-repos-done"
+fi
+
+# --- nested ROOTFUL podman: storage driver + additional (shared) image stores ----
+# Prefer the kernel's native overlay driver (fast); fall back to fuse-overlayfs only if
+# a native overlay mount isn't possible here. The decision is cached in the (persistent)
+# /var/lib/containers volume so the probe runs at most once per instance.
+# Additional read-only image stores arrive via CS_SANDBOX_IMAGE_STORES (colon-separated
+# graphroot paths, each a named shared store bind-mounted RO by sandbox). They're listed
+# as `additionalimagestores` so nested podman reuses images already in them instead of
+# re-pulling into this container's own store.
+ais=""
+if [ -n "${CS_SANDBOX_IMAGE_STORES:-}" ]; then
+  _oifs="$IFS"; IFS=':'
+  for _s in $CS_SANDBOX_IMAGE_STORES; do
+    [ -n "$_s" ] && [ -d "$_s" ] || continue
+    ais="${ais:+$ais, }\"$_s\""
+  done
+  IFS="$_oifs"
+fi
+
+write_storage_conf() {  # $1 = native|fuse
+  {
+    printf '[storage]\ndriver = "overlay"\n\n[storage.options]\n'
+    [ -n "$ais" ] && printf 'additionalimagestores = [%s]\n' "$ais"
+    [ "$1" = "fuse" ] && printf '\n[storage.options.overlay]\nmount_program = "/usr/bin/fuse-overlayfs"\n'
+  } > /etc/containers/storage.conf
+}
+
+FUSE_FLAG="/var/lib/containers/.cs-sandbox-nested-fuse"
+NATIVE_FLAG="/var/lib/containers/.cs-sandbox-nested-native-ok"
+if command -v /usr/bin/podman >/dev/null 2>&1; then
+  if [ -f "$FUSE_FLAG" ]; then
+    write_storage_conf fuse
+  elif [ -f "$NATIVE_FLAG" ]; then
+    write_storage_conf native
+  else
+    write_storage_conf native
+    if /usr/bin/podman info >/dev/null 2>&1; then
+      touch "$NATIVE_FLAG"
+    else
+      write_storage_conf fuse
+      touch "$FUSE_FLAG"
+    fi
+  fi
+fi
+
+# --- start sshd and signal readiness --------------------------------------------
+/usr/sbin/sshd -D -p "$PORT" -oUsePAM=no -oPermitUserEnvironment=yes &
+
+touch /run/cs-sandbox-ready 2>/dev/null && chmod 644 /run/cs-sandbox-ready 2>/dev/null || true
+
+# --- drop privileges to the developer user for the main process -----------------
+exec runuser -u "$CS_SANDBOX_USER" -- "$@"

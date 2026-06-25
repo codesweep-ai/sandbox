@@ -1,0 +1,83 @@
+#!/bin/bash
+# mdview — render Markdown to a throwaway temp HTML file (GitHub style + Mermaid)
+# and open it in the browser right away. Companion to mdtohtml, which it calls to
+# do the actual conversion; mdview just picks the temp output and launches a
+# browser, so you never leave stray .html files beside your sources.
+set -euo pipefail
+
+PROG="${0##*/}"
+VERSION="1.2.0"
+
+usage() {
+    cat <<EOF
+$PROG $VERSION — render Markdown to a temp HTML file and open it in the browser
+
+Usage:
+  $PROG [options] <input.md>
+
+Arguments:
+  <input.md>          Markdown file to render. Use '-' to read from stdin.
+
+Options:
+  -t, --title TITLE   Browser/tab <title> for the document.
+  -h, --help          Show this help and exit.
+  -V, --version       Print version and exit.
+
+The HTML goes to a temp file (its path is printed) which is then opened in
+Google Chrome (falling back to google-chrome-stable, then xdg-open). See mdtohtml
+to convert to a file you keep instead.
+
+Requires: pandoc, and a browser (google-chrome / xdg-open) for the open step.
+EOF
+}
+
+die() { echo "$PROG: $*" >&2; exit 1; }
+
+# Locate mdtohtml: prefer the copy sibling to this script, else fall back to PATH.
+here="$(cd "$(dirname "$0")" && pwd)"
+if [ -x "$here/mdtohtml" ]; then MD2H="$here/mdtohtml"; else MD2H="mdtohtml"; fi
+
+# --- parse a small set of args; everything else is forwarded to mdtohtml ---
+title=""
+inputs=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -t|--title)   [ $# -ge 2 ] || die "$1 requires an argument"; title="$2"; shift 2 ;;
+        -h|--help)    usage; exit 0 ;;
+        -V|--version) echo "$PROG $VERSION"; exit 0 ;;
+        --)           shift; while [ $# -gt 0 ]; do inputs+=("$1"); shift; done ;;
+        -?*)          die "unknown option: $1 (try '$PROG --help')" ;;
+        *)            inputs+=("$1"); shift ;;
+    esac
+done
+
+[ "${#inputs[@]}" -ne 0 ] || { usage >&2; exit 2; }
+[ "${#inputs[@]}" -eq 1 ] || die "expected exactly one input file, got ${#inputs[@]} (try '$PROG --help')"
+input="${inputs[0]}"
+
+# Keep rendered files in a dedicated per-user dir so we don't litter /tmp itself.
+viewdir="${TMPDIR:-/tmp}/mdview-${USER:-$(id -un)}"
+mkdir -p "$viewdir"
+
+# Name the temp file after the source for friendlier browser tabs / history.
+if [ "$input" = "-" ]; then base="document"; else base="$(basename "${input%.*}")"; fi
+output="$(mktemp --suffix=".html" -p "$viewdir" "${base}.XXXXXX" 2>/dev/null || mktemp --suffix=".html" -p "$viewdir")"
+
+# Delegate the conversion to mdtohtml (which prints the output path on success).
+title_args=()
+[ -n "$title" ] && title_args=(-t "$title")
+"$MD2H" "${title_args[@]}" -o "$output" -- "$input"
+
+# Open in Google Chrome (fall back to the desktop default if Chrome is absent).
+if command -v google-chrome >/dev/null 2>&1; then
+    browser=google-chrome
+elif command -v google-chrome-stable >/dev/null 2>&1; then
+    browser=google-chrome-stable
+elif command -v xdg-open >/dev/null 2>&1; then
+    browser=xdg-open
+else
+    die "no browser found (tried google-chrome, google-chrome-stable, xdg-open); HTML is at $output"
+fi
+
+nohup "$browser" "$output" >/dev/null 2>&1 &
+exit 0

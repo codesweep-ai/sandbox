@@ -1,0 +1,8 @@
+# #!/bin/bash
+
+# Run this inside the container
+if [ ! -f /run/.containerenv ]; then
+  echo "Error: This script must be run inside the cs-sandbox container."
+  exit 1
+fi
+

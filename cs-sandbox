@@ -1,0 +1,2502 @@
+#!/usr/bin/env bash
+# cs-sandbox — manage multiple named dev sandboxes (user / agent types), as rootless
+# Firecracker microVMs (the default) or podman containers. Run `cs-sandbox help` for the full reference
+# (the single source of truth for usage; see usage() below). See docs/design.md for the design,
+# docs/firecracker.md for the microVM engine, and docs/repo-sharing.md for repo sharing.
+
+set -euo pipefail
+
+# --- constants ------------------------------------------------------------
+CS_SANDBOX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IMAGE="localhost/cs-sandbox:44"
+CONTAINERFILE="Containerfile"
+# Private podman registry baked into the image so nested podman can pull from a local/private
+# registry (see docs/design.md "Private registry"). Both vars are forwarded to the image as
+# build-args by cmd_build:
+#   CS_SANDBOX_PRIVATE_REGISTRY=host:port    registry to trust, as a bare host:port (no scheme,
+#                                            per docker/podman convention); empty = bake in none.
+#   CS_SANDBOX_PRIVATE_REGISTRY_INSECURE=1   insecure: permit plain-HTTP and skip TLS verification;
+#                                            0 (default) = secure (HTTPS, TLS-verified).
+# Secure is the default; insecure (plain-HTTP / self-signed) is opt-in, e.g.:
+#   CS_SANDBOX_PRIVATE_REGISTRY=registry.internal:5000 CS_SANDBOX_PRIVATE_REGISTRY_INSECURE=1
+# ${VAR-default}: unset keeps the default; an explicit value (including empty) overrides it.
+PRIVATE_REGISTRY="${CS_SANDBOX_PRIVATE_REGISTRY-}"
+PRIVATE_REGISTRY_INSECURE="${CS_SANDBOX_PRIVATE_REGISTRY_INSECURE-0}"
+# Normalize the insecure flag to a clean 1/0 for the build-arg (accepts 1/true/yes/on).
+case "${PRIVATE_REGISTRY_INSECURE,,}" in 1|true|yes|on) PRIVATE_REGISTRY_INSECURE=1 ;; *) PRIVATE_REGISTRY_INSECURE=0 ;; esac
+NET="cs-sandbox-net"
+PREFIX=""                                   # instances use their bare name; infra (network, volumes, keepalive) keep cs-sandbox-*
+PORT_MIN="${CS_SANDBOX_PORT_MIN:-2200}"
+PORT_MAX="${CS_SANDBOX_PORT_MAX:-2399}"
+# The host SSH-port pool is split so podman-published ports (each bound individually on the
+# host) never collide with the per-VM host ports the firecracker engine binds (socat per VM). Ports in
+# [PORT_MIN, PORT_SPLIT) go to podman containers; [PORT_SPLIT, PORT_MAX] go to firecracker VMs.
+# Allocation also skips any number already used by either engine, so the two can never clash.
+PORT_SPLIT="${CS_SANDBOX_PORT_SPLIT:-2300}"
+# Host address the published SSH ports bind to. Default loopback: reach instances from the
+# host, or remotely via `ssh -J <host>` (ProxyJump). Set to 0.0.0.0 (all interfaces) or a
+# specific host IP to expose the SSH ports on the network so a remote machine can ssh straight
+# in (mind your firewall). Applies to new containers at create time and to VMs when the network
+# fabric (re)starts. See README "Reaching instances over SSH".
+CS_SANDBOX_SSH_BIND="${CS_SANDBOX_SSH_BIND:-127.0.0.1}"
+INTERNAL_SSH_PORT=22       # instances' sshd listens on the standard port, so 'ssh <name>' (peer or host) needs no per-host port override
+TIER_DIR="$CS_SANDBOX_DIR/tier-keys"
+INST_DIR="$CS_SANDBOX_DIR/instances"
+START_TIMEOUT="${CS_SANDBOX_START_TIMEOUT:-120}"
+TZ_DEFAULT="${CS_SANDBOX_TZ:-America/Los_Angeles}"
+
+# --- firecracker engine (microVM) -- see docs/firecracker.md ---
+FC_DIR="$CS_SANDBOX_DIR/fc"                       # guest init + host vsock ProxyCommand
+FC_CACHE="$CS_SANDBOX_DIR/.fc-cache"              # gitignored: firecracker bin, kernel, base rootfs
+# Pinned firecracker release (official GitHub static binary — the project ships no distro
+# package). Override with CS_SANDBOX_FC_VERSION to bump; the download is checksum-verified against
+# the release's published .sha256.txt.
+FC_VERSION="${CS_SANDBOX_FC_VERSION:-v1.16.0}"
+# Guest kernel source: 'fedora' (default) builds a Fedora kernel+modules+initramfs from the
+# image via a throwaway container, so the guest runs the SAME kernel on any host (Fedora,
+# Ubuntu, …) — no host kernel / dracut / CONFIG_PVH dependency. 'host' uses the running
+# host kernel (uname -r), which is smaller and auto-tracks host upgrades (Fedora hosts only).
+FC_KERNEL="${CS_SANDBOX_FC_KERNEL:-fedora}"
+FC_KVER="$(uname -r)"                       # host-kernel mode: guest kernel = host's running kernel
+# Fedora-mode guest kernel is PINNED to a specific kernel-core NVR (not "latest") so the
+# microVM is reproducible. Bump with CS_SANDBOX_FC_KVER (must be available in the image's Fedora
+# repos); empty falls back to the latest kernel-core. Changing it rebuilds the kernel cache.
+FC_KVER_PIN="${CS_SANDBOX_FC_KVER:-7.0.12-201.fc44}"
+FC_MEM_MIB="${CS_SANDBOX_FC_MEM:-4096}"
+FC_VCPUS="${CS_SANDBOX_FC_VCPUS:-4}"
+FC_ROOTFS_GB="${CS_SANDBOX_FC_ROOTFS_GB:-14}"
+# Unified rootless network fabric (see fc_net_* below): VMs live in PODMAN's own rootless
+# netns, with a tap on podman's bridge and an address in podman's subnet — so containers and
+# VMs share one L2/L3 fabric and reach each other directly, by name. A tiny "keepalive"
+# container holds that netns alive; a forwarding dnsmasq resolves VM names (and forwards the
+# rest to aardvark). VM host addresses are taken from the high end of podman's /24.
+FC_NET_DIR="$FC_CACHE/net"                  # dnsmasq pid/hostsdir, per-VM forwarder records, logs
+FC_REPO_CACHE="$FC_CACHE/repo-disks"        # content-addressed bare-repo ext4 disks, shared across VMs
+FC_REPO_CACHE_TTL_DAYS="${CS_SANDBOX_FC_REPO_CACHE_TTL_DAYS:-14}"   # prune cached repo disks unused this long (0 disables)
+FC_STORE_CACHE="$FC_CACHE/store-disks"      # content-addressed shared-image-store ext4 disks (--image-store on FC)
+FC_KEEPALIVE="cs-sandbox-net-keepalive"       # container that pins podman's rootless netns + bridge
+FC_VM_HOST_MIN="${CS_SANDBOX_FC_VM_HOST_MIN:-200}"   # VM addresses: <podman-prefix>.200 .. .250
+FC_VM_HOST_MAX="${CS_SANDBOX_FC_VM_HOST_MAX:-250}"   #   (podman hands containers low addresses, so no clash)
+
+USER_NAME="$(id -un)"
+USER_ID="$(id -u)"
+GROUP_ID="$(id -g)"
+SSH_CFG_DIR="$HOME/.ssh/config.d"
+SSH_CFG_FILE="$SSH_CFG_DIR/cs-sandbox"
+
+is_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
+
+die()  { echo "cs-sandbox: $*" >&2; exit 1; }
+info() { echo "cs-sandbox: $*" >&2; }
+
+# The instance name, as given — instances are not prefixed, so this is the bare name.
+short_name() { echo "$1"; }
+
+# --- prerequisites --------------------------------------------------------
+ensure_net() {
+    podman network exists "$NET" 2>/dev/null && return 0
+    # Tolerate a parallel create that creates the network at the same moment: a losing
+    # `network create` errors, but the network now exists, which is all we require.
+    podman network create "$NET" >/dev/null 2>&1 || true
+    podman network exists "$NET" 2>/dev/null || die "could not create podman network '$NET'"
+}
+
+ensure_image() {
+    if ! podman image exists "$IMAGE" 2>/dev/null; then
+        info "image $IMAGE not found; building (this takes a while)…"
+        cmd_build
+    fi
+}
+
+ensure_tier_keys() {
+    mkdir -p "$TIER_DIR"; chmod 700 "$TIER_DIR"
+    local k
+    for k in id_cs-sandbox_user id_cs-sandbox_agent; do
+        if [[ ! -f "$TIER_DIR/$k" ]]; then
+            ssh-keygen -t ed25519 -N '' -C "${k#id_cs-sandbox_}-tier@sandbox" -f "$TIER_DIR/$k" >/dev/null
+        fi
+    done
+    chmod 600 "$TIER_DIR"/id_cs-sandbox_* 2>/dev/null || true
+    chmod 644 "$TIER_DIR"/id_cs-sandbox_*.pub 2>/dev/null || true
+}
+
+# Concatenate all host public keys (the "H" identity set).
+host_pubkeys() {
+    local found=""
+    shopt -s nullglob
+    local f
+    for f in "$HOME"/.ssh/*.pub; do
+        [[ -s "$f" ]] && { cat "$f"; found=1; }
+    done
+    shopt -u nullglob
+    [[ -n "$found" ]] || info "warning: no host public keys in ~/.ssh/*.pub — the host will not be able to ssh into containers"
+}
+
+# Indented `IdentityFile` lines for every host private key whose .pub we authorize
+# into instances (see build_seed -> host_pubkeys). Emitting these into the generated
+# ssh config blocks makes `ssh <name>` offer the right key even when it has a
+# non-standard filename and isn't loaded in the agent — otherwise ssh only tries the
+# default names (id_rsa/id_ecdsa/id_ed25519) and fails with "Permission denied
+# (publickey)". Skips .pub files with no matching private key (can't be presented).
+host_identity_lines() {
+    local f priv
+    shopt -s nullglob
+    for f in "$HOME"/.ssh/*.pub; do
+        [[ -s "$f" ]] || continue
+        priv="${f%.pub}"
+        [[ -f "$priv" ]] || continue
+        printf '    IdentityFile ~/.ssh/%s\n' "$(basename "$priv")"
+    done
+    shopt -u nullglob
+}
+
+# The IdentityFile block plus `IdentitiesOnly yes`, or empty if no usable host key.
+# `IdentitiesOnly yes` keeps ssh from exhausting MaxAuthTries on unrelated agent keys
+# before reaching ours; safe because the authorized set IS exactly these host keys.
+host_identity_block() {
+    local lines; lines="$(host_identity_lines)"
+    [[ -n "$lines" ]] || return 0
+    printf '%s\n    IdentitiesOnly yes' "$lines"
+}
+
+# --- port allocation ------------------------------------------------------
+reserved_ports() {
+    # ports already assigned to existing instances (running or stopped)
+    podman ps -a --filter "label=cs-sandbox.managed=1" \
+        --format '{{index .Labels "cs-sandbox.ssh_port"}}' 2>/dev/null | grep -E '^[0-9]+$' || true
+    # plus any recorded in instance metadata (covers removed containers)
+    if [[ -d "$INST_DIR" ]]; then
+        local m
+        for m in "$INST_DIR"/*/meta; do
+            [[ -f "$m" ]] || continue
+            sed -n 's/^port=//p' "$m"
+        done
+    fi
+}
+
+port_free() {
+    # returns 0 if the port appears free (nothing listening on loopback)
+    local p="$1"
+    if (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then
+        exec 3>&- 3<&- 2>/dev/null || true
+        return 1   # something answered → in use
+    fi
+    return 0
+}
+
+# alloc_port [lo] [hi] [vm]
+#   Default range is the container sub-pool [PORT_MIN, PORT_SPLIT). VMs pass the upper pool
+#   and "vm": a VM's host port is bound later (a per-VM socat at launch), so skip the live
+#   port_free() probe and just take a number not already reserved by another instance
+#   (reserved_ports spans BOTH engines, so container/VM numbers never collide either way).
+alloc_port() {
+    local lo="${1:-$PORT_MIN}" hi="${2:-$((PORT_SPLIT-1))}" mode="${3:-}"
+    local reserved p
+    reserved="$(reserved_ports | sort -u)"
+    for ((p=lo; p<=hi; p++)); do
+        grep -qxF "$p" <<<"$reserved" && continue
+        [[ "$mode" == vm ]] || port_free "$p" || continue
+        echo "$p"; return 0
+    done
+    die "no free SSH port in range $lo-$hi"
+}
+
+# --- create serialization -------------------------------------------------
+# Concurrent `cs-sandbox create`s race on shared host state: SSH-port and VM-IP allocation (each
+# picks a value by scanning existing instances, then claims it by writing meta — a gap a
+# parallel create can slip into and pick the same value), the one-per-host network fabric
+# (keepalive container + forwarding dnsmasq + podman network), and image builds. We serialize
+# just the short, race-sensitive setup prefix of each create under a host-wide lock; the long
+# parts (repo-disk builds, the container start / VM boot wait) run unlocked, so independent
+# creates still overlap there. flock auto-releases when the fd closes (incl. crash/kill), so a
+# dead create can't wedge it; where flock is unavailable (e.g. stock macOS) we fall back to an
+# atomic mkdir spinlock with stale-owner reclaim. Reentrant: nested acquire/release in one
+# process just adjust a depth counter, so callers can lock without minding their callers.
+CS_SANDBOX_LOCK="$INST_DIR/.create.lock"
+_lock_depth=0
+lock_acquire() {
+    _lock_depth=$((_lock_depth + 1)); [[ "$_lock_depth" -gt 1 ]] && return 0
+    mkdir -p "$INST_DIR"
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$CS_SANDBOX_LOCK"; flock 9
+    else
+        local d="$CS_SANDBOX_LOCK.d" owner i=0
+        until mkdir "$d" 2>/dev/null; do
+            owner="$(cat "$d/pid" 2>/dev/null || true)"
+            if [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; then rm -rf "$d"; continue; fi
+            sleep 0.2; i=$((i + 1)); [[ "$i" -gt 1800 ]] && die "create lock busy >6m ($d) — remove it if no create is running"
+        done
+        echo "$$" > "$d/pid"
+    fi
+}
+lock_release() {
+    [[ "$_lock_depth" -gt 0 ]] || return 0
+    _lock_depth=$((_lock_depth - 1)); [[ "$_lock_depth" -gt 0 ]] && return 0
+    if command -v flock >/dev/null 2>&1; then
+        flock -u 9 2>/dev/null || true
+        exec 9>&-   # NB: no redirect on a bare `exec` — `exec ... 2>x` would make it permanent
+    else
+        rm -rf "$CS_SANDBOX_LOCK.d" 2>/dev/null || true
+    fi
+}
+
+# --- inspection helpers ---------------------------------------------------
+container_exists() { podman container exists "$1" 2>/dev/null; }
+
+label_of() { podman inspect -f "{{ index .Config.Labels \"$2\" }}" "$1" 2>/dev/null || true; }
+
+instance_port() {
+    local full="$1" p
+    p="$(label_of "$full" cs-sandbox.ssh_port)"
+    [[ -n "$p" ]] && { echo "$p"; return; }
+    local short; short="$(short_name "$full")"
+    [[ -f "$INST_DIR/$short/meta" ]] && sed -n 's/^port=//p' "$INST_DIR/$short/meta"
+}
+
+# --- seed assembly --------------------------------------------------------
+
+# Provider env vars auto-captured (when set in the create-time environment) into an instance's
+# agent profile, so an API-key / cloud-provider setup on the host carries forward like a
+# subscription login does. Scalar values only — path-valued vars (GOOGLE_APPLICATION_CREDENTIALS,
+# AWS_SHARED_CREDENTIALS_FILE / AWS_CONFIG_FILE) are deliberately omitted: they point at host files,
+# so carry those via ~/.cs-<agent>/env + ~/.cs-<agent>/creds/ instead.
+CLAUDE_KEY_VARS=(ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL \
+  CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY \
+  AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
+  AWS_SESSION_TOKEN AWS_BEARER_TOKEN_BEDROCK CLOUD_ML_REGION ANTHROPIC_VERTEX_PROJECT_ID \
+  GCLOUD_PROJECT GOOGLE_CLOUD_PROJECT ANTHROPIC_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL \
+  ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL)
+CODEX_KEY_VARS=(OPENAI_API_KEY OPENAI_BASE_URL AZURE_OPENAI_API_KEY)
+
+# seed_agent_env <name> <type> <agent> <seeddir> <profiledir> <allowlist-var>...
+# Build <seeddir>/env from (1) allowlisted provider vars set in the environment, then (2) the user's
+# declarative <profiledir>/env appended last (so it wins on re-source), and carry <profiledir>/creds
+# -> <seeddir>/creds. The cs-<agent> wrapper sources env at launch. Secret: the seed is gitignored
+# and first-boot-installed at mode 600, exactly like the subscription credentials. Returns 0 if it
+# carried anything. The caller skips this entirely under --no-keys.
+seed_agent_env() {
+    local name="$1" type="$2" agent="$3" sd="$4" pd="$5"; shift 5
+    local v tmp wrote=0
+    tmp="$(mktemp)"
+    for v in "$@"; do [[ -n "${!v+x}" ]] && { printf 'export %s=%q\n' "$v" "${!v}" >> "$tmp"; wrote=1; }; done
+    [[ -f "$pd/env" ]] && { cat "$pd/env" >> "$tmp"; wrote=1; }
+    if [[ "$wrote" == 1 ]]; then mkdir -p "$sd"; chmod 700 "$sd"; install -m 600 "$tmp" "$sd/env"; fi
+    rm -f "$tmp"
+    if [[ -d "$pd/creds" ]]; then mkdir -p "$sd"; chmod 700 "$sd"; cp -a "$pd/creds" "$sd/creds"; chmod -R go-rwx "$sd/creds"; wrote=1; fi
+    # Cloud-provider flag set in the env, but its file-based creds can't be auto-carried.
+    if [[ "$agent" == claude && ! -f "$pd/env" && ! -d "$pd/creds" \
+          && -n "${CLAUDE_CODE_USE_BEDROCK:-}${CLAUDE_CODE_USE_VERTEX:-}${CLAUDE_CODE_USE_FOUNDRY:-}" ]]; then
+        local p; for p in GOOGLE_APPLICATION_CREDENTIALS AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE; do
+            [[ -n "${!p+x}" ]] && { info "note: carried a Bedrock/Vertex flag but not \$$p (a host file path); put file creds under ~/.cs-$agent/{env,creds/} so they carry into instances"; break; }
+        done
+    fi
+    [[ "$wrote" == 1 && "$type" == agent ]] && info "note: agent '$name' will carry your $agent provider credentials — use --no-keys to skip"
+    [[ "$wrote" == 1 ]]
+}
+
+# Normalize one env token for --env/--env-file: "KEY=VALUE" is kept verbatim; a bare "KEY" pulls
+# the value from the create-time environment (docker --env-file style). Echoes a KEY=VALUE line, or
+# returns 1 (with a note) for an invalid name or an unset pass-through var.
+emit_env_kv() {
+    local tok="$1" k
+    if [[ "$tok" == *=* ]]; then
+        k="${tok%%=*}"
+        [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { info "ignoring invalid env entry: $tok"; return 1; }
+        printf '%s\n' "$tok"
+    else
+        k="$tok"
+        [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { info "ignoring invalid env name: $tok"; return 1; }
+        [[ -n "${!k+x}" ]] || { info "ignoring --env $k: not set in the environment"; return 1; }
+        printf '%s=%s\n' "$k" "${!k}"
+    fi
+}
+
+build_seed() {
+    local short="$1" type="$2" solo="${3:-0}" injected_env="${4:-}"
+    local idir="$INST_DIR/$short" seed="$INST_DIR/$short/seed"
+    mkdir -p "$seed/host_keys"
+    chmod -R 700 "$idir"
+
+    # authorized_keys: H (+ U) (+ G for agent) — the SAME for solo and non-solo, so peers and the
+    # host can still ssh INTO a --solo sandbox. What makes a sandbox "solo" is purely that it is
+    # seeded no tier private key (below): the restriction is OUTBOUND only.
+    {
+        host_pubkeys
+        cat "$TIER_DIR/id_cs-sandbox_user.pub"
+        [[ "$type" == "agent" ]] && cat "$TIER_DIR/id_cs-sandbox_agent.pub"
+    } > "$seed/authorized_keys"
+    chmod 600 "$seed/authorized_keys"
+
+    # tier private key the container uses to ssh out + its .pub. A --solo agent gets NO tier key,
+    # so it holds no credential any peer (or the host) authorizes and cannot ssh OUT to anything —
+    # while its authorized_keys above stays normal, so peers/host can still ssh IN.
+    local tier=""
+    if   [[ "$solo" == 1 ]]; then tier=""
+    elif [[ "$type" == "user" ]]; then tier="id_cs-sandbox_user"
+    else                              tier="id_cs-sandbox_agent"; fi
+    if [[ -n "$tier" ]]; then
+        install -m 600 "$TIER_DIR/$tier"     "$seed/$tier"
+        install -m 644 "$TIER_DIR/$tier.pub" "$seed/$tier.pub"
+    fi
+
+    # Reach the host by its own name from inside (ping / HTTP / ssh). The host's real name
+    # resolves to its LAN/Tailscale address, which hairpins back through pasta and isn't
+    # reachable from a sandbox; pin the name to the address a sandbox CAN reach it at
+    # (host.containers.internal / the pasta host address) in the guest's /etc/hosts, which NSS
+    # consults before DNS — so it beats even a Tailscale MagicDNS answer, for every protocol.
+    # Guest-only (installed by the entrypoint / fc-init); the host's /etc/hosts is untouched.
+    # (build_seed runs after the fabric is up, so the host.containers.internal lookup works.)
+    local host_ip host_names
+    host_ip="$(podman exec "$FC_KEEPALIVE" getent hosts host.containers.internal 2>/dev/null | awk '{print $1; exit}')"
+    host_names="$( { hostname; hostname -s; } 2>/dev/null | sort -u | tr '\n' ' ' )"
+    if [[ -n "$host_ip" && -n "${host_names// /}" ]]; then
+        echo "$host_ip ${host_names% }" > "$seed/host_hosts"
+    fi
+
+    # in-instance ssh client config. "Host * !*.*" matches dotless names (peer sandboxes; dotted
+    # hosts like github.com keep ssh defaults) and accept-news the peer host key. AGENT instances
+    # also pin their tier key there (it is their only key). USER instances do NOT pin it: they
+    # reach peers with their own keys (H is authorized on every peer), and pinning an IdentityFile
+    # stops ssh from offering the default keys (id_rsa, …), which breaks ssh to real hosts.
+    # AGENTs additionally restrict auth to publickey: fabric/host access is always key-based, so
+    # when an agent's key isn't accepted (e.g. ssh to the host, which it can't auth to) ssh denies
+    # immediately instead of falling through to the host's password prompt and hanging on a TTY.
+    # (USER instances keep defaults — they may legitimately password-auth to a dotless LAN host.)
+    {
+        echo "# Managed by cs-sandbox — applies to dotless hostnames (sandbox peers)."
+        echo "Host * !*.*"
+        [[ -n "$tier" && "$type" == "agent" ]] && echo "    IdentityFile ~/.ssh/$tier"
+        [[ "$type" == "agent" ]] && echo "    PreferredAuthentications publickey"
+        echo "    StrictHostKeyChecking accept-new"
+    } > "$seed/ssh_config"
+    chmod 600 "$seed/ssh_config"
+
+    # --env / --env-file: resolved KEY=VALUE lines. The guest init installs these into
+    # ~/.ssh/environment (sshd runs PermitUserEnvironment=yes), so every ssh session — interactive
+    # and `ssh <name> cmd` — sees them; the podman engine also passes them as container env. Treated
+    # as secret-bearing (mode 600), like the rest of the seed.
+    if [[ -n "$injected_env" ]]; then
+        printf '%s' "$injected_env" > "$seed/inject-env"
+        chmod 600 "$seed/inject-env"
+    else
+        rm -f "$seed/inject-env"
+    fi
+
+    # user type: one-time snapshot copy of the host ~/.ssh (for git-over-ssh = H)
+    rm -rf "$seed/host_ssh"
+    if [[ "$type" == "user" && -d "$HOME/.ssh" ]]; then
+        mkdir -p "$seed/host_ssh"; chmod 700 "$seed/host_ssh"
+        # copy keys/config/known_hosts but NOT authorized_keys (we manage that)
+        local f
+        shopt -s dotglob nullglob
+        for f in "$HOME"/.ssh/*; do
+            case "$(basename "$f")" in
+                authorized_keys|config.d) continue ;;
+            esac
+            cp -a "$f" "$seed/host_ssh/" 2>/dev/null || true
+        done
+        shopt -u dotglob nullglob
+    fi
+
+    # stable per-instance host keys (generated once)
+    if ! ls "$seed/host_keys"/ssh_host_*_key >/dev/null 2>&1; then
+        ssh-keygen -q -t ed25519 -N '' -C '' -f "$seed/host_keys/ssh_host_ed25519_key"
+        ssh-keygen -q -t rsa -b 3072 -N '' -C '' -f "$seed/host_keys/ssh_host_rsa_key"
+    fi
+    chmod 600 "$seed"/host_keys/ssh_host_*_key
+    chmod 644 "$seed"/host_keys/ssh_host_*_key.pub
+
+    # Claude auth carried into BOTH instance types — secret, never baked: it lives only in this
+    # gitignored per-instance seed and is installed into the home volume on first boot.
+    #   * subscription: the host's ~/.cs-claude/.credentials.json (absent on macOS, where it is in
+    #     the Keychain — use 'cs-sandbox claude-login <name>' there);
+    #   * API key / cloud provider: the host's ~/.cs-claude/env (+ creds/) plus auto-captured
+    #     provider vars (CLAUDE_KEY_VARS) — unless --no-keys. See docs/design.md.
+    rm -rf "$seed/claude"
+    local hostcreds="$HOME/.cs-claude/.credentials.json" claude_keys=0
+    [ -f "$hostcreds" ] && { mkdir -p "$seed/claude"; chmod 700 "$seed/claude"; install -m 600 "$hostcreds" "$seed/claude/.credentials.json"; }
+    if [[ "${nokeys:-0}" != 1 ]] && seed_agent_env "$short" "$type" claude "$seed/claude" "$HOME/.cs-claude" "${CLAUDE_KEY_VARS[@]}"; then claude_keys=1; fi
+    if [ ! -f "$hostcreds" ] && [[ "$claude_keys" != 1 ]]; then info "no host Claude auth — not seeding (run 'cs-claude' to log in, set ~/.cs-claude/env for an API key / cloud target, or 'cs-sandbox claude-login $short' after create)"; fi
+
+    # Codex auth — same model.
+    #   * subscription / OpenAI key: the host's ~/.cs-codex/auth.json;
+    #   * API key / custom provider: ~/.cs-codex/env (+ creds/) plus auto-captured OPENAI_* — unless --no-keys.
+    rm -rf "$seed/codex"
+    local hostcodex="$HOME/.cs-codex/auth.json" codex_keys=0
+    [ -f "$hostcodex" ] && { mkdir -p "$seed/codex"; chmod 700 "$seed/codex"; install -m 600 "$hostcodex" "$seed/codex/auth.json"; }
+    if [[ "${nokeys:-0}" != 1 ]] && seed_agent_env "$short" "$type" codex "$seed/codex" "$HOME/.cs-codex" "${CODEX_KEY_VARS[@]}"; then codex_keys=1; fi
+    if [ ! -f "$hostcodex" ] && [[ "$codex_keys" != 1 ]]; then info "no host Codex auth — not seeding (run 'cs-codex' to log in, set ~/.cs-codex/env for an API key, or 'cs-sandbox codex-login $short' after create)"; fi
+
+    # Git identity (non-secret): carry the host user's GLOBAL git user.name/email so commits made in
+    # the sandbox are attributed to you. Applied to ~/.gitconfig on first boot. Per-repo overrides
+    # (incl. includeIf / work-vs-personal) are carried separately in the seed 'repos' manifest.
+    rm -f "$seed/git_identity"
+    local g_name g_email
+    g_name="$(git config --global user.name 2>/dev/null || true)"
+    g_email="$(git config --global user.email 2>/dev/null || true)"
+    if [[ -n "$g_name" || -n "$g_email" ]]; then
+        { printf 'name\t%s\n' "$g_name"; printf 'email\t%s\n' "$g_email"; } > "$seed/git_identity"
+        chmod 600 "$seed/git_identity"
+    fi
+    return 0
+}
+
+# --- repo mount specs -----------------------------------------------------
+# Echoes one "hostpath<TAB>mountname" line per repo to mount.
+# --mount specs (live RW bind-mount, podman only) and --snapshot specs (RO point-in-time
+# copy, both engines) share the same PATH[:NAME] grammar and validation (any directory —
+# no git requirement, unlike --repo). Echo one "hostpath<TAB>name" line per spec.
+_resolve_dir_specs() {  # <flag-for-msgs> <spec...>
+    local flag="$1"; shift
+    local -a specs=("$@")
+    local seen="" spec path name rp
+    for spec in "${specs[@]}"; do
+        # PATH:NAME form (NAME must contain no slash)
+        if [[ "$spec" == *:* && "${spec##*:}" != */* && "${spec##*:}" != "" ]]; then
+            path="${spec%:*}"; name="${spec##*:}"
+        else
+            path="$spec"; name=""
+        fi
+        [[ -e "$path" ]] || die "$flag: path not found: $path"
+        [[ -d "$path" ]] || die "$flag: not a directory: $path"
+        rp="$(cd "$path" && pwd)"
+        [[ -n "$name" ]] || name="$(basename "$rp")"
+        if is_macos; then
+            case "$rp/" in
+                "$HOME"/*) : ;;
+                *) die "on macOS, $flag '$rp' must be under \$HOME ($HOME) to be visible to the podman machine. Re-run from under \$HOME or add it with: podman machine set --volume <path>" ;;
+            esac
+        fi
+        grep -qxF "$name" <<<"$seen" && die "duplicate mount name '$name' (use $flag PATH:NAME to disambiguate)"
+        seen+="$name"$'\n'
+        printf '%s\t%s\n' "$rp" "$name"
+    done
+}
+resolve_mounts()    { _resolve_dir_specs --mount    "$@"; }
+resolve_snapshots() { _resolve_dir_specs --snapshot "$@"; }
+
+# --- repo clone specs (--repo) -------------------------------------------
+# Echoes one "hostpath<TAB>dir<TAB>baseref" line per --repo spec.
+# Spec: PATH[@REF][:NAME]  (REF = base commit, default source HEAD; NAME = home dir).
+# The source is later RO-mounted; the entrypoint alternates-clones it into ~/<dir>.
+resolve_repo_clones() {
+    local -a specs=("$@")
+    local seen="" spec path ref name rp
+    for spec in "${specs[@]}"; do
+        ref=""; name=""
+        if [[ "$spec" == *:* && "${spec##*:}" != */* && "${spec##*:}" != "" ]]; then
+            name="${spec##*:}"; spec="${spec%:*}"
+        fi
+        if [[ "$spec" == *@* ]]; then ref="${spec##*@}"; spec="${spec%@*}"; fi
+        path="$spec"
+        rp="$(cd "$path" 2>/dev/null && pwd)" || die "--repo path not found: $path"
+        [[ -n "$name" ]] || name="$(basename "$rp")"
+        [[ -e "$rp/.git" || -d "$rp/objects" ]] || die "--repo '$rp' is not a git repository"
+        if is_macos; then
+            case "$rp/" in "$HOME"/*) : ;; *) die "on macOS, --repo '$rp' must be under \$HOME ($HOME)" ;; esac
+        fi
+        grep -qxF "$name" <<<"$seen" && die "duplicate repo name '$name' (use --repo PATH:NAME to disambiguate)"
+        seen+="$name"$'\n'
+        printf '%s\t%s\t%s\n' "$rp" "$name" "$ref"
+    done
+}
+
+# Effective git identity of a host repo (resolves local override, includeIf, then global), as
+# "name<US>email" — so a sandbox clone commits exactly as that repo does on the host. The repos
+# manifest is \x1f-separated (US), not tab: a tab is IFS-whitespace, so `read` would collapse an
+# empty field (e.g. a repo with no @REF base) and shift the columns.
+_repo_git_identity() {
+    printf '%s\037%s' "$(git -C "$1" config user.name 2>/dev/null || true)" \
+                      "$(git -C "$1" config user.email 2>/dev/null || true)"
+}
+
+# --- ssh config (host side) ----------------------------------------------
+cmd_sync_ssh_config() {
+    mkdir -p "$SSH_CFG_DIR"; chmod 700 "$HOME/.ssh" "$SSH_CFG_DIR" 2>/dev/null || true
+    {
+        echo "# Managed by cs-sandbox — do not edit. Regenerated by 'cs-sandbox sync-ssh-config'."
+        local nm port id_block
+        id_block="$(host_identity_block)"
+        while read -r nm port; do
+            [[ -n "$nm" && -n "$port" ]] || continue
+            cat <<EOF
+
+Host $nm $nm.$HR_DNS_SUFFIX
+    HostName 127.0.0.1
+    Port $port
+    User $USER_NAME
+    HostKeyAlias $nm${id_block:+
+$id_block}
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile ~/.ssh/known_hosts.cs-sandbox
+EOF
+        done < <(podman ps -a --filter "label=cs-sandbox.managed=1" \
+                    --format '{{.Names}} {{index .Labels "cs-sandbox.ssh_port"}}' 2>/dev/null)
+    } > "$SSH_CFG_FILE"
+    chmod 600 "$SSH_CFG_FILE"
+
+    # ensure the Include directive is present in ~/.ssh/config
+    local inc="Include ~/.ssh/config.d/cs-sandbox"
+    touch "$HOME/.ssh/config"; chmod 600 "$HOME/.ssh/config"
+    if ! grep -qxF "$inc" "$HOME/.ssh/config"; then
+        printf '%s\n\n%s\n' "$inc" "$(cat "$HOME/.ssh/config")" > "$HOME/.ssh/config.cs-sandbox.tmp"
+        mv "$HOME/.ssh/config.cs-sandbox.tmp" "$HOME/.ssh/config"
+    fi
+}
+
+# --- subcommands ----------------------------------------------------------
+
+# doctor — report host prerequisites for both engines (non-fatal; just prints status
+# and the exact fix for anything missing). Read-only, safe to run anytime.
+cmd_doctor() {
+    # Scope the checks to one engine (default: firecracker, the default engine). The
+    # podman + rootless-userns checks always run (both engines need them on the host);
+    # the KVM / host-package / firecracker-binary checks run only for --engine firecracker.
+    local engine=firecracker
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --engine)  [[ $# -ge 2 ]] || die "--engine requires an argument"; engine="$2"; shift 2 ;;
+            -h|--help) echo "usage: cs-sandbox doctor [--engine firecracker|podman]   (default: firecracker)"; return 0 ;;
+            *)         die "cs-sandbox doctor: unexpected argument '$1' (usage: cs-sandbox doctor [--engine firecracker|podman])" ;;
+        esac
+    done
+    case "$engine" in firecracker|podman) ;; *) die "--engine must be 'firecracker' or 'podman'" ;; esac
+
+    local OK="  \033[32mok\033[0m  " NO="  \033[31mNO\033[0m  " HM="  \033[33m??\033[0m  "
+    local issues=0
+    local mgr="dnf install" apt=""
+    if ! command -v dnf >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then mgr="apt install"; apt=1; fi
+
+    if is_macos && [[ "$engine" == firecracker ]]; then
+        printf 'cs-sandbox doctor — firecracker is unavailable on macOS; checking the podman engine instead.\n\n'
+        engine=podman
+    else
+        printf 'cs-sandbox doctor — %s engine\n\n' "$engine"
+    fi
+
+    # podman — required on every host (builds the image; provides the microVM fabric)
+    printf 'podman (required on every host):\n'
+    if command -v podman >/dev/null 2>&1; then
+        printf '%b%s\n' "$OK" "podman present ($(podman --version 2>/dev/null | awk '{print $NF}'))"
+    else
+        printf '%b%s\n' "$NO" "podman not found — install:  sudo $mgr podman"; issues=$((issues+1))
+    fi
+    printf '\n'
+
+    if is_macos; then
+        printf '%b%s\n\n' "$HM" "macOS: ensure the podman machine is up:  podman machine start"
+        [[ $issues -eq 0 ]] && printf 'All good — try: cs-sandbox create <name> --engine podman\n' || printf '%d issue(s) above.\n' "$issues"
+        return $(( issues > 0 ? 1 : 0 ))
+    fi
+
+    # rootless user namespaces — both engines run rootless
+    printf 'rootless user namespaces (both engines):\n'
+    if grep -q "^$USER:" /etc/subuid 2>/dev/null && grep -q "^$USER:" /etc/subgid 2>/dev/null; then
+        printf '%b%s\n' "$OK" "subuid/subgid ranges for $USER present"
+    else
+        printf '%b%s\n' "$NO" "no subuid/subgid range for $USER — add:  sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 \"\$USER\""; issues=$((issues+1))
+    fi
+    if [[ -n "$apt" && "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" == "1" ]]; then
+        printf '%b%s\n' "$HM" "kernel.apparmor_restrict_unprivileged_userns=1 (Ubuntu 24.04+) — if rootless netns fails:  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"
+    fi
+    printf '\n'
+
+    if [[ "$engine" == firecracker ]]; then
+        printf 'firecracker microVM engine (Linux/KVM):\n'
+        # KVM
+        if [[ -e /dev/kvm && -w /dev/kvm ]]; then
+            printf '%b%s\n' "$OK" "/dev/kvm present and writable"
+        elif [[ -e /dev/kvm ]]; then
+            printf '%b%s\n' "$NO" "/dev/kvm not writable — add yourself to the kvm group:  sudo usermod -aG kvm \"\$USER\"  (re-login)"; issues=$((issues+1))
+        else
+            printf '%b%s\n' "$NO" "/dev/kvm missing — needs a Linux host with KVM (virtualization enabled in BIOS/host)"; issues=$((issues+1))
+        fi
+        # host packages (same name mapping as fc_preflight)
+        local t miss="" tools="pasta:passt:passt dnsmasq:dnsmasq:dnsmasq-base \
+            fakeroot:fakeroot:fakeroot mke2fs:e2fsprogs:e2fsprogs e2fsck:e2fsprogs:e2fsprogs \
+            socat:socat:socat python3:python3:python3 newuidmap:shadow-utils:uidmap \
+            curl:curl:curl git:git:git"
+        [[ "$FC_KERNEL" == host ]] && tools="$tools dracut:dracut:dracut-core"
+        for t in $tools; do
+            command -v "${t%%:*}" >/dev/null 2>&1 && continue
+            local rest="${t#*:}"
+            [[ -n "$apt" ]] && miss+=" ${rest#*:}" || miss+=" ${rest%%:*}"
+        done
+        if [[ -z "$miss" ]]; then
+            printf '%b%s\n' "$OK" "host packages present (passt, dnsmasq, fakeroot, e2fsprogs, socat, python3, newuidmap, curl, git)"
+        else
+            local pkgs; pkgs="$(printf '%s\n' $miss | sort -u | tr '\n' ' ')"
+            printf '%b%s\n' "$NO" "missing host packages — install:  sudo $mgr ${pkgs% }"; issues=$((issues+1))
+        fi
+        # firecracker binary (auto-downloaded; informational only)
+        if [[ -x "$FC_CACHE/bin/firecracker" ]]; then
+            printf '%b%s\n' "$OK" "firecracker binary cached ($FC_VERSION)"
+        else
+            printf '%b%s\n' "$HM" "firecracker binary not downloaded yet — sandbox fetches $FC_VERSION (SHA256-verified) on first 'create'"
+        fi
+        printf '\n'
+    fi
+
+    # host-route (OPTIONAL, both engines): direct host->instance reachability by name/IP.
+    # Everything here is informational (never a hard 'issue') since host-route is opt-in. The
+    # last check is a real smoke test of the core mechanism — handing root a PID that lives
+    # inside podman's rootless netns — run without sudo and without mutating anything.
+    printf 'host-route (optional — host↔instance ping/curl by name under .%s; one-time sudo):\n' "$HR_DNS_SUFFIX"
+    if hr_active; then
+        printf '%b%s\n' "$OK" "currently UP ($(ip -br addr show "$HR_VETH_HOST" 2>/dev/null | awk '{print $1, $3}'); names *.$HR_DNS_SUFFIX)"
+    else
+        printf '%b%s\n' "$HM" "off — enable with: cs-sandbox host-route up"
+    fi
+    if hr_use_resolved; then
+        printf '%b%s\n' "$OK" "systemd-resolved active (routes .$HR_DNS_SUFFIX to the fabric DNS)"
+    else
+        printf '%b%s\n' "$HM" "systemd-resolved not active — required for host-route's name resolution"
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+        printf '%b%s\n' "$OK" "sudo present (one-time: wires the veth + the resolver)"
+    else
+        printf '%b%s\n' "$HM" "sudo not found — host-route can't wire the host in without it"
+    fi
+    if command -v ip >/dev/null 2>&1; then
+        printf '%b%s\n' "$OK" "iproute2 present (veth wiring)"
+    else
+        printf '%b%s\n' "$HM" "ip (iproute2) not found — needed for the host<->netns veth"
+    fi
+    if [[ -e "$(hr_nspath)" ]]; then
+        local _hostns _parked _ppid _ppf _peerns
+        _hostns="$(readlink /proc/self/ns/net 2>/dev/null)"
+        if _parked="$(hr_park_in_netns 2>/dev/null)"; then
+            _ppid="${_parked%% *}"; _ppf="${_parked#* }"
+            _peerns="$(readlink "/proc/$_ppid/ns/net" 2>/dev/null)"
+            kill "$_ppid" 2>/dev/null || true; rm -f "$_ppf"
+            if [[ -n "$_peerns" && "$_peerns" != "$_hostns" ]]; then
+                printf '%b%s\n' "$OK" "rootless netns reachable for veth placement (smoke test passed)"
+            else
+                printf '%b%s\n' "$HM" "couldn't confirm a process inside the rootless netns"
+            fi
+        else
+            printf '%b%s\n' "$HM" "couldn't enter the rootless netns (podman unshare --rootless-netns failed)"
+        fi
+    else
+        printf '%b%s\n' "$HM" "fabric down — create an instance (or 'host-route up') to smoke-test the netns wiring"
+    fi
+    printf '\n'
+
+    # agent tooling (OPTIONAL, both engines): host-side sign-in that instances inherit needs the
+    # cs-claude/cs-codex wrappers (via 'cs-sandbox install') plus the claude/codex CLIs. All
+    # informational — you can instead sign in inside an instance ('cs-sandbox claude-login <name>').
+    printf 'agent tooling (optional — host-side sign-in that instances inherit):\n'
+    if command -v cs-claude >/dev/null 2>&1 && command -v cs-codex >/dev/null 2>&1; then
+        printf '%b%s\n' "$OK" "host helpers on PATH (cs-claude, cs-codex)"
+    else
+        printf '%b%s\n' "$HM" "host helpers not on PATH — install them:  cs-sandbox install"
+    fi
+    local _b agentmiss=""
+    for _b in claude codex; do command -v "$_b" >/dev/null 2>&1 || agentmiss+=" $_b"; done
+    if [[ -z "$agentmiss" ]]; then
+        printf '%b%s\n' "$OK" "agent CLIs present (claude, codex) — run 'cs-claude' (/login) + 'cs-codex login' to sign in"
+    else
+        printf '%b%s\n' "$HM" "agent CLI(s) not found:${agentmiss} — needed for host-side cs-claude/cs-codex (or sign in inside an instance: cs-sandbox claude-login <name>)"
+    fi
+    printf '\n'
+
+    if [[ $issues -eq 0 ]]; then
+        local hint=""; [[ "$engine" == podman ]] && hint=" --engine podman"
+        printf 'All good — try: cs-sandbox create <name>%s\n' "$hint"
+    elif [[ "$engine" == firecracker ]]; then
+        printf '%d issue(s) to fix above. The podman engine needs fewer prereqs — check it with:  cs-sandbox doctor --engine podman\n' "$issues"
+    else
+        printf '%d issue(s) to fix above.\n' "$issues"
+    fi
+    return $(( issues > 0 ? 1 : 0 ))
+}
+
+cmd_build() {
+    cd "$CS_SANDBOX_DIR"
+    # The image is generic — no user identity is baked in. sandbox passes your name/uid/
+    # gid/home at run time (see cmd_create), and the entrypoint creates the user on
+    # first boot. So the same image works for every developer and machine.
+    podman build \
+        -t "$IMAGE" \
+        -f "$CONTAINERFILE" \
+        --build-arg "CS_SANDBOX_PRIVATE_REGISTRY=$PRIVATE_REGISTRY" \
+        --build-arg "CS_SANDBOX_PRIVATE_REGISTRY_INSECURE=$PRIVATE_REGISTRY_INSECURE" \
+        context
+}
+
+cmd_create() {
+    local name="" type="" port="" engine="${CS_SANDBOX_ENGINE:-}"
+    local cpus="$FC_VCPUS" mem="$FC_MEM_MIB"
+    # Nested-podman privilege posture (podman engine only). Default: a scaled-down cap
+    # set with seccomp left on (see priv_flags below). --privileged restores the broad
+    # fallback; CS_SANDBOX_NESTED_CAPS=privileged does the same via env.
+    local privileged=0
+    [[ "${CS_SANDBOX_NESTED_CAPS:-}" == privileged ]] && privileged=1
+    # --yolo: run the coding agents with no permission prompts (Claude --dangerously-skip-permissions,
+    # Codex --dangerously-bypass-approvals-and-sandbox).
+    # Only meaningful for autonomous AGENT instances; rejected for user instances below.
+    local yolo=0 nokeys=0
+    # --solo: an agent sandbox with NO outbound SSH into the fabric (it works "solo"). It is seeded
+    # no shared tier key, so it can't ssh into any peer or the host — but its authorized_keys stays
+    # normal, so peers and the host CAN still ssh into it. Outbound-only SSH restriction; network
+    # reachability is unchanged. The lever lives in build_seed. Agent-only.
+    local solo=0
+    local -a mount_specs=()    # --mount: live RW bind-mount of a dir (podman only)
+    local -a snap_specs=()     # --snapshot: RO point-in-time copy of a dir (both engines)
+    local -a repo_clones=()    # --repo: per-instance git checkout (both engines)
+    local -a shared_stores=()
+    local -a env_specs=()      # --env / -e KEY=VALUE (bare KEY -> pass through the host's value)
+    local -a env_files=()      # --env-file: a file of KEY=VALUE lines (# comments / blanks ignored)
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --type)          type="$2"; shift 2 ;;
+            --engine)        engine="$2"; shift 2 ;;
+            --mount)         mount_specs+=("$2"); shift 2 ;;
+            --snapshot)      snap_specs+=("$2"); shift 2 ;;
+            --repo)          repo_clones+=("$2"); shift 2 ;;
+            --env|-e)        env_specs+=("$2"); shift 2 ;;
+            --env-file)      env_files+=("$2"); shift 2 ;;
+            --port)          port="$2"; shift 2 ;;
+            --cpus)          cpus="$2"; shift 2 ;;
+            --mem)           mem="$2"; shift 2 ;;
+            --image-store)   shared_stores+=("$2"); shift 2 ;;
+            --privileged)    privileged=1; shift ;;
+            --yolo)          yolo=1; shift ;;
+            --solo)          solo=1; shift ;;
+            --no-keys)       nokeys=1; shift ;;
+            -*)              die "unknown flag: $1" ;;
+            *)               [[ -z "$name" ]] && name="$1" || die "unexpected argument: $1"; shift ;;
+        esac
+    done
+    [[ "$cpus" =~ ^[0-9]+$ && "$cpus" -ge 1 ]] || die "--cpus must be a positive integer"
+    [[ "$mem"  =~ ^[0-9]+$ && "$mem"  -ge 128 ]] || die "--mem (MiB) must be an integer >= 128"
+    # Default engine: firecracker microVM (stronger isolation — its own kernel) on a
+    # Linux/KVM host; podman container on macOS, where firecracker isn't available.
+    # Override either way with --engine or CS_SANDBOX_ENGINE.
+    if [[ -z "$engine" ]]; then
+        if is_macos; then engine=podman; else engine=firecracker; fi
+    fi
+    [[ -n "$name" ]] || die "usage: cs-sandbox create <name> [--type user|agent] [--engine firecracker|podman] [--repo P[:NAME]]..."
+    # Default type: agent — the autonomous, sandboxed kind with no host SSH credentials.
+    # Pass --type user for an interactive instance that copies your host ~/.ssh.
+    [[ -n "$type" ]] || type=agent
+    case "$type" in user|agent) ;; *) die "--type must be 'user' or 'agent'" ;; esac
+    case "$engine" in podman|firecracker) ;; *) die "--engine must be 'podman' or 'firecracker'" ;; esac
+    # YOLO (no permission prompts) is for autonomous agents only — never user instances.
+    [[ "$yolo" == 1 && "$type" != agent ]] && die "--yolo is only allowed for --type agent (it disables the coding agents' permission/approval prompts; not for user instances)"
+    [[ "$solo" == 1 && "$type" != agent ]] && die "--solo is only allowed for --type agent (user instances intentionally carry your host keys and reach peers)"
+
+    # --env / --env-file -> one resolved block of KEY=VALUE lines (env-files first, then -e/--env,
+    # so a later --env overrides a file entry when the guest applies them). Injected whole-environment.
+    local injected_env="" _ef _spec _ln _r
+    for _ef in ${env_files[@]+"${env_files[@]}"}; do
+        [[ -f "$_ef" ]] || die "--env-file: no such file: $_ef"
+        while IFS= read -r _ln || [[ -n "$_ln" ]]; do
+            _ln="${_ln#"${_ln%%[![:space:]]*}"}"            # strip leading whitespace
+            [[ -z "$_ln" || "$_ln" == '#'* ]] && continue   # skip blank lines and # comments
+            if _r="$(emit_env_kv "$_ln")"; then injected_env+="$_r"$'\n'; fi
+        done < "$_ef"
+    done
+    for _spec in ${env_specs[@]+"${env_specs[@]}"}; do
+        if _r="$(emit_env_kv "$_spec")"; then injected_env+="$_r"$'\n'; fi
+    done
+
+    local short full
+    short="$(short_name "$name")"; full="$PREFIX$short"
+    [[ "$short" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || die "invalid name '$short' (allowed: [A-Za-z0-9][A-Za-z0-9._-]*)"
+
+    # Claude sign-in is carried into instances from the host profile ~/.cs-claude. If it's
+    # not set up yet, the instance still builds — it just won't arrive pre-authenticated.
+    [[ -d "$HOME/.cs-claude" ]] || info "note: ~/.cs-claude not found — '$full' will start without your Claude sign-in (Claude Code will prompt you to log in inside it). To carry your host login into instances, set it up once: run 'cs-claude' and sign in with /login, then recreate (or 'cs-sandbox claude-login $short' after this create)."
+    [[ -d "$HOME/.cs-codex" ]] || info "note: ~/.cs-codex not found — '$full' will start without your Codex sign-in. To carry it into instances, set it up once: run 'cs-codex login' on the host, then recreate (or 'cs-sandbox codex-login $short' after this create)."
+
+    # Reject a name that's already taken, in any form and by EITHER engine — a live
+    # container/microVM or a stopped instance whose meta dir was kept (rm keeps instances/<name>).
+    # This is engine-agnostic on purpose: previously the podman path only checked for a podman
+    # container, so 'create <name> --engine podman' silently failed to notice an existing
+    # firecracker microVM of the same name (and the stopped-instance case was missed both ways),
+    # letting the two collide on the shared name / host port / network fabric.
+    local taken; taken="$(instance_exists "$short")" && die "$taken"
+
+    # --- firecracker engine: a microVM, not a container ---
+    if [[ "$engine" == firecracker ]]; then
+        is_macos && die "the firecracker engine is Linux/KVM only (no macOS)"
+        [[ ${#mount_specs[@]} -eq 0 ]] || die "--mount (live bind-mount) needs a shared filesystem the microVM doesn't have; use --snapshot (read-only point-in-time copy) or --repo (per-instance checkout)"
+        local ss
+        for ss in ${shared_stores[@]+"${shared_stores[@]}"}; do
+            podman volume exists "cs-sandbox-shared-$ss" 2>/dev/null \
+                || die "no such image store '$ss' — create it first ('cs-sandbox create-store $ss' / 'cs-sandbox seed-store $ss <image>...')"
+        done
+        local repoclones; repoclones="$(resolve_repo_clones ${repo_clones[@]+"${repo_clones[@]}"})"
+        local snaps; snaps="$(resolve_snapshots ${snap_specs[@]+"${snap_specs[@]}"})"
+        local stores=""; [[ ${#shared_stores[@]} -gt 0 ]] && stores="$(printf '%s\n' "${shared_stores[@]}")"
+        fc_cmd_create "$short" "$type" "$port" "$repoclones" "$cpus" "$mem" "$yolo" "$snaps" "$stores" "$solo" "$injected_env"
+        return
+    fi
+
+    # Serialize the race-sensitive setup prefix (shared image/network/key bring-up, port
+    # allocation + meta claim, fabric bring-up) against parallel creates. Released before the
+    # slow container start so independent creates still overlap there.
+    lock_acquire
+    ensure_image
+    ensure_net
+    ensure_tier_keys
+
+    # No implicit mount (consistent with the firecracker engine): a dir gets in only when you
+    # ask for it — --mount (live bind-mount), --snapshot (RO point-in-time copy), or --repo
+    # (per-instance checkout). With none, the home has no shared dir (no automatic $PWD mount).
+    # resolve up front (fails fast on bad paths / collisions). The ${arr[@]+...} guard keeps
+    # this safe under `set -u` on bash 3.2 (macOS).
+    local mounts; mounts="$(resolve_mounts ${mount_specs[@]+"${mount_specs[@]}"})"
+    local snaps; snaps="$(resolve_snapshots ${snap_specs[@]+"${snap_specs[@]}"})"
+    local repoclones; repoclones="$(resolve_repo_clones ${repo_clones[@]+"${repo_clones[@]}"})"
+
+    # port
+    if [[ -n "$port" ]]; then
+        port_free "$port" || die "requested port $port is in use"
+    else
+        port="$(alloc_port)"
+    fi
+
+    # record metadata — writing port= here (still under the lock) claims the port, so a
+    # parallel create's alloc_port/reserved_ports can't hand out the same number.
+    mkdir -p "$INST_DIR/$short"
+    {
+        echo "name=$short"
+        echo "type=$type"
+        [[ "$yolo" == 1 ]] && echo "yolo=1"
+        [[ "$solo" == 1 ]] && echo "solo=1"
+        echo "port=$port"
+        echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        for ss in ${shared_stores[@]+"${shared_stores[@]}"}; do echo "shared=$ss"; done
+        while IFS=$'\t' read -r rp nm; do [[ -n "$rp" ]] && echo "mount=$rp:$nm"; done <<<"$mounts"
+        while IFS=$'\t' read -r rp nm; do [[ -n "$rp" ]] && echo "snapshot=$rp:$nm"; done <<<"$snaps"
+        while IFS=$'\t' read -r cs cd cr; do [[ -n "$cs" ]] && printf 'repoclone=%s\t%s\tcs-sandbox/%s\n' "$cs" "$cd" "$short"; done <<<"$repoclones"
+    } > "$INST_DIR/$short/meta"
+
+    # Bring up the whole fabric, not just dnsmasq: the keepalive pins podman's netns + bridge
+    # (podman's bridge — podman1/podman2/…), which dnsmasq must bind its secondary address on. On
+    # a cold start (no container yet running on $NET) the bridge doesn't exist, so a bare fc_dns_up
+    # would fail to bind .53.
+    fc_net_up || true
+    lock_release   # port claimed + fabric up; the slow container start below runs unlocked
+
+    # seed (per-instance, no shared state — safe to build unlocked)
+    build_seed "$short" "$type" "$solo" "$injected_env"
+
+    # assemble run command
+    local home_vol="cs-sandbox-home-$short" cont_vol="cs-sandbox-containers-$short"
+    # Nested-podman privilege posture. This is a *rootless* container (--userns=keep-id),
+    # so all of it is namespaced — caps are bounded by the unprivileged host user, NOT
+    # host root (no host-root path absent a kernel bug). The ROOTFUL inner podman (via the
+    # /usr/local/bin/podman sudo wrapper) needs CAP_SYS_ADMIN to set up nested userns/mounts
+    # with native overlay; rootless inner fails here (missing newuidmap caps + keep-id).
+    #
+    # Default = a scaled-down set that keeps the default seccomp filter ON and leaves
+    # /proc/kcore + host devices masked, yet still passes pull/run/build end-to-end. Each
+    # entry is what rootful-inner podman concretely needs beyond podman's default cap set:
+    #   SYS_ADMIN  nested userns + mounts (native overlay)
+    #   NET_ADMIN  inner netavark bridge
+    #   MKNOD      device nodes in inner containers
+    #   SYS_PTRACE pasta opening the build worker's netns (podman build RUN step)
+    #   /dev/net/tun       pasta's tap device (absent from the default /dev)
+    #   unmask=/proc/sys   netavark writes net.ipv4.ip_forward (RO under default; a partial
+    #                      unmask of /proc/sys/* does NOT work — it is one ro mount)
+    # --privileged (flag or CS_SANDBOX_NESTED_CAPS=privileged) restores the broad fallback for
+    # kernels/podman versions where the scaled-down set regresses.
+    local -a priv_flags
+    if [[ "$privileged" == 1 ]]; then
+        priv_flags=( --privileged )
+    else
+        priv_flags=( --cap-add=SYS_ADMIN --cap-add=NET_ADMIN --cap-add=MKNOD
+                     --cap-add=SYS_PTRACE
+                     --device /dev/net/tun
+                     --security-opt unmask=/proc/sys )
+    fi
+    # The --dns flags below point at the forwarding dnsmasq (VM names) + the gateway (fallback).
+    local -a run=(
+        podman run -d
+        --name "$full" --hostname "$full"
+        --network "$NET"
+        -p "$CS_SANDBOX_SSH_BIND:$port:$INTERNAL_SSH_PORT"
+        --dns "$(fc_dns_ip)" --dns "$(fc_net_gw)"
+        --init
+        "${priv_flags[@]}"
+        --security-opt label=disable
+        --cap-add=NET_RAW
+        --cap-add=NET_BIND_SERVICE
+        # Let the (unprivileged) dev user open ICMP sockets so `ping` works without a
+        # setuid/file-cap binary. Scoped to the dev user's gid because a rootless keep-id
+        # userns only maps a limited gid range (a wider range is rejected as unmapped).
+        --sysctl "net.ipv4.ping_group_range=$GROUP_ID $GROUP_ID"
+
+        --ulimit nofile=-1:-1 --ulimit nproc=-1:-1
+        --userns=keep-id
+        # Start as root so the entrypoint can finish user/sudo/subuid/home setup; it
+        # then drops to the developer user (runuser) for the main process. Without this,
+        # keep-id would start the container as the (injected) host user, not root.
+        --user 0:0
+        -e "TZ=$TZ_DEFAULT"
+        -e "CS_SANDBOX_TYPE=$type"
+        -e "CS_SANDBOX_YOLO=$yolo"
+        -e "CS_SANDBOX_SSH_PORT=$INTERNAL_SSH_PORT"
+        # Generic image: the entrypoint normalizes this user on first boot. Under keep-id
+        # the host uid maps to the same uid inside, so CS_SANDBOX_UID must be the host uid.
+        -e "CS_SANDBOX_USER=$USER_NAME"
+        -e "CS_SANDBOX_UID=$USER_ID"
+        -e "CS_SANDBOX_GID=$GROUP_ID"
+        -e "CS_SANDBOX_HOME=/home/$USER_NAME"
+        --label cs-sandbox.managed=1
+        --label "cs-sandbox.type=$type"
+        --label "cs-sandbox.ssh_port=$port"
+        --label "cs-sandbox.name=$short"
+        -v "$home_vol:/home/$USER_NAME"
+        -v "$cont_vol:/var/lib/containers"
+        -v "$INST_DIR/$short/seed:/run/cs-sandbox-seed:ro"
+    )
+    [[ "$yolo" == 1 ]] && run+=( --label cs-sandbox.yolo=1 )   # surfaced in `ls`
+    [[ "$solo" == 1 ]] && run+=( --label cs-sandbox.solo=1 )
+    # --env / --env-file: also pass as container env so `cs-sandbox exec` and container services see
+    # them (ssh sessions get them via ~/.ssh/environment, seeded by the entrypoint).
+    while IFS= read -r _ln; do [[ -n "$_ln" ]] && run+=( -e "$_ln" ); done <<< "$injected_env"
+    # additional (read-only) image stores: named shared stores mounted RO, so their
+    # images aren't re-pulled into this container's own store. Paths are passed to the
+    # entrypoint (CS_SANDBOX_IMAGE_STORES) which lists them as additionalimagestores in the
+    # nested podman storage.conf. (Populate a shared store with `cs-sandbox seed-store`.)
+    local -a image_stores=()
+    local ss
+    for ss in ${shared_stores[@]+"${shared_stores[@]}"}; do
+        podman volume exists "cs-sandbox-shared-$ss" 2>/dev/null \
+            || die "shared store '$ss' does not exist — create it with: cs-sandbox seed-store $ss <image>..."
+        run+=(-v "cs-sandbox-shared-$ss:/var/lib/shared/$ss:ro")
+        image_stores+=("/var/lib/shared/$ss")
+    done
+    if [[ ${#image_stores[@]} -gt 0 ]]; then
+        run+=(-e "CS_SANDBOX_IMAGE_STORES=$(IFS=:; echo "${image_stores[*]}")")
+    fi
+    # --mount: live RW bind-mount (shared working tree, edits flow both ways)
+    local rp nm
+    while IFS=$'\t' read -r rp nm; do
+        [[ -n "$rp" ]] || continue
+        run+=(-v "$rp:/home/$USER_NAME/$nm")
+    done <<<"$mounts"
+    # --snapshot: read-only point-in-time copy. Freeze the dir into the instance dir (CoW
+    # reflink where the fs supports it) and bind it RO, so host edits don't show through and
+    # the guest can't write it — matching the firecracker engine's frozen-disk semantics.
+    if [[ -n "$snaps" ]]; then
+        local snap_root="$INST_DIR/$short/snap"; rm -rf "$snap_root"; mkdir -p "$snap_root"
+        while IFS=$'\t' read -r rp nm; do
+            [[ -n "$rp" ]] || continue
+            cp -a --reflink=auto "$rp" "$snap_root/$nm" || {
+                podman rm -f "$full" >/dev/null 2>&1 || true
+                rm -rf "$INST_DIR/$short"; lock_release 2>/dev/null || true
+                die "--snapshot: failed to copy '$rp' (must be a fully readable directory)"
+            }
+            run+=(-v "$snap_root/$nm:/home/$USER_NAME/$nm:ro")
+        done <<<"$snaps"
+    fi
+    # --repo: RO-mount the source repo; the entrypoint alternates-clones it into ~/<dir>
+    # on a per-instance branch (cs-sandbox/<name>). The seed 'repos' file carries the spec.
+    local cl_src cl_dir cl_ref
+    if [[ -n "$repoclones" ]]; then
+        : > "$INST_DIR/$short/seed/repos"
+        while IFS=$'\t' read -r cl_src cl_dir cl_ref; do
+            [[ -n "$cl_src" ]] || continue
+            run+=(-v "$cl_src:/run/cs-sandbox-repos/$cl_dir:ro")
+            printf '%s\037%s\037%s\037%s\037%s\n' "$cl_dir" "/run/cs-sandbox-repos/$cl_dir" "cs-sandbox/$short" "$cl_ref" "$(_repo_git_identity "$cl_src")" \
+                >> "$INST_DIR/$short/seed/repos"
+        done <<<"$repoclones"
+        chmod 600 "$INST_DIR/$short/seed/repos"
+    fi
+    run+=("$IMAGE" sleep infinity)
+
+    "${run[@]}" >/dev/null
+
+    # wait for readiness
+    local i ok=""
+    for ((i=0; i<START_TIMEOUT; i++)); do
+        if podman exec "$full" test -f /run/cs-sandbox-ready 2>/dev/null; then ok=1; break; fi
+        sleep 1
+    done
+    [[ -n "$ok" ]] || info "warning: '$full' did not report ready within ${START_TIMEOUT}s (check 'podman logs $full')"
+
+    # A fresh instance has fresh per-instance host keys; drop any stale known_hosts entry
+    # (keyed by HostKeyAlias=$full) so accept-new relearns it instead of failing with
+    # "host key changed" when a port is recycled or a name is recreated.
+    ssh-keygen -R "$full" -f "$HOME/.ssh/known_hosts.cs-sandbox" >/dev/null 2>&1 || true
+
+    cmd_sync_ssh_config
+
+    echo "created $full (type=$type, ssh port=$port)"
+    echo "  ssh:   ssh $full        # or: cs-sandbox ssh $short"
+    echo "  shell: cs-sandbox exec $short"
+    local rp nm
+    while IFS=$'\t' read -r rp nm; do [[ -n "$rp" ]] && echo "  mount:    $rp -> ~/$nm (live, read-write)"; done <<<"$mounts"
+    while IFS=$'\t' read -r rp nm; do [[ -n "$rp" ]] && echo "  snapshot: $rp -> ~/$nm (read-only, frozen at create)"; done <<<"$snaps"
+    local cs cd cr
+    while IFS=$'\t' read -r cs cd cr; do [[ -n "$cd" ]] && echo "  repo:     ~/$cd on branch cs-sandbox/$short"; done <<<"$repoclones"
+    return 0   # don't let the test above become cmd_create's (nonzero) exit status
+}
+
+cmd_start()  {
+    local s; s="$(short_name "$1")"
+    if [[ "$(instance_engine "$s")" == firecracker ]]; then
+        fc_running "$s" && { echo "$PREFIX$s already running"; return; }
+        [[ -f "$INST_DIR/$s/run.json" ]] || die "no microVM config for $s"
+        e2fsck -p "$INST_DIR/$s/rootfs.ext4" >/dev/null 2>&1 || true   # repair an unclean prior stop
+        local ip; ip="$(sed -n 's/^fcip=//p' "$INST_DIR/$s/meta" | head -1)"
+        [[ -n "$ip" ]] && fc_net_register "$s" "$ip"   # re-assert name in case the fabric restarted
+        fc_launch "$s"                                 # fabric up + tap + boot
+        local i; for ((i=0;i<START_TIMEOUT;i++)); do grep -q FC-VM-READY "$INST_DIR/$s/serial.log" 2>/dev/null && break; fc_running "$s" || break; sleep 1; done
+        fc_sync_ssh_config; echo "started $PREFIX$s (microVM)"; return
+    fi
+    podman start "$PREFIX$s" >/dev/null && cmd_sync_ssh_config && echo "started $PREFIX$s"
+}
+cmd_stop()   {
+    local s; s="$(short_name "$1")"
+    fwd_kill_all "$s"   # the tunnels die with the instance anyway; drop their records
+    if [[ "$(instance_engine "$s")" == firecracker ]]; then
+        fc_shutdown "$s"; fc_fwd_down "$INST_DIR/$s"; fc_net_gc
+        echo "stopped $PREFIX$s (microVM)"; return
+    fi
+    podman stop "$PREFIX$s" >/dev/null && echo "stopped $PREFIX$s"
+}
+
+cmd_rm() {
+    local s; s="$(short_name "$1")"
+    fwd_kill_all "$s"
+    if [[ "$(instance_engine "$s")" == firecracker ]]; then
+        fc_shutdown "$s"; fc_fwd_down "$INST_DIR/$s"; fc_net_gc; fc_sync_ssh_config
+        echo "stopped microVM $PREFIX$s (disks + instances/$s kept; 'cs-sandbox destroy $s' to purge)"; return
+    fi
+    podman rm -f "$PREFIX$s" >/dev/null 2>&1 || true
+    fc_net_gc   # reclaim the shared fabric if this was the last sandbox instance
+    cmd_sync_ssh_config
+    echo "removed container $PREFIX$s (volumes and instances/$s kept; use 'cs-sandbox destroy $s' to purge)"
+}
+
+cmd_destroy() {
+    local force="" s
+    [[ "${1:-}" == "-f" ]] && { force=1; shift; }
+    s="$(short_name "${1:?usage: cs-sandbox destroy [-f] <name>}")"
+    if [[ -z "$force" ]]; then
+        # No TTY to ask on (scripted/CI/remote): fail loudly instead of a confusing
+        # "aborted" no-op that looks like the user declined.
+        [[ -t 0 ]] || die "destroy needs confirmation; re-run with -f (non-interactive shell)"
+        read -r -p "Destroy $PREFIX$s and its home/containers volumes + instance data? [y/N] " ans
+        [[ "$ans" == [yY]* ]] || { echo "aborted"; return; }
+    fi
+    fwd_kill_all "$s"
+    if [[ "$(instance_engine "$s")" == firecracker ]]; then
+        fc_destroy "$s"; rm -rf "${INST_DIR:?}/$s"; fc_sync_ssh_config
+        echo "destroyed $PREFIX$s (microVM)"; return
+    fi
+    podman rm -f "$PREFIX$s" >/dev/null 2>&1 || true
+    podman volume rm "cs-sandbox-home-$s" "cs-sandbox-containers-$s" >/dev/null 2>&1 || true
+    rm -rf "${INST_DIR:?}/$s"
+    fc_net_gc   # reclaim the shared fabric if this was the last sandbox instance
+    cmd_sync_ssh_config
+    echo "destroyed $PREFIX$s"
+}
+
+cmd_ls() {
+    local fmt='%-22s %-6s %-12s %-6s %-10s %-5s %-5s\n'
+    # shellcheck disable=SC2059
+    printf "$fmt" NAME TYPE ENGINE PORT STATE YOLO SOLO
+    # `|| true`: under `set -euo pipefail` a non-zero exit from the podman pipeline (e.g. a
+    # transient warning after it has already printed rows) must NOT abort the function, or the
+    # firecracker block below would be silently skipped. YOLO/SOLO come from labels (podman) or
+    # meta (firecracker); both print 'yes' or '-'.
+    { podman ps -a --filter "label=cs-sandbox.managed=1" \
+        --format '{{.Names}}\t{{index .Labels "cs-sandbox.type"}}\t{{index .Labels "cs-sandbox.ssh_port"}}\t{{.State}}\t{{index .Labels "cs-sandbox.yolo"}}\t{{index .Labels "cs-sandbox.solo"}}' 2>/dev/null \
+        | sort | while IFS=$'\t' read -r nm ty po st yolo solo; do
+            [[ "$nm" == "$FC_KEEPALIVE" ]] && continue   # infra, not a user instance
+            printf "$fmt" "$nm" "${ty:-—}" podman "$po" "$st" "$([[ $yolo == 1 ]] && echo yes || echo -)" "$([[ $solo == 1 ]] && echo yes || echo -)"
+        done; } || true
+    local m nm st ty po
+    for m in "$INST_DIR"/*/meta; do
+        [[ -f "$m" ]] || continue
+        grep -q '^engine=firecracker' "$m" || continue
+        nm="$(sed -n 's/^name=//p' "$m")"; [[ -n "$nm" ]] || continue
+        ty="$(sed -n 's/^type=//p' "$m" | head -1)"
+        fc_running "$nm" && st=running || st=stopped
+        po="$(sed -n 's/^port=//p' "$m" | head -1)"
+        printf "$fmt" "$PREFIX$nm" "${ty:-—}" firecracker "${po:-—}" "$st" \
+            "$(grep -q '^yolo=1' "$m" && echo yes || echo -)" "$(grep -q '^solo=1' "$m" && echo yes || echo -)"
+    done
+}
+
+cmd_port() {
+    local s; s="$(short_name "${1:?usage: cs-sandbox port <name>}")"
+    local p; p="$(instance_port "$PREFIX$s")"
+    [[ -n "$p" ]] || die "no port known for $PREFIX$s"
+    echo "$p"
+}
+
+cmd_ssh() {
+    local s; s="$(short_name "${1:?usage: cs-sandbox ssh <name> [args...]}")"; shift || true
+    exec ssh "$PREFIX$s" "$@"
+}
+
+cmd_exec() {
+    local s; s="$(short_name "${1:?usage: cs-sandbox exec <name> [cmd...]}")"; shift || true
+    # microVM: no podman exec — go in over ssh (vsock).
+    [[ "$(instance_engine "$s")" == firecracker ]] && exec ssh "$PREFIX$s" "$@"
+    # The container runs as root (it creates the user at boot), so enter explicitly as
+    # the developer user, landing in their home.
+    local -a u=(--user "$USER_NAME" --workdir "/home/$USER_NAME")
+    if [[ -t 0 ]]; then
+        if [[ $# -eq 0 ]]; then podman exec -it "${u[@]}" "$PREFIX$s" /bin/bash -l
+        else podman exec -it "${u[@]}" "$PREFIX$s" "$@"; fi
+    else
+        podman exec -i "${u[@]}" "$PREFIX$s" "${@:-/bin/bash}"
+    fi
+}
+
+# Install the host-side helper tools (the cs-claude/cs-codex launch wrappers, the
+# remote-delegation families + their reference docs, and the markdown utilities) onto your PATH,
+# so you can set up agent auth on the host — which new instances then inherit — and delegate to
+# remote agent sessions. Default destination is ~/bin (where the remote tools look for their turn
+# driver). user-podman is skipped: it's a sandbox-internal nested-podman wrapper.
+cmd_install() {
+    local dest="${1:-$HOME/bin}"
+    local src="$CS_SANDBOX_DIR/context/home/bin"
+    [[ -d "$src" ]] || die "cannot find bundled tools at $src"
+    mkdir -p "$dest" || die "cannot create $dest"
+    local n=0 f base
+    for f in "$src"/*; do
+        base="$(basename "$f")"
+        [[ "$base" == "user-podman" ]] && continue
+        if [[ "$base" == *.md ]]; then install -m 644 "$f" "$dest/$base"
+        else install -m 755 "$f" "$dest/$base"; fi
+        n=$((n + 1))
+    done
+    info "installed $n host helpers into $dest"
+    case ":$PATH:" in
+        *":$dest:"*) : ;;
+        *) info "note: $dest is not on your PATH yet — add it:"
+           info "    echo 'export PATH=\"$dest:\$PATH\"' >> ~/.bashrc && source ~/.bashrc" ;;
+    esac
+    local miss=()
+    command -v claude >/dev/null 2>&1 || miss+=("claude")
+    command -v codex  >/dev/null 2>&1 || miss+=("codex")
+    if (( ${#miss[@]} )); then
+        info "note: ${miss[*]} not on PATH — cs-claude/cs-codex need the agent CLI(s) on the host."
+        info "  Install Claude Code and/or Codex, then run 'cs-claude' (/login) + 'cs-codex login' to sign in"
+        info "  (instances inherit it). Or skip host setup: use 'cs-sandbox claude-login <name>' /"
+        info "  'codex-login <name>' inside an instance instead."
+    else
+        info "next: run 'cs-claude' (sign in with /login) and 'cs-codex login' so new instances inherit your auth"
+    fi
+}
+
+cmd_claude_login() {
+    local s; s="$(short_name "${1:?usage: cs-sandbox claude-login <name>}")"
+    echo "Launching cs-claude inside $PREFIX$s — run /login to authenticate, then exit." >&2
+    if [[ "$(instance_engine "$s")" == firecracker ]]; then
+        fc_running "$s" || die "microVM $PREFIX$s is not running"
+        exec ssh -t "$PREFIX$s" 'cs-claude'
+    fi
+    container_exists "$PREFIX$s" || die "no such container: $PREFIX$s"
+    podman exec -it --user "$USER_NAME" --workdir "/home/$USER_NAME" "$PREFIX$s" bash -lc 'cs-claude'
+}
+
+cmd_codex_login() {
+    local s; s="$(short_name "${1:?usage: cs-sandbox codex-login <name>}")"
+    echo "Running 'codex login' inside $PREFIX$s — follow the prompts to authenticate." >&2
+    if [[ "$(instance_engine "$s")" == firecracker ]]; then
+        fc_running "$s" || die "microVM $PREFIX$s is not running"
+        exec ssh -t "$PREFIX$s" 'cs-codex login'
+    fi
+    container_exists "$PREFIX$s" || die "no such container: $PREFIX$s"
+    podman exec -it --user "$USER_NAME" --workdir "/home/$USER_NAME" "$PREFIX$s" bash -lc 'cs-codex login'
+}
+
+# The cs-claude launch wrapper and the remote-delegation tooling (cs-claude-remote*,
+# cs-claude-turn, CS_CLAUDE_REMOTE*.md) live in context/home; they are generic and free of
+# host/personal specifics.
+
+# --- repo checkout retrieval (--repo) -------------------------------------
+# All git transport is host-initiated over the host->instance ssh alias (<name>),
+# so it works even for agent containers that can't ssh back. Each --repo's work lands on
+# a 'cs-sandbox/<name>' branch in its own host source repo (recorded as repoclone= in meta).
+_repo_clones_of() { sed -n 's/^repoclone=//p' "$INST_DIR/$1/meta" 2>/dev/null; }
+
+cmd_fetch() {
+    local s; s="$(short_name "${1:?usage: cs-sandbox fetch <name> [dir]}")"; shift || true
+    local want="${1:-}"
+    [[ -f "$INST_DIR/$s/meta" ]] || die "no such instance: $PREFIX$s"
+    local src dir br any=""
+    while IFS=$'\t' read -r src dir br; do
+        [[ -n "$src" ]] || continue
+        [[ -z "$want" || "$want" == "$dir" ]] || continue
+        any=1
+        info "fetch $PREFIX$s:$dir ($br) -> $src  [refs/heads/cs-sandbox/$s]"
+        if git -C "$src" fetch "$PREFIX$s:$dir" "$br:refs/heads/cs-sandbox/$s"; then
+            echo "  $src  cs-sandbox/$s -> $(git -C "$src" log --oneline -1 "cs-sandbox/$s" 2>/dev/null)"
+        else
+            info "  fetch failed (non-fast-forward? review with: git -C $src log cs-sandbox/$s)"
+        fi
+    done < <(_repo_clones_of "$s")
+    [[ -n "$any" ]] || die "no --repo checkouts recorded for $s${want:+ matching '$want'}"
+}
+
+cmd_push() {
+    local s; s="$(short_name "${1:?usage: cs-sandbox push <name> [dir]}")"; shift || true
+    local want="${1:-}"
+    [[ -f "$INST_DIR/$s/meta" ]] || die "no such instance: $PREFIX$s"
+    local src dir br any=""
+    while IFS=$'\t' read -r src dir br; do
+        [[ -n "$src" ]] || continue
+        [[ -z "$want" || "$want" == "$dir" ]] || continue
+        any=1
+        info "push $src HEAD -> $PREFIX$s:$dir ($br)"
+        git -C "$src" push "$PREFIX$s:$dir" "HEAD:$br" \
+            || info "  push failed (diverged? the instance branch must fast-forward, tree clean)"
+    done < <(_repo_clones_of "$s")
+    [[ -n "$any" ]] || die "no --repo checkouts recorded for $s${want:+ matching '$want'}"
+}
+
+# --- host<->instance port forwards (ssh -L / -D), with lifecycle ----------
+# Tunnel host ports to ports inside an instance over the existing `ssh <name>` path
+# (so it works for both the podman and firecracker engines). Each forward is a tracked,
+# backgrounded `ssh -N` process; records live in instances/<name>/forwards/<hostport> so
+# they can be listed and torn down. Bound to 127.0.0.1 by default (no inbound exposure).
+fwd_dir() { echo "$INST_DIR/$1/forwards"; }
+
+# drop records whose ssh process has exited (e.g. the instance was stopped/rebooted)
+fwd_gc() {
+    local d; d="$(fwd_dir "$1")"; [[ -d "$d" ]] || return 0
+    local f pid
+    for f in "$d"/*; do
+        [[ -f "$f" && "$f" != *.log ]] || continue
+        pid="$(sed -n 's/^pid=//p' "$f")"
+        kill -0 "$pid" 2>/dev/null || rm -f "$f" "$f.log"
+    done
+    rmdir "$d" 2>/dev/null || true
+}
+
+# kill all forwards for an instance (used by stop/rm/destroy)
+fwd_kill_all() {
+    local d; d="$(fwd_dir "$1")"; [[ -d "$d" ]] || return 0
+    local f pid
+    for f in "$d"/*; do
+        [[ -f "$f" && "$f" != *.log ]] || continue
+        pid="$(sed -n 's/^pid=//p' "$f")"; kill "$pid" 2>/dev/null || true
+    done
+    rm -rf "$d"
+}
+
+# _fwd_start <short> <L|D> <hostport> <vmport> <target> <bind>
+_fwd_start() {
+    local s="$1" kind="$2" hp="$3" vp="$4" target="$5" bind="$6"
+    local d; d="$(fwd_dir "$s")"; mkdir -p "$d"
+    [[ -f "$d/$hp" ]] && { info "host port $hp already forwarded for $PREFIX$s ('cs-sandbox unforward $s $hp' first)"; return; }
+    port_free "$hp" || die "host port $hp is already in use"
+    local -a arg
+    if [[ "$kind" == D ]]; then arg=(-D "$bind:$hp"); else arg=(-L "$bind:$hp:$target"); fi
+    nohup ssh -N -o ExitOnForwardFailure=yes -o BatchMode=yes "${arg[@]}" "$PREFIX$s" > "$d/$hp.log" 2>&1 &
+    local pid=$!
+    sleep 0.6
+    if ! kill -0 "$pid" 2>/dev/null; then
+        info "forward $hp failed: $(tail -1 "$d/$hp.log" 2>/dev/null)"; rm -f "$d/$hp.log"; return 1
+    fi
+    { echo "pid=$pid"; echo "kind=$kind"; echo "hostport=$hp"; echo "target=$target"; echo "bind=$bind"; } > "$d/$hp"
+    if [[ "$kind" == D ]]; then echo "forward: socks5://$bind:$hp -> $PREFIX$s (SOCKS proxy)"
+    else echo "forward: $bind:$hp -> $PREFIX$s:$vp"; fi
+}
+
+cmd_forward() {
+    local s; s="$(short_name "${1:?usage: cs-sandbox forward <name> [HOSTPORT:]VMPORT... | --socks [PORT]}")"; shift || true
+    [[ -f "$INST_DIR/$s/meta" ]] || die "no such instance: $PREFIX$s"
+    local bind="127.0.0.1" socks=""
+    local -a specs=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --bind)  bind="$2"; shift 2 ;;
+            --socks) if [[ "${2:-}" =~ ^[0-9]+$ ]]; then socks="$2"; shift 2; else socks="1080"; shift; fi ;;
+            -*)      die "unknown flag: $1" ;;
+            *)       specs+=("$1"); shift ;;
+        esac
+    done
+    fwd_gc "$s"
+    [[ "$bind" == 127.0.0.1 || "$bind" == localhost ]] || info "warning: --bind $bind exposes the forward beyond host loopback"
+    if [[ -n "$socks" ]]; then _fwd_start "$s" D "$socks" "$socks" socks "$bind"; return; fi
+    [[ ${#specs[@]} -gt 0 ]] || die "usage: cs-sandbox forward <name> [HOSTPORT:]VMPORT... | --socks [PORT]"
+    local spec hp vp
+    for spec in "${specs[@]}"; do
+        if [[ "$spec" == *:* ]]; then hp="${spec%%:*}"; vp="${spec##*:}"; else hp="$spec"; vp="$spec"; fi
+        [[ "$hp" =~ ^[0-9]+$ && "$vp" =~ ^[0-9]+$ ]] || die "invalid port spec '$spec' (use VMPORT or HOSTPORT:VMPORT)"
+        _fwd_start "$s" L "$hp" "$vp" "localhost:$vp" "$bind"
+    done
+}
+
+cmd_forwards() {
+    local want=""; [[ -n "${1:-}" ]] && want="$(short_name "$1")"
+    local m s d f kind hp target bind rows=""
+    for m in "$INST_DIR"/*/meta; do
+        [[ -f "$m" ]] || continue
+        s="$(sed -n 's/^name=//p' "$m")"; [[ -n "$s" ]] || continue
+        [[ -z "$want" || "$want" == "$s" ]] || continue
+        fwd_gc "$s"; d="$(fwd_dir "$s")"; [[ -d "$d" ]] || continue
+        for f in "$d"/*; do
+            [[ -f "$f" && "$f" != *.log ]] || continue
+            kind="$(sed -n 's/^kind=//p' "$f")"; hp="$(sed -n 's/^hostport=//p' "$f")"
+            target="$(sed -n 's/^target=//p' "$f")"; bind="$(sed -n 's/^bind=//p' "$f")"
+            rows+="$(printf '%-16s %-22s %-5s %s' "$PREFIX$s" "$bind:$hp" "$kind" "$target")"$'\n'
+        done
+    done
+    [[ -n "$rows" ]] || { echo "no active forwards${want:+ for $PREFIX$want}"; return; }
+    printf '%-16s %-22s %-5s %s\n' NAME HOST KIND TARGET
+    printf '%s' "$rows"
+}
+
+cmd_unforward() {
+    local s; s="$(short_name "${1:?usage: cs-sandbox unforward <name> [HOSTPORT|all]}")"; shift || true
+    local target="${1:-all}"
+    local d; d="$(fwd_dir "$s")"; [[ -d "$d" ]] || { echo "no forwards for $PREFIX$s"; return; }
+    local f hp pid any=""
+    for f in "$d"/*; do
+        [[ -f "$f" && "$f" != *.log ]] || continue
+        hp="$(sed -n 's/^hostport=//p' "$f")"
+        [[ "$target" == all || "$target" == "$hp" ]] || continue
+        pid="$(sed -n 's/^pid=//p' "$f")"; kill "$pid" 2>/dev/null || true
+        rm -f "$f" "$d/$hp.log"; any=1; echo "removed forward $hp for $PREFIX$s"
+    done
+    rmdir "$d" 2>/dev/null || true
+    [[ -n "$any" ]] || die "no matching forward for $PREFIX$s ($target)"
+}
+
+# --- shared image stores --------------------------------------------------
+# A named shared store is the podman volume cs-sandbox-shared-<name>, holding an image set
+# that multiple containers reuse read-only via `--image-store <name>` (instead of each
+# pulling its own copy). Stores are seeded with the rootful nested engine so they're
+# owned by the keep-id subuid base every sandbox container shares.
+
+valid_store_name() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || die "invalid store name '$1'"; }
+
+# Create an empty shared store (initialized as a valid, empty podman store so it's safe
+# to mount even before it's seeded). Seed it later with `cs-sandbox seed-store <name> ...`.
+#
+# The store helpers (create-store / seed-store / stores) run the nested rootful podman
+# only for local storage ops on the /seed overlay (init / pull / save|load / images) —
+# they never launch a nested *container*, so they need CAP_SYS_ADMIN (overlay mounts)
+# but not the full create-path set (NET_ADMIN/MKNOD/SYS_PTRACE/tun/unmask). Pull network
+# comes from the outer helper container's own netns, not a nested one.
+cmd_create_store() {
+    local name="${1:?usage: cs-sandbox create-store <name>}"
+    valid_store_name "$name"
+    local vol="cs-sandbox-shared-$name"
+    podman volume exists "$vol" 2>/dev/null && die "shared store '$name' already exists"
+    ensure_image
+    podman volume create "$vol" >/dev/null
+    # initialize the store layout (overlay-images db etc.) so an unseeded store mounts cleanly
+    podman run --rm --userns=keep-id --user 0:0 --cap-add=SYS_ADMIN --security-opt label=disable \
+        -v "$vol:/seed" --entrypoint /bin/bash "$IMAGE" \
+        -c '/usr/bin/podman --root /seed --runroot /run/seed-rr --storage-driver overlay images >/dev/null 2>&1 || true'
+    echo "created empty shared store '$name' — seed it with: cs-sandbox seed-store $name <image>..."
+}
+
+cmd_seed_store() {
+    local from_host=0
+    [[ "${1:-}" == "--from-host" ]] && { from_host=1; shift; }
+    local name="${1:?usage: cs-sandbox seed-store [--from-host] <name> <image>...}"; shift || true
+    [[ $# -ge 1 ]] || die "usage: cs-sandbox seed-store [--from-host] <name> <image>..."
+    [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || die "invalid store name '$name'"
+    ensure_image
+    local vol="cs-sandbox-shared-$name"
+    podman volume exists "$vol" 2>/dev/null || { podman volume create "$vol" >/dev/null; info "created shared store volume $vol"; }
+
+    local -a run=(podman run --rm --userns=keep-id --user 0:0 --cap-add=SYS_ADMIN --security-opt label=disable -v "$vol:/seed")
+    local script
+    if [[ "$from_host" == 1 ]]; then
+        # Copy images that already exist in the HOST store into the shared store, but
+        # RE-OWNED by the rootful nested engine (save|load through it), so image-uid-0 is
+        # stored under the shared keep-id root. When such an image is later run nested,
+        # image-root maps back to 0 — so setuid binaries / sudo work (unlike serving the
+        # image straight from the host *rootless* store, where image-root shows as 1000).
+        local img host_store
+        host_store="$(podman info --format '{{.Store.GraphRoot}}' 2>/dev/null || true)"
+        [[ -n "$host_store" && -d "$host_store" ]] || die "cannot resolve host image store"
+        for img in "$@"; do
+            podman image exists "$img" 2>/dev/null \
+                || die "image '$img' is not in the host store — build/pull it first, or drop --from-host to pull from a registry"
+        done
+        run+=(-v "$host_store:/var/lib/host-store:ro")
+        info "copying into shared store '$name' from host store (re-owned rootful): $*"
+        script='
+            set -e
+            mkdir -p /etc/containers
+            printf "[storage]\ndriver = \"overlay\"\n\n[storage.options]\nadditionalimagestores = [\"/var/lib/host-store\"]\n" > /etc/containers/storage.conf
+            for img in "$@"; do
+                echo ">> copying $img  (host store -> shared store)"
+                /usr/bin/podman save "$img" | /usr/bin/podman --root /seed --runroot /run/seed-rr --storage-driver overlay load
+            done
+            echo "== shared store now contains: =="
+            /usr/bin/podman --root /seed --runroot /run/seed-rr --storage-driver overlay images
+        '
+    else
+        info "seeding shared store '$name' with (pull): $*"
+        script='
+            set -e
+            for img in "$@"; do
+                echo ">> pulling $img"
+                /usr/bin/podman --root /seed --runroot /run/seed-rr --storage-driver overlay pull "$img"
+            done
+            echo "== shared store now contains: =="
+            /usr/bin/podman --root /seed --runroot /run/seed-rr --storage-driver overlay images
+        '
+    fi
+    "${run[@]}" --entrypoint /bin/bash "$IMAGE" -c "$script" _ "$@"
+    echo "seeded shared store '$name' — use it with: cs-sandbox create <name> --type user|agent --image-store $name"
+}
+
+# List shared stores and the images each holds. Each store is read by the rootful
+# nested engine (they're owned by the shared subuid base, unreadable from the host) and
+# mounted at /seed — the same path it was seeded at — so podman's libpod static-dir
+# check matches (a different mount path would error "database configuration mismatch").
+cmd_stores() {
+    local -a vols=()
+    local v name out
+    while IFS= read -r v; do [[ -n "$v" ]] && vols+=("$v"); done \
+        < <(podman volume ls --filter name=cs-sandbox-shared- --format '{{.Name}}' 2>/dev/null)
+    [[ ${#vols[@]} -gt 0 ]] || { echo "no shared stores (create one with: cs-sandbox create-store <name>)"; return; }
+    ensure_image
+    for v in "${vols[@]}"; do
+        name="${v#cs-sandbox-shared-}"
+        echo "== $name =="
+        # `if out=$(...)` keeps set -e from aborting the whole listing on one bad store.
+        if out="$(podman run --rm --userns=keep-id --user 0:0 --cap-add=SYS_ADMIN --security-opt label=disable \
+            -v "$v:/seed" --entrypoint /bin/bash "$IMAGE" \
+            -c '/usr/bin/podman --root /seed --runroot /run/seed-rr --storage-driver overlay images --format "{{.Repository}}:{{.Tag}}  {{.Size}}" 2>/dev/null')"; then
+            if [[ -n "$out" ]]; then echo "$out" | sed 's/^/  /'; else echo "  (no images)"; fi
+        else
+            echo "  (unreadable — re-create with: cs-sandbox rm-store $name && cs-sandbox seed-store ...)"
+        fi
+    done
+}
+
+# Delete a shared store. Refuses if any container still references it (use -f to force).
+cmd_rm_store() {
+    local force=""
+    [[ "${1:-}" == "-f" ]] && { force=1; shift; }
+    local name="${1:?usage: cs-sandbox rm-store [-f] <name>}"
+    local vol="cs-sandbox-shared-$name"
+    podman volume exists "$vol" 2>/dev/null || die "no such shared store: $name"
+    local users; users="$(podman ps -a --filter volume="$vol" --format '{{.Names}}' 2>/dev/null | tr '\n' ' ')"
+    if [[ -n "${users// }" && -z "$force" ]]; then
+        die "shared store '$name' is in use by: ${users}— remove those containers first (cs-sandbox destroy -f <name>), or use 'cs-sandbox rm-store -f $name'"
+    fi
+    podman volume rm ${force:+-f} "$vol" >/dev/null
+    echo "removed shared store '$name'"
+}
+
+usage() {
+    cat <<'EOF'
+cs-sandbox — manage named dev sandboxes (rootless Firecracker microVMs by default, or podman containers).
+
+Usage:
+  cs-sandbox <command> [arguments]
+
+Each instance uses the bare name you give to 'create' (e.g. "some-work").
+
+Commands:
+  doctor [--engine firecracker|podman] Check host prerequisites (KVM, packages, subuid) + a
+                                       host-route smoke test (default engine: firecracker).
+  install [DIR]                        Install the host helper tools (cs-claude, cs-codex, the
+                                       remote-delegation families + docs) onto PATH (default: ~/bin),
+                                       so you can set up agent auth on the host. Run once after cloning.
+  build                                Build the container image (also auto-built on first create).
+
+  create <name> [options]              Create and start a new instance. Options:
+    --type user|agent                  Instance kind (default: agent — autonomous, sandboxed, no
+                                       host SSH creds; 'user' copies your host ~/.ssh for git-over-SSH).
+    --engine firecracker|podman        Backend to run on (default: firecracker; podman on macOS).
+    --mount PATH[:NAME]                Live RW bind-mount of a dir at ~/<name> (podman only; repeatable).
+    --snapshot PATH[:NAME]             Read-only point-in-time copy of a dir at ~/<name> (any engine; repeatable).
+    --repo PATH[@REF][:NAME]           Per-instance git checkout on branch cs-sandbox/<name> (any engine; repeatable).
+    --env KEY=VALUE, -e KEY=VALUE      Inject an env var into the whole sandbox — every ssh session
+                                       and the coding agent (both engines; repeatable). A bare KEY
+                                       (no =) passes through the host's current value of KEY.
+    --env-file FILE                    Inject KEY=VALUE lines from FILE (# comments and blank lines
+                                       ignored; a bare KEY passes the host's value). Repeatable.
+    --port N                           Host SSH port to publish (default: auto-allocated).
+    --image-store NAME                 Mount a read-only shared image store (both engines; repeatable).
+    --cpus N                           Firecracker only: number of vCPUs (default: 4).
+    --mem MiB                          Firecracker only: memory in MiB (default: 4096).
+    --privileged                       Podman only: use broad --privileged for nested podman
+                                       (default: a scaled-down capability set, seccomp left on).
+    --yolo                             Agent instances only: run the coding agents (Claude & Codex)
+                                       with no permission/approval prompts. Rejected for user.
+    --solo                             Agent instances only: deny the sandbox any OUTBOUND ssh into
+                                       the fabric — it works "solo". Seeded no shared tier key, so it
+                                       can't ssh into any peer or the host; but peers and the host
+                                       CAN still ssh into it (normal authorized_keys). Outbound-only
+                                       SSH restriction; network reachability is unchanged. Rejected
+                                       for user.
+    --no-keys                          Don't carry your API-key / cloud-provider agent credentials
+                                       (~/.cs-{claude,codex}/env + creds/) into this instance.
+
+  ls                                   List instances with their type, engine, and SSH port.
+  port <name>                          Print the instance's host SSH port.
+  ssh <name> [args...]                 SSH into the instance by name (port lookup is automatic).
+  exec <name> [cmd]                    Run a command (or open a shell) inside the instance without SSH.
+  start <name>                         Start a stopped instance.
+  stop <name>                          Stop a running instance (keeps its state).
+  rm <name>                            Remove the instance but keep its home/data volumes.
+  destroy [-f] <name>                  Remove the instance AND its volumes/data.
+
+  fetch <name> [dir]                   Retrieve a --repo instance's commits to host branch cs-sandbox/<name>.
+  push <name> [dir]                    Send host-side commits into a --repo instance (fast-forward only).
+
+  forward <name> [HOSTPORT:]VMPORT...  Forward host ports to the instance over an SSH tunnel.
+  forward <name> --socks [PORT]        Open a SOCKS proxy into the instance.
+  forwards [<name>]                    List active port forwards.
+  unforward <name> [HOSTPORT|all]      Tear down one or all forwards for the instance.
+
+  host-route up|down|status|refresh    OPTIONAL (Linux, systemd-resolved, one-time sudo): reach
+                                       instances from the host by name under .cs.sandbox, any
+                                       protocol — 'ping <name>.cs.sandbox', 'curl
+                                       http://<name>.cs.sandbox:8000'. Off by default; 'up' wires the
+                                       host into the sandbox network + points DNS at the fabric
+                                       resolver. Names then auto-update with no further sudo.
+
+  create-store <name>                  Create an empty shared image store.
+  seed-store [--from-host] <name> <image>...
+                                       Populate a shared image store (--from-host re-owns a local image).
+  stores                               List shared stores and the images each holds.
+  rm-store [-f] <name>                 Delete a shared store.
+
+  claude-login <name>                  Authenticate Claude Code interactively inside the instance.
+  codex-login <name>                   Authenticate Codex (`codex login`) inside the instance.
+  sync-ssh-config                      Regenerate ~/.ssh/config.d/cs-sandbox{,-fc} for all instances.
+  help                                 Show this help.
+
+See docs/design.md for the full design; docs/firecracker.md (microVMs) and docs/repo-sharing.md (repos).
+EOF
+    exit "${1:-0}"
+}
+
+# --- firecracker engine (microVM) -----------------------------------------
+# Runs an instance as a Firecracker microVM instead of a podman container, reusing the
+# same image (converted to an ext4 rootfs) and the same SSH + --repo model. Host->VM ssh
+# is over VSOCK (no networking/root needed). See docs/firecracker.md.
+
+instance_engine() { sed -n 's/^engine=//p' "$INST_DIR/$1/meta" 2>/dev/null | head -1; }
+fc_running() { local p="$INST_DIR/$1/fc.pid"; [[ -f "$p" ]] && kill -0 "$(cat "$p")" 2>/dev/null; }
+
+# instance_exists <short> — succeeds if a name is already taken in ANY form, regardless of
+# engine: a live podman container, a running microVM, or a recorded instance dir (the `meta`
+# left behind by a stopped or `rm`'d-but-not-`destroy`'d instance of EITHER engine). On success
+# it echoes a human-readable description of what holds the name, including the cleanup hint, so
+# `create` can refuse with a precise message. The meta check is what makes detection symmetric:
+# a podman instance records no `engine=` line (engine defaults to podman), while a firecracker
+# one records `engine=firecracker`, and either way the meta presence alone marks the name taken.
+instance_exists() {
+    local s="$1" e
+    if container_exists "$PREFIX$s"; then
+        echo "a podman container '$PREFIX$s' already exists (use 'cs-sandbox rm $s' or 'cs-sandbox destroy $s' first)"; return 0
+    fi
+    if fc_running "$s"; then
+        echo "a microVM '$PREFIX$s' is already running (use 'cs-sandbox destroy $s' first)"; return 0
+    fi
+    if [[ -f "$INST_DIR/$s/meta" ]]; then
+        e="$(instance_engine "$s")"; [[ -n "$e" ]] || e=podman
+        echo "an instance '$PREFIX$s' already exists (engine $e, stopped — use 'cs-sandbox destroy $s' first)"; return 0
+    fi
+    return 1
+}
+
+# --- unified rootless network fabric (VMs in podman's own netns) ---------------
+# VMs run inside PODMAN's rootless network namespace (entered via `podman unshare
+# --rootless-netns`), each with a tap on podman's bridge and an address in podman's subnet.
+# Containers and VMs thus share one L2 fabric and reach each other directly. Two helpers keep
+# it usable independent of user containers:
+#   - a "keepalive" container pins podman's netns + bridge + aardvark-dns alive;
+#   - a forwarding dnsmasq (in that netns, on a dedicated address) resolves VM names from a
+#     hostsdir and forwards everything else to aardvark, so every instance resolves BOTH.
+# See docs/firecracker.md.
+fc_pnet() { podman unshare --rootless-netns "$@"; }    # run a command in podman's rootless netns
+
+fc_net_gw()     { podman network inspect "$NET" --format '{{(index .Subnets 0).Gateway}}' 2>/dev/null; }
+fc_net_prefix() { local gw; gw="$(fc_net_gw)"; echo "${gw%.*}"; }   # e.g. 10.89.0
+fc_dns_ip()     { echo "$(fc_net_prefix).53"; }        # forwarding dnsmasq (secondary IP on the bridge)
+# The bridge interface netavark assigns to $NET. Podman names bridges sequentially across
+# networks (podman0, podman1, podman2…), so read the real name rather than assuming a fixed one.
+fc_net_bridge() { podman network inspect "$NET" --format '{{.NetworkInterface}}' 2>/dev/null; }
+fc_keepalive_running() { [[ "$(podman inspect "$FC_KEEPALIVE" --format '{{.State.Running}}' 2>/dev/null)" == true ]]; }
+
+fc_keepalive_up() {
+    fc_keepalive_running && return 0
+    podman container exists "$FC_KEEPALIVE" 2>/dev/null && { podman start "$FC_KEEPALIVE" >/dev/null 2>&1 && return 0; }
+    ensure_image
+    podman run -d --name "$FC_KEEPALIVE" --network "$NET" --restart=always \
+        --label cs-sandbox.managed=1 --label cs-sandbox.keepalive=1 \
+        "$IMAGE" sleep infinity >/dev/null 2>&1 && return 0
+    # Lost a race (a parallel create grabbed the name) or a stale leftover exists: succeed if
+    # it's now running, otherwise try to start the existing one before giving up.
+    fc_keepalive_running && return 0
+    podman start "$FC_KEEPALIVE" >/dev/null 2>&1 && return 0
+    die "fc: could not start the network keepalive container"
+}
+
+# Forwarding dnsmasq inside podman's netns: serves VM names (hostsdir, auto-reloading) and
+# forwards the rest to aardvark (the podman subnet gateway). Listens on a dedicated secondary
+# address on podman's bridge so it doesn't fight aardvark's :53.
+# Liveness checks the pid AND that it is really OUR dnsmasq on OUR address — so a recycled or
+# stale pid (e.g. a leftover from a prior fabric) can't masquerade as a healthy resolver.
+fc_dns_running() {
+    [[ -f "$FC_NET_DIR/dnsmasq.pid" ]] || return 1
+    local pid; pid="$(cat "$FC_NET_DIR/dnsmasq.pid")"
+    kill -0 "$pid" 2>/dev/null || return 1
+    tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "listen-address=$(fc_dns_ip)"
+}
+fc_dns_up() {
+    mkdir -p "$FC_NET_DIR/hosts.d"
+    fc_dns_running && return 0
+    local gw dns br; gw="$(fc_net_gw)"; dns="$(fc_dns_ip)"; br="$(fc_net_bridge)"
+    [[ -n "$gw" ]] || die "fc: cannot read podman network '$NET' gateway"
+    [[ -n "$br" ]] || die "fc: cannot read podman network '$NET' bridge interface"
+    # Stay as (userns-)root — which maps to the host user that owns the hostsdir — so dnsmasq can
+    # still traverse $HOME (mode 750) to re-read --hostsdir after startup; the default drop to
+    # "nobody" can't, and would silently forward VM names upstream instead of answering them.
+    nohup podman unshare --rootless-netns bash -c "
+        ip addr add $dns/24 dev $br 2>/dev/null || true
+        exec dnsmasq --keep-in-foreground --user=root --group=root --bind-interfaces --listen-address=$dns \
+            --no-hosts --no-resolv --server=$gw \
+            --hostsdir=$FC_NET_DIR/hosts.d --pid-file=$FC_NET_DIR/dnsmasq.pid --conf-file=/dev/null
+    " > "$FC_NET_DIR/dnsmasq.log" 2>&1 &
+    local i; for ((i=0;i<40;i++)); do fc_dns_running && break; sleep 0.1; done
+    fc_dns_running || { info "fc: dnsmasq failed to start ($FC_NET_DIR/dnsmasq.log)"; return 1; }
+}
+
+fc_net_up() {
+    ensure_net           # create $NET if missing — so start/host-route work without a prior create
+    fc_keepalive_up      # pin podman's netns + bridge + aardvark
+    fc_dns_up            # VM-name resolver that forwards everything else to aardvark
+}
+
+fc_net_down() {
+    [[ -f "$FC_NET_DIR/dnsmasq.pid" ]] && kill "$(cat "$FC_NET_DIR/dnsmasq.pid")" 2>/dev/null || true
+    rm -f "$FC_NET_DIR/dnsmasq.pid"
+    fc_keepalive_running && fc_pnet ip addr del "$(fc_dns_ip)/24" dev "$(fc_net_bridge)" 2>/dev/null || true
+    podman rm -f "$FC_KEEPALIVE" >/dev/null 2>&1 || true
+}
+
+# GC the fabric (keepalive + dnsmasq) only once NOTHING uses it: no microVM is running AND no
+# sandbox container (other than the keepalive itself) remains. Containers rely on the dnsmasq too
+# — aardvark forwards their misses to it — so it must outlive the last VM if containers persist.
+fc_net_gc() {
+    hr_active && return 0   # host-route pins the fabric: its veth + resolver wiring depend on the
+                            # netns/dnsmasq staying up, so don't reclaim it while host-route is on.
+    local m nm
+    for m in "$INST_DIR"/*/meta; do
+        [[ -f "$m" ]] || continue
+        grep -q '^engine=firecracker' "$m" || continue
+        nm="$(sed -n 's/^name=//p' "$m")"
+        fc_running "$nm" && return 0     # a VM is up — keep the fabric
+    done
+    podman ps -a --filter "label=cs-sandbox.managed=1" --format '{{.Names}}' 2>/dev/null \
+        | grep -vqxF "$FC_KEEPALIVE" && return 0   # an sandbox container remains — keep it
+    fc_net_down
+}
+
+# dnsmasq auto-reloads its --hostsdir; SIGHUP for promptness (inotify can miss a fresh file).
+fc_net_dnsmasq_reload() {
+    local f="$FC_NET_DIR/dnsmasq.pid"
+    [[ -f "$f" ]] && kill -HUP "$(cat "$f")" 2>/dev/null || true
+}
+fc_net_register()   { mkdir -p "$FC_NET_DIR/hosts.d"; echo "$2 $PREFIX$1" > "$FC_NET_DIR/hosts.d/$1"; fc_net_dnsmasq_reload; }
+fc_net_unregister() { rm -f "$FC_NET_DIR/hosts.d/$1"; fc_net_dnsmasq_reload; }
+
+# Host -> VM published port. The host can't address podman's netns directly, so bridge it with
+# a unix socket (unix sockets ignore network namespaces): a persistent socat in the netns relays
+# the socket to the VM's sshd, and a host-side socat binds the published port to the socket.
+# Per-VM, lifecycle-tracked — no shared daemon to restart when a VM comes or goes.
+fc_fwd_up() {   # <idir> <hostport> <vmip>
+    local idir="$1" port="$2" ip="$3"
+    fc_fwd_down "$idir"
+    rm -f "$idir/fwd.sock" "$idir/fwd-ns.pid"
+    # `podman unshare --rootless-netns` re-execs, so $! is the host-side wrapper, NOT the in-netns
+    # socat that actually holds the socket. Recording the wrapper pid means fc_fwd_down kills only
+    # the wrapper and orphans the socat (reparented to init — it leaks). So let the inner process
+    # report its own pid and `exec socat` onto it (same trick as hr_park_in_netns), giving
+    # fc_fwd_down the pid of the process that holds the socket.
+    nohup podman unshare --rootless-netns \
+        sh -c "echo \$\$ > '$idir/fwd-ns.pid'; exec socat 'UNIX-LISTEN:$idir/fwd.sock,fork,reuseaddr' 'TCP:$ip:$INTERNAL_SSH_PORT'" \
+        > "$idir/fwd-ns.log" 2>&1 &
+    local i; for ((i=0;i<40;i++)); do [[ -S "$idir/fwd.sock" ]] && break; sleep 0.1; done
+    nohup socat "TCP-LISTEN:$port,bind=$CS_SANDBOX_SSH_BIND,fork,reuseaddr" "UNIX-CONNECT:$idir/fwd.sock" \
+        > "$idir/fwd-host.log" 2>&1 &
+    echo $! > "$idir/fwd-host.pid"
+}
+fc_fwd_down() {   # <idir>
+    local idir="$1" f
+    for f in fwd-host fwd-ns; do [[ -f "$idir/$f.pid" ]] && kill "$(cat "$idir/$f.pid")" 2>/dev/null || true; rm -f "$idir/$f.pid"; done
+    # belt-and-suspenders (mirrors fc_shutdown): reap any socat — ns- or host-side — still bound to
+    # this instance's socket, including one orphaned by an older build that tracked the wrapper pid.
+    pkill -f "$idir/fwd.sock" 2>/dev/null || true
+    rm -f "$idir/fwd.sock"
+}
+
+# --- host-route: optional host<->sandbox reachability by name (needs one-time sudo) --
+# OFF by default. The fabric is rootless: containers/VMs live in podman's rootless netns, so
+# their <prefix>.x addresses are NOT in the host's root netns — that's why everything else crosses
+# host->guest through the socat/unix-socket hop, and why bare `ping <name>` / `curl <name>:PORT`
+# from the HOST don't work (they do from a peer instance, which is inside the fabric).
+#
+# `host-route up` opts into real reachability in two one-time, sudo'd steps:
+#   1. a veth from the host root netns into podman's rootless netns (peer enslaved to podman's
+#      bridge), giving the host an address on the sandbox /24 — so it can route to instances AND
+#      reach the fabric's dnsmasq at <prefix>.53;
+#   2. point systemd-resolved at that dnsmasq for the `.cs.sandbox` domain (a routing-only domain
+#      on the veth link). The fabric dnsmasq already resolves instance names (VMs from its hostsdir,
+#      containers forwarded to aardvark), updated rootlessly as instances come and go.
+# Net effect: `ping <name>.cs.sandbox` / `curl http://<name>.cs.sandbox:PORT` resolve via DNS — no
+# /etc/hosts, and create/destroy need NO further sudo (only the initial wiring does). While it's on,
+# the fabric is pinned up (fc_net_gc skips it) so the veth + resolver survive instance churn.
+# Requires systemd-resolved (the only rootless way to scope a domain to one resolver); without it,
+# `host-route up` errors with guidance. Linux-only.
+HR_VETH_HOST="cs-sandbox"       # host-side veth end (root netns) — the host's visible link onto the sandbox net
+HR_VETH_NS="cs-sandbox-ns"      # peer end, pushed into podman's rootless netns + enslaved to the bridge
+HR_HOST_OCTET=251               # host address = <prefix>.251 (above the VM range .200-.250, below broadcast)
+HR_DNS_SUFFIX="${CS_SANDBOX_DNS_SUFFIX:-cs.sandbox}"   # DNS suffix the host resolves instances under
+HR_MARK="$FC_NET_DIR/host-route.on"
+HR_DNS_HOSTS="$FC_NET_DIR/hosts.d/_host-route"          # dnsmasq hostsdir file: FQDN entries the host resolves
+# Legacy markers from the pre-DNS (/etc/hosts) implementation — cleaned up on up/down for upgraders.
+HR_HOSTS_BEGIN="# >>> cs-sandbox host-route (managed) — do not edit >>>"
+HR_HOSTS_END="# <<< cs-sandbox host-route (managed) <<<"
+
+# Path at which podman pins its rootless netns (the pasta namespace that holds the bridge). The
+# inode behind it changes when the fabric is torn down/recreated, but the path is stable.
+hr_nspath() { echo "${XDG_RUNTIME_DIR:-/run/user/$USER_ID}/containers/networks/rootless-netns/rootless-netns"; }
+hr_active() { [[ -f "$HR_MARK" ]]; }
+
+# An instance's address on the sandbox subnet (engine-agnostic): firecracker records it in meta;
+# podman assigns it (read it back from the container's $NET attachment).
+hr_instance_ip() {  # <name>
+    local s="$1"
+    if [[ "$(instance_engine "$s")" == firecracker ]]; then
+        sed -n 's/^fcip=//p' "$INST_DIR/$s/meta" 2>/dev/null | head -1
+    else
+        podman inspect "$PREFIX$s" --format "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" 2>/dev/null
+    fi
+}
+
+# A host-visible PID that lives INSIDE podman's rootless netns. `podman unshare --rootless-netns`
+# is the only thing that enters that (user-namespace-owned) netns correctly, but it re-execs, so
+# its `$!` is the host-side wrapper, not the in-netns process — we must let the inner process
+# report its own pid. It `exec sleep`s so the pid stays alive as a stable handle for `ip link`.
+hr_park_in_netns() {   # echoes "<pid> <pidfile>"; caller kills the pid + rm's the file when done
+    local pf; pf="$(mktemp)"
+    ( podman unshare --rootless-netns sh -c "echo \$\$ > '$pf'; exec sleep 300" ) >/dev/null 2>&1 &
+    local i; for ((i=0;i<60;i++)); do [[ -s "$pf" ]] && break; sleep 0.1; done
+    local pid; pid="$(cat "$pf" 2>/dev/null)"
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null || { rm -f "$pf"; return 1; }
+    echo "$pid $pf"
+}
+
+# (Re)create the host<->rootless-netns veth and enslave the peer to podman's bridge. Idempotent:
+# a no-op (no sudo) when the link is already healthy; re-wires if the fabric was recreated under
+# it (host end persists, ns peer vanished). The rootless netns is owned by podman's USER namespace,
+# so we can't `nsenter` into it — instead root creates the pair with the peer dropped straight into
+# the netns by pid (crosses the userns boundary fine for real root), and the peer is enslaved/raised
+# from the USER side via `podman unshare --rootless-netns` (the same primitive that makes the taps).
+hr_ensure_veth() {
+    local br prefix nspath haddr
+    br="$(fc_net_bridge)"; prefix="$(fc_net_prefix)"; nspath="$(hr_nspath)"
+    [[ -n "$br" && -n "$prefix" ]] || die "host-route: network fabric is not up (create or start an instance first)"
+    [[ -e "$nspath" ]] || die "host-route: rootless netns not found at $nspath (is the fabric up?)"
+    haddr="$prefix.$HR_HOST_OCTET"
+    # Healthy already? host end carries the address AND the ns peer is still present on the bridge.
+    if ip -br addr show "$HR_VETH_HOST" 2>/dev/null | grep -q "[[:space:]]$haddr/" \
+       && fc_pnet ip link show "$HR_VETH_NS" >/dev/null 2>&1; then
+        return 0
+    fi
+    info "host-route: wiring host <-> sandbox network ($haddr on $br) — needs sudo"
+    fc_pnet ip link del "$HR_VETH_NS" 2>/dev/null || true   # drop a stale peer from a prior fabric (user side)
+    local parked pid pf
+    parked="$(hr_park_in_netns)" || die "host-route: could not obtain a PID inside the rootless netns"
+    pid="${parked%% *}"; pf="${parked#* }"
+    local rc=0
+    sudo bash -s -- "$HR_VETH_HOST" "$HR_VETH_NS" "$pid" "$haddr" <<'ROOT' || rc=$?
+set -euo pipefail
+HVE="$1"; NVE="$2"; NSPID="$3"; HADDR="$4"
+ip link del "$HVE" 2>/dev/null || true                      # drop a dangling host end from a prior fabric
+ip link add "$HVE" type veth peer name "$NVE" netns "$NSPID"  # peer lands directly in the rootless netns
+ip addr add "$HADDR/24" dev "$HVE"                          # connected /24 route appears automatically
+ip link set "$HVE" up
+ROOT
+    if [[ $rc -eq 0 ]]; then
+        fc_pnet ip link set "$HR_VETH_NS" master "$br" || rc=$?     # enslave to the bridge (user owns the netns)
+        [[ $rc -eq 0 ]] && { fc_pnet ip link set "$HR_VETH_NS" up || rc=$?; }
+    fi
+    kill "$pid" 2>/dev/null || true; rm -f "$pf"   # the peer stays; the netns is pinned by the bind mount
+    return $rc
+}
+
+hr_teardown_veth() {
+    local present=0
+    if ip link show "$HR_VETH_HOST" >/dev/null 2>&1; then present=1; fi
+    if fc_pnet ip link show "$HR_VETH_NS" >/dev/null 2>&1; then present=1; fi
+    [[ $present -eq 1 ]] || return 0
+    info "host-route: removing the host <-> sandbox link — needs sudo"
+    sudo ip link del "$HR_VETH_HOST" 2>/dev/null || true   # deleting one end takes its peer with it
+    fc_pnet ip link del "$HR_VETH_NS" 2>/dev/null || true  # belt-and-suspenders if the peer outlived it
+    return 0
+}
+
+# systemd-resolved is the only rootless way to scope a domain to a specific resolver (per-link DNS
+# + a routing domain). Required for host-route's DNS mode.
+hr_use_resolved() { command -v resolvectl >/dev/null 2>&1 && systemctl is-active --quiet systemd-resolved 2>/dev/null; }
+
+# Publish every instance's `<name>.cs.sandbox -> ip` into the fabric dnsmasq's hostsdir, then reload.
+# ROOTLESS (the hostsdir is user-owned) — this is what makes create/destroy need no sudo. We write
+# the FQDN explicitly so dnsmasq answers it for the host; instance<->instance keeps using the bare
+# names fc_net_register already serves (VMs) or aardvark (containers).
+hr_write_dns() {
+    mkdir -p "$FC_NET_DIR/hosts.d"
+    local m s ip tmp="$HR_DNS_HOSTS.tmp"; : > "$tmp"
+    for m in "$INST_DIR"/*/meta; do
+        [[ -f "$m" ]] || continue
+        s="$(sed -n 's/^name=//p' "$m" | head -1)"; [[ -n "$s" ]] || continue
+        ip="$(hr_instance_ip "$s")"; [[ -n "$ip" ]] || continue
+        printf '%s %s.%s\n' "$ip" "$s" "$HR_DNS_SUFFIX" >> "$tmp"
+    done
+    mv -f "$tmp" "$HR_DNS_HOSTS"
+    fc_net_dnsmasq_reload
+}
+hr_clear_dns() { rm -f "$HR_DNS_HOSTS"; fc_net_dnsmasq_reload; }
+
+# One-time (sudo): point systemd-resolved at the fabric dnsmasq for `.cs.sandbox`, scoped to the
+# veth link via a routing-only domain (`~suffix`) so only sandbox names go there.
+hr_resolver_up() {   # <dns_ip>
+    sudo resolvectl dns "$HR_VETH_HOST" "$1" \
+        && sudo resolvectl domain "$HR_VETH_HOST" "~$HR_DNS_SUFFIX"
+}
+hr_resolver_down() { command -v resolvectl >/dev/null 2>&1 && sudo resolvectl revert "$HR_VETH_HOST" 2>/dev/null || true; }
+
+hr_clear_hosts() {
+    sudo bash -s -- "$HR_HOSTS_BEGIN" "$HR_HOSTS_END" <<'ROOT'
+set -euo pipefail
+B="$1"; E="$2"; F=/etc/hosts
+tmp="$(mktemp)"
+awk -v b="$B" -v e="$E" '$0==b{skip=1} skip&&$0==e{skip=0;next} !skip{print}' "$F" > "$tmp"
+cat "$tmp" > "$F"; rm -f "$tmp"
+ROOT
+}
+
+# Lifecycle hook: when host-route is on, republish the instance->name DNS as instances come and go.
+# Fully ROOTLESS (writes the user-owned dnsmasq hostsdir) — the fabric stays pinned while host-route
+# is on, so the veth + resolver wiring persist and no sudo is needed in the create/exec/rm path.
+hr_refresh_if_active() {
+    hr_active || return 0
+    hr_write_dns >/dev/null 2>&1 || true
+}
+
+cmd_host_route() {
+    is_macos && die "host-route is Linux-only (the rootless network fabric is Linux/firecracker)"
+    local sub="${1:-status}"; shift || true
+    case "$sub" in
+        up)
+            hr_use_resolved || die "host-route: requires systemd-resolved (resolvectl) to route .$HR_DNS_SUFFIX to the fabric DNS rootlessly. Enable it, or reach instances by IP (cs-sandbox host-route status shows the addresses)."
+            fc_net_up || die "host-route: could not bring up the network fabric"
+            sudo -v || die "host-route: needs sudo to wire the host into the sandbox network"   # cache creds: one prompt
+            hr_ensure_veth || die "host-route: failed to wire the host into the sandbox network (see error above)"
+            hr_resolver_up "$(fc_dns_ip)" || die "host-route: failed to point systemd-resolved at the fabric DNS ($(fc_dns_ip))"
+            hr_clear_hosts 2>/dev/null || true   # drop any stale block left by the old /etc/hosts implementation
+            hr_write_dns                          # publish current instance names (rootless)
+            : > "$HR_MARK"
+            local prefix; prefix="$(fc_net_prefix)"
+            echo "host-route: UP — reach instances from the host by name (any protocol) under .$HR_DNS_SUFFIX:"
+            echo "    ping <name>.$HR_DNS_SUFFIX        curl http://<name>.$HR_DNS_SUFFIX:8000"
+            echo "  Names auto-update as instances come and go — no further sudo. (ssh <name> still works as before.)"
+            echo "  Host is on the sandbox network at $prefix.$HR_HOST_OCTET; DNS via $(fc_dns_ip)."
+            ;;
+        down)
+            sudo -v 2>/dev/null || true
+            hr_resolver_down                      # revert the resolved per-link config (sudo)
+            hr_teardown_veth                      # remove the veth (sudo)
+            hr_clear_dns                          # unpublish names (rootless)
+            hr_clear_hosts 2>/dev/null || true    # legacy /etc/hosts cleanup
+            rm -f "$HR_MARK"
+            fc_net_gc                             # marker cleared: let the fabric be reclaimed if idle
+            echo "host-route: DOWN — reverted the resolver, removed the veth and the published names."
+            ;;
+        refresh)
+            hr_active || die "host-route is not up (run: cs-sandbox host-route up)"
+            hr_ensure_veth || die "host-route: failed to (re)wire the host into the sandbox network"
+            hr_use_resolved && { hr_resolver_up "$(fc_dns_ip)" || die "host-route: failed to re-assert the resolver"; }
+            hr_write_dns
+            echo "host-route: refreshed the veth, resolver, and published names."
+            ;;
+        status)
+            if hr_active; then
+                local prefix; prefix="$(fc_net_prefix)"
+                echo "host-route: UP (host ${prefix:-?}.$HR_HOST_OCTET on $(fc_net_bridge) via $HR_VETH_HOST; *.$HR_DNS_SUFFIX -> $(fc_dns_ip))"
+                ip -br addr show "$HR_VETH_HOST" 2>/dev/null | sed 's/^/  link: /'
+                command -v resolvectl >/dev/null 2>&1 && resolvectl domain "$HR_VETH_HOST" 2>/dev/null | sed 's/^/  resolved: /'
+                echo "  published names:"
+                sed 's/^/    /' "$HR_DNS_HOSTS" 2>/dev/null || echo "    (none)"
+            else
+                echo "host-route: down  (enable with: cs-sandbox host-route up)"
+            fi
+            ;;
+        *) die "usage: cs-sandbox host-route up|down|refresh|status" ;;
+    esac
+}
+
+# Allocate the next free VM address from the high end of podman's /24, avoiding instance metas
+# (podman hands containers low addresses, so .200-.250 won't clash).
+fc_net_alloc_ip() {
+    local prefix used m ip n
+    prefix="$(fc_net_prefix)"; [[ -n "$prefix" ]] || die "fc: cannot read podman network '$NET' subnet"
+    used="$(for m in "$INST_DIR"/*/meta; do [[ -f "$m" ]] && sed -n 's/^fcip=//p' "$m"; done)"
+    for ((n=FC_VM_HOST_MIN; n<=FC_VM_HOST_MAX; n++)); do
+        ip="$prefix.$n"
+        grep -qxF "$ip" <<<"$used" || { echo "$ip"; return 0; }
+    done
+    die "fc: no free VM address in $prefix.$FC_VM_HOST_MIN-$FC_VM_HOST_MAX"
+}
+
+fc_tap_name() { echo "fdt${1##*.}"; }     # tap name from the IP's last octet (<=15 chars)
+fc_guest_mac() { printf '02:fc:0a:59:00:%02x' "${1##*.}"; }   # stable MAC from last octet
+
+# Create (idempotently) the VM's tap on podman's bridge, inside podman's rootless netns.
+fc_tap_up() {
+    local tap="$1" br; br="$(fc_net_bridge)"
+    [[ -n "$br" ]] || die "fc: cannot read podman network '$NET' bridge interface"
+    fc_pnet bash -c "ip link show $tap >/dev/null 2>&1 || ip tuntap add $tap mode tap; \
+        ip link set $tap master $br; ip link set $tap up"
+}
+fc_tap_del() { local tap="$1"; fc_pnet ip link del "$tap" 2>/dev/null || true; }
+
+# Launch firecracker for an instance inside podman's rootless netns (used by create+start).
+fc_launch() {
+    local s="$1"; local idir="$INST_DIR/$s"
+    local ip tap; ip="$(sed -n 's/^fcip=//p' "$idir/meta" | head -1)"; tap="$(fc_tap_name "$ip")"
+    local port; port="$(sed -n 's/^port=//p' "$idir/meta" | head -1)"
+    if [[ -z "$port" ]]; then port="$(alloc_port "$PORT_SPLIT" "$PORT_MAX" vm)"; echo "port=$port" >> "$idir/meta"; fi
+    rm -f "$idir/vm.vsock"*
+    fc_net_up
+    fc_tap_up "$tap"
+    fc_fwd_up "$idir" "$port" "$ip"   # host $CS_SANDBOX_SSH_BIND:$port -> this VM's guest sshd
+    # Firecracker runs INSIDE podman's rootless netns (it has /dev/kvm + the tap on podman1).
+    nohup podman unshare --rootless-netns \
+        "$FC_CACHE/bin/firecracker" --no-api --config-file "$idir/run.json" \
+        > "$idir/serial.log" 2>&1 &
+    echo $! > "$idir/fc.pid"
+}
+
+# Fail early (with an actionable message) if the host is missing a tool the firecracker
+# engine needs, instead of dying mid-build with a raw "command not found". The firecracker
+# binary itself is auto-downloaded; these are the host packages it shells out to.
+fc_preflight() {
+    [[ -e /dev/kvm && -w /dev/kvm ]] || die "fc: /dev/kvm not available/writable — the firecracker engine needs a Linux host with KVM (on Debian/Ubuntu: 'sudo usermod -aG kvm \$USER', re-login)"
+    # tool:fedora-pkg:debian-pkg — pick the package name for the host's package manager
+    local mgr="dnf install"; local apt=""
+    if ! command -v dnf >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then mgr="apt install"; apt=1; fi
+    local t miss=""
+    # dracut + a readable host kernel are only needed in host-kernel mode; the default
+    # 'fedora' mode builds the kernel/initramfs inside a container.
+    # VMs run in podman's own rootless netns. The engine needs the dnsmasq + socat forwarder,
+    # the ext4/seed build tools, and podman's rootless deps (pasta uplink, subuid).
+    local tools="pasta:passt:passt dnsmasq:dnsmasq:dnsmasq-base \
+             fakeroot:fakeroot:fakeroot mke2fs:e2fsprogs:e2fsprogs \
+             e2fsck:e2fsprogs:e2fsprogs socat:socat:socat python3:python3:python3 \
+             newuidmap:shadow-utils:uidmap curl:curl:curl git:git:git"
+    [[ "$FC_KERNEL" == host ]] && tools="$tools dracut:dracut:dracut-core"
+    for t in $tools; do
+        command -v "${t%%:*}" >/dev/null 2>&1 && continue
+        local rest="${t#*:}"
+        [[ -n "$apt" ]] && miss+=" ${rest#*:}" || miss+=" ${rest%%:*}"
+    done
+    if [[ -n "$miss" ]]; then
+        local pkgs; pkgs="$(printf '%s\n' $miss | sort -u | tr '\n' ' ')"
+        die "fc: missing host prerequisites — install with:  sudo $mgr ${pkgs% }"
+    fi
+}
+
+fc_ensure_artifacts() {
+    mkdir -p "$FC_CACHE/bin"
+    local fc="$FC_CACHE/bin/firecracker"
+    if [[ ! -x "$fc" ]]; then
+        info "fc: downloading firecracker $FC_VERSION…"
+        local arch
+        case "$(uname -m)" in
+            x86_64|amd64)  arch=x86_64 ;;
+            aarch64|arm64) arch=aarch64 ;;
+            *) die "fc: unsupported architecture $(uname -m)" ;;
+        esac
+        local base="https://github.com/firecracker-microvm/firecracker/releases/download/$FC_VERSION"
+        local tgz="firecracker-$FC_VERSION-$arch.tgz"; local dl="$FC_CACHE/$tgz"
+        curl -fsSL -o "$dl" "$base/$tgz" || die "fc: failed to download $tgz"
+        # Verify against the release's published checksum ("<sha256>  <file>.tgz").
+        local want got
+        want=$(curl -fsSL "$base/$tgz.sha256.txt" | awk 'NF{print $1; exit}')
+        got=$(sha256sum "$dl" | cut -d' ' -f1)
+        [[ -n "$want" && "$want" == "$got" ]] || { rm -f "$dl"; die "fc: firecracker $FC_VERSION checksum mismatch (want=${want:-<none>} got=$got)"; }
+        tar -xzf "$dl" -C "$FC_CACHE"
+        cp "$FC_CACHE"/release-*/firecracker-*-"$arch" "$fc"; chmod +x "$fc"
+        rm -rf "$FC_CACHE"/release-* "$dl"
+    fi
+    # --- guest kernel + initramfs (+ modules, in fedora mode) ---
+    # Mode is recorded in kernel-mode so switching CS_SANDBOX_FC_KERNEL rebuilds the artifacts.
+    ensure_image
+    local kmode; kmode="$(cat "$FC_CACHE/kernel-mode" 2>/dev/null || true)"
+    local mod_tar=""    # non-empty => take guest /lib/modules from this tar (fedora mode)
+    if [[ "$FC_KERNEL" == host ]]; then
+        FC_KVER="$(uname -r)"
+        if [[ "$kmode" != host || ! -f "$FC_CACHE/vmlinux.elf" || ! -f "$FC_CACHE/initrd.img" \
+              || "$(cat "$FC_CACHE/kver" 2>/dev/null)" != "$FC_KVER" ]]; then
+            rm -f "$FC_CACHE/vmlinux.elf" "$FC_CACHE/initrd.img" "$FC_CACHE/modules.tar"
+            info "fc: extracting host vmlinux ($FC_KVER)…"
+            [[ -r "/boot/vmlinuz-$FC_KVER" ]] || die "fc: /boot/vmlinuz-$FC_KVER not readable (chmod +r it, or use the default CS_SANDBOX_FC_KERNEL=fedora)"
+            [[ -f "$FC_CACHE/extract-vmlinux" ]] || curl -fsSL "https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-vmlinux" -o "$FC_CACHE/extract-vmlinux"
+            chmod +x "$FC_CACHE/extract-vmlinux"
+            "$FC_CACHE/extract-vmlinux" "/boot/vmlinuz-$FC_KVER" > "$FC_CACHE/vmlinux.elf"
+            info "fc: building initramfs (virtio_mmio)…"
+            dracut --force --no-hostonly --no-hostonly-cmdline \
+              --omit "iscsi nfs nbd multipath lvm mdraid crypt dmraid network network-manager network-legacy ifcfg fcoe" \
+              --add-drivers "virtio virtio_ring virtio_pci virtio_mmio ext4" \
+              --kver "$FC_KVER" "$FC_CACHE/initrd.img" >/dev/null 2>&1 || true
+            [[ -f "$FC_CACHE/initrd.img" ]] || die "fc: dracut failed to build initramfs"
+            echo "$FC_KVER" > "$FC_CACHE/kver"; echo host > "$FC_CACHE/kernel-mode"
+        fi
+    else
+        # Rebuild when: mode flipped, any artifact missing, OR the pinned kernel NVR changed
+        # (kver-pin records what we last built against, so bumping CS_SANDBOX_FC_KVER rebuilds).
+        local kpin; kpin="$(cat "$FC_CACHE/kver-pin" 2>/dev/null || true)"
+        if [[ "$kmode" != fedora || ! -f "$FC_CACHE/vmlinux.elf" || ! -f "$FC_CACHE/initrd.img" \
+              || ! -f "$FC_CACHE/modules.tar" || ! -f "$FC_CACHE/kver" || "$kpin" != "$FC_KVER_PIN" ]]; then
+            rm -f "$FC_CACHE/vmlinux.elf" "$FC_CACHE/initrd.img" "$FC_CACHE/modules.tar" "$FC_CACHE/kver"
+            fc_build_fedora_kernel
+            echo fedora > "$FC_CACHE/kernel-mode"; echo "$FC_KVER_PIN" > "$FC_CACHE/kver-pin"
+        fi
+        FC_KVER="$(cat "$FC_CACHE/kver")"
+        mod_tar="$FC_CACHE/modules.tar"
+    fi
+
+    # base rootfs depends on the image id + kernel version + kernel mode + the guest init
+    local imgid inithash cur
+    imgid="$(podman image inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null)"
+    inithash="$(sha256sum "$FC_DIR/init" 2>/dev/null | cut -c1-12)"
+    cur="$imgid|$FC_KVER|$FC_KERNEL|$inithash"
+    if [[ ! -f "$FC_CACHE/base-rootfs.ext4" || "$(cat "$FC_CACHE/base-rootfs.stamp" 2>/dev/null)" != "$cur" ]]; then
+        info "fc: building base rootfs from $IMAGE + guest modules ($FC_KERNEL kernel $FC_KVER; several min)…"
+        rm -f "$FC_CACHE/base-rootfs.ext4"
+        local tmp="$FC_CACHE/build"
+        podman rm -f fcbuild >/dev/null 2>&1 || true
+        podman create --name fcbuild "$IMAGE" sleep infinity >/dev/null
+        podman export fcbuild -o "$FC_CACHE/rootfs.tar"; podman rm -f fcbuild >/dev/null
+        rm -rf "$tmp"; mkdir -p "$tmp"
+        truncate -s "${FC_ROOTFS_GB}G" "$FC_CACHE/base-rootfs.ext4"
+        FC_TMP="$tmp" FC_CACHE="$FC_CACHE" FC_KVER="$FC_KVER" FC_DIR="$FC_DIR" FC_MOD_TAR="$mod_tar" fakeroot -- bash -c '
+          set -e
+          tar -C "$FC_TMP" -xpf "$FC_CACHE/rootfs.tar"
+          mkdir -p "$FC_TMP/lib/modules"
+          if [ -n "$FC_MOD_TAR" ]; then tar -C "$FC_TMP/lib/modules" -xf "$FC_MOD_TAR"
+          else cp -a "/lib/modules/$FC_KVER" "$FC_TMP/lib/modules/"; fi
+          install -m0755 "$FC_DIR/init" "$FC_TMP/fc-init"
+          find "$FC_TMP" ! -readable -exec chmod u+rX {} + 2>/dev/null || true
+          mke2fs -F -q -t ext4 -d "$FC_TMP" "$FC_CACHE/base-rootfs.ext4"'
+        rm -rf "$tmp" "$FC_CACHE/rootfs.tar"
+        echo "$cur" > "$FC_CACHE/base-rootfs.stamp"
+    fi
+}
+
+# Build a Fedora guest kernel (vmlinux.elf + initrd.img + modules.tar + kver) in a throwaway
+# container from the image, so the microVM runs a consistent Fedora kernel on ANY host —
+# decoupled from the host kernel. One-time per cache; downloads ~100 MB of kernel rpms.
+fc_build_fedora_kernel() {
+    # PINNED kernel-core NVR (FC_KVER_PIN) for reproducibility; empty => latest.
+    local kpkg="kernel-core"; [[ -n "$FC_KVER_PIN" ]] && kpkg="kernel-core-$FC_KVER_PIN"
+    info "fc: building Fedora guest kernel from $IMAGE (dnf $kpkg + dracut; one-time, ~100 MB)…"
+    podman rm -f fckbuild >/dev/null 2>&1 || true
+    # --user 0:0 --entrypoint bash bypasses the image entrypoint (which would drop to the
+    # dev user) so dnf runs as root.
+    podman run --name fckbuild --user 0:0 -e "FC_KPKG=$kpkg" --entrypoint /bin/bash "$IMAGE" -c '
+        set -e
+        dnf install -y --setopt=install_weak_deps=False "$FC_KPKG" dracut zstd xz gzip binutils file >/dev/null \
+          || { echo "fc: dnf could not install $FC_KPKG (pinned kernel no longer in the Fedora repos? bump CS_SANDBOX_FC_KVER)" >&2; exit 1; }
+        KVER=$(ls -1 /lib/modules | head -1)
+        VMZ=/lib/modules/$KVER/vmlinuz; [ -f "$VMZ" ] || VMZ=/boot/vmlinuz-$KVER
+        curl -fsSL https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-vmlinux -o /tmp/ev; chmod +x /tmp/ev
+        mkdir -p /artifacts
+        /tmp/ev "$VMZ" > /artifacts/vmlinux.elf
+        dracut --force --no-hostonly --no-hostonly-cmdline \
+          --omit "iscsi nfs nbd multipath lvm mdraid crypt dmraid network network-manager network-legacy ifcfg fcoe" \
+          --add-drivers "virtio virtio_ring virtio_pci virtio_mmio ext4" \
+          --kver "$KVER" /artifacts/initrd.img
+        tar -C /lib/modules -cf /artifacts/modules.tar "$KVER"
+        echo "$KVER" > /artifacts/kver
+    ' >/dev/null 2>&1 || { podman rm -f fckbuild >/dev/null 2>&1 || true; die "fc: Fedora kernel build failed (run without piping to see dnf/dracut output)"; }
+    podman cp fckbuild:/artifacts/. "$FC_CACHE/" >/dev/null 2>&1
+    podman rm -f fckbuild >/dev/null 2>&1 || true
+    [[ -s "$FC_CACHE/vmlinux.elf" && -s "$FC_CACHE/initrd.img" && -s "$FC_CACHE/modules.tar" && -s "$FC_CACHE/kver" ]] \
+        || die "fc: Fedora kernel build produced no artifacts"
+}
+
+# Graceful microVM shutdown: sync + reboot inside the guest (firecracker exits on the
+# guest reboot — far cleaner for the writable rootfs than a raw kill), then kill as a
+# fallback. Used by stop / rm / destroy.
+fc_shutdown() {
+    local short="$1"; local idir="$INST_DIR/$short"
+    [[ -f "$idir/fc.pid" ]] || return 0
+    local pid; pid="$(cat "$idir/fc.pid")"
+    kill -0 "$pid" 2>/dev/null || { rm -f "$idir/fc.pid"; return 0; }
+    timeout 8 ssh -o BatchMode=yes -o ConnectTimeout=5 "$PREFIX$short" \
+        'sync; sudo sh -c "sync; reboot -f"' >/dev/null 2>&1 || true
+    local i
+    for ((i=0; i<16; i++)); do kill -0 "$pid" 2>/dev/null || { rm -f "$idir/fc.pid"; return 0; }; sleep 0.5; done
+    kill "$pid" 2>/dev/null || true
+    for ((i=0; i<8; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    kill -9 "$pid" 2>/dev/null || true
+    # belt-and-suspenders: the tracked pid is the 'podman unshare' parent; make sure no
+    # firecracker for this instance survives detached.
+    pkill -9 -f "config-file $idir/run.json" 2>/dev/null || true
+    rm -f "$idir/fc.pid"
+}
+
+fc_sync_ssh_config() {
+    mkdir -p "$SSH_CFG_DIR"; chmod 700 "$HOME/.ssh" "$SSH_CFG_DIR" 2>/dev/null || true
+    local out="$SSH_CFG_DIR/cs-sandbox-fc" m s
+    {
+        echo "# Managed by cs-sandbox (firecracker engine) — do not edit."
+        local id_block; id_block="$(host_identity_block)"
+        local vmport
+        for m in "$INST_DIR"/*/meta; do
+            [[ -f "$m" ]] || continue
+            grep -q '^engine=firecracker' "$m" || continue
+            s="$(sed -n 's/^name=//p' "$m")"; [[ -n "$s" ]] || continue
+            vmport="$(sed -n 's/^port=//p' "$m" | head -1)"; [[ -n "$vmport" ]] || continue
+            # Same block shape as the podman engine: a host loopback port (socat-bridged into
+            # podman's netns -> guest sshd). HostName 127.0.0.1 works regardless of $CS_SANDBOX_SSH_BIND (even
+            # when exposed on 0.0.0.0). Manual fallback if the fabric path is ever down:
+            #   ssh -o ProxyCommand="$FC_DIR/vsock-connect $INST_DIR/<name>/vm.vsock 22" $PREFIX<name>
+            cat <<EOF
+
+Host $PREFIX$s $PREFIX$s.$HR_DNS_SUFFIX
+    HostName 127.0.0.1
+    Port $vmport
+    User $USER_NAME
+    HostKeyAlias $PREFIX$s${id_block:+
+$id_block}
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile ~/.ssh/known_hosts.cs-sandbox
+EOF
+        done
+    } > "$out"; chmod 600 "$out"
+    local inc="Include ~/.ssh/config.d/cs-sandbox-fc"
+    touch "$HOME/.ssh/config"; chmod 600 "$HOME/.ssh/config"
+    grep -qxF "$inc" "$HOME/.ssh/config" || { printf '%s\n\n%s\n' "$inc" "$(cat "$HOME/.ssh/config")" > "$HOME/.ssh/config.tmp"; mv "$HOME/.ssh/config.tmp" "$HOME/.ssh/config"; }
+}
+
+fc_destroy() {
+    local short="$1"; local idir="$INST_DIR/$short"
+    fc_shutdown "$short"
+    # detach from the shared network: tear down the host->VM forwarder, tap, and name registration
+    local ip; ip="$(sed -n 's/^fcip=//p' "$idir/meta" 2>/dev/null | head -1)"
+    fc_fwd_down "$idir"
+    [[ -n "$ip" ]] && fc_keepalive_running && fc_tap_del "$(fc_tap_name "$ip")"
+    fc_net_unregister "$short"
+    rm -f "$idir"/rootfs.ext4 "$idir"/seed.ext4 "$idir"/repo*.ext4 "$idir"/snap*.ext4 "$idir"/store*.ext4 "$idir"/vm.vsock* \
+          "$idir"/run.json "$idir"/serial.log "$idir"/fc.pid 2>/dev/null || true
+    fc_net_gc
+}
+
+# Size an ext4 disk (MiB) to a directory's content plus margin/overhead.
+fc_disk_mib() { local kb; kb="$(du -sk "$1" 2>/dev/null | cut -f1)"; echo $(( kb/1024 + kb/4096 + ${2:-128} )); }
+
+# Content-addressed cache of --repo objects disks. A bare clone's contents are fully
+# determined by the source repo's ref tips + HEAD, so two VMs created from the same repo at
+# the same state get byte-for-byte the same bare objects. We build the ext4 once, key it by
+# (source identity, ref/HEAD hash), and reflink-copy it per instance — turning a full
+# `git clone --bare` + mke2fs into a near-free CoW copy whenever the repo hasn't changed.
+fc_repo_key() {   # <src> -> 40-hex hash of the source repo's clonable state ("" on failure)
+    { git -C "$1" for-each-ref --format='%(objectname) %(refname)' \
+        && echo "HEAD:$(git -C "$1" symbolic-ref -q HEAD || git -C "$1" rev-parse HEAD)"
+    } 2>/dev/null | sha256sum | cut -c1-40
+}
+fc_repo_disk() {  # <src> <label> -> echoes path to a cached bare-repo ext4, building it on a miss
+    local src="$1" label="$2" key srcid cache tg td
+    key="$(fc_repo_key "$src")"; [[ ${#key} -eq 40 ]] || return 1
+    srcid="$(printf '%s' "$src" | sha256sum | cut -c1-12)"
+    mkdir -p "$FC_REPO_CACHE"
+    cache="$FC_REPO_CACHE/$srcid-$key.ext4"
+    if [[ -f "$cache" ]]; then
+        touch -c "$cache" 2>/dev/null   # bump mtime so an actively-reused disk survives TTL GC;
+        if [[ -f "$cache" ]]; then      # -c never creates, so a concurrent GC delete here just
+            info "fc: repo disk ($label): reusing cached build $key"; echo "$cache"; return 0
+        fi                              # falls through to a rebuild instead of an empty disk
+    fi
+    # Miss: build once into a private temp, then atomically publish (parallel creates of the
+    # same key race harmlessly — they produce identical bytes and last mv wins).
+    info "fc: repo disk ($label): building (state $key)…"
+    tg="$cache.git.$$"; td="$cache.tmp.$$"; rm -rf "$tg" "$td"
+    git clone -q --bare "$src" "$tg" || { rm -rf "$tg" "$td"; return 1; }
+    truncate -s "$(fc_disk_mib "$tg" 96)M" "$td" || { rm -rf "$tg" "$td"; return 1; }
+    fakeroot -- mke2fs -F -q -t ext4 -d "$tg" "$td" || { rm -rf "$tg" "$td"; return 1; }
+    rm -rf "$tg"; mv -f "$td" "$cache"; echo "$cache"
+}
+fc_repo_cache_gc() {   # drop cached disks (and orphaned build temps) not touched within the TTL
+    [[ -d "$FC_REPO_CACHE" && "$FC_REPO_CACHE_TTL_DAYS" -gt 0 ]] || return 0
+    find "$FC_REPO_CACHE" -maxdepth 1 -name '*.ext4' -mtime +"$FC_REPO_CACHE_TTL_DAYS" -delete 2>/dev/null || true
+    find "$FC_REPO_CACHE" -maxdepth 1 -name '*.ext4.*' -mtime +1 -delete 2>/dev/null || true
+}
+
+# --- --image-store on firecracker: ship a shared podman image store into the microVM as a
+# RO ext4 disk the guest's (real-root) podman uses as an `additionalimagestores`. The store
+# is built and read by the keep-id nested engine, so on the host volume image-uid-0 lives
+# under the shared keep-id root; the same keep-id container that built it sees those files
+# back as uid 0. We `tar` the store from inside that container (capturing the *logical* uids,
+# image-root = 0) and rebuild it as ext4 under host fakeroot — so in the VM, where podman is
+# real root, image-root is a real 0 and setuid bins / file ownership are correct. (The podman
+# engine instead bind-mounts the keep-id volume directly into its keep-id container.)
+fc_imagestore_key() {  # <store-name> -> 40-hex hash of the store's image set ("" on failure)
+    # Hash the store's image/layer metadata (read from inside the keep-id container that can
+    # see it) rather than shelling out to `podman --root` — the store's libpod db pins the
+    # path it was built at (/seed), so a `podman --root /store` read errors on a path mismatch.
+    local vol="cs-sandbox-shared-$1"
+    podman volume exists "$vol" 2>/dev/null || return 1
+    podman run --rm --userns=keep-id --user 0:0 --security-opt label=disable -v "$vol:/store:ro" \
+        --entrypoint sh "$IMAGE" -c 'cat /store/overlay-images/images.json /store/overlay-layers/layers.json 2>/dev/null' \
+        2>/dev/null | sha256sum | cut -c1-40
+}
+fc_imagestore_disk() {  # <store-name> -> echoes path to a cached store ext4, building it on a miss
+    # NB: separate declarations — `local name="$1" vol="…$name"` would expand $name from the
+    # caller's scope (cmd_create's `name` = the instance name) before this local takes effect.
+    local name="$1"; local vol="cs-sandbox-shared-$name" key cache ttar tdir td szk mib
+    podman volume exists "$vol" 2>/dev/null || return 1
+    key="$(fc_imagestore_key "$name")"; [[ ${#key} -eq 40 ]] || return 1
+    mkdir -p "$FC_STORE_CACHE"
+    cache="$FC_STORE_CACHE/$name-$key.ext4"
+    if [[ -f "$cache" ]]; then
+        touch -c "$cache" 2>/dev/null
+        [[ -f "$cache" ]] && { info "fc: image-store disk ($name): reusing cached build $key"; echo "$cache"; return 0; }
+    fi
+    info "fc: image-store disk ($name): building (state $key)…"
+    ttar="$cache.tar.$$"; tdir="$cache.d.$$"; td="$cache.tmp.$$"; rm -rf "$ttar" "$tdir" "$td"
+    # tar the store from inside the keep-id container (image-root presents as uid 0 there)…
+    podman run --rm --userns=keep-id --user 0:0 --security-opt label=disable -v "$vol:/store:ro" \
+        --entrypoint tar "$IMAGE" -C /store -cf - . > "$ttar" 2>/dev/null \
+        || { rm -f "$ttar"; return 1; }
+    # …then rebuild as ext4 under host fakeroot, preserving that logical (root=0) ownership.
+    szk="$(du -sk "$ttar" | cut -f1)"; mib=$(( szk/1024 + szk/4096 + 128 ))
+    truncate -s "${mib}M" "$td" || { rm -rf "$ttar" "$td"; return 1; }
+    fakeroot -- bash -c "mkdir -p '$tdir' && tar -C '$tdir' -xf '$ttar' && mke2fs -F -q -t ext4 -d '$tdir' '$td'" \
+        || { rm -rf "$ttar" "$tdir" "$td"; return 1; }
+    rm -rf "$ttar" "$tdir"; mv -f "$td" "$cache"; echo "$cache"
+}
+fc_store_cache_gc() {  # drop cached store disks (and orphaned build temps) not touched within the repo TTL
+    [[ -d "$FC_STORE_CACHE" && "$FC_REPO_CACHE_TTL_DAYS" -gt 0 ]] || return 0
+    find "$FC_STORE_CACHE" -maxdepth 1 -name '*.ext4' -mtime +"$FC_REPO_CACHE_TTL_DAYS" -delete 2>/dev/null || true
+    find "$FC_STORE_CACHE" -maxdepth 1 -name '*.ext4.*' -mtime +1 -delete 2>/dev/null || true
+}
+
+# Reap a half-built microVM if create fails after the ip/port has been claimed in meta, so a
+# crash/error between the claim and a successful boot doesn't leak the reserved address+port
+# (and the instance dir). Armed by an EXIT trap once the claim is written; _FC_PENDING holds
+# the instance dir to reap, and is cleared to "" the moment create succeeds. Guarded on a full
+# path (never "$INST_DIR/" with an empty name), so a no-op fire can't touch the wrong thing.
+_FC_PENDING=""
+_fc_create_cleanup() {
+    [[ -n "$_FC_PENDING" ]] || return 0
+    fc_destroy "$(basename "$_FC_PENDING")" >/dev/null 2>&1 || true
+    rm -rf "$_FC_PENDING" 2>/dev/null || true
+    fc_sync_ssh_config >/dev/null 2>&1 || true
+}
+
+# fc_cmd_create <short> <type> <port> <repoclones-TSV> <cpus> <mem-mib> <yolo> <snaps-TSV>
+fc_cmd_create() {
+    local short="$1" type="$2" port="$3" repoclones="$4" cpus="$5" mem="$6" yolo="${7:-0}" snaps="${8:-}" imagestores="${9:-}" solo="${10:-0}" injected_env="${11:-}"
+    local idir="$INST_DIR/$short"; mkdir -p "$idir"
+    fc_preflight
+
+    # Serialize allocation + claim + fabric bring-up against parallel creates. fc_net_alloc_ip
+    # and alloc_port both pick by scanning instance metas, so the chosen ip/port MUST be written
+    # to meta (the claim) before the lock drops — otherwise two simultaneous creates pick the
+    # same ip (→ same MAC, same tap name, broken networking for both) or the same host port. The
+    # long parts (repo-disk builds, the boot wait) run unlocked below, so creates still overlap.
+    lock_acquire
+    fc_ensure_artifacts
+    ensure_tier_keys
+    ensure_net                                                           # network must exist before we read its subnet to allocate an ip
+    local ip; ip="$(fc_net_alloc_ip)"                                     # VM address on the shared fabric
+    [[ -n "$port" ]] || port="$(alloc_port "$PORT_SPLIT" "$PORT_MAX" vm)"  # host SSH port (VM sub-pool)
+    # Claim ip+port by recording meta now, still under the lock, then arm failure cleanup.
+    { echo "name=$short"; echo "type=$type"; [[ "$yolo" == 1 ]] && echo "yolo=1"; [[ "$solo" == 1 ]] && echo "solo=1"; echo "engine=firecracker"
+      echo "fcip=$ip"; echo "port=$port"; echo "cpus=$cpus"; echo "mem=$mem"
+      echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      while IFS=$'\t' read -r rp nm; do [[ -n "$rp" ]] && echo "snapshot=$rp:$nm"; done <<<"$snaps"
+      while IFS=$'\t' read -r cs cd cr; do [[ -n "$cs" ]] && printf 'repoclone=%s\t%s\tcs-sandbox/%s\n' "$cs" "$cd" "$short"; done <<<"$repoclones"
+      while IFS= read -r st; do [[ -n "$st" ]] && echo "shared=$st"; done <<<"$imagestores"
+    } > "$idir/meta"
+    _FC_PENDING="$idir"; trap _fc_create_cleanup EXIT
+    fc_net_up                          # fabric (keepalive + dnsmasq) — serialized by the lock
+    fc_net_register "$short" "$ip"     # dnsmasq: <name> -> ip (for VM<->VM by name)
+    lock_release
+
+    build_seed "$short" "$type" "$solo" "$injected_env"   # per-instance, no shared state — built unlocked
+
+    # --- seed disk: cs-sandbox.conf + ssh (authorized_keys, host keys, tier key, host ~/.ssh
+    #     snapshot for user type) + Claude creds + repos manifest. Same trust model as the
+    #     container engine; the guest init installs these on first boot. ---
+    local sd="$idir/fc-seed"; rm -rf "$sd"; mkdir -p "$sd"
+    cp "$idir/seed/authorized_keys" "$sd/authorized_keys" 2>/dev/null || true
+    cp "$idir"/seed/host_keys/ssh_host_* "$sd/" 2>/dev/null || true
+    cp "$idir"/seed/id_cs-sandbox_* "$sd/" 2>/dev/null || true           # tier key (ssh out)
+    cp "$idir/seed/ssh_config" "$sd/ssh_config" 2>/dev/null || true # in-instance ssh config
+    cp "$idir/seed/host_hosts" "$sd/host_hosts" 2>/dev/null || true # host-name -> reachable addr (/etc/hosts)
+    cp "$idir/seed/inject-env" "$sd/inject-env" 2>/dev/null || true # --env/--env-file -> ~/.ssh/environment
+    [[ -d "$idir/seed/host_ssh" ]] && cp -a "$idir/seed/host_ssh" "$sd/host_ssh"  # user: host ~/.ssh
+    [[ -d "$idir/seed/claude" ]]   && cp -a "$idir/seed/claude"   "$sd/claude"    # Claude creds
+    [[ -d "$idir/seed/codex" ]]    && cp -a "$idir/seed/codex"    "$sd/codex"     # Codex creds
+    cp "$idir/seed/git_identity" "$sd/git_identity" 2>/dev/null || true            # host global git user.name/email
+    { echo "CS_SANDBOX_USER=$USER_NAME"; echo "CS_SANDBOX_UID=$USER_ID"; echo "CS_SANDBOX_GID=$GROUP_ID"
+      echo "CS_SANDBOX_HOSTNAME=$PREFIX$short"; echo "CS_SANDBOX_TYPE=$type"; echo "CS_SANDBOX_YOLO=$yolo"
+      echo "CS_SANDBOX_IP=$ip"; echo "CS_SANDBOX_GW=$(fc_net_gw)"; echo "CS_SANDBOX_DNS=$(fc_dns_ip)"; } > "$sd/cs-sandbox.conf"
+
+    # --- --repo (repeatable): one RO objects disk per repo (vdc, vdd, …) + manifest.
+    #     Each disk is sized to the bare clone's content (not a fixed 2 GB). ---
+    local repo_drives="" cl_src cl_dir cl_ref n=0
+    : > "$sd/repos"; rm -f "$idir"/repo*.ext4
+    fc_repo_cache_gc
+    if [[ -n "$repoclones" ]]; then
+        while IFS=$'\t' read -r cl_src cl_dir cl_ref; do
+            [[ -n "$cl_src" ]] || continue
+            n=$((n+1)); printf '%s\037%s\037%s\037%s\n' "$cl_dir" "cs-sandbox/$short" "$cl_ref" "$(_repo_git_identity "$cl_src")" >> "$sd/repos"
+            local rd="$idir/repo$n.ext4" cache
+            if cache="$(fc_repo_disk "$cl_src" "$cl_dir")"; then
+                cp --reflink=auto -f "$cache" "$rd"   # CoW where supported; build is amortized across VMs
+            else
+                # caching failed (not a normal path) — build the disk in place, as before
+                info "fc: building repo disk $n ($cl_dir)…"
+                local rg="$idir/repo$n.git"
+                rm -rf "$rg"; git clone -q --bare "$cl_src" "$rg"
+                truncate -s "$(fc_disk_mib "$rg" 96)M" "$rd"
+                fakeroot -- mke2fs -F -q -t ext4 -d "$rg" "$rd"; rm -rf "$rg"
+            fi
+            repo_drives="$repo_drives,{\"drive_id\":\"repo$n\",\"path_on_host\":\"$rd\",\"is_root_device\":false,\"is_read_only\":true}"
+        done <<<"$repoclones"
+    fi
+
+    # --- --snapshot (repeatable): one RO ext4 disk per dir, sized to content, mounted by the
+    #     guest init read-only at ~/<name>. Frozen at create (no host edits show through) —
+    #     the microVM analogue of the podman engine's RO point-in-time copy. The disks follow
+    #     the repo disks in the drive list, so the guest assigns them the next vd* letters. ---
+    local snap_drives="" sp_src sp_name m=0
+    : > "$sd/snapshots"; rm -f "$idir"/snap*.ext4
+    if [[ -n "$snaps" ]]; then
+        while IFS=$'\t' read -r sp_src sp_name; do
+            [[ -n "$sp_src" ]] || continue
+            m=$((m+1)); printf '%s\n' "$sp_name" >> "$sd/snapshots"
+            local snd="$idir/snap$m.ext4"
+            info "fc: building snapshot disk $m ($sp_name)…"
+            truncate -s "$(fc_disk_mib "$sp_src" 64)M" "$snd"
+            fakeroot -- mke2fs -F -q -t ext4 -d "$sp_src" "$snd"
+            snap_drives="$snap_drives,{\"drive_id\":\"snap$m\",\"path_on_host\":\"$snd\",\"is_root_device\":false,\"is_read_only\":true}"
+        done <<<"$snaps"
+    fi
+
+    # --- --image-store (repeatable): one RO ext4 disk per shared store, built from the keep-id
+    #     volume (logical root=0 ownership), mounted by the guest init RO at /var/lib/shared/<name>
+    #     and wired into the guest podman as an additionalimagestores. Follows the repo+snapshot
+    #     disks in the drive list, so the guest assigns it the next vd* letter. ---
+    local store_drives="" st_name k=0
+    : > "$sd/imagestores"; rm -f "$idir"/store*.ext4
+    fc_store_cache_gc
+    if [[ -n "$imagestores" ]]; then
+        while IFS= read -r st_name; do
+            [[ -n "$st_name" ]] || continue
+            k=$((k+1)); printf '%s\n' "$st_name" >> "$sd/imagestores"
+            local std="$idir/store$k.ext4" scache
+            if scache="$(fc_imagestore_disk "$st_name")"; then
+                cp --reflink=auto -f "$scache" "$std"   # CoW where supported; build amortized across VMs
+            else
+                die "fc: failed to build image-store disk for '$st_name' (is the store seeded?)"
+            fi
+            store_drives="$store_drives,{\"drive_id\":\"store$k\",\"path_on_host\":\"$std\",\"is_root_device\":false,\"is_read_only\":true}"
+        done <<<"$imagestores"
+    fi
+    rm -f "$idir/seed.ext4"; truncate -s "$(fc_disk_mib "$sd" 16)M" "$idir/seed.ext4"
+    fakeroot -- mke2fs -F -q -t ext4 -d "$sd" "$idir/seed.ext4"; rm -rf "$sd"
+
+    # --- per-instance writable rootfs (CoW reflink if the fs supports it) ---
+    cp --reflink=auto -f "$FC_CACHE/base-rootfs.ext4" "$idir/rootfs.ext4"
+
+    # --- firecracker config: vsock (host->VM ssh) + a virtio-net tap on the shared
+    #     bridge (outbound NAT + VM<->VM by name). The tap is created in podman's rootless
+    #     netns by fc_launch just before boot. ---
+    rm -f "$idir/vm.vsock"*
+    local tap mac; tap="$(fc_tap_name "$ip")"; mac="$(fc_guest_mac "$ip")"
+    cat > "$idir/run.json" <<JSON
+{
+  "boot-source": { "kernel_image_path": "$FC_CACHE/vmlinux.elf", "initrd_path": "$FC_CACHE/initrd.img", "boot_args": "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/fc-init quiet" },
+  "drives": [
+    {"drive_id":"rootfs","path_on_host":"$idir/rootfs.ext4","is_root_device":true,"is_read_only":false},
+    {"drive_id":"seed","path_on_host":"$idir/seed.ext4","is_root_device":false,"is_read_only":true}$repo_drives$snap_drives$store_drives
+  ],
+  "network-interfaces": [
+    {"iface_id":"eth0","host_dev_name":"$tap","guest_mac":"$mac"}
+  ],
+  "vsock": { "guest_cid": 3, "uds_path": "$idir/vm.vsock" },
+  "machine-config": { "vcpu_count": $cpus, "mem_size_mib": $mem }
+}
+JSON
+
+    # meta + ip/port claim + name registration already done above, under the create lock.
+    fc_launch "$short"                 # fabric already up; brings up this VM's tap, then boots
+
+    local i ok=""
+    for ((i=0; i<START_TIMEOUT; i++)); do grep -q FC-VM-READY "$idir/serial.log" 2>/dev/null && { ok=1; break; }
+        fc_running "$short" || break; sleep 1; done
+    if [[ -z "$ok" ]]; then
+        info "'$PREFIX$short' did not boot (see $idir/serial.log); cleaning up"
+        die "fc: microVM $PREFIX$short failed to start"   # _fc_create_cleanup (EXIT trap) tears it down
+    fi
+    _FC_PENDING=""   # booted — disarm the failure-cleanup trap
+    # fresh per-instance host keys: drop any stale known_hosts entry (keyed by HostKeyAlias)
+    # so accept-new relearns it instead of failing when a name is recreated.
+    ssh-keygen -R "$PREFIX$short" -f "$HOME/.ssh/known_hosts.cs-sandbox" >/dev/null 2>&1 || true
+    fc_sync_ssh_config
+    echo "created $PREFIX$short (microVM: ssh port $port, $ip on shared net, ${cpus}vcpu/${mem}MiB)"
+    echo "  ssh:   ssh $PREFIX$short        # host $CS_SANDBOX_SSH_BIND:$port -> guest sshd; on podman net $ip"
+    while IFS=$'\t' read -r rp nm; do [[ -n "$nm" ]] && echo "  snapshot: ~/$nm (read-only, frozen at create)"; done <<<"$snaps"
+    while IFS=$'\t' read -r cs cd cr; do [[ -n "$cd" ]] && echo "  repo:  ~/$cd on branch cs-sandbox/$short"; done <<<"$repoclones"
+    [[ "$n" -gt 0 ]] && echo "  (retrieve commits with: cs-sandbox fetch $short)"
+    return 0   # don't leak the last test's exit status as the command's
+}
+
+# --- dispatch -------------------------------------------------------------
+[[ $# -ge 1 ]] || usage 1
+cmd="$1"; shift
+case "$cmd" in
+    doctor)           cmd_doctor "$@" ;;
+    install)          cmd_install "$@" ;;
+    build)            cmd_build "$@" ;;
+    create)           cmd_create "$@"; hr_refresh_if_active ;;
+    start)            cmd_start "${1:?usage: cs-sandbox start <name>}"; hr_refresh_if_active ;;
+    stop)             cmd_stop "${1:?usage: cs-sandbox stop <name>}"; hr_refresh_if_active ;;
+    rm)               cmd_rm "${1:?usage: cs-sandbox rm <name>}"; hr_refresh_if_active ;;
+    destroy)          cmd_destroy "$@"; hr_refresh_if_active ;;
+    ls|list)          cmd_ls ;;
+    port)             cmd_port "$@" ;;
+    ssh)              cmd_ssh "$@" ;;
+    exec)             cmd_exec "$@" ;;
+    claude-login)     cmd_claude_login "$@" ;;
+    codex-login)      cmd_codex_login "$@" ;;
+    fetch)            cmd_fetch "$@" ;;
+    push)             cmd_push "$@" ;;
+    forward)          cmd_forward "$@" ;;
+    forwards)         cmd_forwards "$@" ;;
+    unforward)        cmd_unforward "$@" ;;
+    create-store)     cmd_create_store "$@" ;;
+    seed-store)       cmd_seed_store "$@" ;;
+    stores)           cmd_stores ;;
+    rm-store)         cmd_rm_store "$@" ;;
+    host-route)       cmd_host_route "$@" ;;
+    sync-ssh-config)  cmd_sync_ssh_config && fc_sync_ssh_config && echo "synced $SSH_CFG_FILE and $SSH_CFG_DIR/cs-sandbox-fc" ;;
+    -h|--help|help)   usage 0 ;;
+    *)                die "unknown command '$cmd' (try: cs-sandbox help)" ;;
+esac

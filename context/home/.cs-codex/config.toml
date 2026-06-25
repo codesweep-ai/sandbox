@@ -1,0 +1,5 @@
+# cs-codex profile config (CODEX_HOME=~/.cs-codex), seeded from the home skeleton.
+# Non-YOLO defaults; the cs-codex wrapper marks the launch dir trusted and, for --yolo agents,
+# adds --dangerously-bypass-approvals-and-sandbox (which overrides these).
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"

@@ -1,0 +1,323 @@
+#!/bin/bash
+# Remote-side driver for the tmux-based remote delegation model.
+# Runs ON the remote machine (your-remote-host). Drives one conversational turn
+# against an interactive Claude Code that lives in a long-running tmux session,
+# and returns that turn's output by reading the session JSONL (NOT by scraping
+# the tmux pane, which is full of TUI/ANSI artifacts).
+#
+# One turn =
+#   1. ensure the tmux session is alive (create with --session-id on first run,
+#      recreate with --resume if it died), handling the first-run trust prompt;
+#   2. paste the prompt (read from stdin) via tmux load-buffer + bracketed paste,
+#      then submit with Enter;
+#   3. wait for the turn to finish by watching the JSONL for a new
+#      {"type":"system","subtype":"turn_duration"} marker (the deterministic
+#      end-of-turn edge that interactive mode writes);
+#   4. print the new assistant content appended since the prompt was sent.
+#
+# The tmux session is named by UUID (cs-claude-<uuid>) so it is always a safe,
+# unique token regardless of the human-facing session name.
+#
+# Usage (all flags except --uuid optional):
+#   echo "prompt" | cs-claude-turn --uuid <uuid> [--workdir <dir>] \
+#       [--format text|json] [--timeout <secs>] [--wrapper <cmd>] \
+#       [--projects <dir>] [--name <label>]
+#
+# Exit codes: 0 ok, 2 turn timed out, 3 launch/setup failure, 1 usage/other.
+
+set -uo pipefail
+
+UUID=""
+WORKDIR=""
+FORMAT="text"
+TIMEOUT=600          # max seconds to wait for a turn to complete
+# Stall watchdog: bail early if the JSONL stops growing AND the TUI is no longer
+# working before a turn_duration marker appears. 0 disables. Env-overridable.
+STALL_SECS="${CS_CLAUDE_STALL_SECS:-180}"
+WRAPPER="cs-claude"
+PROJECTS="$HOME/.cs-claude/projects"
+LABEL=""             # human label, used only in diagnostics
+
+err() { echo "cs-claude-turn: $*" >&2; }
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --uuid)     UUID="$2"; shift 2 ;;
+        --workdir)  WORKDIR="$2"; shift 2 ;;
+        --format)   FORMAT="$2"; shift 2 ;;
+        --timeout)  TIMEOUT="$2"; shift 2 ;;
+        --wrapper)  WRAPPER="$2"; shift 2 ;;
+        --projects) PROJECTS="$2"; shift 2 ;;
+        --name)     LABEL="$2"; shift 2 ;;
+        -h|--help)
+            sed -n '2,30p' "$0"; exit 0 ;;
+        *) err "unknown argument: $1"; exit 1 ;;
+    esac
+done
+
+if [[ -z "$UUID" ]]; then
+    err "--uuid is required"; exit 1
+fi
+if ! [[ "$UUID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    err "--uuid '$UUID' is not a valid UUID"; exit 1
+fi
+
+TMUX_SESSION="cs-claude-$UUID"
+
+# Read the prompt from stdin into a temp file (avoids all shell-escaping issues
+# when handing it to tmux load-buffer).
+PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-claude-turn.XXXXXX")"
+trap 'rm -f "$PROMPT_FILE"' EXIT
+cat > "$PROMPT_FILE"
+if [[ ! -s "$PROMPT_FILE" ]]; then
+    err "empty prompt on stdin"; exit 1
+fi
+
+# --- helpers --------------------------------------------------------------
+
+jsonl_path() {
+    # Locate the JSONL for this UUID (may not exist yet on a brand-new session).
+    # Anchor the name to the FULL UUID ("<uuid>.jsonl") instead of a
+    # "*<uuid>.jsonl" glob, so an unrelated file whose name merely ends in this
+    # UUID can never be picked up. If two project dirs somehow hold the same
+    # UUID, warn and take the most recent deterministically.
+    local matches n
+    matches="$(find "$PROJECTS" -type f -name "${UUID}.jsonl" 2>/dev/null)"
+    [[ -z "$matches" ]] && return 0
+    n="$(printf '%s\n' "$matches" | grep -c .)"
+    if (( n > 1 )); then
+        err "multiple JSONL files match ${UUID}.jsonl; using the most recent:"
+        printf '%s\n' "$matches" | sed 's/^/  /' >&2
+        printf '%s\n' "$matches" | xargs -r ls -t 2>/dev/null | head -1
+        return 0
+    fi
+    printf '%s\n' "$matches"
+}
+
+# Count completed turns = number of turn_duration system markers in the JSONL.
+turn_count() {
+    local f="$1"
+    [[ -f "$f" ]] || { echo 0; return; }
+    python3 - "$f" <<'PY'
+import json, sys
+n = 0
+try:
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                o = json.loads(line)
+            except Exception:
+                continue
+            if o.get("type") == "system" and o.get("subtype") == "turn_duration":
+                n += 1
+except FileNotFoundError:
+    pass
+print(n)
+PY
+}
+
+line_count() {
+    local f="$1"
+    [[ -f "$f" ]] && wc -l < "$f" | tr -d ' ' || echo 0
+}
+
+pane() { tmux capture-pane -p -t "$TMUX_SESSION" 2>/dev/null; }
+
+session_alive() { tmux has-session -t "$TMUX_SESSION" 2>/dev/null; }
+
+# Classify the current TUI screen from the pane. Mirrors the state taxonomy in
+# dev_tools/agent-dev-template/lib/claude_state.sh so we react correctly to
+# screens that block input (sign-in, onboarding, tool-approval) instead of
+# blindly waiting them out. Order matters: more specific overlays are matched
+# before the generic "Do you want to" approval prompt.
+detect_state() {
+    local p; p="$(pane)"
+    [[ -z "$p" ]] && { echo "unknown"; return; }
+    case "$p" in
+        *"Paste code here"*|*"platform.claude.com/oauth"*)            echo "oauth"; return ;;
+        *"Choose the text style"*|*"Select login method"*)           echo "onboarding"; return ;;
+        *"trust this folder"*|*"Do you trust the files in this folder"*) echo "trust_folder"; return ;;
+        *"Enter to select"*"Esc to cancel"*)                         echo "picker"; return ;;
+        *"esc to interrupt"*)                                        echo "working"; return ;;
+        *"Do you want to"*)                                          echo "tool_approval"; return ;;
+    esac
+    # No blocking overlay and not actively working: ready once the status line is up.
+    if grep -qi "auto mode on" <<<"$p"; then
+        echo "ready"; return
+    fi
+    echo "unknown"
+}
+
+# Wait until the TUI is ready to accept input. Auto-clears the first-run trust
+# prompt; fails fast with an actionable message on screens that need a human
+# (sign-in / onboarding) or that signal the warm session is misconfigured
+# (a tool-approval prompt — the session is meant to run skip-permissions).
+wait_ready() {
+    local deadline=$(( SECONDS + 60 ))
+    local st
+    while (( SECONDS < deadline )); do
+        if ! session_alive; then
+            err "tmux session died during startup"; return 3
+        fi
+        st="$(detect_state)"
+        case "$st" in
+            trust_folder)
+                # Option 1 ("Yes, I trust this folder") is preselected.
+                tmux send-keys -t "$TMUX_SESSION" Enter
+                sleep 1 ;;
+            oauth)
+                err "remote Claude needs interactive sign-in (OAuth) — cannot proceed unattended"
+                err "  attach to complete it: tmux attach -t $TMUX_SESSION"
+                return 3 ;;
+            onboarding)
+                err "remote Claude is on the first-run onboarding wizard — needs a human"
+                err "  attach to complete it: tmux attach -t $TMUX_SESSION"
+                return 3 ;;
+            tool_approval)
+                err "remote Claude is blocked on a tool-approval prompt — the warm session"
+                err "  should run with permissions skipped; attach to inspect: tmux attach -t $TMUX_SESSION"
+                return 3 ;;
+            ready)
+                return 0 ;;
+            working|picker|unknown|*)
+                # transient / still busy — keep polling
+                sleep 0.5 ;;
+        esac
+    done
+    err "timed out waiting for the TUI to become ready (last state: $(detect_state))"
+    return 3
+}
+
+ensure_session() {
+    if session_alive; then
+        return 0
+    fi
+    # Decide create vs resume by whether history already exists on disk.
+    local jp; jp="$(jsonl_path)"
+    local launch
+    if [[ -n "$jp" ]]; then
+        launch="$WRAPPER --resume $UUID"
+    else
+        launch="$WRAPPER --session-id $UUID"
+    fi
+    local newargs=(new-session -d -s "$TMUX_SESSION" -x 220 -y 50)
+    if [[ -n "$WORKDIR" ]]; then
+        newargs+=(-c "$WORKDIR")
+    fi
+    newargs+=("$launch")
+    if ! tmux "${newargs[@]}"; then
+        err "failed to start tmux session ($launch)"; return 3
+    fi
+    wait_ready
+}
+
+# --- run one turn ---------------------------------------------------------
+
+ensure_session || exit $?
+
+# Make sure we are not mid-turn before sending.
+wait_ready || exit $?
+
+# Snapshot the JSONL state BEFORE sending. On a brand-new session the JSONL does
+# not exist until the first message is submitted, so absent => zero baseline.
+JSONL="$(jsonl_path)"
+PRE_TURNS="$(turn_count "$JSONL")"
+PRE_LINES="$(line_count "$JSONL")"
+
+# Paste the prompt as a single bracketed-paste block, then submit. load-buffer
+# from a file means no characters need shell-escaping.
+tmux load-buffer "$PROMPT_FILE"
+tmux paste-buffer -p -d -t "$TMUX_SESSION"
+sleep 0.3
+tmux send-keys -t "$TMUX_SESSION" Enter
+# The TUI occasionally swallows the first Enter while it finishes rendering the
+# pasted block. A second Enter after a short delay reliably submits; if the
+# first already landed, this one falls on an empty prompt and is harmless.
+sleep 0.2
+tmux send-keys -t "$TMUX_SESSION" Enter
+
+# The JSONL appears once the first message is accepted; wait for it to exist.
+if [[ -z "$JSONL" ]]; then
+    for _ in $(seq 1 20); do
+        JSONL="$(jsonl_path)"; [[ -n "$JSONL" ]] && break; sleep 0.5
+    done
+fi
+if [[ -z "$JSONL" ]]; then
+    err "could not locate JSONL for $UUID under $PROJECTS after submitting"; exit 3
+fi
+
+# Wait for a new turn_duration marker to appear (turn complete).
+deadline=$(( SECONDS + TIMEOUT ))
+completed=false
+last_lines="$PRE_LINES"
+last_change=$SECONDS
+while (( SECONDS < deadline )); do
+    if ! session_alive; then
+        err "tmux session died mid-turn"; exit 3
+    fi
+    now="$(turn_count "$JSONL")"
+    if (( now > PRE_TURNS )); then
+        completed=true; break
+    fi
+    # Stall watchdog: a healthy in-progress turn keeps appending to the JSONL
+    # (and the TUI shows "esc to interrupt"). If the JSONL stops growing AND the
+    # TUI is no longer working, the turn has wedged or ended without emitting a
+    # turn_duration marker — bail early with a diagnostic rather than blocking
+    # for the full timeout (which is what made hung background turns invisible).
+    if (( STALL_SECS > 0 )); then
+        cur_lines="$(line_count "$JSONL")"
+        if (( cur_lines != last_lines )); then
+            last_lines="$cur_lines"; last_change=$SECONDS
+        elif (( SECONDS - last_change >= STALL_SECS )); then
+            st="$(detect_state)"
+            if [[ "$st" != "working" ]]; then
+                err "turn stalled: JSONL unchanged for $(( SECONDS - last_change ))s, TUI state '$st', no turn_duration marker"
+                err "  attach to inspect: tmux attach -t $TMUX_SESSION"
+                exit 2
+            fi
+            last_change=$SECONDS   # genuinely still working (long tool call) — reset clock
+        fi
+    fi
+    sleep 1
+done
+
+if ! $completed; then
+    err "turn did not complete within ${TIMEOUT}s"
+    exit 2
+fi
+
+# Emit this turn's new content from the JSONL (lines appended after PRE_LINES).
+python3 - "$JSONL" "$PRE_LINES" "$FORMAT" <<'PY'
+import json, sys
+path, pre_lines, fmt = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+with open(path, encoding="utf-8", errors="replace") as fh:
+    lines = fh.readlines()
+new = lines[pre_lines:]
+
+if fmt == "json":
+    # Emit the raw new JSONL lines verbatim for the caller to parse.
+    sys.stdout.write("".join(new))
+    sys.exit(0)
+
+# text: concatenate assistant text blocks from the new range.
+chunks = []
+for line in new:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        o = json.loads(line)
+    except Exception:
+        continue
+    if o.get("type") != "assistant":
+        continue
+    for b in o.get("message", {}).get("content", []):
+        if isinstance(b, dict) and b.get("type") == "text":
+            t = b.get("text", "").rstrip()
+            if t:
+                chunks.append(t)
+print("\n\n".join(chunks))
+PY

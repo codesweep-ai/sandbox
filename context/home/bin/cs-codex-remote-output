@@ -1,0 +1,86 @@
+#!/bin/bash
+# Show output from a background remote codex task.
+# Reads the local log file written by "cs-codex-remote -b".
+#
+# Usage:
+#   cs-codex-remote-output <name>            # session name is REQUIRED
+#   cs-codex-remote-output <name> -f         # follow (tail -f) the log
+#   cs-codex-remote-output <name> -n 50      # show last 50 lines
+#   cs-codex-remote-output <name> --full     # show the entire log
+#   cs-codex-remote-output <name> -s         # status only: "running"/"finished" (exit 0=finished, 2=running)
+
+set -euo pipefail
+
+LOG_DIR="$HOME/.cs-codex-remote-logs"
+PID_DIR="$HOME/.cs-codex-remote-pids"
+
+NUM_LINES=30; SESSION=""; FOLLOW=false; FULL=false; STATUS_ONLY=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -n) NUM_LINES="$2"; shift 2 ;;
+        -f|--follow) FOLLOW=true; shift ;;
+        --full) FULL=true; shift ;;
+        -s|--status) STATUS_ONLY=true; shift ;;
+        -h|--help)
+            echo "Usage: cs-codex-remote-output <name> [-n NUM] [-f] [--full] [-s]"
+            echo "  name       Session name (REQUIRED)"
+            echo "  -n NUM     Show last NUM lines (default: 30)"
+            echo "  -f         Follow the log in real time (tail -f)"
+            echo "  --full     Show the entire log file"
+            echo "  -s         Status only: 'running'/'finished'/'unknown'. Exit 0=finished, 2=running, 1=unknown."
+            exit 0 ;;
+        *) SESSION="$1"; shift ;;
+    esac
+done
+
+if [[ -z "$SESSION" ]]; then
+    echo "Error: session name is required" >&2
+    echo "  List sessions: cs-codex-remote-sessions" >&2
+    exit 1
+fi
+
+LOG_FILE="$LOG_DIR/${SESSION}.log"
+PID_FILE="$PID_DIR/${SESSION}.pid"
+
+if [[ ! -f "$LOG_FILE" ]]; then
+    if $STATUS_ONLY; then echo "unknown"; echo "No log file for session '$SESSION' ($LOG_FILE)" >&2; exit 1; fi
+    echo "No log file found for session '$SESSION'" >&2
+    echo "  Expected: $LOG_FILE  (Was the task started with -b?)" >&2
+    exit 1
+fi
+
+# Running/finished is decided by the authoritative footer the background wrapper writes after
+# each turn ("--- ... --- finished (exit N) ---"); the PID is only a secondary signal.
+last_prompt_ln="$(grep -n -- '--- .* --- prompt:' "$LOG_FILE" 2>/dev/null | tail -1 | cut -d: -f1 || true)"
+last_finish_ln="$(grep -n -- '--- .* --- finished (exit' "$LOG_FILE" 2>/dev/null | tail -1 | cut -d: -f1 || true)"
+LOG_FINISHED=true
+if [[ -n "$last_prompt_ln" ]]; then
+    if [[ -z "$last_finish_ln" || "$last_finish_ln" -lt "$last_prompt_ln" ]]; then LOG_FINISHED=false; fi
+fi
+
+PID=""; PID_ALIVE=false
+if [[ -f "$PID_FILE" ]]; then
+    PID="$(cat "$PID_FILE")"
+    if kill -0 "$PID" 2>/dev/null; then PID_ALIVE=true; else rm -f "$PID_FILE"; fi
+fi
+
+RUNNING=false; CRASHED=false
+if $LOG_FINISHED; then RUNNING=false; elif $PID_ALIVE; then RUNNING=true; else CRASHED=true; fi
+
+if $STATUS_ONLY; then
+    if $RUNNING; then echo "running"; exit 2
+    elif $CRASHED; then echo "unknown"; echo "Session '$SESSION' has no footer and no live process — likely crashed." >&2; exit 1
+    else echo "finished"; exit 0; fi
+fi
+
+IS_TTY=false; [[ -t 1 ]] && IS_TTY=true
+dim() { $IS_TTY && printf '\033[2m%s\033[0m\n' "$1" || echo "$1"; }
+if $RUNNING; then dim "Session '$SESSION' is still running${PID:+ (PID $PID)}"
+elif $CRASHED; then dim "Session '$SESSION' appears to have crashed (no footer, no live process)"
+else dim "Session '$SESSION' has finished"; fi
+echo
+
+if $FOLLOW; then tail -f "$LOG_FILE"
+elif $FULL; then cat "$LOG_FILE"
+else tail -n "$NUM_LINES" "$LOG_FILE"; fi

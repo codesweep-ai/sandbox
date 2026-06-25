@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Launch claude under the cs-claude profile (CLAUDE_CONFIG_DIR=~/.cs-claude).
+#
+# YOLO mode (no permission prompts at all) is enabled when either CS_CLAUDE_YOLO
+# is set in the environment or the marker file ~/.cs-claude/.yolo exists; cs-sandbox
+# creates that marker for `--yolo` agent instances. Otherwise we run in 'auto' mode,
+# which honours the allow/deny rules in settings.json. YOLO uses
+# --dangerously-skip-permissions, which is only safe inside an isolated container/VM.
+#
+# Streamlining (the sandbox is throwaway, so don't re-ask Claude Code's first-run
+# confirmations every time):
+#   * bypass-permissions warning — auto-accepted via "skipDangerousModePermissionPrompt"
+#     in this profile's settings.json (exactly what accepting the dialog would persist).
+#   * per-folder "do you trust the files in this folder?" prompt — it's keyed by directory
+#     in .claude.json (no global switch), so we mark the launch dir ($PWD) trusted below.
+#   * "claude command at ~/.local/bin/claude missing or broken · run claude install to
+#     repair" — claude is a pinned single binary in read-only /opt (externally managed),
+#     which matches none of claude's known installMethods, so its install-health check
+#     nags. DISABLE_INSTALLATION_CHECKS silences that; DISABLE_AUTOUPDATER stops any
+#     background self-update (it can't write /opt anyway, and would otherwise shadow-install
+#     a newer build into ~/.local). Set here so it covers both the container and microVM
+#     engines (the VM guest init doesn't inherit the image's ENV). Override by exporting
+#     either var =0 before launch.
+export DISABLE_INSTALLATION_CHECKS="${DISABLE_INSTALLATION_CHECKS:-1}"
+export DISABLE_AUTOUPDATER="${DISABLE_AUTOUPDATER:-1}"
+
+# Claude Code runs on Node; give V8 a heap sized to this instance (rather than its conservative
+# default) so large contexts have room. We use ~75% of RAM so it never over-commits a small
+# microVM the way a hardcoded value would, but cap it at 8 GiB so that on a podman container —
+# which sees the host's full RAM (no memory cgroup limit) — one Claude can't balloon and starve the
+# other instances on the host. Skipped if you set your own --max-old-space-size.
+if [[ "${NODE_OPTIONS:-}" != *max-old-space-size* ]]; then
+  _memkb="$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null || true)"
+  if [[ "$_memkb" =~ ^[0-9]+$ ]]; then
+    _heap=$(( _memkb * 3 / 4 / 1024 )); (( _heap > 8192 )) && _heap=8192
+    export NODE_OPTIONS="--max-old-space-size=$_heap${NODE_OPTIONS:+ $NODE_OPTIONS}"
+  fi
+fi
+
+CC_DIR="$HOME/.cs-claude"
+mkdir -p "$CC_DIR" 2>/dev/null || true   # ensure the profile dir exists (first run / fresh host)
+
+# Carry host-provided provider auth (API key / cloud target). ~/.cs-claude/env is seeded from the
+# host (an API-key/cloud counterpart of the subscription credential); sourcing it puts
+# ANTHROPIC_API_KEY / CLAUDE_CODE_USE_BEDROCK|VERTEX / AWS_* / Vertex vars into claude's environment.
+[ -f "$CC_DIR/env" ] && { set -a; . "$CC_DIR/env"; set +a; }
+
+# Auto-trust the current directory so launching claude in any repo never stops to ask.
+if command -v jq >/dev/null 2>&1; then
+  cfg="$CC_DIR/.claude.json"
+  [ -f "$cfg" ] || echo '{}' > "$cfg"
+  if tmp="$(mktemp "$CC_DIR/.claude.json.XXXXXX" 2>/dev/null)"; then
+    jq --arg d "$PWD" \
+       '.projects[$d] = ((.projects[$d] // {}) + {hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true})' \
+       "$cfg" > "$tmp" 2>/dev/null && mv "$tmp" "$cfg" || rm -f "$tmp"
+    chmod 600 "$cfg" 2>/dev/null || true
+  fi
+fi
+
+if [ -n "${CS_CLAUDE_YOLO:-}" ] || [ -f "$CC_DIR/.yolo" ]; then
+  exec env CLAUDE_CONFIG_DIR="$CC_DIR" claude --dangerously-skip-permissions "$@"
+fi
+exec env CLAUDE_CONFIG_DIR="$CC_DIR" claude --permission-mode auto "$@"

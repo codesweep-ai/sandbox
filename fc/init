@@ -1,0 +1,222 @@
+#!/bin/bash
+# sandbox Firecracker guest PID1 (baked into the VM rootfs at build time).
+# A microVM is real root on a real kernel, so there's none of the keep-id/--privileged
+# dance: set up the developer user from the RO seed disk (/dev/vdb), bring up eth0 on the
+# shared cs-sandbox bridge (outbound NAT + VM<->VM by name), alternates-clone the --repo objects
+# from the RO repo disks (/dev/vdc…), start sshd, and expose it over VSOCK (port 22) so the
+# host reaches it with no IP networking at all. See docs/firecracker.md.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+# As kernel-launched PID1 our umask is 0000, so any file created by a shell redirect (e.g.
+# ~/.ssh/config below, /etc/resolv.conf) would be world-writable — and ssh then rejects its
+# own config with "Bad owner or permissions". Set a sane umask for everything that follows.
+umask 022
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs dev /dev 2>/dev/null
+# Unified cgroups v2 hierarchy. This PID1 isn't systemd, so nothing mounts it otherwise;
+# without it nested podman falls back to deprecated cgroups v1 and warns on every run.
+mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
+mkdir -p /run/sshd /dev/pts; mount -t devpts devpts /dev/pts 2>/dev/null
+modprobe vmw_vsock_virtio_transport 2>/dev/null; modprobe vsock 2>/dev/null
+
+CS_SANDBOX_USER=dev CS_SANDBOX_UID=1000 CS_SANDBOX_GID=1000 CS_SANDBOX_HOSTNAME=cs-sandbox-vm
+SEED=/run/cs-sandbox-seed; mkdir -p "$SEED"
+mount -o ro /dev/vdb "$SEED" 2>/dev/null && [ -f "$SEED/cs-sandbox.conf" ] && . "$SEED/cs-sandbox.conf"
+HOME_DIR="/home/$CS_SANDBOX_USER"
+hostname "$CS_SANDBOX_HOSTNAME" 2>/dev/null
+
+getent group "$CS_SANDBOX_GID" >/dev/null 2>&1 || groupadd -g "$CS_SANDBOX_GID" "$CS_SANDBOX_USER" 2>/dev/null
+id -u "$CS_SANDBOX_USER" >/dev/null 2>&1 || useradd -u "$CS_SANDBOX_UID" -g "$CS_SANDBOX_GID" -m -d "$HOME_DIR" -s /bin/bash "$CS_SANDBOX_USER" 2>/dev/null
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$CS_SANDBOX_USER" > /etc/sudoers.d/cs-sandbox; chmod 440 /etc/sudoers.d/cs-sandbox
+
+# --- networking: virtio-net on the shared cs-sandbox bridge (outbound NAT + VM<->VM by name).
+# The host attaches a tap; the guest just configures the static address from the seed. ---
+modprobe virtio_net 2>/dev/null
+NIC=""; for _i in 1 2 3 4 5 6 7 8 9 10; do
+  NIC="$(ls /sys/class/net 2>/dev/null | grep -v '^lo$' | head -1)"; [ -n "$NIC" ] && break; sleep 0.2
+done
+if [ -n "$NIC" ] && [ -n "${CS_SANDBOX_IP:-}" ]; then
+  ip link set "$NIC" up
+  ip addr add "$CS_SANDBOX_IP/24" dev "$NIC" 2>/dev/null
+  ip route add default via "${CS_SANDBOX_GW:-}" 2>/dev/null
+  printf 'nameserver %s\n' "${CS_SANDBOX_DNS:-${CS_SANDBOX_GW:-1.1.1.1}}" > /etc/resolv.conf
+  chmod 644 /etc/resolv.conf   # the glibc resolver runs as the user; root-only resolv.conf breaks all DNS
+fi
+printf '127.0.0.1 localhost\n%s %s\n' "${CS_SANDBOX_IP:-127.0.1.1}" "$CS_SANDBOX_HOSTNAME" > /etc/hosts
+# Reach the host by its own name (the seeded mapping; /etc/hosts wins over DNS, incl. Tailscale).
+[ -f "$SEED/host_hosts" ] && cat "$SEED/host_hosts" >> /etc/hosts
+chmod 644 /etc/hosts
+# Prefer IPv4. The sandbox net is IPv4-only (link-local IPv6 only, no v6 route), but the host's
+# resolver / Tailscale MagicDNS hands back AAAA records — which getaddrinfo would otherwise try
+# first, so naive single-address clients hang on an unreachable v6 and every dual-stack lookup
+# eats a v6 timeout. This makes the host's pinned IPv4 (and v4 generally) win. (host_hosts only
+# pins an A record, so it can't suppress the AAAA on its own.)
+printf 'precedence ::ffff:0:0/96 100\n' > /etc/gai.conf; chmod 644 /etc/gai.conf
+# Let the dev user open ICMP sockets so `ping` works without a setuid/file-cap binary.
+echo '0 2147483647' > /proc/sys/net/ipv4/ping_group_range 2>/dev/null || true
+
+# --- first boot only: seed the home skeleton (bin, claude tools, dotfiles) + host ~/.ssh ---
+# Clobber, not -n: useradd -m already populated the home from /etc/skel (stock .bashrc with
+# no nvm/pyenv), so the sandbox skeleton must overwrite it — else `claude` etc. aren't on
+# PATH. (The container engine mkdir's an empty home, so it doesn't hit this.)
+if [ ! -f "$HOME_DIR/.cs-sandbox-initialized" ]; then
+  [ -d /sandbox/home ] && cp -af /sandbox/home/. "$HOME_DIR/" 2>/dev/null || true
+  if [ -d "$SEED/host_ssh" ]; then
+    mkdir -p "$HOME_DIR/.ssh"; cp -a "$SEED/host_ssh/." "$HOME_DIR/.ssh/" 2>/dev/null || true
+  fi
+  touch "$HOME_DIR/.cs-sandbox-initialized"
+  chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$HOME_DIR" 2>/dev/null || true
+fi
+
+# --- every boot: refresh cs-sandbox-managed ssh material from the RO seed ---
+SSH_DIR="$HOME_DIR/.ssh"; mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"; chmod go-w "$HOME_DIR" 2>/dev/null || true
+[ -f "$SEED/authorized_keys" ] && install -m600 "$SEED/authorized_keys" "$SSH_DIR/authorized_keys"
+# --env / --env-file: whole-environment injection. sshd (PermitUserEnvironment=yes) reads
+# ~/.ssh/environment for every session — interactive and `ssh <name> cmd` (chown'd with $SSH_DIR below).
+# Also export the vars into PID 1 (this init), so the whole FC process tree — and anything init
+# later spawns — inherits them, matching the Podman container env. (ssh sessions still come from
+# ~/.ssh/environment; sshd resets its own session env regardless.) Values are literal, so build
+# each "NAME=VALUE" as a single word to keep spaces/'=' intact; non-KEY=VALUE lines are skipped.
+if [ -f "$SEED/inject-env" ]; then
+  install -m600 "$SEED/inject-env" "$SSH_DIR/environment"
+  while IFS= read -r _e_line || [ -n "$_e_line" ]; do
+    case "$_e_line" in *=*) export "${_e_line%%=*}=${_e_line#*=}" ;; esac
+  done < "$SEED/inject-env"
+  unset _e_line
+fi
+for k in id_cs-sandbox_user id_cs-sandbox_agent; do
+  [ -f "$SEED/$k" ]     && install -m600 "$SEED/$k"     "$SSH_DIR/$k"
+  [ -f "$SEED/$k.pub" ] && install -m644 "$SEED/$k.pub" "$SSH_DIR/$k.pub"
+done
+if [ -f "$SEED/ssh_config" ]; then          # in-instance ssh client config, installed via an include
+  mkdir -p "$SSH_DIR/config.d"; chmod 700 "$SSH_DIR/config.d"
+  install -m600 "$SEED/ssh_config" "$SSH_DIR/config.d/cs-sandbox"
+  touch "$SSH_DIR/config"
+  grep -qxF 'Include ~/.ssh/config.d/cs-sandbox' "$SSH_DIR/config" \
+    || { printf 'Include ~/.ssh/config.d/cs-sandbox\n\n%s\n' "$(cat "$SSH_DIR/config")" > "$SSH_DIR/config.tmp"; mv "$SSH_DIR/config.tmp" "$SSH_DIR/config"; }
+  chmod 600 "$SSH_DIR/config"   # after the mv (which would otherwise inherit the umask), so ssh accepts it
+fi
+chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$SSH_DIR" 2>/dev/null || true
+
+# stable per-instance host keys (from the seed, else generated)
+if ls "$SEED"/ssh_host_*_key >/dev/null 2>&1; then
+  cp -a "$SEED"/ssh_host_*_key "$SEED"/ssh_host_*_key.pub /etc/ssh/ 2>/dev/null; chmod 600 /etc/ssh/ssh_host_*_key 2>/dev/null
+else
+  ssh-keygen -A >/dev/null 2>&1
+fi
+
+# --- Claude subscription auth (cs-claude profile), first boot only ---
+CC_DIR="$HOME_DIR/.cs-claude"; mkdir -p "$CC_DIR"; chmod 700 "$CC_DIR" 2>/dev/null || true
+if [ -f "$SEED/claude/.credentials.json" ] && [ ! -f "$CC_DIR/.credentials.json" ]; then
+  install -m600 "$SEED/claude/.credentials.json" "$CC_DIR/.credentials.json"
+fi
+# API-key / cloud-provider auth (first boot only): seeded env (sourced by cs-claude) + creds/.
+if [ -f "$SEED/claude/env" ] && [ ! -f "$CC_DIR/env" ]; then install -m600 "$SEED/claude/env" "$CC_DIR/env"; fi
+if [ -d "$SEED/claude/creds" ] && [ ! -d "$CC_DIR/creds" ]; then cp -a "$SEED/claude/creds" "$CC_DIR/creds"; chmod -R go-rwx "$CC_DIR/creds"; fi
+if command -v jq >/dev/null 2>&1; then
+  if [ -f "$CC_DIR/.claude.json" ]; then
+    jq '.hasCompletedOnboarding=true' "$CC_DIR/.claude.json" > "$CC_DIR/.claude.json.tmp" 2>/dev/null \
+      && mv "$CC_DIR/.claude.json.tmp" "$CC_DIR/.claude.json" || rm -f "$CC_DIR/.claude.json.tmp"
+  else echo '{"hasCompletedOnboarding":true}' > "$CC_DIR/.claude.json"; fi
+fi
+# YOLO marker (agent + --yolo only): the cs-claude wrapper then runs claude with
+# --dangerously-skip-permissions. CS_SANDBOX_YOLO/CS_SANDBOX_TYPE come from the seed's cs-sandbox.conf.
+if [ "${CS_SANDBOX_YOLO:-0}" = "1" ] && [ "${CS_SANDBOX_TYPE:-}" = "agent" ]; then
+  : > "$CC_DIR/.yolo"
+else
+  rm -f "$CC_DIR/.yolo" 2>/dev/null || true
+fi
+chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CC_DIR" 2>/dev/null || true
+
+# --- Codex subscription auth (cs-codex profile), first boot only — mirrors Claude above ---
+CODEX_DIR="$HOME_DIR/.cs-codex"; mkdir -p "$CODEX_DIR"; chmod 700 "$CODEX_DIR" 2>/dev/null || true
+if [ -f "$SEED/codex/auth.json" ] && [ ! -f "$CODEX_DIR/auth.json" ]; then
+  install -m600 "$SEED/codex/auth.json" "$CODEX_DIR/auth.json"
+fi
+# API-key / custom-provider auth (first boot only): seeded env + creds/ (as for Claude above).
+if [ -f "$SEED/codex/env" ] && [ ! -f "$CODEX_DIR/env" ]; then install -m600 "$SEED/codex/env" "$CODEX_DIR/env"; fi
+if [ -d "$SEED/codex/creds" ] && [ ! -d "$CODEX_DIR/creds" ]; then cp -a "$SEED/codex/creds" "$CODEX_DIR/creds"; chmod -R go-rwx "$CODEX_DIR/creds"; fi
+if [ "${CS_SANDBOX_YOLO:-0}" = "1" ] && [ "${CS_SANDBOX_TYPE:-}" = "agent" ]; then
+  : > "$CODEX_DIR/.yolo"
+else
+  rm -f "$CODEX_DIR/.yolo" 2>/dev/null || true
+fi
+chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CODEX_DIR" 2>/dev/null || true
+
+# RO data disks follow the rootfs (vda) and seed (vdb): the --repo objects disks first
+# (seed/repos), then the --snapshot disks (seed/snapshots), in the SAME order cs-sandbox appended
+# them to run.json — so one device-letter cursor (vdc, vdd, …) lines up with both lists.
+_letters=(c d e f g h i j k l m n o p); _i=0
+
+# --- global git identity: seed ~/.gitconfig user.name/email from the host's global config, only if
+# unset (never clobber a later change). Per-repo --repo overrides are applied below. ---
+if [ -f "$SEED/git_identity" ]; then
+  gi_name="$(awk -F'\t' '$1=="name"{print $2}' "$SEED/git_identity")"
+  gi_email="$(awk -F'\t' '$1=="email"{print $2}' "$SEED/git_identity")"
+  [ -n "$gi_name" ] && [ -z "$(runuser -u "$CS_SANDBOX_USER" -- git config --global user.name 2>/dev/null)" ] \
+    && runuser -u "$CS_SANDBOX_USER" -- git config --global user.name "$gi_name" 2>/dev/null || true
+  [ -n "$gi_email" ] && [ -z "$(runuser -u "$CS_SANDBOX_USER" -- git config --global user.email 2>/dev/null)" ] \
+    && runuser -u "$CS_SANDBOX_USER" -- git config --global user.email "$gi_email" 2>/dev/null || true
+fi
+
+# --repo: each line of seed/repos (\x1f-separated: dir, branch, base, user.name, user.email — \x1f
+# not tab, so an empty base/identity field isn't collapsed) maps to one RO repo disk. Alternates-
+# clone borrows objects read-only; the new branch starts at <base> (the --repo @REF, if any); new
+# commits stay local (retrieved with `cs-sandbox fetch`). The repo's host identity is set locally so
+# its commits match the host. Idempotent across reboots (skips an existing clone).
+if [ -f "$SEED/repos" ]; then
+  while IFS="$(printf '\037')" read -r r_dir r_branch r_base r_uname r_uemail; do
+    [ -n "$r_dir" ] || continue
+    _dev="/dev/vd${_letters[$_i]}"; _i=$((_i+1))
+    [ -b "$_dev" ] || continue
+    _mp="/run/cs-sandbox-repo-$_i"; mkdir -p "$_mp"; mount -o ro "$_dev" "$_mp" 2>/dev/null || continue
+    [ -d "$HOME_DIR/$r_dir/.git" ] && continue
+    su - "$CS_SANDBOX_USER" -c "git clone -q --shared '$_mp' '$HOME_DIR/$r_dir' \
+      && git -C '$HOME_DIR/$r_dir' config receive.denyCurrentBranch updateInstead \
+      && { git -C '$HOME_DIR/$r_dir' switch -q -c '$r_branch' ${r_base:+\"$r_base\"} \
+           || git -C '$HOME_DIR/$r_dir' switch -q -c '$r_branch'; }" 2>/dev/null
+    [ -n "$r_uname" ]  && runuser -u "$CS_SANDBOX_USER" -- git -C "$HOME_DIR/$r_dir" config user.name  "$r_uname"  2>/dev/null || true
+    [ -n "$r_uemail" ] && runuser -u "$CS_SANDBOX_USER" -- git -C "$HOME_DIR/$r_dir" config user.email "$r_uemail" 2>/dev/null || true
+  done < "$SEED/repos"
+fi
+
+# --snapshot: each line of seed/snapshots ("name") maps to one RO ext4 disk, mounted
+# read-only directly at ~/<name> — a frozen point-in-time copy (no clone, no writes).
+if [ -f "$SEED/snapshots" ]; then
+  while IFS= read -r s_name; do
+    [ -n "$s_name" ] || continue
+    _dev="/dev/vd${_letters[$_i]}"; _i=$((_i+1))
+    [ -b "$_dev" ] || continue
+    _mp="$HOME_DIR/$s_name"; mkdir -p "$_mp"; chown "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$_mp" 2>/dev/null || true
+    mount -o ro "$_dev" "$_mp" 2>/dev/null || true
+  done < "$SEED/snapshots"
+fi
+
+# --image-store: each line of seed/imagestores ("name") maps to one RO ext4 disk holding a
+# shared podman image store, mounted RO at /var/lib/shared/<name> and registered with the
+# (rootful, via the sudo wrapper) guest podman as an additionalimagestores — so nested
+# `podman` reuses those images instead of re-pulling. image-root in the store is a real 0
+# (built that way on the host), matching the VM's real-root podman, so setuid bins / ownership
+# stay correct. Follows the repo+snapshot disks on the same device-letter cursor.
+if [ -f "$SEED/imagestores" ]; then
+  _ais=""
+  while IFS= read -r st_name; do
+    [ -n "$st_name" ] || continue
+    _dev="/dev/vd${_letters[$_i]}"; _i=$((_i+1))
+    [ -b "$_dev" ] || continue
+    _mp="/var/lib/shared/$st_name"; mkdir -p "$_mp"
+    mount -o ro "$_dev" "$_mp" 2>/dev/null || continue
+    _ais="$_ais\"$_mp\","
+  done < "$SEED/imagestores"
+  if [ -n "$_ais" ]; then
+    mkdir -p /etc/containers
+    printf '[storage]\ndriver = "overlay"\n\n[storage.options]\nadditionalimagestores = [%s]\n' "${_ais%,}" > /etc/containers/storage.conf
+  fi
+fi
+
+# sshd on the standard port 22 so VM<->VM ssh by bare name works on the default port; the
+# host reaches it over vsock (vsock port 22 -> guest 22).
+/usr/sbin/sshd -p 22 -o PasswordAuthentication=no -o PermitUserEnvironment=yes
+echo "##### FC-VM-READY #####"
+# PID1 = the vsock<->sshd bridge (reaps its own forked relays)
+exec socat VSOCK-LISTEN:22,reuseaddr,fork TCP4:127.0.0.1:22

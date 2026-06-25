@@ -1,0 +1,155 @@
+#!/bin/bash
+# Show progress of the current (or specified) remote Claude session.
+# Reads the session JSONL on the session's remote host and summarizes activity.
+#
+# Usage:
+#   cs-claude-remote-status <name-or-id>         # session name or UUID is REQUIRED
+#   cs-claude-remote-status <name-or-id> -n 5    # last 5 assistant messages
+#   cs-claude-remote-status <name-or-id> -t      # show tool calls too
+
+set -euo pipefail
+
+REMOTE_PROJECTS='.cs-claude/projects'
+SESSION_MAP_DIR="$HOME/.cs-claude-remote-sessions"
+
+HOST_FLAG=""
+# Resolve the SSH target host: --host flag > the session's stored host > the
+# CS_CLAUDE_REMOTE_HOST env var > this machine's short hostname.
+resolve_remote_host() {
+    local name="${1:-}" h
+    if [[ -n "$HOST_FLAG" ]]; then printf '%s\n' "$HOST_FLAG"; return; fi
+    if [[ -n "$name" && -f "$SESSION_MAP_DIR/${name}.host" ]]; then
+        h="$(cat "$SESSION_MAP_DIR/${name}.host" 2>/dev/null)"
+        [[ -n "$h" ]] && { printf '%s\n' "$h"; return; }
+    fi
+    if [[ -n "${CS_CLAUDE_REMOTE_HOST:-}" ]]; then printf '%s\n' "$CS_CLAUDE_REMOTE_HOST"; return; fi
+    hostname -s
+}
+
+NUM_MESSAGES=3
+SESSION=""
+SHOW_TOOLS=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -n) NUM_MESSAGES="$2"; shift 2 ;;
+        -t) SHOW_TOOLS=true; shift ;;
+        -H|--host) HOST_FLAG="$2"; shift 2 ;;
+        -h|--help)
+            echo "Usage: cs-claude-remote-status <name-or-session-id> [-n NUM] [-t]"
+            echo "  name-or-session-id  Session name or UUID (REQUIRED)"
+            echo "  -n NUM              Show last NUM assistant messages (default: 3)"
+            echo "  -t                  Include tool use calls"
+            echo "  -H, --host <host>   SSH target host (default: the session's stored host)"
+            exit 0
+            ;;
+        *)
+            SESSION="$1"
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$SESSION" ]]; then
+    echo "Error: session name or UUID is required" >&2
+    echo "  Usage: cs-claude-remote-status <name-or-session-id> [-n NUM] [-t]" >&2
+    echo "  List sessions: cs-claude-remote-sessions" >&2
+    exit 1
+fi
+
+# Resolve session name to UUID if needed (remember the name for host lookup).
+ORIG_NAME=""
+if [[ ! "$SESSION" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    ORIG_NAME="$SESSION"
+    UUID_FILE="$SESSION_MAP_DIR/$SESSION"
+    if [[ -f "$UUID_FILE" ]]; then
+        SESSION=$(cat "$UUID_FILE")
+    else
+        echo "No UUID mapping found for session '$SESSION'" >&2; exit 1
+    fi
+fi
+
+# Resolve the SSH target host for this session.
+REMOTE_HOST="$(resolve_remote_host "$ORIG_NAME")"
+
+# Find the JSONL file on the remote machine by UUID
+JSONL_PATH=$(ssh "$REMOTE_HOST" "find \$HOME/$REMOTE_PROJECTS -name '*${SESSION}.jsonl' 2>/dev/null" | head -1 | tr -d '\r')
+
+if [[ -z "$JSONL_PATH" ]]; then
+    echo "Session $SESSION not found on $REMOTE_HOST" >&2; exit 1
+fi
+
+# Read the tail of the JSONL and extract recent assistant messages
+# We read more lines than needed since not all lines are assistant messages
+TAIL_LINES=$(( NUM_MESSAGES * 20 ))
+SHOW_TOOLS_PY=$( $SHOW_TOOLS && echo True || echo False )
+
+ssh "$REMOTE_HOST" "tail -n $TAIL_LINES '$JSONL_PATH'" 2>/dev/null \
+    | python3 -u -c "
+import sys, json
+
+NUM = $NUM_MESSAGES
+SHOW_TOOLS = $SHOW_TOOLS_PY
+IS_TTY = sys.stdout.isatty()
+
+def dim(t):   return f'\033[2m{t}\033[0m' if IS_TTY else t
+def bold(t):  return f'\033[1m{t}\033[0m' if IS_TTY else t
+def cyan(t):  return f'\033[36m{t}\033[0m' if IS_TTY else t
+
+entries = []
+
+for line in sys.stdin.buffer:
+    line = line.decode('utf-8', errors='replace').strip()
+    if not line: continue
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+
+    typ = obj.get('type', '')
+    if typ == 'assistant':
+        msg = obj.get('message', {})
+        content = msg.get('content', [])
+        ts = obj.get('timestamp', '')
+        texts = []
+        tools = []
+        for block in (content if isinstance(content, list) else []):
+            if isinstance(block, dict):
+                if block.get('type') == 'text':
+                    texts.append(block.get('text', ''))
+                elif block.get('type') == 'tool_use' and SHOW_TOOLS:
+                    name = block.get('name', 'unknown')
+                    inp = block.get('input', {})
+                    # Summarize tool input
+                    if name in ('Read', 'Glob', 'Grep'):
+                        detail = inp.get('file_path') or inp.get('pattern') or inp.get('path', '')
+                    elif name == 'Edit':
+                        detail = inp.get('file_path', '')
+                    elif name == 'Write':
+                        detail = inp.get('file_path', '')
+                    elif name == 'Bash':
+                        cmd = inp.get('command', '')
+                        detail = (cmd[:80] + '...') if len(cmd) > 80 else cmd
+                    else:
+                        detail = ''
+                    tools.append(f'{name}({detail})')
+            elif isinstance(block, str):
+                texts.append(block)
+        text = '\n'.join(texts).strip()
+        if text or tools:
+            entries.append((ts, text, tools))
+
+# Show last N
+for ts, text, tools in entries[-NUM:]:
+    ts_short = ts[:19].replace('T', ' ') if ts else ''
+    print(dim(f'--- {ts_short} ---'))
+    if tools:
+        for t in tools:
+            print(cyan(f'  [tool] {t}'))
+    if text:
+        # Truncate very long messages
+        if len(text) > 2000:
+            text = text[:2000] + '\n... (truncated)'
+        print(text)
+    print()
+"

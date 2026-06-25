@@ -1,0 +1,251 @@
+#!/bin/bash
+# Remote-side driver for Codex remote delegation (tmux model — mirrors cs-claude-turn).
+# Runs ON the remote machine. Drives one conversational turn against an INTERACTIVE codex TUI
+# kept warm in a long-running tmux session, and returns that turn's output by reading the codex
+# session JSONL (the rollout file) — NOT by scraping the tmux pane (which is full of TUI/ANSI).
+#
+# One turn =
+#   1. ensure the tmux session is alive (launch `cs-codex` for a new session, or
+#      `cs-codex resume <uuid>` if it died and we know the codex session id), auto-clearing the
+#      first-run trust prompt and refusing screens that need a human (sign-in);
+#   2. paste the prompt (read from stdin) via tmux load-buffer + bracketed paste, submit Enter;
+#   3. wait for the turn to finish by watching the rollout JSONL for a new task_complete event
+#      ({"payload":{"type":"task_complete"}}) — codex's deterministic end-of-turn edge;
+#   4. print the agent message(s) appended since the prompt was sent.
+#
+# codex assigns the session id itself (it can't be forced), so the tmux session is named by a
+# stable local token (cs-codex-<token>) passed in by the caller, and the codex session id is
+# captured from the new rollout file after the first turn and emitted as a trailing sentinel:
+#   __CS_CODEX_SESSION_ID__ <uuid>
+# which the local cs-codex-remote maps to the session name (and strips from the output).
+#
+# Usage: echo "prompt" | cs-codex-turn --tmux <token> [--uuid <uuid>] [--workdir <dir>] \
+#            [--format text|json] [--timeout <secs>] [--name <label>]
+# Exit codes: 0 ok, 2 turn timed out/stalled, 3 launch/setup failure (e.g. needs sign-in), 1 usage.
+
+set -uo pipefail
+
+TOKEN=""; UUID=""; WORKDIR=""; FORMAT="text"; TIMEOUT="${CS_CODEX_TIMEOUT:-1800}"; LABEL=""
+# Stall watchdog: bail early if the JSONL stops growing AND the TUI is no longer working before
+# a task_complete appears. 0 disables. Env-overridable.
+STALL_SECS="${CS_CODEX_STALL_SECS:-180}"
+CODEX_DIR="$HOME/.cs-codex"
+err() { echo "cs-codex-turn: $*" >&2; }
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --tmux)    TOKEN="$2"; shift 2 ;;
+        --uuid)    UUID="$2"; shift 2 ;;
+        --workdir) WORKDIR="$2"; shift 2 ;;
+        --format)  FORMAT="$2"; shift 2 ;;
+        --timeout) TIMEOUT="$2"; shift 2 ;;
+        --name)    LABEL="$2"; shift 2 ;;
+        -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
+        *) err "unknown argument: $1"; exit 1 ;;
+    esac
+done
+
+[[ -n "$TOKEN" ]] || { err "--tmux <token> is required"; exit 1; }
+[[ "$TOKEN" =~ ^[A-Za-z0-9_-]+$ ]] || { err "--tmux token '$TOKEN' has invalid characters"; exit 1; }
+if [[ -n "$UUID" ]] && ! [[ "$UUID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    err "--uuid '$UUID' is not a valid uuid"; exit 1
+fi
+command -v codex >/dev/null 2>&1 || { err "codex not found on remote PATH"; exit 3; }
+command -v tmux  >/dev/null 2>&1 || { err "tmux not found on remote PATH"; exit 3; }
+
+export CODEX_HOME="$CODEX_DIR"
+SESS="$CODEX_HOME/sessions"
+TMUX_SESSION="cs-codex-$TOKEN"
+
+PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-codex-turn.XXXXXX")"
+trap 'rm -f "$PROMPT_FILE"' EXIT
+cat > "$PROMPT_FILE"
+[[ -s "$PROMPT_FILE" ]] || { err "empty prompt on stdin"; exit 1; }
+
+# --- helpers --------------------------------------------------------------
+
+# Locate the rollout JSONL for a codex session id (rollout-<ts>-<uuid>.jsonl), if it exists.
+sess_file_for() { find "$SESS" -type f -name "*-$1.jsonl" 2>/dev/null | head -1; }
+
+# Count completed turns = number of task_complete events in the rollout JSONL.
+task_count() {
+    local f="$1"; [[ -f "$f" ]] || { echo 0; return; }
+    python3 - "$f" <<'PY'
+import json, sys
+n = 0
+try:
+    for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line: continue
+        try: o = json.loads(line)
+        except Exception: continue
+        p = o.get("payload")
+        if isinstance(p, dict) and p.get("type") == "task_complete":
+            n += 1
+except FileNotFoundError:
+    pass
+print(n)
+PY
+}
+
+line_count() { local f="$1"; [[ -f "$f" ]] && wc -l < "$f" | tr -d ' ' || echo 0; }
+
+pane() { tmux capture-pane -p -t "$TMUX_SESSION" 2>/dev/null; }
+session_alive() { tmux has-session -t "$TMUX_SESSION" 2>/dev/null; }
+
+# Classify the current TUI screen from the pane. Order matters: blocking overlays (trust,
+# sign-in) before the "working" indicator, before the ready status line.
+detect_state() {
+    local p; p="$(pane)"
+    [[ -z "$p" ]] && { echo "unknown"; return; }
+    case "$p" in
+        *"Do you trust the contents of this directory"*)                 echo "trust_folder"; return ;;
+        *"Sign in with ChatGPT"*|*"Welcome to Codex"*|*"Provide your own API key"*) echo "login"; return ;;
+        *"esc to interrupt"*)                                            echo "working"; return ;;
+    esac
+    # No blocking overlay and not working: ready once codex's status line ("<model> default ·
+    # <dir>") is up.
+    case "$p" in
+        *"default ·"*) echo "ready"; return ;;
+    esac
+    echo "unknown"
+}
+
+# Wait until the TUI is ready to accept input. Auto-clears the first-run trust prompt; fails fast
+# on a sign-in screen (needs a human).
+wait_ready() {
+    local deadline=$(( SECONDS + 60 )) st
+    while (( SECONDS < deadline )); do
+        session_alive || { err "tmux session died during startup"; return 3; }
+        st="$(detect_state)"
+        case "$st" in
+            trust_folder)
+                # Option 1 ("Yes, continue") is preselected.
+                tmux send-keys -t "$TMUX_SESSION" Enter; sleep 1 ;;
+            login)
+                err "remote codex needs interactive sign-in — cannot proceed unattended"
+                err "  sign in on the remote: 'cs-codex login' (or 'cs-sandbox codex-login <name>')"
+                return 3 ;;
+            ready)
+                return 0 ;;
+            working|unknown|*)
+                sleep 0.5 ;;
+        esac
+    done
+    err "timed out waiting for the codex TUI to become ready (last state: $(detect_state))"
+    return 3
+}
+
+# Launch (or relaunch) the warm tmux session if it is not alive. New session = `cs-codex`;
+# known prior session = `cs-codex resume <uuid>`. The permission mode is INHERITED from the target
+# host's cs-codex wrapper (its ~/.cs-codex/.yolo marker / CS_CODEX_YOLO) — we do NOT force it here,
+# mirroring cs-claude-turn. A non-yolo target can wedge on an approval prompt a headless TUI cannot
+# answer; that surfaces as the ready-timeout (exit 3) → attach, or set .yolo on that host.
+ensure_session() {
+    session_alive && return 0
+    local launch="cs-codex"
+    if [[ -n "$UUID" && -n "$(sess_file_for "$UUID")" ]]; then
+        launch="cs-codex resume $UUID"
+    fi
+    local newargs=(new-session -d -s "$TMUX_SESSION" -x 220 -y 50)
+    [[ -n "$WORKDIR" ]] && newargs+=(-c "$WORKDIR")
+    newargs+=("$launch")
+    tmux "${newargs[@]}" || { err "failed to start tmux session ($launch)"; return 3; }
+    wait_ready
+}
+
+# --- run one turn ---------------------------------------------------------
+
+ensure_session || exit $?
+wait_ready || exit $?
+
+# Snapshot which rollout files exist now, so a brand-new session's file (created only once the
+# first prompt is submitted) can be identified afterwards.
+BEFORE="$(find "$SESS" -type f -name '*.jsonl' 2>/dev/null | sort)"
+# If we already know this session's file, snapshot its turn/line counts for the wait below.
+JSONL=""; PRE_TASKS=0; PRE_LINES=0
+if [[ -n "$UUID" ]]; then
+    JSONL="$(sess_file_for "$UUID")"
+    PRE_TASKS="$(task_count "$JSONL")"; PRE_LINES="$(line_count "$JSONL")"
+fi
+
+# Paste the prompt as one bracketed-paste block, then submit.
+tmux load-buffer -b cs-codex-buf "$PROMPT_FILE"
+tmux paste-buffer -p -d -b cs-codex-buf -t "$TMUX_SESSION"
+sleep 0.4
+tmux send-keys -t "$TMUX_SESSION" Enter
+
+# Locate the rollout JSONL for this session: known one, or the file that appears post-submit.
+if [[ -z "$JSONL" ]]; then
+    for _ in $(seq 1 30); do
+        AFTER="$(find "$SESS" -type f -name '*.jsonl' 2>/dev/null | sort)"
+        JSONL="$(comm -13 <(printf '%s\n' "$BEFORE") <(printf '%s\n' "$AFTER") | head -1)"
+        [[ -n "$JSONL" ]] && break
+        sleep 0.5
+    done
+fi
+if [[ -z "$JSONL" ]]; then
+    # The first Enter is occasionally swallowed while the TUI finishes rendering the paste; retry.
+    tmux send-keys -t "$TMUX_SESSION" Enter
+    for _ in $(seq 1 20); do
+        AFTER="$(find "$SESS" -type f -name '*.jsonl' 2>/dev/null | sort)"
+        JSONL="$(comm -13 <(printf '%s\n' "$BEFORE") <(printf '%s\n' "$AFTER") | head -1)"
+        [[ -n "$JSONL" ]] && break
+        sleep 0.5
+    done
+fi
+[[ -n "$JSONL" ]] || { err "could not locate the codex rollout JSONL after submitting"; exit 3; }
+
+# Wait for a new task_complete (turn done), with a stall watchdog.
+deadline=$(( SECONDS + TIMEOUT ))
+completed=false; last_lines="$PRE_LINES"; last_change=$SECONDS
+while (( SECONDS < deadline )); do
+    session_alive || { err "tmux session died mid-turn"; exit 3; }
+    if (( $(task_count "$JSONL") > PRE_TASKS )); then completed=true; break; fi
+    if (( STALL_SECS > 0 )); then
+        cur_lines="$(line_count "$JSONL")"
+        if (( cur_lines != last_lines )); then
+            last_lines="$cur_lines"; last_change=$SECONDS
+        elif (( SECONDS - last_change >= STALL_SECS )); then
+            st="$(detect_state)"
+            if [[ "$st" != "working" ]]; then
+                err "turn stalled: JSONL unchanged for $(( SECONDS - last_change ))s, TUI state '$st', no task_complete"
+                err "  attach to inspect: tmux attach -t $TMUX_SESSION"
+                exit 2
+            fi
+            last_change=$SECONDS
+        fi
+    fi
+    sleep 1
+done
+$completed || { err "turn did not complete within ${TIMEOUT}s"; exit 2; }
+
+# Determine the codex session id (for the local name->id map): from the rollout file we used.
+OUT_UUID="$UUID"
+[[ -z "$OUT_UUID" ]] && OUT_UUID="$(python3 -c 'import json,sys;print(json.loads(open(sys.argv[1]).readline())["payload"]["id"])' "$JSONL" 2>/dev/null)"
+
+# Emit this turn's new content from the JSONL (lines appended after PRE_LINES).
+python3 - "$JSONL" "$PRE_LINES" "$FORMAT" <<'PY'
+import json, sys
+path, pre_lines, fmt = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+with open(path, encoding="utf-8", errors="replace") as fh:
+    lines = fh.readlines()
+new = lines[pre_lines:]
+if fmt == "json":
+    sys.stdout.write("".join(new)); sys.exit(0)
+# text: concatenate the agent's final-answer messages from this turn.
+chunks = []
+for line in new:
+    line = line.strip()
+    if not line: continue
+    try: o = json.loads(line)
+    except Exception: continue
+    p = o.get("payload")
+    if isinstance(p, dict) and p.get("type") == "agent_message":
+        t = (p.get("message") or "").rstrip()
+        if t: chunks.append(t)
+print("\n\n".join(chunks))
+PY
+
+[[ -n "$OUT_UUID" ]] && printf '\n__CS_CODEX_SESSION_ID__ %s\n' "$OUT_UUID"
+exit 0

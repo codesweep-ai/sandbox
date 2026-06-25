@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Launch codex under the cs-codex profile (CODEX_HOME=~/.cs-codex) — the Codex counterpart
+# of cs-claude. A dedicated profile keeps the sandbox's Codex config/auth isolated from any
+# personal ~/.codex and lets us ship sane defaults (config.toml in the home skeleton).
+#
+# YOLO mode (no approvals, no sandbox) is enabled when CS_CODEX_YOLO is set in the
+# environment or the marker file ~/.cs-codex/.yolo exists; cs-sandbox creates that marker for
+# `--yolo` agent instances. YOLO uses `--dangerously-bypass-approvals-and-sandbox`, which is
+# only safe because the instance is itself an isolated container/VM. Otherwise codex runs with
+# the profile's defaults (approval_policy=on-request, sandbox_mode=workspace-write, from
+# config.toml) — the analogue of cs-claude's `--permission-mode auto`.
+CODEX_DIR="$HOME/.cs-codex"
+mkdir -p "$CODEX_DIR" 2>/dev/null || true   # ensure the profile dir exists (first run / fresh host)
+export CODEX_HOME="$CODEX_DIR"
+
+# Carry host-provided provider auth (API key / custom provider). ~/.cs-codex/env is seeded from the
+# host; sourcing it puts OPENAI_API_KEY (or a custom provider's env_key var) into codex's environment.
+[ -f "$CODEX_DIR/env" ] && { set -a; . "$CODEX_DIR/env"; set +a; }
+
+# Pre-trust the project so codex never stops at the "Do you trust the contents of this
+# directory?" gate. That gate is separate from approvals/sandbox (it controls loading
+# project-local config/hooks/exec policies), so even --yolo would otherwise hit it. codex keys
+# trust by the project root — the git repo root if any, else the launch dir — and persists it
+# as a [projects."<root>"] table in config.toml; write that exact entry (what accepting the
+# prompt would persist), once per root.
+cfg="$CODEX_DIR/config.toml"
+root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"; root="${root:-$PWD}"
+if ! grep -qF "[projects.\"$root\"]" "$cfg" 2>/dev/null; then
+  printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$root" >> "$cfg"
+fi
+
+if [ -n "${CS_CODEX_YOLO:-}" ] || [ -f "$CODEX_DIR/.yolo" ]; then
+  exec codex --dangerously-bypass-approvals-and-sandbox "$@"
+fi
+exec codex "$@"
