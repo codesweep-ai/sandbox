@@ -1653,6 +1653,7 @@ fc_dns_running() {
 }
 fc_dns_up() {
     mkdir -p "$FC_NET_DIR/hosts.d"
+    command -v dnsmasq >/dev/null 2>&1 || return 1   # optional (podman containers use aardvark); fc_preflight guards the firecracker path
     fc_dns_running && return 0
     local gw dns br; gw="$(fc_net_gw)"; dns="$(fc_dns_ip)"; br="$(fc_net_bridge)"
     [[ -n "$gw" ]] || die "fc: cannot read podman network '$NET' gateway"
