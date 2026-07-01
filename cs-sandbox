@@ -23,7 +23,10 @@ CONTAINERFILE="Containerfile"
 PRIVATE_REGISTRY="${CS_SANDBOX_PRIVATE_REGISTRY-}"
 PRIVATE_REGISTRY_INSECURE="${CS_SANDBOX_PRIVATE_REGISTRY_INSECURE-0}"
 # Normalize the insecure flag to a clean 1/0 for the build-arg (accepts 1/true/yes/on).
-case "${PRIVATE_REGISTRY_INSECURE,,}" in 1|true|yes|on) PRIVATE_REGISTRY_INSECURE=1 ;; *) PRIVATE_REGISTRY_INSECURE=0 ;; esac
+# Use tr instead of Bash 4's ${var,,}; macOS still ships Bash 3.2.
+PRIVATE_REGISTRY_INSECURE_LC="$(printf '%s' "$PRIVATE_REGISTRY_INSECURE" | tr '[:upper:]' '[:lower:]')"
+case "$PRIVATE_REGISTRY_INSECURE_LC" in 1|true|yes|on) PRIVATE_REGISTRY_INSECURE=1 ;; *) PRIVATE_REGISTRY_INSECURE=0 ;; esac
+unset PRIVATE_REGISTRY_INSECURE_LC
 NET="cs-sandbox-net"
 PREFIX=""                                   # instances use their bare name; infra (network, volumes, keepalive) keep cs-sandbox-*
 PORT_MIN="${CS_SANDBOX_PORT_MIN:-2200}"
@@ -447,9 +450,8 @@ build_seed() {
 # "hostpath<TAB>name" line per spec.
 _resolve_dir_specs() {  # <flag-for-msgs> <spec...>
     local flag="$1"; shift
-    local -a specs=("$@")
     local seen="" spec path name rp
-    for spec in "${specs[@]}"; do
+    for spec in "$@"; do
         # PATH:NAME form (NAME must contain no slash)
         if [[ "$spec" == *:* && "${spec##*:}" != */* && "${spec##*:}" != "" ]]; then
             path="${spec%:*}"; name="${spec##*:}"
@@ -478,9 +480,8 @@ resolve_snapshots() { _resolve_dir_specs --snapshot "$@"; }
 # Spec: PATH[@REF][:NAME]  (REF = base commit, default source HEAD; NAME = home dir).
 # The source is later RO-mounted; the entrypoint alternates-clones it into ~/<dir>.
 resolve_repo_clones() {
-    local -a specs=("$@")
     local seen="" spec path ref name rp
-    for spec in "${specs[@]}"; do
+    for spec in "$@"; do
         ref=""; name=""
         if [[ "$spec" == *:* && "${spec##*:}" != */* && "${spec##*:}" != "" ]]; then
             name="${spec##*:}"; spec="${spec%:*}"
