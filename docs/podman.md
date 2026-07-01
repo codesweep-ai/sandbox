@@ -9,9 +9,8 @@ shared image stores, agent tooling) lives in [`design.md`](design.md).
 ## Why a container
 
 The container shares the host kernel - no separate guest kernel to build or boot - so it is the
-**lighter, faster-to-start** engine, the **only** engine on macOS / non-KVM hosts, and the one that
-supports a **live `--mount`** share (a real host-directory bind-mount, which a microVM has no
-`virtio-fs` to offer). The trade-off: isolation rests on the **container boundary** (a scaled-down
+**lighter, faster-to-start** engine and the **only** engine on macOS / non-KVM hosts. The
+trade-off: isolation rests on the **container boundary** (a scaled-down
 capability set + seccomp, bounded by your unprivileged host user) rather than a separate kernel -
 which is why the autonomous **agent** type defaults to the microVM on a Linux/KVM host. See
 [firecracker.md](firecracker.md#why-a-microvm) for the other side of that trade.

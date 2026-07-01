@@ -18,7 +18,7 @@ Three companion documents cover the engine- and feature-specific parts:
 ## Overview
 
 - **Two sandbox types**, by who runs them:
-  - **user** - for the human host user. Gets a one-time **copy** (not a live mount) of the
+  - **user** - for the human host user. Gets a one-time **copy** of the
     host's `~/.ssh`, so in-sandbox git-over-SSH works as it does on the host.
   - **agent** (default) - for an autonomous coding agent. Its own persistent home, and **no**
     host SSH credentials of any kind.
@@ -267,20 +267,18 @@ are in [`firecracker.md`](firecracker.md#optional-reach-sandboxes-directly-from-
 ## Directory sharing
 
 A host directory comes into a sandbox only when you ask - there is **no implicit `$PWD`
-mount** on either engine. Three modes, each landing the directory at `~/<name>` (default name =
+mount** on either engine. Two modes, each landing the directory at `~/<name>` (default name =
 basename; `:NAME` to override), each repeatable; a name clash is a hard error:
 
-| flag | what you get | host edits show through? | writable in guest? | engines |
-|---|---|:---:|:---:|---|
-| `--repo PATH[@REF][:NAME]` | per-sandbox **git checkout** on branch `cs-sandbox/<name>` (objects borrowed read-only) | no | yes (own branch) | both |
-| `--snapshot PATH[:NAME]` | **read-only frozen copy** of any directory | no | no | both |
-| `--mount PATH[:NAME]` | **live read-write** bind-mount of any directory | yes | yes | Podman only |
+| flag | what you get | writable in guest? | engines |
+|---|---|:---:|---|
+| `--repo PATH[@REF][:NAME]` | per-sandbox **git checkout** on branch `cs-sandbox/<name>` (objects borrowed read-only) | yes (own branch) | both |
+| `--snapshot PATH[:NAME]` | **read-only frozen copy** of any directory | no | both |
 
 `--repo` is the engine-portable, git-aware mode (retrieve the sandbox's commits with `cs-sandbox
-fetch`, send host commits in with `cs-sandbox push`); it requires a git repo. `--mount` and
-`--snapshot` take any directory. `--mount` needs a shared filesystem, which a microVM doesn't
-have, so it is Podman-only (on Firecracker use `--snapshot` or `--repo`). Full design in
-[`repo-sharing.md`](repo-sharing.md).
+fetch`, send host commits in with `cs-sandbox push`); it requires a git repo. `--snapshot` takes
+any directory. Both work identically on either engine — a sandbox does its work, then you fetch the
+results back to the host. Full design in [`repo-sharing.md`](repo-sharing.md).
 
 On **macOS**, each shared path must resolve under a podman-machine-shared root (by default, under
 `$HOME`); `cs-sandbox` errors with remediation otherwise.

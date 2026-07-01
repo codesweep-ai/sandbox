@@ -17,8 +17,8 @@ a real kernel, so the whole nested-podman apparatus the container engine needs (
 [`podman.md`](podman.md#nested-podman)) is **unnecessary**; Podman
 just runs.
 
-The cost: a microVM has no live host-directory share (no `virtio-fs`), so the rootfs and shared
-directories are delivered as block devices, not live mounts.
+The cost: with no `virtio-fs`, the rootfs and shared directories are delivered to a microVM as
+block devices — ext4 disks built on the host and attached to the guest.
 
 ## Prerequisites
 
@@ -287,8 +287,8 @@ failed create so it can't leak its reserved address/port. The cache builds are c
 
 Firecracker is a deliberately lean rust-vmm/KVM VMM, which trades features for a small surface:
 
-- **No `virtio-fs`, so no live host-directory share.** Directory sharing is a RO ext4 disk
-  (`--snapshot`) or the alternates clone (`--repo`) - never a live `--mount`.
+- **Directory sharing is a block device (no `virtio-fs`).** A shared directory comes in as a RO
+  ext4 disk (`--snapshot`) or the alternates clone (`--repo`).
 - **Shared objects are point-in-time.** Refresh the disk, or `fetch` for later host commits; reflink
   makes the rootfs copy ~free on btrfs/xfs.
 - **VM names are sandbox-registered** on create/destroy rather than auto-discovered the way container

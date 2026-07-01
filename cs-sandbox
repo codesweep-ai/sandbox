@@ -441,11 +441,10 @@ build_seed() {
     return 0
 }
 
-# --- repo mount specs -----------------------------------------------------
-# Echoes one "hostpath<TAB>mountname" line per repo to mount.
-# --mount specs (live RW bind-mount, podman only) and --snapshot specs (RO point-in-time
-# copy, both engines) share the same PATH[:NAME] grammar and validation (any directory —
-# no git requirement, unlike --repo). Echo one "hostpath<TAB>name" line per spec.
+# --- directory snapshot specs --------------------------------------------
+# --snapshot specs (RO point-in-time copy, both engines) use the PATH[:NAME] grammar and
+# validation (any directory — no git requirement, unlike --repo). Echo one
+# "hostpath<TAB>name" line per spec.
 _resolve_dir_specs() {  # <flag-for-msgs> <spec...>
     local flag="$1"; shift
     local -a specs=("$@")
@@ -472,7 +471,6 @@ _resolve_dir_specs() {  # <flag-for-msgs> <spec...>
         printf '%s\t%s\n' "$rp" "$name"
     done
 }
-resolve_mounts()    { _resolve_dir_specs --mount    "$@"; }
 resolve_snapshots() { _resolve_dir_specs --snapshot "$@"; }
 
 # --- repo clone specs (--repo) -------------------------------------------
@@ -741,7 +739,6 @@ cmd_create() {
     # normal, so peers and the host CAN still ssh into it. Outbound-only SSH restriction; network
     # reachability is unchanged. The lever lives in build_seed. Agent-only.
     local solo=0
-    local -a mount_specs=()    # --mount: live RW bind-mount of a dir (podman only)
     local -a snap_specs=()     # --snapshot: RO point-in-time copy of a dir (both engines)
     local -a repo_clones=()    # --repo: per-instance git checkout (both engines)
     local -a shared_stores=()
@@ -751,7 +748,6 @@ cmd_create() {
         case "$1" in
             --type)          type="$2"; shift 2 ;;
             --engine)        engine="$2"; shift 2 ;;
-            --mount)         mount_specs+=("$2"); shift 2 ;;
             --snapshot)      snap_specs+=("$2"); shift 2 ;;
             --repo)          repo_clones+=("$2"); shift 2 ;;
             --env|-e)        env_specs+=("$2"); shift 2 ;;
@@ -821,7 +817,6 @@ cmd_create() {
     # --- firecracker engine: a microVM, not a container ---
     if [[ "$engine" == firecracker ]]; then
         is_macos && die "the firecracker engine is Linux/KVM only (no macOS)"
-        [[ ${#mount_specs[@]} -eq 0 ]] || die "--mount (live bind-mount) needs a shared filesystem the microVM doesn't have; use --snapshot (read-only point-in-time copy) or --repo (per-instance checkout)"
         local ss
         for ss in ${shared_stores[@]+"${shared_stores[@]}"}; do
             podman volume exists "cs-sandbox-shared-$ss" 2>/dev/null \
@@ -843,11 +838,10 @@ cmd_create() {
     ensure_tier_keys
 
     # No implicit mount (consistent with the firecracker engine): a dir gets in only when you
-    # ask for it — --mount (live bind-mount), --snapshot (RO point-in-time copy), or --repo
-    # (per-instance checkout). With none, the home has no shared dir (no automatic $PWD mount).
+    # ask for it — --snapshot (RO point-in-time copy) or --repo (per-instance checkout). With
+    # none, the home has no shared dir (no automatic $PWD mount).
     # resolve up front (fails fast on bad paths / collisions). The ${arr[@]+...} guard keeps
     # this safe under `set -u` on bash 3.2 (macOS).
-    local mounts; mounts="$(resolve_mounts ${mount_specs[@]+"${mount_specs[@]}"})"
     local snaps; snaps="$(resolve_snapshots ${snap_specs[@]+"${snap_specs[@]}"})"
     local repoclones; repoclones="$(resolve_repo_clones ${repo_clones[@]+"${repo_clones[@]}"})"
 
@@ -869,7 +863,6 @@ cmd_create() {
         echo "port=$port"
         echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         for ss in ${shared_stores[@]+"${shared_stores[@]}"}; do echo "shared=$ss"; done
-        while IFS=$'\t' read -r rp nm; do [[ -n "$rp" ]] && echo "mount=$rp:$nm"; done <<<"$mounts"
         while IFS=$'\t' read -r rp nm; do [[ -n "$rp" ]] && echo "snapshot=$rp:$nm"; done <<<"$snaps"
         while IFS=$'\t' read -r cs cd cr; do [[ -n "$cs" ]] && printf 'repoclone=%s\t%s\tcs-sandbox/%s\n' "$cs" "$cd" "$short"; done <<<"$repoclones"
     } > "$INST_DIR/$short/meta"
@@ -974,12 +967,6 @@ cmd_create() {
     if [[ ${#image_stores[@]} -gt 0 ]]; then
         run+=(-e "CS_SANDBOX_IMAGE_STORES=$(IFS=:; echo "${image_stores[*]}")")
     fi
-    # --mount: live RW bind-mount (shared working tree, edits flow both ways)
-    local rp nm
-    while IFS=$'\t' read -r rp nm; do
-        [[ -n "$rp" ]] || continue
-        run+=(-v "$rp:/home/$USER_NAME/$nm")
-    done <<<"$mounts"
     # --snapshot: read-only point-in-time copy. Freeze the dir into the instance dir (CoW
     # reflink where the fs supports it) and bind it RO, so host edits don't show through and
     # the guest can't write it — matching the firecracker engine's frozen-disk semantics.
@@ -1031,7 +1018,6 @@ cmd_create() {
     echo "  ssh:   ssh $full        # or: cs-sandbox ssh $short"
     echo "  shell: cs-sandbox exec $short"
     local rp nm
-    while IFS=$'\t' read -r rp nm; do [[ -n "$rp" ]] && echo "  mount:    $rp -> ~/$nm (live, read-write)"; done <<<"$mounts"
     while IFS=$'\t' read -r rp nm; do [[ -n "$rp" ]] && echo "  snapshot: $rp -> ~/$nm (read-only, frozen at create)"; done <<<"$snaps"
     local cs cd cr
     while IFS=$'\t' read -r cs cd cr; do [[ -n "$cd" ]] && echo "  repo:     ~/$cd on branch cs-sandbox/$short"; done <<<"$repoclones"
@@ -1512,7 +1498,6 @@ Commands:
     --type user|agent                  Instance kind (default: agent — autonomous, sandboxed, no
                                        host SSH creds; 'user' copies your host ~/.ssh for git-over-SSH).
     --engine firecracker|podman        Backend to run on (default: firecracker; podman on macOS).
-    --mount PATH[:NAME]                Live RW bind-mount of a dir at ~/<name> (podman only; repeatable).
     --snapshot PATH[:NAME]             Read-only point-in-time copy of a dir at ~/<name> (any engine; repeatable).
     --repo PATH[@REF][:NAME]           Per-instance git checkout on branch cs-sandbox/<name> (any engine; repeatable).
     --env KEY=VALUE, -e KEY=VALUE      Inject an env var into the whole sandbox — every ssh session

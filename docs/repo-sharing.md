@@ -2,18 +2,17 @@
 
 `--repo` shares a git repo into a sandbox as an **isolated, lightweight, per-sandbox checkout**
 that works the same on both engines (Podman containers and Firecracker microVMs). This document
-covers `--repo`; the plain directory modes (`--mount`, `--snapshot`) are in
+covers `--repo`; the plain directory mode (`--snapshot`) is in
 [`design.md`](design.md#directory-sharing).
 
-## The three sharing modes, at a glance
+## The two sharing modes, at a glance
 
 | flag | model | mutability | engines | use when |
 |---|---|---|---|---|
-| `--mount PATH[:NAME]` | **live bind mount** | RW, shared host tree | Podman only (needs a shared FS) | edit on host, run in guest; one shared tree |
-| `--snapshot PATH[:NAME]` | **frozen copy** (Podman `cp`+`:ro`; Firecracker RO ext4) | RO, point-in-time | both | freeze inputs/data; no host edits leak in |
+| `--snapshot PATH[:NAME]` | **frozen copy** (Podman `cp`+`:ro`; Firecracker RO ext4) | RO, point-in-time | both | freeze inputs/data at create time |
 | `--repo PATH[@REF][:NAME]` | **per-sandbox clone borrowing the source's git objects** | RW on its own branch | both | isolated git work / agents; portable; retrieve via git |
 
-`--mount` and `--snapshot` take **any** directory; `--repo` requires a git repo (a worktree or a
+`--snapshot` takes **any** directory; `--repo` requires a git repo (a worktree or a
 bare repo). All are repeatable and land at `~/<name>` (default name = basename of the **resolved**
 path - `--repo .` → the current directory's real name; `:NAME` overrides). For `--repo`, `@REF`
 sets the base commit (default: the source's `HEAD`), and the checkout lives on branch
@@ -99,8 +98,8 @@ branch from the sandbox's `meta` (`repoclone=<source>\t<dir>\tcs-sandbox/<name>`
 
 - `resolve_repo_clones` parses `--repo` specs - strips `:NAME` first (a slash-free, non-empty tail),
   then `@REF`; derives `dir` from the **resolved** path; validates each is a git repo (`.git` or
-  `objects/`); rejects duplicate names. It mirrors `--mount`/`--snapshot` via a shared
-  `_resolve_dir_specs`.
+  `objects/`); rejects duplicate names. It mirrors `--snapshot`'s PATH[:NAME] grammar (the shared
+  `_resolve_dir_specs`).
 - One engine hook is the only divergence: Podman adds `-v …:ro`; Firecracker builds + attaches the
   cached RO disk (`fc_repo_disk` / `fc_repo_key`). The first-boot clone and `fetch`/`push` are
   engine-agnostic. The seed `repos` manifest is **6 fields on Podman** (`dir`, the RO-source path,

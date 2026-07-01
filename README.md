@@ -31,8 +31,8 @@ is **create → work → fetch → destroy**.
 
 You drive everything from your host with the `cs-sandbox` CLI. Each sandbox runs on one of two
 engines (a Podman container or a Firecracker microVM) but they all join a single shared network, so
-every sandbox is reachable by name. You share data into a sandbox explicitly, as a git repo,
-a frozen snapshot, or a live mount, and pull commits back out. The diagram below traces that: the
+every sandbox is reachable by name. You share data into a sandbox explicitly, as a git repo
+or a frozen snapshot, and pull commits back out. The diagram below traces that: the
 host on top, the shared network holding the sandboxes, and how data moves in and out.
 
 ```
@@ -52,7 +52,7 @@ host on top, the shared network holding the sandboxes, and how data moves in and
    │   └──────────────────────┘       └──────────────────────┘     │
    └───────────────────────────────────────────────────────────────┘
 
-   host data in:  --repo · --snapshot · --mount        commits out:  fetch
+   host data in:  --repo · --snapshot        commits out:  fetch
 ```
 
 Every sandbox runs from one generic image (no identity baked in; your user is created at first
@@ -186,18 +186,16 @@ ssh driver
 ## Choosing an engine: Podman vs Firecracker
 
 Both engines work the same way for almost everything: same image, trust model, sharing flags, and
-shared network. They differ mostly in isolation versus weight, with a few capability gaps (for
-example, live `--mount` shares are Podman only). Pick with `--engine podman|firecracker`.
+shared network. They differ mostly in isolation versus weight. Pick with `--engine podman|firecracker`.
 
 | | **Podman container** | **Firecracker microVM** |
 |---|---|---|
 | Isolation | shares the host kernel, scaled-down capabilities | **own kernel**, hardware virtualization |
 | Root inside | rootful-in-userns (sudo wrapper) | **real root** |
 | Nested Podman | via a rootful-inside wrapper | native |
-| `--mount` (live RW share) | ✓ | ✗ (use `--repo` / `--snapshot`) |
 | Requires | Podman | `/dev/kvm`, Linux x86_64 |
 | Default on | macOS / non-KVM hosts | Linux + KVM |
-| **Reach for it when** | speed, live mounts, macOS | stronger isolation, untrusted workloads, nested root |
+| **Reach for it when** | speed, macOS | stronger isolation, untrusted workloads, nested root |
 | Deep dive | [`docs/podman.md`](docs/podman.md) | [`docs/firecracker.md`](docs/firecracker.md) |
 
 ## SSH trust
@@ -225,8 +223,8 @@ that holds your host keys.
 - **The boundary is the engine.** A Podman container shares the host kernel; a Firecracker microVM
   boots its own kernel under hardware virtualization, the stronger choice for untrusted or
   autonomous work.
-- **Nothing shared by default.** Host data enters a sandbox only through `--repo` (a git checkout),
-  `--snapshot` (a frozen read-only copy), or `--mount` (a live read-write bind, Podman only).
+- **Nothing shared by default.** Host data enters a sandbox only through `--repo` (a git checkout)
+  or `--snapshot` (a frozen read-only copy). Results come back out with `cs-sandbox fetch`.
 - **Agent vs user isolation.** The [SSH trust](#ssh-trust) rules are enforced per type, so an agent
   can't pivot through SSH into a sandbox that carries your host keys.
 - **`--yolo`** (agent sandboxes) drops the agents' approval prompts, safe because the sandbox itself
