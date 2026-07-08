@@ -204,8 +204,9 @@ Every sandbox runs an SSH server, so you reach each one by name. What a sandbox 
 depends on its **type**, set with `--type` (independent of engine): you (and your user sandboxes) can
 `ssh` into either type, but an agent sandbox can never `ssh` in as you.
 
-- **user sandbox** (`--type user`): yours. Gets a one-time copy of your host `~/.ssh`, so git-over-SSH
-  works as on the host, and it can `ssh` into **every** sandbox.
+- **user sandbox** (`--type user`): yours. **No** host keys are copied in; it has its own home and
+  can `ssh` into **every** sandbox. (If you ever need your own keys inside it, you can forward your
+  agent for a session — see [below](#using-your-ssh-keys-inside-a-user-sandbox-ssh--a).)
 - **agent sandbox** (default): one you hand to a coding agent. Its own home, **no** host SSH keys; it
   can `ssh` only into **other agent sandboxes**, never into a user sandbox.
 
@@ -215,8 +216,21 @@ depends on its **type**, set with `--type` (independent of engine): you (and you
 | **user** sandbox | ✓ | ✓ |
 | **agent** sandbox | ✗ | ✓ |
 
-So you and your user sandboxes reach everything, but a coding agent can never `ssh` into a sandbox
-that holds your host keys.
+So you and your user sandboxes reach everything, but a coding agent can never `ssh` into a user
+sandbox — which is also why a user sandbox is the one type where forwarding your agent (below) is
+safe from the fabric.
+
+### Using your SSH keys inside a user sandbox (`ssh -A`)
+
+A user sandbox has none of your SSH keys by default. If you ever need them inside one — for example
+to `ssh` from the sandbox into another machine using your own keys — you can forward your host
+ssh-agent for the session with `ssh -A <name>`; the keys are used without being copied in. A few
+things to keep in mind if you do:
+
+- Forward only into **user** sandboxes, not `--type agent` ones.
+- Load only the key you need into your agent (`ssh-add -c` prompts on the host for each use).
+- While you're connected, anything running as you inside the sandbox can *use* the forwarded socket
+  (it can't copy the key out).
 
 ## Security model
 
@@ -225,8 +239,11 @@ that holds your host keys.
   autonomous work.
 - **Nothing shared by default.** Host data enters a sandbox only through `--repo` (a git checkout)
   or `--snapshot` (a frozen read-only copy). Results come back out with `cs-sandbox fetch`.
+- **No host SSH keys in any sandbox.** Neither type receives a copy of your host keys; sandboxes
+  reach each other with generated per-tier keys. If you ever need your own keys inside a user sandbox
+  you can forward your agent for a session ([`ssh -A`](#using-your-ssh-keys-inside-a-user-sandbox-ssh--a)) — they stay on the host.
 - **Agent vs user isolation.** The [SSH trust](#ssh-trust) rules are enforced per type, so an agent
-  can't pivot through SSH into a sandbox that carries your host keys.
+  can't pivot through SSH into a user sandbox (the one type you'd forward your agent into).
 - **`--yolo`** (agent sandboxes) drops the agents' approval prompts, safe because the sandbox itself
   is the isolation boundary. **`--solo`** additionally denies the agent any *outbound* SSH into the
   fabric, while keeping it reachable for you to drive.

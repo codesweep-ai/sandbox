@@ -55,15 +55,14 @@ printf 'precedence ::ffff:0:0/96 100\n' > /etc/gai.conf; chmod 644 /etc/gai.conf
 # Let the dev user open ICMP sockets so `ping` works without a setuid/file-cap binary.
 echo '0 2147483647' > /proc/sys/net/ipv4/ping_group_range 2>/dev/null || true
 
-# --- first boot only: seed the home skeleton (bin, claude tools, dotfiles) + host ~/.ssh ---
+# --- first boot only: seed the home skeleton (bin, claude tools, dotfiles) ---
 # Clobber, not -n: useradd -m already populated the home from /etc/skel (stock .bashrc with
 # no nvm/pyenv), so the sandbox skeleton must overwrite it — else `claude` etc. aren't on
 # PATH. (The container engine mkdir's an empty home, so it doesn't hit this.)
+# NOTE: host SSH keys are never seeded here — a user sandbox gets git-over-SSH when the host
+# `ssh -A`s in (the forwarded agent supplies the keys), so they stay on the host.
 if [ ! -f "$HOME_DIR/.cs-sandbox-initialized" ]; then
   [ -d /sandbox/home ] && cp -af /sandbox/home/. "$HOME_DIR/" 2>/dev/null || true
-  if [ -d "$SEED/host_ssh" ]; then
-    mkdir -p "$HOME_DIR/.ssh"; cp -a "$SEED/host_ssh/." "$HOME_DIR/.ssh/" 2>/dev/null || true
-  fi
   touch "$HOME_DIR/.cs-sandbox-initialized"
   chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$HOME_DIR" 2>/dev/null || true
 fi

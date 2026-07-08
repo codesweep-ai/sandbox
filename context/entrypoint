@@ -63,10 +63,8 @@ chown "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CS_SANDBOX_HOME"
 if [ ! -f "$CS_SANDBOX_HOME/.cs-sandbox-initialized" ]; then
   # skeleton dotfiles, bin, vendored claude tools, pre-built nvim plugins, etc.
   cp -rn /sandbox/home/. "$CS_SANDBOX_HOME/" 2>/dev/null || true
-  if [ -d "$SEED/host_ssh" ]; then
-    mkdir -p "$SSH_DIR"
-    cp -a "$SEED/host_ssh/." "$SSH_DIR/" 2>/dev/null || true
-  fi
+  # NOTE: host SSH keys are never seeded into a sandbox. A user sandbox gets git-over-SSH when the
+  # host `ssh -A`s in (the forwarded agent supplies the keys), so they stay on the host.
   touch "$CS_SANDBOX_HOME/.cs-sandbox-initialized"
   # chown ONLY the seeded skeleton entries (by name), so bind-mounted repos are skipped
   for e in $(cd /sandbox/home && ls -A) .ssh .cs-sandbox-initialized; do

@@ -357,18 +357,45 @@ build_seed() {
     fi
 
     # in-instance ssh client config. "Host * !*.*" matches dotless names (peer sandboxes; dotted
-    # hosts like github.com keep ssh defaults) and accept-news the peer host key. AGENT instances
-    # also pin their tier key there (it is their only key). USER instances do NOT pin it: they
-    # reach peers with their own keys (H is authorized on every peer), and pinning an IdentityFile
-    # stops ssh from offering the default keys (id_rsa, …), which breaks ssh to real hosts.
-    # AGENTs additionally restrict auth to publickey: fabric/host access is always key-based, so
-    # when an agent's key isn't accepted (e.g. ssh to the host, which it can't auth to) ssh denies
-    # immediately instead of falling through to the host's password prompt and hanging on a TTY.
-    # (USER instances keep defaults — they may legitimately password-auth to a dotless LAN host.)
+    # hosts like github.com keep ssh defaults) and accept-news the peer host key. BOTH types pin
+    # their tier key here for PEER reach — it is the only key each holds that peers authorize (users
+    # hold U, agents hold G; no host keys are copied into either).
+    #
+    # The IdentityFile pin alone is not enough once the host does `ssh -A` into a user sandbox: the
+    # peer also authorizes H (the host keys), and OpenSSH offers forwarded-agent keys BEFORE a
+    # file-only IdentityFile, so a forwarded H would be accepted first and `-A` would silently switch
+    # the key a sandbox presents to peers. To keep sandbox→peer auth on the tier key with OR without
+    # `-A`, add `IdentitiesOnly yes` — but ONLY for real peers, identified by resolving onto the
+    # fabric subnet ($fabric_re, e.g. ^10[.]89[.]0[.]). A `Match exec` that greps the resolved v4
+    # address does this; anything that does NOT resolve onto the fabric (external hosts, dotless or
+    # not) is left alone, so a forwarded agent still reaches them (git-over-SSH, other machines).
+    # AGENTs additionally restrict the dotless match to publickey: fabric/host access is always
+    # key-based, so when an agent's key isn't accepted (e.g. ssh to the host) ssh denies immediately
+    # instead of falling through to the host's password prompt and hanging on a TTY. (USER instances
+    # keep defaults for the peer match — they may legitimately password-auth to a dotless LAN host.)
+    #
+    # A sandbox with a tier key (any non-solo) reaches peers with it, so it MUST get the guard. If the
+    # fabric subnet can't be determined we FAIL — never seed a config that would silently omit the
+    # guard and let `ssh -A` leak the host key to peers. (ensure_net runs before build_seed, so this
+    # should always succeed; the check is a hard tripwire, not a soft fallback.)
+    local fabric_gw fabric_re=""
+    fabric_gw="$(fc_net_gw 2>/dev/null)"                                    # e.g. 10.89.0.1
+    if [[ -n "$tier" ]]; then
+        [[ "$fabric_gw" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] \
+            || die "cannot seed '$short': could not determine the fabric subnet from podman network '$NET' (gateway='$fabric_gw'). The network must be up first (ensure_net)."
+        fabric_re="^$(printf '%s.' "${fabric_gw%.*}" | sed 's/[.]/[.]/g')"  # ^10[.]89[.]0[.]
+    fi
     {
-        echo "# Managed by cs-sandbox — applies to dotless hostnames (sandbox peers)."
+        echo "# Managed by cs-sandbox — sandbox→peer auth uses the tier key; other hosts may use a forwarded agent."
+        if [[ -n "$tier" ]]; then
+            # A dotless name resolving onto the fabric subnet is a real peer -> restrict it to the
+            # tier key so `ssh -A` cannot substitute a forwarded host key. (Skips the getent for
+            # dotted names, which are never peers.) $fabric_re is guaranteed set here (checked above).
+            printf 'Match exec "case %%h in *.*) exit 1 ;; esac; getent ahostsv4 %%h 2>/dev/null | grep -q '\''%s'\''"\n' "$fabric_re"
+            echo "    IdentitiesOnly yes"
+        fi
         echo "Host * !*.*"
-        [[ -n "$tier" && "$type" == "agent" ]] && echo "    IdentityFile ~/.ssh/$tier"
+        [[ -n "$tier" ]] && echo "    IdentityFile ~/.ssh/$tier"
         [[ "$type" == "agent" ]] && echo "    PreferredAuthentications publickey"
         echo "    StrictHostKeyChecking accept-new"
     } > "$seed/ssh_config"
@@ -385,21 +412,10 @@ build_seed() {
         rm -f "$seed/inject-env"
     fi
 
-    # user type: one-time snapshot copy of the host ~/.ssh (for git-over-ssh = H)
+    # No host ~/.ssh is ever copied into a sandbox (neither type). A user sandbox that needs
+    # git-over-SSH gets it when the host `ssh -A <name>`s in: the forwarded agent supplies the keys,
+    # which never leave the host. (rm -rf clears any host_ssh left by an older seed on recreate.)
     rm -rf "$seed/host_ssh"
-    if [[ "$type" == "user" && -d "$HOME/.ssh" ]]; then
-        mkdir -p "$seed/host_ssh"; chmod 700 "$seed/host_ssh"
-        # copy keys/config/known_hosts but NOT authorized_keys (we manage that)
-        local f
-        shopt -s dotglob nullglob
-        for f in "$HOME"/.ssh/*; do
-            case "$(basename "$f")" in
-                authorized_keys|config.d) continue ;;
-            esac
-            cp -a "$f" "$seed/host_ssh/" 2>/dev/null || true
-        done
-        shopt -u dotglob nullglob
-    fi
 
     # stable per-instance host keys (generated once)
     if ! ls "$seed/host_keys"/ssh_host_*_key >/dev/null 2>&1; then
@@ -775,7 +791,8 @@ cmd_create() {
     fi
     [[ -n "$name" ]] || die "usage: cs-sandbox create <name> [--type user|agent] [--engine firecracker|podman] [--repo P[:NAME]]..."
     # Default type: agent — the autonomous, sandboxed kind with no host SSH credentials.
-    # Pass --type user for an interactive instance that copies your host ~/.ssh.
+    # Pass --type user for an interactive instance; no host keys are copied in — `ssh -A <name>`
+    # forwards your agent when you need git-over-SSH.
     [[ -n "$type" ]] || type=agent
     case "$type" in user|agent) ;; *) die "--type must be 'user' or 'agent'" ;; esac
     case "$engine" in podman|firecracker) ;; *) die "--engine must be 'podman' or 'firecracker'" ;; esac
@@ -1497,7 +1514,9 @@ Commands:
 
   create <name> [options]              Create and start a new instance. Options:
     --type user|agent                  Instance kind (default: agent — autonomous, sandboxed, no
-                                       host SSH creds; 'user' copies your host ~/.ssh for git-over-SSH).
+                                       host SSH creds). Neither type copies your host keys in; for a
+                                       'user' instance, `ssh -A <name>` forwards your agent when you
+                                       need git-over-SSH.
     --engine firecracker|podman        Backend to run on (default: firecracker; podman on macOS).
     --snapshot PATH[:NAME]             Read-only point-in-time copy of a dir at ~/<name> (any engine; repeatable).
     --repo PATH[@REF][:NAME]           Per-instance git checkout on branch cs-sandbox/<name> (any engine; repeatable).
@@ -2336,7 +2355,6 @@ fc_cmd_create() {
     cp "$idir/seed/ssh_config" "$sd/ssh_config" 2>/dev/null || true # in-instance ssh config
     cp "$idir/seed/host_hosts" "$sd/host_hosts" 2>/dev/null || true # host-name -> reachable addr (/etc/hosts)
     cp "$idir/seed/inject-env" "$sd/inject-env" 2>/dev/null || true # --env/--env-file -> ~/.ssh/environment
-    [[ -d "$idir/seed/host_ssh" ]] && cp -a "$idir/seed/host_ssh" "$sd/host_ssh"  # user: host ~/.ssh
     [[ -d "$idir/seed/claude" ]]   && cp -a "$idir/seed/claude"   "$sd/claude"    # Claude creds
     [[ -d "$idir/seed/codex" ]]    && cp -a "$idir/seed/codex"    "$sd/codex"     # Codex creds
     cp "$idir/seed/git_identity" "$sd/git_identity" 2>/dev/null || true            # host global git user.name/email
@@ -2456,6 +2474,9 @@ JSON
 }
 
 # --- dispatch -------------------------------------------------------------
+# Allow tests to source this file for unit-testing individual functions without dispatching a
+# command: `CS_SANDBOX_NO_MAIN=1 source ./cs-sandbox`. Inert during normal execution.
+[[ -n "${CS_SANDBOX_NO_MAIN:-}" ]] && return 0 2>/dev/null || true
 [[ $# -ge 1 ]] || usage 1
 cmd="$1"; shift
 case "$cmd" in

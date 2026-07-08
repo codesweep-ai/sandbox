@@ -18,8 +18,8 @@ Three companion documents cover the engine- and feature-specific parts:
 ## Overview
 
 - **Two sandbox types**, by who runs them:
-  - **user** - for the human host user. Gets a one-time **copy** of the
-    host's `~/.ssh`, so in-sandbox git-over-SSH works as it does on the host.
+  - **user** - for the human host user. Receives **no** host SSH keys of its own; if you need your
+    keys inside one you can forward your agent for a session (`ssh -A`), so they are never copied in.
   - **agent** (default) - for an autonomous coding agent. Its own persistent home, and **no**
     host SSH credentials of any kind.
 - **Reach any sandbox by name**, never by port number - from the host (`ssh <name>`) and
@@ -69,7 +69,6 @@ Firecracker engine) with:
 - `ssh_config` and the stable `host_keys/`;
 - `host_hosts` - the host-by-name map (see [Networking](#reaching-the-host-by-name-from-inside-a-sandbox));
 - `inject-env` - `--env` / `--env-file` vars (see [Injecting environment variables](#injecting-environment-variables));
-- `host_ssh/` - the host `~/.ssh` snapshot (user sandboxes only);
 - `git_identity` - the host's global git `user.name`/`email`, seeded into the sandbox's `~/.gitconfig`;
 - `claude/` + `codex/` - the agent credentials, plus the API-key/cloud `env` + `creds/` when present.
 
@@ -77,20 +76,32 @@ On boot the guest init (the container entrypoint or the microVM's `/fc-init`) sp
 
 - **first boot** (`~/.cs-sandbox-initialized` absent): seed the skeleton home from the image
   (`/sandbox/home` - dotfiles, `~/bin` + the bundled agent tooling, pre-built Neovim plugins) and
-  chown it; copy the host `~/.ssh` snapshot (user sandboxes); install the agent credentials. `--repo`
-  clones use a separate `~/.cs-sandbox-repos-done` guard.
+  chown it; install the agent credentials. (No host `~/.ssh` is ever copied in - if you need your
+  keys inside a user sandbox you forward your agent with `ssh -A`.) `--repo` clones use a separate
+  `~/.cs-sandbox-repos-done` guard.
 - **every boot** (idempotent): refresh the *managed* ssh material - `authorized_keys`, the tier key,
   `ssh_config` → `~/.ssh/config.d/cs-sandbox`, and the persisted `ssh_host_*` keys - so key rotation
   just works; normalize perms; start sshd; signal readiness.
 
 The in-sandbox `~/.ssh/config.d/cs-sandbox` scopes its rules to `Host * !*.*` (dotless names = peer
-sandboxes) with `StrictHostKeyChecking accept-new`. **Agent** sandboxes also pin the agent-tier key
-there (`IdentityFile`, their only key) and set `PreferredAuthentications publickey` - fabric/host
-access is always key-based, so when an agent's key isn't accepted (e.g. ssh to the host) it is
-denied immediately instead of falling through to the host's `password` prompt and hanging on a TTY.
-**User** sandboxes omit both so ssh still offers the copied host keys to real git hosts (and may
-password-auth to a dotless LAN host). Dotted hosts (GitHub, FQDNs) are untouched, so git-over-SSH
-keeps working.
+sandboxes) with `StrictHostKeyChecking accept-new`. **Both** types pin their tier key there
+(`IdentityFile`) - it is the only key each holds that peers authorize (users hold `U`, agents hold
+`G`); the pin is scoped to dotless peer names, so dotted hosts (GitHub, FQDNs) are untouched. **Agent**
+sandboxes additionally set `PreferredAuthentications publickey` - fabric/host access is always
+key-based, so when an agent's key isn't accepted (e.g. ssh to the host) it is denied immediately
+instead of falling through to the host's `password` prompt and hanging on a TTY. **User** sandboxes
+omit that (they may legitimately password-auth to a dotless LAN host) and can reach dotted external
+hosts through an agent forwarded by `ssh -A` (if you forward one) - with no keys copied in.
+
+Pinning the tier key is not enough on its own once the host does `ssh -A` into a user sandbox: the
+peer also authorizes `H`, and OpenSSH offers forwarded-agent keys *before* a file-only `IdentityFile`,
+so a forwarded `H` would be accepted first and `-A` would silently change the key the sandbox presents
+to peers. To keep sandbox→peer auth on the tier key **with or without** `-A`, the config adds
+`IdentitiesOnly yes` - but only for real peers, identified by a `Match exec` that resolves the target
+and checks it lands on the **fabric subnet** (the podman network gateway's `/24`). Hosts that don't
+resolve onto the fabric (external machines, dotless or not) are left alone, so a forwarded agent still
+reaches them. Result: a user sandbox uses `U` for every peer regardless of `-A`, while `ssh -A` still
+lets it reach external hosts with your forwarded keys.
 
 ### Injecting environment variables
 
@@ -118,8 +129,8 @@ Access is governed by sandbox **type**, independent of engine. The matrix (clien
 | **agent** sandbox  | ✗ | ✓ |
 
 In words: the host and user sandboxes reach everything; agents reach other agents but **not**
-user sandboxes (so an agent can never touch a sandbox carrying your host SSH keys). The allowed
-reaches - note that nothing points *into* a user sandbox from an agent:
+user sandboxes (so an agent can never reach the agent socket you forward into a user sandbox with
+`ssh -A`). The allowed reaches - note that nothing points *into* a user sandbox from an agent:
 
 ```
                     ┌──────┐
@@ -140,7 +151,7 @@ Three key identities produce this matrix:
 
 | Symbol | What | Lives in | Grants |
 |---|---|---|---|
-| **H** | the host user's existing `~/.ssh/*.pub` | host `~/.ssh`, copied into user sandboxes | host → sandboxes; in-sandbox git-over-SSH |
+| **H** | the host user's existing `~/.ssh/*.pub` | **public** keys authorized in every sandbox; the private keys never leave the host | host → sandboxes (and, when *forwarded* via `ssh -A`, reaching external hosts from a user sandbox) |
 | **U** | a generated **user-tier** key | user sandboxes only | user sandbox → any sandbox |
 | **G** | a generated **agent-tier** key | agent sandboxes only | agent sandbox → agent sandboxes |
 
@@ -148,7 +159,8 @@ Three key identities produce this matrix:
 mode 600). Each sandbox's `authorized_keys` is **always generated by `cs-sandbox`** (a copied
 host `authorized_keys` is never inherited):
 
-- **user** sandbox authorizes `H + U`, and holds the private keys `H` (copied host `~/.ssh`) + `U`.
+- **user** sandbox authorizes `H + U`, and holds only the private key `U` (no host keys are copied
+  in; if you need your own keys inside, you forward your agent with `ssh -A`).
 - **agent** sandbox authorizes `H + U + G`, and holds only `G`.
 
 The single rule that blocks "agent → user": `G` is never written into a user sandbox's
@@ -367,8 +379,9 @@ warm in tmux and reading output from the session JSONL. The target host resolves
 (`-H <host>` > a per-session stored host > `$CS_CLAUDE_REMOTE_HOST`/`$CS_CODEX_REMOTE_HOST` > this
 machine's short hostname - inside a sandbox, that is its own name), so by default they target the
 sandbox itself. Reaching an external host needs
-SSH access to it - user sandboxes have it via the copied host keys; an agent can only reach hosts
-that trust the agent tier.
+SSH access to it - in a user sandbox that comes from the agent forwarded by `ssh -A` (whatever keys
+you loaded on the host), so it works while you hold an active forwarded session; an agent can only
+reach hosts that trust the agent tier.
 
 **Settings + instruction hubs** (non-secret, baked into each profile dir):
 
@@ -386,8 +399,8 @@ sessions and an in-sandbox Codex can drive Claude remote sessions.
 (`--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`) when a
 `.yolo` marker exists. `cs-sandbox create --yolo` is **rejected for `--type user`**; the marker is
 written only when the type is `agent` (a defense-in-depth re-check). Skipping prompts is safe only
-because the sandbox is an isolated sandbox - never for a user sandbox, which carries your host
-keys.
+because the sandbox is an isolated sandbox - never for a user sandbox, which holds your user-tier key
+and is the type you forward your agent into with `ssh -A`.
 
 **Subscription auth (secret, NEVER baked).** `cs-sandbox create` snapshots the host's agent
 credentials (`~/.cs-claude/.credentials.json`, `~/.cs-codex/auth.json`) into the gitignored
@@ -452,9 +465,18 @@ so use `env` + `creds/` (a note fires if a cloud flag is set without them). More
   This holds **only** while that boundary is intact: running the image rootful, `--privileged`, or
   `--userns=host` would turn the same passwordless sudo into genuine host-root.
 - SSH ports bind `127.0.0.1` only; sandboxes are not exposed on the LAN by default.
-- User sandboxes hold a copy of your host private keys inside the home **volume** (mode 600,
-  seeded once) - not in a repo-adjacent, git-trackable directory. The agent credential snapshot
-  lives only in the gitignored per-sandbox seed and the home volume - never in the image or git.
+- **No host private keys inside any sandbox.** Nothing at rest to leak from a sandbox's disk/volume;
+  sandboxes reach each other with generated tier keys. If you need your own keys inside a user
+  sandbox (e.g. to `ssh` on to another machine), you *forward* your agent with `ssh -A` - the keys
+  stay on the host, present only for the life of that session, and no agent can `ssh` into a user
+  sandbox to reach the socket. The agent credential snapshot lives only in the gitignored per-sandbox
+  seed and the home volume - never in the image or git.
+- **`ssh -A` is a deliberate, careful privilege (optional).** It's safe from the fabric (no agent can
+  `ssh` into a user sandbox to reach the socket) - but for the life of the connection any process
+  running as you *inside* that sandbox can use the forwarded socket (it cannot copy the key out). So
+  if you use it: only `ssh -A` into **user** sandboxes, never an agent one; forward only the key you
+  need (`ssh-add -c` to confirm each use on the host); and don't run untrusted code in a sandbox you
+  are actively forwarding into.
 
 ## Limitations
 
