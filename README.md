@@ -204,11 +204,14 @@ Every sandbox runs an SSH server, so you reach each one by name. What a sandbox 
 depends on its **type**, set with `--type` (independent of engine): you (and your user sandboxes) can
 `ssh` into either type, but an agent sandbox can never `ssh` in as you.
 
-- **user sandbox** (`--type user`): yours. **No** host keys are copied in; it has its own home and
-  can `ssh` into **every** sandbox. (If you ever need your own keys inside it, you can forward your
-  agent for a session — see [below](#using-your-ssh-keys-inside-a-user-sandbox-ssh--a).)
+- **user sandbox** (`--type user`): yours, to work in interactively. **No** host keys are copied in;
+  it has its own home and can `ssh` into **every** sandbox. (If it ever needs your own keys inside it,
+  you can lend them for a session — see [below](#lending-a-sandbox-specific-ssh-keys-with-ssh--a).)
 - **agent sandbox** (default): one you hand to a coding agent. Its own home, **no** host SSH keys; it
   can `ssh` only into **other agent sandboxes**, never into a user sandbox.
+
+User sandboxes are for you to work in by hand; run autonomous coding agents in `agent` sandboxes, not
+in user sandboxes.
 
 | client ↓ \ server → | user sandbox | agent sandbox |
 |---|:---:|:---:|
@@ -217,20 +220,24 @@ depends on its **type**, set with `--type` (independent of engine): you (and you
 | **agent** sandbox | ✗ | ✓ |
 
 So you and your user sandboxes reach everything, but a coding agent can never `ssh` into a user
-sandbox — which is also why a user sandbox is the one type where forwarding your agent (below) is
-safe from the fabric.
+sandbox. That unreachability is one half of what makes it safe to lend a user sandbox your keys
+(below); the other half is trusting whoever is working in it for the session.
 
-### Using your SSH keys inside a user sandbox (`ssh -A`)
+### Lending a sandbox specific SSH keys with `ssh -A`
 
-A user sandbox has none of your SSH keys by default. If you ever need them inside one — for example
-to `ssh` from the sandbox into another machine using your own keys — you can forward your host
-ssh-agent for the session with `ssh -A <name>`; the keys are used without being copied in. A few
-things to keep in mind if you do:
+Agent forwarding isn't a property of any sandbox type — it's a general, opt-in technique you apply
+deliberately when a sandbox needs to reach an SSH-protected resource (e.g. git-over-SSH to a private
+host). You can forward a controlled, specific set of your host keys for the session with
+`ssh -A <name>`, without copying any key into the sandbox — the keys stay on the host. What makes a
+given use *safe* is a per-situation judgment, not the type name. Keep both conditions in mind:
 
-- Forward only into **user** sandboxes, not `--type agent` ones.
-- Load only the key you need into your agent (`ssh-add -c` prompts on the host for each use).
-- While you're connected, anything running as you inside the sandbox can *use* the forwarded socket
-  (it can't copy the key out).
+- **Scope the keys.** Load only the key you need into your agent (`ssh-add -c` prompts on the host
+  for each use), rather than exposing your whole keyring.
+- **Trust the operator.** Only forward into a sandbox whose operator you trust for the duration of
+  the session, because while you're connected anything running as you there can *use* the forwarded
+  socket (it can't copy the key out). A user sandbox is the natural fit: you drive it yourself, and
+  the agent fabric can't `ssh` into it — but the trust judgment, not the type label, is what makes
+  it safe.
 
 ## Security model
 
@@ -240,10 +247,13 @@ things to keep in mind if you do:
 - **Nothing shared by default.** Host data enters a sandbox only through `--repo` (a git checkout)
   or `--snapshot` (a frozen read-only copy). Results come back out with `cs-sandbox fetch`.
 - **No host SSH keys in any sandbox.** Neither type receives a copy of your host keys; sandboxes
-  reach each other with generated per-tier keys. If you ever need your own keys inside a user sandbox
-  you can forward your agent for a session ([`ssh -A`](#using-your-ssh-keys-inside-a-user-sandbox-ssh--a)) — they stay on the host.
+  reach each other with generated per-tier keys. If a sandbox ever needs your own keys, you can lend
+  a specific set for a session ([`ssh -A`](#lending-a-sandbox-specific-ssh-keys-with-ssh--a)) — they
+  stay on the host.
+- **User sandboxes are for you, not for agents.** A user sandbox is where you work interactively; run
+  autonomous coding agents in `agent` sandboxes, never in a user sandbox.
 - **Agent vs user isolation.** The [SSH trust](#ssh-trust) rules are enforced per type, so an agent
-  can't pivot through SSH into a user sandbox (the one type you'd forward your agent into).
+  can't pivot through SSH into a user sandbox.
 - **`--yolo`** (agent sandboxes) drops the agents' approval prompts, safe because the sandbox itself
   is the isolation boundary. **`--solo`** additionally denies the agent any *outbound* SSH into the
   fabric, while keeping it reachable for you to drive.

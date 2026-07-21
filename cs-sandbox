@@ -1514,9 +1514,11 @@ Commands:
 
   create <name> [options]              Create and start a new instance. Options:
     --type user|agent                  Instance kind (default: agent — autonomous, sandboxed, no
-                                       host SSH creds). Neither type copies your host keys in; for a
-                                       'user' instance, `ssh -A <name>` forwards your agent when you
-                                       need git-over-SSH.
+                                       host SSH creds). Run autonomous coding agents in 'agent'
+                                       instances; a 'user' instance is for you to work in
+                                       interactively. Neither type copies your host keys in; when a
+                                       sandbox needs git-over-SSH, `ssh -A <name>` lends a specific
+                                       key for the session (see README).
     --engine firecracker|podman        Backend to run on (default: firecracker; podman on macOS).
     --snapshot PATH[:NAME]             Read-only point-in-time copy of a dir at ~/<name> (any engine; repeatable).
     --repo PATH[@REF][:NAME]           Per-instance git checkout on branch cs-sandbox/<name> (any engine; repeatable).
