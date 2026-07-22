@@ -1,0 +1,357 @@
+package fcdisk
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+
+	"github.com/codesweep-ai/sandbox/internal/run"
+)
+
+// DefaultKVerPin is the Fedora kernel-core NVR the guest kernel is pinned to when
+// CS_SANDBOX_FC_KVER is unset. It is deliberately the F44 **GA** kernel from the
+// frozen `fedora` repo, not a newer `updates` NVR: the `fedora` repo is immutable
+// for the release's lifetime, so this pin stays resolvable, whereas `updates`
+// churns the kernel release number every few weeks (200 → 202 → …) and drops the
+// old one, which would break the build on a schedule. Bump this only on a Fedora
+// base-image major bump (e.g. 44 → 45), to that release's GA kernel-core NVR.
+const DefaultKVerPin = "6.19.10-300.fc44"
+
+// BuildConfig carries the inputs the artifact BUILD path needs; the caller
+// resolves them from the environment. A zero BuildConfig is valid (its
+// Defaulted() fills the pins).
+type BuildConfig struct {
+	Image     string // podman image the kernel/rootfs are built from (required to build)
+	InitPath  string // host path of the guest init (image/guest/init), baked in as /fc-init
+	Kernel    string // "fedora" (default) or "host"
+	KVerPin   string // pinned fedora kernel-core NVR (CS_SANDBOX_FC_KVER); "" = latest
+	RootfsGB  int    // base rootfs size in GiB (default 14)
+	FCVersion string // firecracker release tag (default v1.16.0)
+}
+
+// Defaulted returns a copy with empty fields filled from the defaults.
+func (b BuildConfig) Defaulted() BuildConfig {
+	if b.Kernel == "" {
+		b.Kernel = "fedora"
+	}
+	if b.KVerPin == "" && b.Kernel == "fedora" {
+		b.KVerPin = DefaultKVerPin
+	}
+	if b.RootfsGB == 0 {
+		b.RootfsGB = 14
+	}
+	if b.FCVersion == "" {
+		b.FCVersion = "v1.16.0"
+	}
+	return b
+}
+
+// stampPath returns the path of a small marker file under the cache.
+func (c Cache) stampPath(name string) string { return filepath.Join(c.Dir, name) }
+
+func (c Cache) readStamp(name string) string {
+	data, err := os.ReadFile(c.stampPath(name))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func (c Cache) writeStamp(name, val string) error {
+	return os.WriteFile(c.stampPath(name), []byte(val+"\n"), 0o644)
+}
+
+func exists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+// VerifyArtifacts returns an actionable error if any cached artifact a microVM
+// boots from is missing — the firecracker binary, the guest kernel + initrd, and
+// the base rootfs. It never builds anything; `cs-sandbox build` does that.
+func (c Cache) VerifyArtifacts() error {
+	for _, a := range []struct{ path, what string }{
+		{c.FirecrackerBin(), "firecracker binary"},
+		{c.Kernel(), "guest kernel"},
+		{c.Initrd(), "guest initrd"},
+		{c.BaseRootfs(), "base rootfs"},
+	} {
+		if !exists(a.path) {
+			return fmt.Errorf("%s missing (%s) — run: cs-sandbox build", a.what, a.path)
+		}
+	}
+	return nil
+}
+
+// EnsureArtifacts makes sure the cached firecracker artifacts exist, BUILDING any
+// that are missing or stale (firecracker binary download, the fedora guest kernel
+// + initrd + modules, and the base rootfs). Only what is missing/stale is rebuilt
+// — a fully-populated cache is left untouched.
+//
+// The build path shells out to podman (kernel + rootfs export), fakeroot + mke2fs
+// (rootfs image) and curl (firecracker download) through the Runner. It requires
+// bc.Image and, for the rootfs, bc.InitPath. If the build inputs are unavailable
+// and an artifact is missing, it returns an actionable error.
+func (c Cache) EnsureArtifacts(ctx context.Context, r run.Runner, bc BuildConfig) error {
+	bc = bc.Defaulted()
+	if err := c.ensureFirecrackerBin(ctx, r, bc); err != nil {
+		return err
+	}
+	if err := c.ensureKernel(ctx, r, bc); err != nil {
+		return err
+	}
+	return c.ensureBaseRootfs(ctx, r, bc)
+}
+
+// ensureFirecrackerBin downloads + checksum-verifies the firecracker binary on a
+// miss.
+func (c Cache) ensureFirecrackerBin(ctx context.Context, r run.Runner, bc BuildConfig) error {
+	fc := c.FirecrackerBin()
+	if exists(fc) {
+		return nil
+	}
+	c.say("downloading firecracker %s…", bc.FCVersion)
+	if err := os.MkdirAll(filepath.Join(c.Dir, "bin"), 0o755); err != nil {
+		return err
+	}
+	var arch string
+	switch runtime.GOARCH {
+	case "amd64":
+		arch = "x86_64"
+	case "arm64":
+		arch = "aarch64"
+	default:
+		return fmt.Errorf("fc: unsupported architecture %s", runtime.GOARCH)
+	}
+	base := "https://github.com/firecracker-microvm/firecracker/releases/download/" + bc.FCVersion
+	tgz := fmt.Sprintf("firecracker-%s-%s.tgz", bc.FCVersion, arch)
+	dl := filepath.Join(c.Dir, tgz)
+	if _, err := r.Run(ctx, run.Opts{}, "curl", "-fsSL", "-o", dl, base+"/"+tgz); err != nil {
+		return fmt.Errorf("fc: failed to download %s: %w", tgz, err)
+	}
+	// Verify against the release's published checksum ("<sha256>  <file>.tgz").
+	want := ""
+	if res, err := r.Run(ctx, run.Opts{ReadOnly: true}, "curl", "-fsSL", base+"/"+tgz+".sha256.txt"); err == nil {
+		for _, line := range strings.Split(res.Stdout, "\n") {
+			if f := strings.Fields(line); len(f) > 0 {
+				want = f[0]
+				break
+			}
+		}
+	}
+	data, err := os.ReadFile(dl)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(data)
+	got := hex.EncodeToString(sum[:])
+	if want == "" || want != got {
+		_ = os.Remove(dl)
+		return fmt.Errorf("fc: firecracker %s checksum mismatch (want=%q got=%s)", bc.FCVersion, want, got)
+	}
+	if _, err := r.Run(ctx, run.Opts{}, "tar", "-xzf", dl, "-C", c.Dir); err != nil {
+		return err
+	}
+	// cp release-*/firecracker-*-<arch> -> bin/firecracker.
+	matches, _ := filepath.Glob(filepath.Join(c.Dir, "release-*", "firecracker-*-"+arch))
+	if len(matches) == 0 {
+		return fmt.Errorf("fc: firecracker binary not found in release tarball")
+	}
+	if _, err := r.Run(ctx, run.Opts{}, "cp", matches[0], fc); err != nil {
+		return err
+	}
+	if err := os.Chmod(fc, 0o755); err != nil {
+		return err
+	}
+	if rel, _ := filepath.Glob(filepath.Join(c.Dir, "release-*")); len(rel) > 0 {
+		for _, d := range rel {
+			_ = os.RemoveAll(d)
+		}
+	}
+	_ = os.Remove(dl)
+	return nil
+}
+
+// kernelRebuildReason reports why the cached fedora guest kernel must be
+// (re)built for bc, or "" when the cache is fresh and can be reused. It only
+// governs fedora mode (bc.Kernel != "host"); host mode is handled in
+// ensureKernel. The pinned-NVR check is what forces a rebuild after
+// CS_SANDBOX_FC_KVER / DefaultKVerPin changes.
+func (c Cache) kernelRebuildReason(bc BuildConfig) string {
+	switch {
+	case c.readStamp("kernel-mode") != "fedora":
+		return "kernel mode is not fedora"
+	case !exists(c.Kernel()):
+		return "vmlinux.elf missing"
+	case !exists(c.Initrd()):
+		return "initrd.img missing"
+	case !exists(filepath.Join(c.Dir, "modules.tar")):
+		return "modules.tar missing"
+	case !exists(c.stampPath("kver")):
+		return "kver stamp missing"
+	case c.readStamp("kver-pin") != bc.KVerPin:
+		return "pinned kernel NVR changed"
+	}
+	return ""
+}
+
+// ensureKernel builds/refreshes the guest kernel (vmlinux.elf + initrd.img, plus
+// modules.tar in fedora mode). Only the fedora mode BUILD is supported (the
+// default); host mode falls back to an actionable error if the artifacts are
+// missing, since it needs host dracut/vmlinuz.
+func (c Cache) ensureKernel(ctx context.Context, r run.Runner, bc BuildConfig) error {
+	if bc.Kernel == "host" {
+		// Host-kernel mode build is unsupported (it depends on host dracut). Reuse a
+		// cached artifact set if present; otherwise fall back to the default kernel.
+		if exists(c.Kernel()) && exists(c.Initrd()) {
+			return nil
+		}
+		return fmt.Errorf("fc: missing host-kernel artifacts and CS_SANDBOX_FC_KERNEL=host build is unsupported; use the default fedora kernel")
+	}
+	// Fedora mode: rebuild when the mode flipped, any artifact is missing, or the
+	// pinned kernel NVR changed.
+	if c.kernelRebuildReason(bc) == "" {
+		return nil
+	}
+	if bc.Image == "" {
+		return fmt.Errorf("fc: guest kernel artifacts missing/stale and no image available to build them")
+	}
+	c.say("building the guest kernel (this can take a few minutes)…")
+	for _, f := range []string{"vmlinux.elf", "initrd.img", "modules.tar", "kver"} {
+		_ = os.Remove(c.stampPath(f))
+	}
+	if err := c.buildFedoraKernel(ctx, r, bc); err != nil {
+		return err
+	}
+	if err := c.writeStamp("kernel-mode", "fedora"); err != nil {
+		return err
+	}
+	return c.writeStamp("kver-pin", bc.KVerPin)
+}
+
+// buildFedoraKernel builds a Fedora guest kernel (vmlinux.elf + initrd.img +
+// modules.tar + kver) in a throwaway container from the image.
+func (c Cache) buildFedoraKernel(ctx context.Context, r run.Runner, bc BuildConfig) error {
+	kpkg := "kernel-core"
+	if bc.KVerPin != "" {
+		kpkg = "kernel-core-" + bc.KVerPin
+	}
+	_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fckbuild")
+	// --user 0:0 --entrypoint /bin/bash bypasses the image entrypoint so dnf runs as root.
+	// The package spec is arch-qualified ("$FC_KPKG.$(uname -m)"): dnf5 resolves a
+	// bare name-version-release inconsistently (an updates-repo NVR fails to match
+	// without the arch), so the .arch NEVRA form is the reliable spec.
+	script := `set -e
+FC_SPEC="$FC_KPKG.$(uname -m)"
+dnf install -y --setopt=install_weak_deps=False "$FC_SPEC" dracut zstd xz gzip binutils file >/dev/null \
+  || { echo "fc: dnf could not install $FC_SPEC (pinned kernel no longer in the Fedora repos? bump CS_SANDBOX_FC_KVER)" >&2; exit 1; }
+KVER=$(ls -1 /lib/modules | head -1)
+VMZ=/lib/modules/$KVER/vmlinuz; [ -f "$VMZ" ] || VMZ=/boot/vmlinuz-$KVER
+curl -fsSL https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-vmlinux -o /tmp/ev; chmod +x /tmp/ev
+mkdir -p /artifacts
+/tmp/ev "$VMZ" > /artifacts/vmlinux.elf
+dracut --force --no-hostonly --no-hostonly-cmdline \
+  --omit "iscsi nfs nbd multipath lvm mdraid crypt dmraid network network-manager network-legacy ifcfg fcoe" \
+  --add-drivers "virtio virtio_ring virtio_pci virtio_mmio ext4" \
+  --kver "$KVER" /artifacts/initrd.img
+tar -C /lib/modules -cf /artifacts/modules.tar "$KVER"
+echo "$KVER" > /artifacts/kver`
+	if _, err := r.Run(ctx, run.Opts{Env: []string{"FC_KPKG=" + kpkg}}, "podman", "run",
+		"--name", "fckbuild", "--user", "0:0", "-e", "FC_KPKG="+kpkg,
+		"--entrypoint", "/bin/bash", bc.Image, "-c", script); err != nil {
+		_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fckbuild")
+		return fmt.Errorf("fc: Fedora kernel build failed: %w", err)
+	}
+	_, cpErr := r.Run(ctx, run.Opts{}, "podman", "cp", "fckbuild:/artifacts/.", c.Dir+"/")
+	_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fckbuild")
+	if cpErr != nil {
+		return fmt.Errorf("fc: copying kernel artifacts: %w", cpErr)
+	}
+	for _, f := range []string{"vmlinux.elf", "initrd.img", "modules.tar", "kver"} {
+		if fi, err := os.Stat(c.stampPath(f)); err != nil || fi.Size() == 0 {
+			return fmt.Errorf("fc: Fedora kernel build produced no %s", f)
+		}
+	}
+	return nil
+}
+
+// ensureBaseRootfs builds/refreshes the base rootfs ext4 when the stamp (image id
+// | kver | kernel mode | init hash) changed or the disk is missing.
+func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfig) error {
+	kver := c.readStamp("kver")
+	if bc.Kernel == "host" && kver == "" {
+		kver = run.Output(ctx, r, "uname", "-r")
+	}
+	imgid := ""
+	if bc.Image != "" {
+		imgid = run.Output(ctx, r, "podman", "image", "inspect", bc.Image, "--format", "{{.Id}}")
+	}
+	inithash := ""
+	if bc.InitPath != "" {
+		if data, err := os.ReadFile(bc.InitPath); err == nil {
+			sum := sha256.Sum256(data)
+			inithash = hex.EncodeToString(sum[:])[:12]
+		}
+	}
+	cur := fmt.Sprintf("%s|%s|%s|%s", imgid, kver, bc.Kernel, inithash)
+	if exists(c.BaseRootfs()) && c.readStamp("base-rootfs.stamp") == cur {
+		return nil
+	}
+	if bc.Image == "" || bc.InitPath == "" {
+		return fmt.Errorf("fc: base rootfs missing/stale and cannot build (need image + init path)")
+	}
+	c.say("building the base sandbox filesystem…")
+	_ = os.Remove(c.BaseRootfs())
+	tmp := filepath.Join(c.Dir, "build")
+	tarPath := filepath.Join(c.Dir, "rootfs.tar")
+	_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fcbuild")
+	if _, err := r.Run(ctx, run.Opts{}, "podman", "create", "--name", "fcbuild", bc.Image, "sleep", "infinity"); err != nil {
+		return fmt.Errorf("fc: base rootfs: podman create: %w", err)
+	}
+	if _, err := r.Run(ctx, run.Opts{}, "podman", "export", "fcbuild", "-o", tarPath); err != nil {
+		_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fcbuild")
+		return fmt.Errorf("fc: base rootfs: podman export: %w", err)
+	}
+	_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fcbuild")
+	_ = os.RemoveAll(tmp)
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		return err
+	}
+	if _, err := r.Run(ctx, run.Opts{}, "truncate", "-s", strconv.Itoa(bc.RootfsGB)+"G", c.BaseRootfs()); err != nil {
+		return err
+	}
+	// The fedora path pulls guest /lib/modules from modules.tar; host mode copies
+	// the host's /lib/modules/<kver>. Assemble + pack under one fakeroot so the
+	// logical ownership survives into the ext4 image.
+	modTar := ""
+	if bc.Kernel != "host" {
+		modTar = filepath.Join(c.Dir, "modules.tar")
+	}
+	script := `set -e
+tar -C "$FC_TMP" -xpf "$FC_ROOTFS_TAR"
+mkdir -p "$FC_TMP/lib/modules"
+if [ -n "$FC_MOD_TAR" ]; then tar -C "$FC_TMP/lib/modules" -xf "$FC_MOD_TAR"
+else cp -a "/lib/modules/$FC_KVER" "$FC_TMP/lib/modules/"; fi
+install -m0755 "$FC_INIT" "$FC_TMP/fc-init"
+find "$FC_TMP" ! -readable -exec chmod u+rX {} + 2>/dev/null || true
+mke2fs -F -q -t ext4 -d "$FC_TMP" "$FC_ROOTFS_IMG"`
+	env := []string{
+		"FC_TMP=" + tmp,
+		"FC_ROOTFS_TAR=" + tarPath,
+		"FC_ROOTFS_IMG=" + c.BaseRootfs(),
+		"FC_MOD_TAR=" + modTar,
+		"FC_KVER=" + kver,
+		"FC_INIT=" + bc.InitPath,
+	}
+	if _, err := r.Run(ctx, run.Opts{Env: env}, "fakeroot", "--", "bash", "-c", script); err != nil {
+		_ = os.RemoveAll(tmp)
+		_ = os.Remove(tarPath)
+		return fmt.Errorf("fc: base rootfs: build: %w", err)
+	}
+	_ = os.RemoveAll(tmp)
+	_ = os.Remove(tarPath)
+	return c.writeStamp("base-rootfs.stamp", cur)
+}

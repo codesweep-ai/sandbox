@@ -23,20 +23,24 @@ block devices — ext4 disks built on the host and attached to the guest.
 ## Prerequisites
 
 All rootless - no host `sudo` to *run* it - but the engine shells out to host packages, which
-`cs-sandbox` preflight-checks (failing with an actionable install line). The Firecracker binary is
-auto-downloaded (SHA256-verified) to `.fc-cache/`. **`./cs-sandbox doctor` checks all of the below
-and prints the exact fix for anything missing.**
+`cs-sandbox` preflight-checks (failing with an actionable install line). `cs-sandbox build`
+downloads the SHA256-verified Firecracker binary and builds the guest kernel + base rootfs into the
+artifact cache (`$XDG_CACHE_HOME/cs-sandbox`, i.e. `~/.cache/cs-sandbox`); `create` then just boots
+from it. **`cs-sandbox doctor` (which defaults to `--engine firecracker`) checks all of the below and
+prints the exact fix for anything missing.**
 
 - **Packages:** `passt` (Podman's rootless uplink, which VMs share), `dnsmasq` (the forwarding
   VM-name resolver), `fakeroot` + `e2fsprogs` (build the ext4 disks), `socat` + `python3` (the
   host→VM port/vsock bridges), `shadow-utils`/`uidmap` (`newuidmap`, for Podman's rootless userns),
-  `curl`, `git`. The preflight detects `dnf` vs `apt` and prints the right names:
+  `iproute`/`iproute2` (`ip`, for the tap/bridge fabric), `openssh-clients`/`openssh-client` (`ssh`,
+  to reach the booted VM), `curl`, `git`. The preflight detects `dnf` vs `apt` and prints the right
+  names:
 
   ```bash
   # Fedora
-  sudo dnf install podman passt dnsmasq fakeroot e2fsprogs socat python3 shadow-utils curl git
-  # Ubuntu / Debian  (uidmap not shadow-utils, dnsmasq-base not dnsmasq)
-  sudo apt install podman passt dnsmasq-base fakeroot e2fsprogs socat python3 uidmap curl git
+  sudo dnf install podman passt dnsmasq fakeroot e2fsprogs socat python3 shadow-utils iproute openssh-clients curl git
+  # Ubuntu / Debian  (uidmap not shadow-utils, dnsmasq-base not dnsmasq, iproute2 not iproute)
+  sudo apt install podman passt dnsmasq-base fakeroot e2fsprogs socat python3 uidmap iproute2 openssh-client curl git
   ```
 
 - **Host kernel:** a Linux host with KVM (`/dev/kvm`). x86_64 only.
@@ -59,9 +63,9 @@ and prints the exact fix for anything missing.**
   sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
   ```
 
-> The base **Podman** install (and, on macOS, `podman machine init && podman machine start`) is the
-> one prerequisite shared with the Podman engine - it builds the image and provides the network
-> fabric on every host. The Firecracker engine is Linux/KVM-only; on macOS / non-KVM hosts sandboxes
+> The base **Podman** install (and, on macOS, a sized podman machine — see
+> [`INSTALL.md`](../INSTALL.md)) is the one prerequisite shared with the Podman engine - it builds
+> the image and provides the network fabric on every host. The Firecracker engine is Linux/KVM-only; on macOS / non-KVM hosts sandboxes
 > use Podman automatically.
 
 ## Per-sandbox anatomy
@@ -101,12 +105,14 @@ PVH boot protocol). Two ways to obtain the `vmlinux`:
   host (Fedora, Ubuntu, …) with **no** dependency on the host's `dracut` or `/boot`, and microVMs are
   reproducible rather than tracking whatever kernel is latest. (`extract-vmlinux` is fetched inside
   that build container; bumping `CS_SANDBOX_FC_KVER` rebuilds the cached artifacts.)
-- **`CS_SANDBOX_FC_KERNEL=host`:** reuse the running host kernel (`uname -r`) - smaller, auto-tracks
-  host upgrades, but **Fedora-host only**: it needs `dracut` and a readable `/boot/vmlinuz-<ver>`
-  that `extract-vmlinux` (downloaded to `.fc-cache/`) can unwrap to an ELF image.
+- **`CS_SANDBOX_FC_KERNEL=host`:** boot the running host kernel (`uname -r`) instead of the pinned
+  fedora one - smaller and auto-tracking host upgrades, but **Fedora-host only** (it relies on the
+  host's `dracut` and a readable `/boot/vmlinuz-<ver>`). Note that `cs-sandbox build` does **not**
+  build host-mode artifacts: it reuses a previously-cached `vmlinux.elf`/`initrd.img` set if one is
+  present, otherwise it errors and points you back to the default fedora kernel.
 
-Either way the cached artifacts are `vmlinux.elf` + `initrd.img` + `modules.tar` (+ `kver`) under
-`.fc-cache/`.
+The cached artifacts are `vmlinux.elf` + `initrd.img` + `modules.tar` (+ `kver`) under the artifact
+cache (`~/.cache/cs-sandbox`).
 
 ### Disks
 
@@ -137,13 +143,14 @@ that same order - so host append-order and guest consume-order must match:
 
 The seed is built in two stages, then packed into `seed.ext4` with `fakeroot mke2fs -d`:
 
-1. `build_seed` (shared with the Podman engine) writes `instances/<name>/seed/`: `authorized_keys`,
-   the tier key, stable `host_keys/`, the sandbox-scoped `ssh_config`, `host_hosts` (reach the host
-   by name), the host `~/.ssh` snapshot (user VMs), and `claude/` + `codex/` credentials (including
-   the API-key/cloud `env` + `creds/` when present).
-2. `fc_cmd_create` copies those into an `fc-seed/` dir and adds **`cs-sandbox.conf`** - the identity +
-   network contract: `CS_SANDBOX_USER`/`UID`/`GID`/`HOSTNAME` (the bare sandbox name), `TYPE`,
-   `YOLO`, `IP`, `GW`, `DNS` - plus the `repos` / `snapshots` / `imagestores` manifests.
+1. the seed builder (`internal/seed`, shared with the Podman engine) writes `instances/<name>/seed/`:
+   `authorized_keys`, the tier key, stable `host_keys/`, the sandbox-scoped `ssh_config`, `host_hosts`
+   (reach the host by name), and `claude/` + `codex/` credentials (including the API-key/cloud `env` +
+   `creds/` when present).
+2. the firecracker engine (`internal/engine/firecracker.go`) copies those into an `fc-seed/` dir and
+   adds **`cs-sandbox.conf`** - the identity + network contract: `CS_SANDBOX_USER`/`UID`/`GID`/`HOSTNAME`
+   (the bare sandbox name), `TYPE`, `YOLO`, `IP`, `GW`, `DNS` - plus the separate `repos` /
+   `snapshots` / `imagestores` manifest files.
 
 The guest mounts it read-only at `/run/cs-sandbox-seed` and sources `cs-sandbox.conf` first.
 
@@ -159,8 +166,8 @@ skips the keep-id / runtime-user dance - the VM is genuinely root with its own u
 5. write `/etc/hosts` (localhost, self, and append `host_hosts` so `ssh <hostname>` reaches the host)
    and `/etc/gai.conf` (prefer IPv4, since the net is v4-only but DNS returns AAAA - see the design
    doc's "Reaching the host by name"); open `ping_group_range` for unprivileged ICMP;
-6. **first boot:** seed `/home/<user>` from the image skeleton (`/sandbox/home`) + the host `~/.ssh`
-   snapshot; **every boot:** refresh the managed ssh material (authorized_keys, tier key, `ssh_config`
+6. **first boot:** seed `/home/<user>` from the image skeleton (`/sandbox/home`); **every boot:**
+   refresh the managed ssh material (authorized_keys, tier key, `ssh_config`
    → `config.d/cs-sandbox`, host keys); install Claude/Codex creds + onboarding/YOLO markers;
 7. the `--repo` alternates-clone; RO-mount `--snapshot` / `--image-store` disks (device-letter cursor);
 8. `sshd -p 22`; print `FC-VM-READY`; `exec socat VSOCK-LISTEN:22 … :22` as PID1.
@@ -229,7 +236,7 @@ Per-VM and lifecycle-tracked.
 
 A Firecracker **vsock** is retained as a no-IP standby transport (it is *not* the routine ssh path):
 guest CID 3; PID1 is `socat VSOCK-LISTEN:22 → TCP4:127.0.0.1:22`; the host side is a hybrid-vsock unix
-socket `instances/<name>/vm.vsock`, and `fc/vsock-connect` speaks Firecracker's `CONNECT <port>` →
+socket `instances/<name>/vm.vsock`, and `image/guest/vsock-connect` speaks Firecracker's `CONNECT <port>` →
 `OK <hostport>` handshake (wired as an ssh `ProxyCommand` in the generated config).
 
 ### Optional: reach sandboxes directly from the host (`host-route`)
@@ -257,25 +264,27 @@ the resolver (`resolvectl revert`) and removes the veth. (Suffix default `cs.san
 
 ## Implementation notes
 
-**`cs-sandbox` integration.** `cmd_create` branches - the Podman path is unchanged; the Firecracker
-path:
+**`cs-sandbox` integration.** `cs-sandbox create` dispatches by engine - the Podman path (the
+`internal/engine` podman adapter) is unchanged; the Firecracker path (the firecracker engine,
+`internal/engine/firecracker.go`):
 
-- builds/uses the cached artifacts and the per-sandbox disks;
-- allocates a subnet address + SSH port (microVMs draw 2300-2399);
+- builds/uses the cached artifacts and the per-sandbox disks (`internal/fcdisk`);
+- allocates a subnet address + SSH port (microVMs draw 2300-2399, via `internal/ports`);
 - writes `run.json` (boot-source + drives + vsock + a virtio-net tap);
-- launches Firecracker via `fc_launch` (fabric up → tap → host→VM forwarder → `podman unshare
-  --rootless-netns` firecracker into the netns), recording `fcip`/`port`/`cpus`/`mem`/repoclones in
-  `instances/<name>/meta`. A VM that never signals `FC-VM-READY` is torn down and the create fails loudly.
+- launches Firecracker via the engine's `launch` step (fabric up via `internal/fcnet` → tap → host→VM
+  forwarder → `podman unshare --rootless-netns` firecracker into the netns), recording
+  `fcip`/`port`/`cpus`/`mem`/repoclones in the sandbox's typed state (`internal/state`, persisted to
+  `instances/<name>/state.json`). A VM that never signals `FC-VM-READY` is torn down and the create fails loudly.
 
-Lifecycle: `start` re-asserts the name registration and relaunches (after `e2fsck -p`); `stop` shuts
+Lifecycle: `start` re-asserts the name registration and relaunches; `stop` shuts
 the VM down (in-guest sync+reboot, then kill) and GCs the fabric; `rm`/`destroy` also drop the tap, the
 name registration, and the disks. `exec` / `claude-login` / `codex-login` go over `ssh` (no `podman
 exec` equivalent).
 
 **Concurrency.** Parallel creates race on shared host state (IP/port allocation, the one-per-host
-fabric, image builds). A host-wide lock (`instances/.create.lock`) wraps only the race-sensitive
-prefix (allocate → write the meta claim → fabric up); the long parts (disk builds, the boot wait) run
-unlocked so creates overlap. The claim is written before the long build, and an EXIT trap reaps a
+fabric, image builds). A host-wide lock (`internal/lock`, `instances/.create.lock`) wraps only the
+race-sensitive prefix (allocate → write the state claim → fabric up); the long parts (disk builds, the
+boot wait) run unlocked so creates overlap. The claim is written before the long build, and an EXIT trap reaps a
 failed create so it can't leak its reserved address/port. The cache builds are concurrency-safe
 (PID-private temp + atomic `mv`).
 

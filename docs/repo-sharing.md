@@ -81,30 +81,64 @@ the refspec; git's `updateInstead` default) - a diverged branch is rejected with
   working tree - rejected unless the tree is clean and the push fast-forwards.
 
 `[dir]` selects one repo when a sandbox has several. `fetch`/`push` read the host source repo and
-branch from the sandbox's `meta` (`repoclone=<source>\t<dir>\tcs-sandbox/<name>`, one line per repo).
+branch from the sandbox's state record (one `repoclone` entry per repo: source, dir, and the
+`cs-sandbox/<name>` branch).
+
+## Peer-to-peer - fetch/push between sandboxes
+
+The host commands above are the usual path, but a **user** sandbox can also fetch or push a peer
+**agent** sandbox's branch directly - the same operation, initiated from inside a sandbox instead of
+the host. It works because a user sandbox reaches agent sandboxes by name over SSH (every sandbox
+authorizes the user-tier key), and both clones borrow the same base objects, so only the new commits
+transfer. It's **user→agent only**: agents can't SSH back into a user sandbox. Nothing here uses the
+`cs-sandbox` CLI (it isn't installed inside sandboxes) - it's plain git over the SSH the fabric
+already provides.
+
+From inside the user sandbox, in its own clone (`~/<dir>`):
+
+```bash
+# Fetch a peer agent's branch. `<agent>:<dir>` is scp-style host:path — <dir> is the repo dir
+# relative to the peer's home (~/<dir>), and <agent> resolves by name on the fabric.
+git fetch worker:api cs-sandbox/worker      # worker = agent sandbox, api = repo dir
+git log --oneline FETCH_HEAD                 # the agent's commits; merge/cherry-pick as usual
+# …or keep it as a local branch:
+git fetch worker:api cs-sandbox/worker:cs-sandbox/worker
+git switch cs-sandbox/worker
+```
+
+Push the other way, into the peer's checkout - same fast-forward + clean-tree rules as `cs-sandbox
+push` (the clone's `receive.denyCurrentBranch=updateInstead` updates its work tree):
+
+```bash
+git push worker:api HEAD:cs-sandbox/worker
+```
 
 ## Lifecycle & safety
 
-- **stop/start, or rm-then-recreate:** the checkout lives in the home volume; the RO source
-  re-attaches at the same path. Because the borrow needs that source, a recreate after `rm` must pass
-  the **same `--repo`** (recorded in `meta`).
-- **destroy** drops the home volume, so the sandbox's commits are gone - **`fetch` before
-  `destroy`** if it has unmerged work.
+- **stop/start** keeps the running sandbox and all its disks - `start` resumes the same instance
+  with its data.
+- **rm keeps the data** (the home volume on Podman, `rootfs.ext4` on Firecracker) and removes only
+  the instance itself. Recreating with the **same name** reuses that home, so the checkout and its
+  commits come back; pass the **same `--repo`** so the read-only source re-attaches (the clone borrows
+  its objects). The commits live in the home, so they survive the `rm`.
+- **destroy** drops the home (volume / `rootfs.ext4`), so the sandbox's commits are gone - **`fetch`
+  before `destroy`** if it has unmerged work.
 - **Don't `git gc --prune` the source** while a Podman sandbox has it borrowed (the source is
   bind-mounted read-only into the live container). A Firecracker sandbox is immune - its disk is a
   point-in-time copy.
 
 ## Implementation
 
-- `resolve_repo_clones` parses `--repo` specs - strips `:NAME` first (a slash-free, non-empty tail),
-  then `@REF`; derives `dir` from the **resolved** path; validates each is a git repo (`.git` or
-  `objects/`); rejects duplicate names. It mirrors `--snapshot`'s PATH[:NAME] grammar (the shared
-  `_resolve_dir_specs`).
+- The spec parser (`internal/spec`) parses `--repo` specs - strips `:NAME` first (a slash-free,
+  non-empty tail), then `@REF`; derives `dir` from the **resolved** path; validates each is a git repo
+  (`.git` or `objects/`); rejects duplicate names. It mirrors `--snapshot`'s PATH[:NAME] grammar (the
+  same directory-spec parsing in `internal/spec`).
 - One engine hook is the only divergence: Podman adds `-v …:ro`; Firecracker builds + attaches the
-  cached RO disk (`fc_repo_disk` / `fc_repo_key`). The first-boot clone and `fetch`/`push` are
-  engine-agnostic. The seed `repos` manifest is **6 fields on Podman** (`dir`, the RO-source path,
-  branch, base, `user.name`, `user.email`) and **5 on Firecracker** (`dir`, branch, base,
-  `user.name`, `user.email`) - the disk's mount point is positional.
-- `meta` records `repoclone=<source>\t<dir>\tcs-sandbox/<name>` per repo for `fetch`/`push`.
+  cached RO disk (the content-addressed repo-disk cache in `internal/fcdisk`). The first-boot clone and
+  `fetch`/`push` are engine-agnostic. The seed `repos` manifest is **6 fields on Podman** (`dir`, the
+  RO-source path, branch, base, `user.name`, `user.email`) and **5 on Firecracker** (`dir`, branch,
+  base, `user.name`, `user.email`) - the disk's mount point is positional.
+- The sandbox's typed state (`internal/state`, persisted to `instances/<name>/state.json`) records
+  one `repoclone` entry per repo — source, dir, and branch — for `fetch`/`push`.
 
 This engine-independence is what lets the microVM engine share repos without `virtio-fs`.

@@ -1,0 +1,65 @@
+# Build + unit tests on every push/PR, on Linux and macOS, and attach the built
+# binary to the run so a PR can be downloaded and tried locally. The integration
+# tests (`-tags integration`) are NOT run here: they need a Linux/KVM host with
+# podman and a built sandbox image (Firecracker also needs /dev/kvm), which
+# GitHub-hosted runners don't provide — run them on a capable host with
+# `make test-integration`.
+name: ci
+
+on:
+  push:
+    branches: [main, go-port] # drop go-port once it is merged into main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+
+      - name: gofmt
+        if: matrix.os == 'ubuntu-latest' # formatting is platform-independent; check once
+        run: make fmt-check
+
+      - name: verify modules
+        run: go mod verify
+
+      - name: vet
+        run: go vet ./...
+
+      # The live tests can't run here (no podman/KVM), but they must still
+      # compile, so a refactor can't silently break them.
+      - name: vet (integration build tag)
+        run: go vet -tags integration ./...
+
+      - name: build
+        run: go build ./... # compile-check every package
+
+      # Produce the actual host binary (static, version-stamped) and attach it, so a
+      # PR build can be downloaded from the run's Artifacts and run locally. Built
+      # before the tests so it's available even if a test later fails.
+      - name: build binary
+        run: make build-go
+
+      - name: upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: cs-sandbox-${{ runner.os }}-${{ runner.arch }}
+          path: bin/cs-sandbox
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: test
+        run: go test -race ./...

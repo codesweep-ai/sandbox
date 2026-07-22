@@ -7,7 +7,7 @@
 ![Engines](https://img.shields.io/badge/engines-podman%20%C2%B7%20firecracker-informational)
 ![Platforms](https://img.shields.io/badge/platform-Linux%20%C2%B7%20macOS-lightgrey)
 
-`cs-sandbox` is a single script that creates and manages these sandboxes. Each one is a rootless
+`cs-sandbox` is a single Go binary that creates and manages these sandboxes. Each one is a rootless
 Linux environment built from a single image, with a modern toolchain and the **Claude Code** &
 **Codex** agents preinstalled. Spin up many named sandboxes, reach each by name over SSH, and share
 **only** the repos or directories you choose. Nothing on your host is shared unless you ask. The loop
@@ -21,11 +21,29 @@ is **create → work → fetch → destroy**.
 
 ## Contents
 
+- [Quickstart](#quickstart)
 - [How it fits together](#how-it-fits-together)
 - [Before you start](#before-you-start) · one-time install + sign-in ([INSTALL.md](INSTALL.md))
 - [Walkthroughs](#walkthroughs) · the fastest way to get a feel for it
 - [Choosing an engine](#choosing-an-engine-podman-vs-firecracker)
 - [SSH trust](#ssh-trust) · [Security model](#security-model) · [Docs](#docs)
+- [Contributing](#contributing)
+
+## Quickstart
+
+One-time host setup (get the binary, Podman, `build`, `install-agent-tools`, sign in once) is in
+**[INSTALL.md](INSTALL.md)** — then the whole loop is:
+
+```bash
+cs-sandbox create feature --repo ~/projects/api   # spin up a sandbox with your repo, on its own branch
+ssh feature                                        # shell in by name
+[feature]$ cd ~/api && cs-claude                   # run the agent — already signed in; then exit
+cs-sandbox fetch feature                           # pull the agent's commits back to the host
+cs-sandbox destroy feature -f                      # throw the whole sandbox away
+```
+
+The [Walkthroughs](#walkthroughs) below unpack this and the rest (user sandboxes, `--yolo --solo`,
+nested Podman, port forwarding, agents driving agents).
 
 ## How it fits together
 
@@ -62,16 +80,19 @@ optional `host-route`.
 
 ## Before you start
 
-The walkthroughs below assume a one-time host setup: install Podman (and, on Linux, the
-Firecracker/KVM packages), build the image, put the host helpers on your PATH, and **sign in once to
-the Claude Code and Codex coding agents** (on the host). It's a handful of commands - see
-**[INSTALL.md](INSTALL.md)** (and `./cs-sandbox doctor` checks every prerequisite for you). That one
-host sign-in is inherited by every sandbox, so in the walkthroughs `cs-claude` and `cs-codex` just
-work, with no login step inside the sandbox.
+The walkthroughs below assume a one-time host setup: **get the `cs-sandbox` binary** (download a
+release, or build it — Go 1.25+, `make build`) and put it on your PATH, install Podman (and, on Linux,
+the Firecracker/KVM packages), run `cs-sandbox build` (sets up the image and, on Linux/KVM, the
+Firecracker artifacts), run `cs-sandbox install-agent-tools` (puts the agent tools on your PATH),
+and **sign in once to the Claude Code and Codex coding agents** (on the host). It's a handful of
+commands - see **[INSTALL.md](INSTALL.md)** (and `cs-sandbox doctor` checks every prerequisite for
+you). That one host sign-in is inherited by every sandbox, so in the walkthroughs `cs-claude` and
+`cs-codex` just work, with no login step inside the sandbox. (To create a sandbox that does *not* inherit
+it, pass `create --no-agent-auth` — see [auth carry](docs/design.md#bundled-agent-tooling-and-auth).)
 
 ## Walkthroughs
 
-Each block is runnable end to end (4 and 5 continue from 3). Skim the comments to get the gist; run
+Each block is runnable end to end (5 and 6 continue from 4). Skim the comments to get the gist; run
 them when you want to play.
 
 ### 1. Share two repos, let an agent edit one, pull the changes out
@@ -80,7 +101,7 @@ Two repos go into one agent sandbox; the agent edits one, and you fetch its comm
 
 ```bash
 # Each repo lands at ~/<basename> on its own branch  cs-sandbox/<sandbox-name>.
-./cs-sandbox create feature --repo ~/projects/api --repo ~/projects/web
+cs-sandbox create feature --repo ~/projects/api --repo ~/projects/web
 
 # shell in, by name
 ssh feature
@@ -91,20 +112,45 @@ ssh feature
 [feature]$ exit
 
 # Pull the agent's commits back to the host (its branch: cs-sandbox/feature).
-./cs-sandbox fetch feature
+cs-sandbox fetch feature
 
-# Done with it? Throw the whole sandbox away.
-./cs-sandbox destroy feature
+# Done with it? Throw the whole sandbox away (-f skips the confirmation prompt).
+cs-sandbox destroy feature -f
 ```
 
-### 2. An isolated experiment (`--yolo --solo`) → a live HTTP API
+### 2. Fetch an agent's work into a user sandbox
+
+Same idea as walkthrough 1, but the destination is a **user sandbox** you drive rather than the host.
+A user sandbox sits a layer above and can `ssh` into agent sandboxes, so it fetches a peer's branch
+with plain git — no host round-trip.
+
+```bash
+# An agent sandbox does the work (its branch: cs-sandbox/worker).
+cs-sandbox create worker --repo ~/projects/api
+ssh worker
+[worker]$ cd ~/api && cs-claude    # "add a /health endpoint and commit when done", then exit
+[worker]$ exit
+
+# A user sandbox with the same repo — your workspace to review the agent's work.
+cs-sandbox create dev --type user --repo ~/projects/api
+ssh dev
+[dev]$ cd ~/api
+# Fetch the agent's branch straight from the agent sandbox, by name.
+[dev]$ git fetch worker:api cs-sandbox/worker
+[dev]$ git log --oneline FETCH_HEAD    # the agent's commits; merge/cherry-pick as usual
+[dev]$ exit
+
+cs-sandbox destroy worker -f && cs-sandbox destroy dev -f
+```
+
+### 3. An isolated experiment (`--yolo --solo`) → a live HTTP API
 
 A throwaway `--yolo --solo` playground where the agent builds and runs a small HTTP API you hit from inside the sandbox.
 
 ```bash
 #   --yolo  agent works with no approval prompts (the sandbox is the boundary)
 #   --solo  agent can't SSH out to your other sandboxes (it stays reachable)
-./cs-sandbox create lab --yolo --solo
+cs-sandbox create lab --yolo --solo
 
 ssh lab
 [lab]$ cs-claude
@@ -115,12 +161,12 @@ ssh lab
 [lab]$ curl http://localhost:8000
 ```
 
-### 3. Run an app inside a nested Podman container
+### 4. Run an app inside a nested Podman container
 
 Run a ready-made container one layer deeper - inside the sandbox - and hit it from inside (nested Podman just works).
 
 ```bash
-./cs-sandbox create web
+cs-sandbox create web
 
 ssh web
 # Run stock nginx in a nested container, on the sandbox's port 8080.
@@ -130,44 +176,44 @@ ssh web
 [web]$ exit
 ```
 
-### 4. Reach a sandbox port from the host with `forward`
+### 5. Reach a sandbox port from the host with `forward`
 
-Continuing from walkthrough 3 (the `web` sandbox running nginx): forward a host port to it - no sudo, both engines, works on macOS.
+Continuing from walkthrough 4 (the `web` sandbox running nginx): forward a host port to it - no sudo, both engines, works on macOS.
 
 ```bash
 # host :9000  ->  web's :8080
-./cs-sandbox forward web 9000:8080
+cs-sandbox forward web 9000:8080
 curl http://localhost:9000
 
 # See what's wired up, then tear the forward down.
-./cs-sandbox forwards web
-./cs-sandbox unforward web all
+cs-sandbox forwards web
+cs-sandbox unforward web all
 ```
 
-### 5. Reach a sandbox by name from the host with `host-route`
+### 6. Reach a sandbox by name from the host with `host-route`
 
-Continuing from walkthrough 3: an optional, Linux-only convenience (one-time sudo) that lets the host reach **any** sandbox port directly by name - no per-port forward.
+Continuing from walkthrough 4: an optional, Linux-only convenience (one-time sudo) that lets the host reach **any** sandbox port directly by name - no per-port forward.
 
 ```bash
-./cs-sandbox host-route up                 # one-time, host-side; needs sudo
+cs-sandbox host-route up                 # one-time, host-side; needs sudo
 
 # Reach web's nginx from the host by name, on whatever port it bound.
 curl http://web.cs.sandbox:8080
 
-./cs-sandbox host-route down               # remove it when done
-./cs-sandbox destroy web                   # done with the walkthrough-3 sandbox
+cs-sandbox host-route down               # remove it when done
+cs-sandbox destroy web -f                # done with the walkthrough-4 sandbox
 ```
 
-### 6. One AI coding agent driving another, in a second sandbox
+### 7. One AI coding agent driving another, in a second sandbox
 
 One agent in a sandbox drives a second agent in another sandbox, over the built-in remote-delegation tooling.
 
 ```bash
 # Two agent sandboxes. Agents can SSH to each other
 # (but never into your user sandboxes).
-./cs-sandbox create driver
+cs-sandbox create driver
 # worker holds the repo to work on
-./cs-sandbox create worker --repo ~/projects/api
+cs-sandbox create worker --repo ~/projects/api
 
 ssh driver
 [driver]$ cs-claude
@@ -210,8 +256,11 @@ depends on its **type**, set with `--type` (independent of engine): you (and you
 - **agent sandbox** (default): one you hand to a coding agent. Its own home, **no** host SSH keys; it
   can `ssh` only into **other agent sandboxes**, never into a user sandbox.
 
-User sandboxes are for you to work in by hand; run autonomous coding agents in `agent` sandboxes, not
-in user sandboxes.
+It's convenient to think of these as **two layers**: a user sandbox can `ssh` into any sandbox (user
+or agent), while an agent sandbox can `ssh` only into other agent sandboxes — never back into a user
+sandbox. Aside from that SSH direction the two types are identical (same image, same capabilities).
+Typically you spawn one user sandbox and oversee the work running across several agent sandboxes from
+there.
 
 | client ↓ \ server → | user sandbox | agent sandbox |
 |---|:---:|:---:|
@@ -250,10 +299,10 @@ given use *safe* is a per-situation judgment, not the type name. Keep both condi
   reach each other with generated per-tier keys. If a sandbox ever needs your own keys, you can lend
   a specific set for a session ([`ssh -A`](#lending-a-sandbox-specific-ssh-keys-with-ssh--a)) — they
   stay on the host.
-- **User sandboxes are for you, not for agents.** A user sandbox is where you work interactively; run
-  autonomous coding agents in `agent` sandboxes, never in a user sandbox.
-- **Agent vs user isolation.** The [SSH trust](#ssh-trust) rules are enforced per type, so an agent
-  can't pivot through SSH into a user sandbox.
+- **Agent/user SSH isolation.** Per-type [SSH trust](#ssh-trust) (the "two layers, user above agent"
+  model) is enforced: a user sandbox can `ssh` into any sandbox, but an agent sandbox reaches only
+  other agent sandboxes — never a user sandbox — so an agent can't pivot through SSH into your
+  workspace.
 - **`--yolo`** (agent sandboxes) drops the agents' approval prompts, safe because the sandbox itself
   is the isolation boundary. **`--solo`** additionally denies the agent any *outbound* SSH into the
   fabric, while keeping it reachable for you to drive.
@@ -262,14 +311,24 @@ given use *safe* is a per-situation judgment, not the type name. Keep both condi
 ## Docs
 
 - [`INSTALL.md`](INSTALL.md): one-time host setup. Podman, the Firecracker/KVM prerequisites,
-  building the image, host helpers, and agent sign-in.
+  building the image, installing the agent tools, and agent sign-in.
 - [`docs/design.md`](docs/design.md): the cross-engine model (types & trust, networking, the generic
   image, the seed, shared image stores, agent tooling & auth, security).
 - [`docs/podman.md`](docs/podman.md): the Podman container engine (boot, nested Podman, storage, macOS).
 - [`docs/firecracker.md`](docs/firecracker.md): the Firecracker microVM engine.
 - [`docs/repo-sharing.md`](docs/repo-sharing.md): the `--repo` checkout / fetch / push model.
 
-`./cs-sandbox help` is the full command reference.
+`cs-sandbox help` is the full command reference.
+
+## Contributing
+
+Bug reports and pull requests are welcome. Run `make check` (formatting, `go vet`, unit tests)
+before opening one. For a security-sensitive issue, please ask for a private contact rather than
+posting details in a public issue.
+
+**Testing.** `make test` runs the unit suite; `make test-integration` runs the live tests against a
+real podman/Firecracker host (each skips gracefully when podman or the image is unavailable). See
+[design.md → Testing](docs/design.md#testing).
 
 ## License
 

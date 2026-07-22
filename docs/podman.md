@@ -15,18 +15,20 @@ capability set + seccomp, bounded by your unprivileged host user) rather than a 
 which is why the autonomous **agent** type defaults to the microVM on a Linux/KVM host. See
 [firecracker.md](firecracker.md#why-a-microvm) for the other side of that trade.
 
-The one prerequisite is **Podman** itself (and, on macOS, `podman machine init && podman machine
-start`); `./cs-sandbox doctor --engine podman` checks it. See [`INSTALL.md`](../INSTALL.md).
+The one prerequisite is **Podman** itself (on macOS, plus a podman machine — size it at init:
+`podman machine init --cpus 4 --memory 8192 --disk-size 60 --now`, since every sandbox shares that
+one VM); `cs-sandbox doctor --engine podman` checks it. See [`INSTALL.md`](../INSTALL.md).
 
 ## Container boot
 
 The image bakes in **no** developer identity (the cross-engine reasons are in
 [design.md](design.md#anatomy-of-a-sandbox)); the container path creates your user at first boot.
 
-`cs-sandbox` launches the container **`--userns=keep-id --user 0:0`** and passes your identity + the
-sandbox config as environment (`CS_SANDBOX_USER`/`UID`/`GID`/`HOME`, plus `CS_SANDBOX_TYPE` / `YOLO`
-/ `SSH_PORT` / `IMAGE_STORES`), so PID1 - the **entrypoint** - runs as container-root, which keep-id
-maps to your host uid. The entrypoint then:
+The `internal/engine` podman adapter (`Podman.Create`, assembling the run arguments in
+`buildRunArgs`) launches the container **`--userns=keep-id --user 0:0`** and passes your identity +
+the sandbox config as environment (`CS_SANDBOX_USER`/`UID`/`GID`/`HOME`, plus `CS_SANDBOX_TYPE` /
+`YOLO` / `SSH_PORT` / `IMAGE_STORES`), so PID1 - the **entrypoint** - runs as container-root, which
+keep-id maps to your host uid. The entrypoint then:
 
 1. creates the matching group + user and grants it NOPASSWD sudo;
 2. adds the subuid/subgid range for nested Podman;
@@ -65,8 +67,8 @@ Podman needs:
 The default seccomp filter stays **on** and `/proc/kcore` + host devices stay masked. Because the
 container is rootless the caps are namespaced - bounded by your host user, with no host-root path
 absent a kernel bug - so this is strictly safer than `--privileged`, which turns seccomp off and
-unmasks everything. `--privileged` (or `CS_SANDBOX_NESTED_CAPS=privileged`) is a one-flag fallback
-if a kernel/podman version regresses the scaled-down set.
+unmasks everything. `cs-sandbox create --privileged` is a one-flag fallback if a kernel/podman
+version regresses the scaled-down set.
 
 **Rootful inner engine.** Nested Podman runs *rootful inside the container* (container-root, which
 under keep-id is your unprivileged host user). Plain `podman` is a `/usr/local/bin/podman` wrapper

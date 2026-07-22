@@ -1,0 +1,742 @@
+//go:build integration
+
+// Integration tests drive the real cobra command tree end-to-end against live
+// podman — proving the CLI wiring (flag parsing, the create/forward/destroy/ls
+// commands, engine selection, repo/env sharing) works, not just the engine API
+// the engine package tests cover. Instance/tier state is redirected to temp dirs
+// so the developer's real sandboxes are untouched; sandboxes are namespaced
+// (csgocli-*) and torn down.
+//
+//	go test -tags integration ./internal/cli/ -v
+//
+// Skips gracefully when podman or the sandbox image is unavailable.
+package cli
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/codesweep-ai/sandbox/internal/hostenv"
+	"github.com/codesweep-ai/sandbox/internal/paths"
+	"github.com/codesweep-ai/sandbox/internal/run"
+)
+
+// runID is a per-process random suffix so namespaced names can't collide with a
+// leftover from a crashed prior run that reused this PID.
+var runID = func() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}()
+
+func image() string {
+	if v := os.Getenv("CS_SANDBOX_IMAGE"); v != "" {
+		return v
+	}
+	return "localhost/cs-sandbox:44"
+}
+
+// execRoot runs a fresh command tree (as production would) and returns stdout.
+func execRoot(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	var out bytes.Buffer
+	root := NewRootCmd()
+	root.SetArgs(args)
+	root.SetOut(&out)
+	root.SetErr(io.Discard)
+	err := root.Execute()
+	return out.String(), err
+}
+
+// liveSetup skips unless podman + the image are present, redirects instance/tier
+// state to temp dirs, and returns a real runner + host identity.
+func liveSetup(t *testing.T) (*run.Exec, hostenv.Host) {
+	t.Helper()
+	if _, err := exec.LookPath("podman"); err != nil {
+		t.Skip("podman not on PATH")
+	}
+	r := &run.Exec{}
+	if _, err := r.Run(context.Background(), run.Opts{ReadOnly: true}, "podman", "info"); err != nil {
+		t.Skipf("podman unavailable: %v", err)
+	}
+	img := image()
+	if _, err := r.Run(context.Background(), run.Opts{ReadOnly: true}, "podman", "image", "exists", img); err != nil {
+		t.Skipf("image %s not built (run: cs-sandbox build) — %v", img, err)
+	}
+	host, err := hostenv.Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CS_SANDBOX_INSTANCES_DIR", filepath.Join(t.TempDir(), "instances"))
+	t.Setenv("CS_SANDBOX_TIER_DIR", filepath.Join(t.TempDir(), "tier"))
+	return r, host
+}
+
+// shareDir returns a temp dir usable as a --repo / --snapshot source. On macOS
+// `create` requires shared paths to resolve under $HOME (the podman-machine
+// share cs-sandbox commits to), and t.TempDir() lands under /var/folders — so
+// build the source under the home there instead. Removed at test end, like
+// t.TempDir().
+func shareDir(t *testing.T, host hostenv.Host) string {
+	t.Helper()
+	if !host.IsMacOS {
+		return t.TempDir()
+	}
+	dir, err := os.MkdirTemp(host.Home, ".cs-sandbox-itest-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// boxName is a unique, namespaced sandbox name for a subtest.
+func boxName(t *testing.T, tag string) string {
+	return fmt.Sprintf("csgocli-%s-%d-%s", tag, os.Getpid(), runID)
+}
+
+// step logs a timestamped progress line. A single test here can boot a real
+// container or microVM and stay busy for tens of seconds; `make test-integration`
+// runs with -v, under which these stream live so you can see where the time goes.
+func step(t *testing.T, format string, args ...any) {
+	t.Helper()
+	t.Logf("[%s] %s", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
+}
+
+// createBox creates a podman sandbox via the CLI and registers teardown — the
+// container plus its named volumes, so no test leaks the home/containers volumes.
+func createBox(t *testing.T, r *run.Exec, name string, extra ...string) {
+	t.Helper()
+	t.Cleanup(func() {
+		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", name)
+		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "volume", "rm", "-f",
+			"cs-sandbox-home-"+name, "cs-sandbox-containers-"+name)
+	})
+	step(t, "creating podman sandbox %s…", name)
+	start := time.Now()
+	args := append([]string{"create", name, "--engine", "podman"}, extra...)
+	if out, err := execRoot(t, args...); err != nil {
+		t.Fatalf("create %s: %v (out=%q)", name, err, out)
+	}
+	step(t, "sandbox %s ready (%s)", name, time.Since(start).Round(time.Millisecond))
+}
+
+// inBox runs a command inside the sandbox as the dev user and returns stdout.
+func inBox(ctx context.Context, r *run.Exec, host hostenv.Host, name, sh string) string {
+	return run.Output(ctx, r, "podman", "exec", "--user", host.User,
+		"--workdir", "/home/"+host.User, name, "bash", "-lc", sh)
+}
+
+func TestCLICreateExecDestroyLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	name := boxName(t, "cxd")
+
+	out, err := execRoot(t, "create", name, "--engine", "podman")
+	t.Cleanup(func() { _, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", name) })
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !strings.Contains(out, "created "+name) {
+		t.Errorf("create stdout = %q, want it to announce created %s", out, name)
+	}
+	if s := run.Output(ctx, r, "podman", "inspect", name, "--format", "{{.State.Running}}"); s != "true" {
+		t.Fatalf("container not running (State.Running=%q)", s)
+	}
+	// The agent tools resolve on PATH at ~/.local/bin (host↔sandbox unification).
+	if where := strings.TrimSpace(inBox(ctx, r, host, name, "command -v cs-claude")); !strings.HasSuffix(where, "/.local/bin/cs-claude") {
+		t.Errorf("cs-claude resolved to %q, want ~/.local/bin/cs-claude", where)
+	}
+
+	if _, err = execRoot(t, "destroy", name, "-f"); err != nil {
+		t.Fatalf("destroy: %v", err)
+	}
+	if _, err := r.Run(ctx, run.Opts{}, "podman", "inspect", name); err == nil {
+		t.Errorf("container %s still exists after destroy", name)
+	}
+}
+
+// TestCLIRmRecreateReusesDataLive: `rm` keeps the sandbox's data; recreating with
+// the same name reuses it (the marker written before rm survives the recreate).
+func TestCLIRmRecreateReusesDataLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	name := boxName(t, "reuse")
+	t.Cleanup(func() {
+		_, _ = execRoot(t, "destroy", name, "-f")
+		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", name)
+		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "volume", "rm", "-f",
+			"cs-sandbox-home-"+name, "cs-sandbox-containers-"+name)
+	})
+
+	if out, err := execRoot(t, "create", name, "--engine", "podman"); err != nil {
+		t.Fatalf("create: %v (%s)", err, out)
+	}
+	if _, err := r.Run(ctx, run.Opts{}, "podman", "exec", "--user", host.User, name,
+		"bash", "-lc", "echo REUSE_MARKER > ~/reuse-marker.txt"); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	// rm keeps the data and removes the sandbox from `ls`.
+	if out, err := execRoot(t, "rm", name); err != nil {
+		t.Fatalf("rm: %v (%s)", err, out)
+	}
+	if ls, _ := execRoot(t, "ls"); strings.Contains(ls, name) {
+		t.Errorf("after rm, %s should be gone from ls:\n%s", name, ls)
+	}
+
+	// recreate with the same name → reuse the kept home volume.
+	if out, err := execRoot(t, "create", name, "--engine", "podman"); err != nil {
+		t.Fatalf("recreate: %v (%s)", err, out)
+	}
+	if got := strings.TrimSpace(inBox(ctx, r, host, name, "cat ~/reuse-marker.txt 2>/dev/null")); got != "REUSE_MARKER" {
+		t.Errorf("recreated sandbox lost its data: marker = %q, want REUSE_MARKER", got)
+	}
+}
+
+// TestCLIAgentToolSetLive: the full agent toolset (not just cs-claude) is present
+// and executable at ~/.local/bin inside a sandbox.
+func TestCLIAgentToolSetLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	name := boxName(t, "tools")
+	createBox(t, r, name)
+
+	for _, tool := range []string{"cs-claude", "cs-codex", "cs-claude-remote", "cs-codex-remote", "mdtohtml"} {
+		got := strings.TrimSpace(inBox(ctx, r, host, name, "command -v "+tool))
+		if !strings.HasSuffix(got, "/.local/bin/"+tool) {
+			t.Errorf("%s resolved to %q, want ~/.local/bin/%s", tool, got, tool)
+		}
+	}
+	// The guest-only user-podman lives there too and is executable.
+	if got := strings.TrimSpace(inBox(ctx, r, host, name, "test -x ~/.local/bin/user-podman && echo ok")); got != "ok" {
+		t.Errorf("user-podman not executable in sandbox: %q", got)
+	}
+}
+
+// TestCLIAgentAuthInheritedLive: a fresh sandbox inherits the host Claude login —
+// create snapshots ~/.cs-claude/.credentials.json into the seed and the entrypoint
+// installs it at 0600 on first boot. Checks existence/mode only, never contents.
+func TestCLIAgentAuthInheritedLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	hostCred := filepath.Join(host.Home, ".cs-claude", ".credentials.json")
+	if !fileExists(hostCred) {
+		t.Skip("host has no ~/.cs-claude/.credentials.json to inherit")
+	}
+	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
+	name := boxName(t, "auth")
+	createBox(t, r, name)
+
+	// The seed snapshotted the credential...
+	if !fileExists(filepath.Join(instDir, name, "seed", "claude", ".credentials.json")) {
+		t.Error("create did not snapshot the host Claude credential into the seed")
+	}
+	// ...and first boot installed it into the sandbox profile at 0600.
+	got := strings.TrimSpace(inBox(ctx, r, host, name,
+		"stat -c %a ~/.cs-claude/.credentials.json 2>/dev/null"))
+	if got != "600" {
+		t.Errorf("sandbox ~/.cs-claude/.credentials.json missing or wrong mode: %q (want 600)", got)
+	}
+}
+
+// TestCLINoAgentAuthLive: --no-agent-auth suppresses the login that would
+// otherwise be inherited — no credential in the seed or the sandbox.
+func TestCLINoAgentAuthLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	if !fileExists(filepath.Join(host.Home, ".cs-claude", ".credentials.json")) {
+		t.Skip("host has no ~/.cs-claude/.credentials.json (nothing to suppress)")
+	}
+	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
+	name := boxName(t, "noauth")
+	createBox(t, r, name, "--no-agent-auth")
+
+	if fileExists(filepath.Join(instDir, name, "seed", "claude", ".credentials.json")) {
+		t.Error("--no-agent-auth should not snapshot the host credential into the seed")
+	}
+	if got := strings.TrimSpace(inBox(ctx, r, host, name,
+		"test -f ~/.cs-claude/.credentials.json && echo present || echo absent")); got != "absent" {
+		t.Errorf("sandbox should have no ~/.cs-claude/.credentials.json under --no-agent-auth, got %q", got)
+	}
+}
+
+// TestCLINoAgentKeysLive: --no-agent-keys drops the provider API-key/cloud carry
+// (an auto-captured ANTHROPIC_API_KEY is not seeded) while still carrying the
+// subscription login — the opposite of --no-agent-auth.
+func TestCLINoAgentKeysLive(t *testing.T) {
+	r, host := liveSetup(t)
+	// A provider key in the create environment is auto-captured by default.
+	t.Setenv("ANTHROPIC_API_KEY", "cs-test-fake-key")
+	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
+
+	// Default: the key lands in the seed provider env.
+	base := boxName(t, "keys")
+	createBox(t, r, base)
+	baseEnv := filepath.Join(instDir, base, "seed", "claude", "env")
+	if data, err := os.ReadFile(baseEnv); err != nil || !strings.Contains(string(data), "ANTHROPIC_API_KEY") {
+		t.Fatalf("default create should auto-capture the provider key into %s (err=%v)", baseEnv, err)
+	}
+
+	// --no-agent-keys: no provider env carried...
+	nk := boxName(t, "nokeys")
+	createBox(t, r, nk, "--no-agent-keys")
+	if _, err := os.Stat(filepath.Join(instDir, nk, "seed", "claude", "env")); !os.IsNotExist(err) {
+		t.Errorf("--no-agent-keys should not carry the provider env (err=%v)", err)
+	}
+	// ...but the subscription login is still carried (if the host has one).
+	if fileExists(filepath.Join(host.Home, ".cs-claude", ".credentials.json")) &&
+		!fileExists(filepath.Join(instDir, nk, "seed", "claude", ".credentials.json")) {
+		t.Error("--no-agent-keys must still carry the subscription credential")
+	}
+}
+
+// TestCLIRepoShareLive: `create --repo <toplevel>` shares a working git checkout
+// into the sandbox.
+func TestCLIRepoShareLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	top := strings.TrimSpace(run.Output(ctx, r, "git", "rev-parse", "--show-toplevel"))
+	if top == "" {
+		t.Skip("not in a git checkout")
+	}
+	name := boxName(t, "repo")
+	createBox(t, r, name, "--repo", top)
+
+	// A cloned repo dir with a .git shows up under the home, and git works in it.
+	repoDir := strings.TrimSpace(inBox(ctx, r, host, name, "ls -d ~/*/.git 2>/dev/null | head -1 | xargs -r dirname"))
+	if repoDir == "" {
+		t.Fatalf("no shared repo checkout found under home in %s", name)
+	}
+	if head := strings.TrimSpace(inBox(ctx, r, host, name, "git -C "+repoDir+" rev-parse --abbrev-ref HEAD")); head == "" {
+		t.Errorf("shared repo %s is not a working checkout (no HEAD)", repoDir)
+	}
+}
+
+// TestCLIYoloLive: --yolo writes the .yolo marker for both agent and user
+// sandboxes (it's not restricted to agents).
+func TestCLIYoloLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+
+	for _, typ := range []string{"agent", "user"} {
+		name := boxName(t, "yolo"+typ)
+		createBox(t, r, name, "--type", typ, "--yolo")
+		if got := strings.TrimSpace(inBox(ctx, r, host, name, "test -f ~/.cs-claude/.yolo && echo yes")); got != "yes" {
+			t.Errorf("%s --yolo missing ~/.cs-claude/.yolo marker: %q", typ, got)
+		}
+	}
+}
+
+// TestCLIUserTypeSeedLive: a user sandbox seeds the user tier key (H+U), an agent
+// seeds the agent tier key (G) — the trust matrix, on the real seed on disk.
+func TestCLIUserTypeSeedLive(t *testing.T) {
+	r, _ := liveSetup(t)
+	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
+
+	uname := boxName(t, "user")
+	createBox(t, r, uname, "--type", "user")
+	userSeed := filepath.Join(instDir, uname, "seed")
+	if !fileExists(filepath.Join(userSeed, "id_cs-sandbox_user")) {
+		t.Errorf("user sandbox missing user tier key in seed")
+	}
+	if fileExists(filepath.Join(userSeed, "id_cs-sandbox_agent")) {
+		t.Errorf("user sandbox should not hold the agent tier key")
+	}
+
+	aname := boxName(t, "agent")
+	createBox(t, r, aname, "--type", "agent")
+	if !fileExists(filepath.Join(instDir, aname, "seed", "id_cs-sandbox_agent")) {
+		t.Errorf("agent sandbox missing agent tier key in seed")
+	}
+}
+
+// TestCLIEnvInjectionLive: `create -e KEY=VALUE` resolves the var into the seed's
+// inject-env file (installed into the sandbox as ~/.ssh/environment), written 0600.
+func TestCLIEnvInjectionLive(t *testing.T) {
+	r, _ := liveSetup(t)
+	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
+	name := boxName(t, "env")
+	createBox(t, r, name, "-e", "CS_TEST_TOKEN=sekret123")
+
+	p := filepath.Join(instDir, name, "seed", "inject-env")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read inject-env: %v", err)
+	}
+	if !strings.Contains(string(data), "CS_TEST_TOKEN=sekret123") {
+		t.Errorf("inject-env missing injected var; got:\n%s", data)
+	}
+	if fi, _ := os.Stat(p); fi != nil && fi.Mode().Perm() != 0o600 {
+		t.Errorf("inject-env mode = %o, want 600 (holds secrets)", fi.Mode().Perm())
+	}
+}
+
+// TestCLINetworkReachabilityLive: two sandboxes on the shared fabric resolve each
+// other by name (the core "reachable by name" promise).
+func TestCLINetworkReachabilityLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	a, b := boxName(t, "neta"), boxName(t, "netb")
+	createBox(t, r, a)
+	createBox(t, r, b)
+
+	// From box A, box B's name resolves to an address on the shared network.
+	got := strings.TrimSpace(inBox(ctx, r, host, a, "getent hosts "+b+" | awk '{print $1}'"))
+	if got == "" {
+		t.Errorf("box %s could not resolve peer %s by name on the shared fabric", a, b)
+	}
+}
+
+// sshCapture runs a shell snippet inside a sandbox over its published SSH port
+// and returns stdout — the engine-agnostic way to read a command's output (the
+// CLI's own `exec` attaches to the terminal, so it can't be captured). Works for
+// both podman containers and Firecracker VMs.
+func sshCapture(t *testing.T, host hostenv.Host, name, sh string) string {
+	t.Helper()
+	portStr, err := execRoot(t, "port", name)
+	if err != nil {
+		t.Fatalf("port %s: %v", name, err)
+	}
+	key := filepath.Join(os.Getenv("CS_SANDBOX_TIER_DIR"), "id_cs-sandbox_user")
+	return run.Output(context.Background(), &run.Exec{}, "ssh",
+		"-i", key, "-p", strings.TrimSpace(portStr),
+		"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+		"-o", "IdentitiesOnly=yes", "-o", "LogLevel=ERROR",
+		fmt.Sprintf("%s@127.0.0.1", host.User), sh)
+}
+
+// assertHostByName checks the host-by-name wiring for a live sandbox: the seed
+// pins the host's name(s) to the reachable pasta address, and inside the guest a
+// getaddrinfo client (gai.conf ordering) picks that IPv4 over any unreachable
+// AAAA the host's resolver returns. inGuest runs a shell snippet in the sandbox.
+func assertHostByName(t *testing.T, host hostenv.Host, name string, inGuest func(sh string) string) {
+	t.Helper()
+	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
+	data, err := os.ReadFile(filepath.Join(instDir, name, "seed", "host_hosts"))
+	if err != nil {
+		t.Fatalf("read host_hosts seed: %v", err)
+	}
+	if !strings.Contains(string(data), "169.254.1.2 ") {
+		t.Errorf("host_hosts should pin the pasta host address; got:\n%s", data)
+	}
+	hn := host.Names[0]
+	got := strings.TrimSpace(inGuest("getent ahosts " + hn + " | awk 'NR==1{print $1}'"))
+	if got != "169.254.1.2" {
+		t.Errorf("host name %q resolves to %q inside the sandbox, want 169.254.1.2", hn, got)
+	}
+}
+
+// TestCLIHostByNameLive: a podman sandbox can reach the host by its own name.
+func TestCLIHostByNameLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	if len(host.Names) == 0 {
+		t.Skip("host exposes no name to map")
+	}
+	name := boxName(t, "hostname")
+	createBox(t, r, name)
+	assertHostByName(t, host, name, func(sh string) string { return inBox(ctx, r, host, name, sh) })
+}
+
+// TestCLIHostByNameFirecrackerLive: same host-by-name promise, exercised through
+// the Firecracker guest path (fc-init appends host_hosts + writes gai.conf, off
+// the seed.ext4 disk). Skips without /dev/kvm or the cached FC artifacts.
+func TestCLIHostByNameFirecrackerLive(t *testing.T) {
+	_, host := liveSetup(t)
+	if len(host.Names) == 0 {
+		t.Skip("host exposes no name to map")
+	}
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		t.Skipf("/dev/kvm unavailable: %v", err)
+	}
+	if !fileExists(filepath.Join(paths.FCCache(), "vmlinux.elf")) {
+		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
+	}
+	name := boxName(t, "hostnamefc")
+	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
+	step(t, "booting firecracker microVM %s (takes ~30s)…", name)
+	start := time.Now()
+	if out, err := execRoot(t, "create", name, "--engine", "firecracker"); err != nil {
+		t.Fatalf("create firecracker: %v (out=%q)", err, out)
+	}
+	step(t, "microVM %s booted (%s)", name, time.Since(start).Round(time.Second))
+	assertHostByName(t, host, name, func(sh string) string { return sshCapture(t, host, name, sh) })
+}
+
+// TestCLIListShowsInstanceLive: `ls` reports a live instance with its engine.
+func TestCLIListShowsInstanceLive(t *testing.T) {
+	r, _ := liveSetup(t)
+	name := boxName(t, "ls")
+	createBox(t, r, name)
+
+	out, err := execRoot(t, "ls")
+	if err != nil {
+		t.Fatalf("ls: %v", err)
+	}
+	if !strings.Contains(out, name) || !strings.Contains(out, "podman") {
+		t.Errorf("ls output missing %s/podman:\n%s", name, out)
+	}
+}
+
+// TestCLIPortForwardLive: forward a host port to a listener inside a sandbox,
+// fetch through it, then tear the forward down.
+func TestCLIPortForwardLive(t *testing.T) {
+	r, _ := liveSetup(t)
+	ctx := context.Background()
+	name := boxName(t, "fwd")
+	createBox(t, r, name)
+
+	// Start a trivial HTTP server inside the sandbox on :8099 (detached).
+	if _, err := r.Run(ctx, run.Opts{}, "podman", "exec", "-d", name,
+		"bash", "-lc", "cd /tmp && nohup python3 -m http.server 8099 >/tmp/http.log 2>&1 &"); err != nil {
+		t.Fatalf("start in-sandbox http server: %v", err)
+	}
+
+	if _, err := execRoot(t, "forward", name, "18099:8099"); err != nil {
+		t.Fatalf("forward: %v", err)
+	}
+	t.Cleanup(func() { _, _ = execRoot(t, "unforward", name, "all") })
+
+	// Poll the host-side forwarded port (ssh -L + server both need a moment).
+	ok := false
+	for i := 0; i < 20; i++ {
+		if _, err := r.Run(ctx, run.Opts{}, "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:18099/"); err == nil {
+			ok = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !ok {
+		t.Errorf("forwarded port 18099 never served a response")
+	}
+
+	// It shows up in `forwards`, and unforward clears it.
+	if out, _ := execRoot(t, "forwards", name); !strings.Contains(out, "18099") {
+		t.Errorf("forwards did not list the active forward:\n%s", out)
+	}
+	if _, err := execRoot(t, "unforward", name, "all"); err != nil {
+		t.Fatalf("unforward: %v", err)
+	}
+}
+
+// TestCLISocksForwardLive: `forward --socks` opens a working SOCKS proxy through
+// the sandbox — a request via it reaches the sandbox's own HTTP server.
+func TestCLISocksForwardLive(t *testing.T) {
+	r, _ := liveSetup(t)
+	ctx := context.Background()
+	name := boxName(t, "socks")
+	createBox(t, r, name)
+
+	if _, err := r.Run(ctx, run.Opts{}, "podman", "exec", "-d", name,
+		"bash", "-lc", "cd /tmp && nohup python3 -m http.server 8098 >/tmp/http.log 2>&1 &"); err != nil {
+		t.Fatalf("start in-sandbox http server: %v", err)
+	}
+
+	// --socks needs =VALUE syntax (the flag has an optional default).
+	if _, err := execRoot(t, "forward", name, "--socks=11080"); err != nil {
+		t.Fatalf("forward --socks: %v", err)
+	}
+	t.Cleanup(func() { _, _ = execRoot(t, "unforward", name, "all") })
+
+	// Through the SOCKS proxy, localhost:8098 resolves from the sandbox's side.
+	ok := false
+	for i := 0; i < 20; i++ {
+		if _, err := r.Run(ctx, run.Opts{}, "curl", "-fsS", "-o", "/dev/null",
+			"--socks5-hostname", "127.0.0.1:11080", "http://localhost:8098/"); err == nil {
+			ok = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !ok {
+		t.Errorf("SOCKS proxy on 11080 never reached the sandbox's HTTP server")
+	}
+	if out, _ := execRoot(t, "forwards", name); !strings.Contains(out, "11080") {
+		t.Errorf("forwards did not list the socks proxy:\n%s", out)
+	}
+}
+
+// TestCLIImageStoreUseLive: a sandbox created with --image-store can use an image
+// from the seeded store via nested podman, without pulling — end to end.
+func TestCLIImageStoreUseLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	store := fmt.Sprintf("csgostore%d%s", os.Getpid(), runID)
+	name := boxName(t, "store")
+	t.Cleanup(func() {
+		_, _ = execRoot(t, "destroy", name, "-f")
+		_, _ = execRoot(t, "rm-store", store, "-f")
+	})
+
+	if out, err := execRoot(t, "create-store", store); err != nil {
+		t.Fatalf("create-store: %v (%s)", err, out)
+	}
+	if out, err := execRoot(t, "seed-store", store, "docker.io/library/busybox"); err != nil {
+		t.Fatalf("seed-store: %v (%s)", err, out)
+	}
+	if out, err := execRoot(t, "create", name, "--engine", "podman", "--image-store", store); err != nil {
+		t.Fatalf("create --image-store: %v (%s)", err, out)
+	}
+
+	// The nested (rootful) podman sees busybox from the mounted store — no pull.
+	got := inBox(ctx, r, host, name, "podman images docker.io/library/busybox --format '{{.Repository}}' 2>/dev/null")
+	if !strings.Contains(got, "busybox") {
+		t.Errorf("nested podman did not see busybox from the --image-store: %q", got)
+	}
+}
+
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+// waitInBox polls a shell test inside the sandbox until it succeeds or times out
+// (for first-boot-async artifacts like the --repo clone).
+func waitInBox(t *testing.T, r *run.Exec, host hostenv.Host, name, sh string, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if _, err := r.Run(context.Background(), run.Opts{}, "podman", "exec", "--user", host.User,
+			"--workdir", "/home/"+host.User, name, "bash", "-lc", sh); err == nil {
+			return
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("timed out waiting for %q in %s", sh, name)
+}
+
+// TestCLIHostRouteReadOnlyLive: the sudo-free host-route paths work end-to-end.
+// FCCache is isolated so host-route is guaranteed inactive — status reports down
+// and refresh is rejected, both WITHOUT ever invoking sudo or touching host
+// networking. (The privileged up/down roundtrip needs interactive sudo +
+// systemd-resolved and is intentionally not exercised.)
+func TestCLIHostRouteReadOnlyLive(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("host-route is Linux-only")
+	}
+	t.Setenv("CS_SANDBOX_FC_CACHE", t.TempDir()) // no marker file -> guaranteed inactive
+
+	out, err := execRoot(t, "host-route", "status")
+	if err != nil {
+		t.Fatalf("host-route status: %v", err)
+	}
+	if !strings.Contains(out, "down") {
+		t.Errorf("status = %q, want it to report down", out)
+	}
+	// refresh when down is rejected cleanly, before any privileged wiring.
+	if _, err := execRoot(t, "host-route", "refresh"); err == nil || !strings.Contains(err.Error(), "not up") {
+		t.Errorf("host-route refresh when down err = %v, want 'not up'", err)
+	}
+}
+
+// hostGitInit creates a host source repo with an identity and an initial commit.
+func hostGitInit(t *testing.T, r *run.Exec, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "user.name", "Test"},
+		{"commit", "--allow-empty", "-m", "initial"},
+	} {
+		if _, err := r.Run(ctx, run.Opts{Dir: dir}, append([]string{"git"}, args...)...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+}
+
+// TestCLIRepoPushLive: `push` fast-forwards a host-side commit into the sandbox's
+// --repo checkout (the reverse of the fetch the engine test covers).
+func TestCLIRepoPushLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	src := filepath.Join(shareDir(t, host), "proj")
+	hostGitInit(t, r, src)
+
+	name := boxName(t, "push")
+	createBox(t, r, name, "--repo", src)
+	waitInBox(t, r, host, name, "test -d ~/proj/.git", 90*time.Second)
+
+	// A new host-side commit, then push it into the sandbox.
+	if _, err := r.Run(ctx, run.Opts{Dir: src}, "git", "commit", "--allow-empty", "-m", "host-side change"); err != nil {
+		t.Fatalf("host commit: %v", err)
+	}
+	if _, err := execRoot(t, "push", name); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if log := inBox(ctx, r, host, name, "git -C ~/proj log --oneline"); !strings.Contains(log, "host-side change") {
+		t.Errorf("sandbox checkout missing pushed commit:\n%s", log)
+	}
+}
+
+// TestCLISnapshotShareLive: `create --snapshot <dir>` shares a frozen copy of a
+// directory into the sandbox.
+func TestCLISnapshotShareLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	snap := filepath.Join(shareDir(t, host), "snapdata")
+	if err := os.MkdirAll(snap, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snap, "hello.txt"), []byte("frozen-hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	name := boxName(t, "snap")
+	createBox(t, r, name, "--snapshot", snap)
+	waitInBox(t, r, host, name, "test -f ~/snapdata/hello.txt", 90*time.Second)
+
+	if got := inBox(ctx, r, host, name, "cat ~/snapdata/hello.txt"); !strings.Contains(got, "frozen-hi") {
+		t.Errorf("snapshot content in sandbox = %q, want frozen-hi", got)
+	}
+}
+
+// TestCLIFirecrackerCrossEngineLive: create a real microVM via the CLI, prove its
+// per-instance disks exist, and prove cross-engine reachability — a podman
+// container resolves the firecracker VM by name on the shared fabric. Skips
+// without /dev/kvm or the cached FC artifacts.
+func TestCLIFirecrackerCrossEngineLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		t.Skipf("/dev/kvm unavailable: %v", err)
+	}
+	if !fileExists(filepath.Join(paths.FCCache(), "vmlinux.elf")) {
+		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
+	}
+	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
+
+	fbox := boxName(t, "xfc")
+	t.Cleanup(func() { _, _ = execRoot(t, "destroy", fbox, "-f") })
+	step(t, "booting firecracker microVM %s (takes ~30s)…", fbox)
+	start := time.Now()
+	if out, err := execRoot(t, "create", fbox, "--engine", "firecracker"); err != nil {
+		t.Fatalf("create firecracker: %v (out=%q)", err, out)
+	}
+	step(t, "microVM %s booted (%s)", fbox, time.Since(start).Round(time.Second))
+	// The per-instance reflink rootfs and the seed.ext4 disk exist on disk.
+	for _, disk := range []string{"rootfs.ext4", "seed.ext4"} {
+		if !fileExists(filepath.Join(instDir, fbox, disk)) {
+			t.Errorf("firecracker instance missing %s", disk)
+		}
+	}
+
+	// A podman container resolves the firecracker VM by name (cross-engine fabric).
+	pbox := boxName(t, "xpod")
+	createBox(t, r, pbox)
+	got := strings.TrimSpace(inBox(ctx, r, host, pbox, "getent hosts "+fbox+" | awk '{print $1}'"))
+	if got == "" {
+		t.Errorf("podman box could not resolve firecracker box %s by name (cross-engine fabric)", fbox)
+	}
+}

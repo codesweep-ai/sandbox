@@ -1,0 +1,115 @@
+# goreleaser config for cs-sandbox: a CGO_ENABLED=0 static
+# multi-arch binary, checksummed + SBOM'd + cosign-signed releases (supply chain).
+#
+#   goreleaser check                                  # validate this file
+#   goreleaser build --single-target --snapshot --clean --output bin/cs-sandbox
+#   goreleaser release --snapshot --clean             # full local dry-run (dist/)
+#   goreleaser release --clean                        # tagged release (needs a git tag)
+version: 2
+
+project_name: cs-sandbox
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+    - go test ./...
+
+builds:
+  - id: cs-sandbox
+    main: ./cmd/cs-sandbox
+    binary: cs-sandbox
+    env:
+      - CGO_ENABLED=0 # static, no cgo
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/codesweep-ai/sandbox/internal/cli.Version={{ .Version }}
+    # Firecracker is linux/amd64-only at runtime; the binary still builds for the
+    # podman-only targets (it errors clearly if an unsupported engine is asked for).
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}" # reproducible builds
+
+archives:
+  - id: cs-sandbox
+    ids:
+      - cs-sandbox
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - INSTALL.md
+      - LICENSE
+      # Ship the user docs.
+      - src: docs/design.md
+        info:
+          mode: 0644
+      - src: docs/podman.md
+        info:
+          mode: 0644
+      - src: docs/firecracker.md
+        info:
+          mode: 0644
+      - src: docs/repo-sharing.md
+        info:
+          mode: 0644
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# Software bill of materials per archive (supply chain). Requires cyclonedx-gomod:
+#   go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
+sboms:
+  - id: archive
+    artifacts: archive
+    documents:
+      - "{{ .ArtifactName }}.sbom.json"
+    cmd: cyclonedx-gomod
+    args: ["app", "-json", "-output", "$document", "-main", "cmd/cs-sandbox", "../../.."]
+
+# Keyless cosign signing of the checksums (supply chain). Requires cosign; runs
+# in release mode. Uses ambient OIDC (CI) — set COSIGN_EXPERIMENTAL=1 locally.
+signs:
+  - id: cosign
+    cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  sort: asc
+  use: git
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^test:"
+      - "merge conflict"
+
+release:
+  draft: true
+  name_template: "cs-sandbox {{ .Tag }}"
+  header: |
+    ## cs-sandbox {{ .Tag }}
+
+    Rootless Firecracker/Podman dev sandboxes for AI coding agents.
+    Static `CGO_ENABLED=0` binaries; verify with `checksums.txt` (+ cosign `.sig`).

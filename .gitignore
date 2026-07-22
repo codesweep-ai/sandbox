@@ -1,8 +1,9 @@
-# Generated SSH tier keys (user/agent) — never commit
-tier-keys/
+# Runtime state lives in the user's XDG dirs, not the source tree
+# (see internal/paths): instances + tier keys under $XDG_DATA_HOME/cs-sandbox,
+# the firecracker cache under $XDG_CACHE_HOME/cs-sandbox. Nothing mutable here.
 
-# Per-instance state: persistent home seed, host keys, metadata — never commit
-instances/
+# Go build output
+/bin/
 
-# Firecracker cache: downloaded binary, built kernel/rootfs, disk caches
-.fc-cache/
+# goreleaser release artifacts
+/dist/
