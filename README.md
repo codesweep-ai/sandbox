@@ -3,6 +3,7 @@
 > **Disposable, isolated Linux dev sandboxes (rootless Podman containers or Firecracker microVMs on
 > one shared network) for running AI coding agents.**
 
+[![CI](https://github.com/codesweep-ai/sandbox/actions/workflows/ci.yml/badge.svg)](https://github.com/codesweep-ai/sandbox/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Engines](https://img.shields.io/badge/engines-podman%20%C2%B7%20firecracker-informational)
 ![Platforms](https://img.shields.io/badge/platform-Linux%20%C2%B7%20macOS-lightgrey)
