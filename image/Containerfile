@@ -162,7 +162,7 @@ RUN mkdir -p "$NVM_DIR" \
 # pinned and reproducible (no background auto-update fighting the read-only tree). The binary IS
 # the full CLI — the launcher is only convenience + auto-update, neither of which we want here.
 # Bump CLAUDE_CODE_VERSION (or pass --build-arg) to upgrade; checksum is verified from the manifest.
-ARG CLAUDE_CODE_VERSION=2.1.178
+ARG CLAUDE_CODE_VERSION=2.1.212
 RUN base=https://downloads.claude.ai/claude-code-releases \
   && case "$(uname -m)" in x86_64|amd64) arch=x64 ;; arm64|aarch64) arch=arm64 ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
   && plat="linux-${arch}" \
@@ -184,16 +184,27 @@ RUN base=https://downloads.claude.ai/claude-code-releases \
 ENV DISABLE_INSTALLATION_CHECKS=1 \
     DISABLE_AUTOUPDATER=1
 
-# OpenAI Codex — native static (musl) binary from the GitHub release, into /opt (same rationale:
-# pinned, read-only-friendly, no Node). The musl build is fully self-contained so it runs on the
-# Fedora glibc base. Bump CODEX_VERSION (or pass --build-arg) to upgrade.
-ARG CODEX_VERSION=0.140.0
+# OpenAI Codex — the release package OpenAI's own installer uses
+# (https://chatgpt.com/codex/install.sh): the static musl build plus the helpers codex ships for
+# itself (its own ripgrep, bwrap, the code-mode host). It is also the only Linux asset with a
+# published checksum — codex-package_SHA256SUMS covers the codex-package-* archives, not the
+# bare-binary ones — so taking it is what lets this download be verified at all. Extracted whole
+# into /opt for the same reason as Claude Code above: pinned, read-only-friendly, no Node.
+# --no-same-owner because the archive carries a build-machine uid: preserving it would leave the
+# agent binaries owned by whichever sandbox user happens to share that uid, and writable by them.
+# Bump CODEX_VERSION (or pass --build-arg) to upgrade.
+ARG CODEX_VERSION=0.145.0
 RUN case "$(uname -m)" in x86_64|amd64) tgt=x86_64-unknown-linux-musl ;; arm64|aarch64) tgt=aarch64-unknown-linux-musl ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
-  && mkdir -p /opt/codex/bin /tmp/codex-dl \
-  && curl -fsSL -o /tmp/codex-dl/codex.tar.gz "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${tgt}.tar.gz" \
-  && tar -xzf /tmp/codex-dl/codex.tar.gz -C /tmp/codex-dl \
-  && mv "/tmp/codex-dl/codex-${tgt}" /opt/codex/bin/codex \
-  && chmod +x /opt/codex/bin/codex \
+  && base="https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}" \
+  && asset="codex-package-${tgt}.tar.gz" \
+  && mkdir -p /opt/codex /tmp/codex-dl \
+  && curl -fsSL -o "/tmp/codex-dl/$asset" "$base/$asset" \
+  && want=$(curl -fsSL "$base/codex-package_SHA256SUMS" | awk -v a="$asset" '$2 == a { print $1 }') \
+  && got=$(sha256sum "/tmp/codex-dl/$asset" | cut -d' ' -f1) \
+  && { [ -n "$want" ] && [ "$want" = "$got" ] || { echo "codex checksum mismatch: want=$want got=$got" >&2; exit 1; }; } \
+  && tar -xzf "/tmp/codex-dl/$asset" -C /opt/codex --no-same-owner \
+  && chmod 0755 /opt/codex/bin/codex /opt/codex/bin/codex-code-mode-host /opt/codex/codex-path/rg \
+  && { [ ! -f /opt/codex/codex-resources/bwrap ] || chmod 0755 /opt/codex/codex-resources/bwrap; } \
   && rm -rf /tmp/codex-dl \
   && /opt/codex/bin/codex --version
 
