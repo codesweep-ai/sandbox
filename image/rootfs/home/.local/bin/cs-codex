@@ -13,8 +13,10 @@ CODEX_DIR="$HOME/.cs-codex"
 mkdir -p "$CODEX_DIR" 2>/dev/null || true   # ensure the profile dir exists (first run / fresh host)
 export CODEX_HOME="$CODEX_DIR"
 
-# Carry host-provided provider auth (API key / custom provider). ~/.cs-codex/env is seeded from the
-# host; sourcing it puts OPENAI_API_KEY (or a custom provider's env_key var) into codex's environment.
+# Provider auth (API key / custom provider), scoped to codex rather than the whole sandbox:
+# anything you put in ~/.cs-codex/env (OPENAI_API_KEY, or a custom provider's env_key var) is
+# sourced here. Nothing creates this file for you — write it inside the sandbox, or use
+# `cs-sandbox create --env` to inject vars sandbox-wide instead.
 [ -f "$CODEX_DIR/env" ] && { set -a; . "$CODEX_DIR/env"; set +a; }
 
 # Pre-trust the project so codex never stops at the "Do you trust the contents of this

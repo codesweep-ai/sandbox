@@ -16,19 +16,18 @@ import (
 
 // CreateSpec is the engine-agnostic description of a sandbox to create.
 type CreateSpec struct {
-	Name        string
-	Type        string // user | agent
-	Yolo        bool
-	Solo        bool
-	Privileged  bool // podman: use --privileged instead of the scaled-down cap set
-	CPUs        int  // firecracker
-	MemMiB      int  // firecracker
-	Snapshots   []spec.Snapshot
-	RepoClones  []spec.RepoClone
-	ImageStores []string
-	InjectedEnv string // resolved KEY=VALUE block
-	NoAgentKeys bool   // --no-agent-keys: skip carrying provider API-key/cloud env + creds
-	NoAgentAuth bool   // --no-agent-auth: skip ALL host agent auth (subscription + provider)
+	Name              string
+	Type              string // user | agent
+	Yolo              bool
+	Solo              bool
+	Privileged        bool // podman: use --privileged instead of the scaled-down cap set
+	CPUs              int  // firecracker
+	MemMiB            int  // firecracker
+	Snapshots         []spec.Snapshot
+	RepoClones        []spec.RepoClone
+	ImageStores       []string
+	InjectedEnv       string   // resolved KEY=VALUE block
+	InheritAgentLogin []string // --inherit-agent-login: agents whose host login to carry in
 }
 
 // ExecIO configures an interactive/exec session.

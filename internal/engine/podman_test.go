@@ -205,3 +205,38 @@ func TestCopyTreeArgv(t *testing.T) {
 		t.Errorf("macOS cp has no --reflink: %q", mac)
 	}
 }
+
+// TestPodmanExecRunsAsDevUser: exec must land as the dev user in their home —
+// the container's main process is uid 0, so without --user/--workdir every
+// exec'd command would run as root with HOME=/root (a different agent profile,
+// root-owned files, and behaviour the firecracker engine doesn't share).
+func TestPodmanExecRunsAsDevUser(t *testing.T) {
+	f := run.NewFake()
+	p := NewPodman(Deps{Runner: f, Host: hostenv.Host{User: "dev"}})
+
+	if err := p.Exec(context.Background(), "box", ExecIO{Argv: []string{"id", "-un"}}); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(f.Calls[0], " ")
+	for _, want := range []string{"--user dev", "--workdir /home/dev", "box id -un"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("exec argv missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "-it") {
+		t.Errorf("a one-shot command should not allocate a TTY: %s", got)
+	}
+
+	// An interactive shell adds -it and defaults to a login shell.
+	f2 := run.NewFake()
+	p2 := NewPodman(Deps{Runner: f2, Host: hostenv.Host{User: "dev"}})
+	if err := p2.Exec(context.Background(), "box", ExecIO{Interactive: true}); err != nil {
+		t.Fatal(err)
+	}
+	got2 := strings.Join(f2.Calls[0], " ")
+	for _, want := range []string{"-it", "--user dev", "bash -l"} {
+		if !strings.Contains(got2, want) {
+			t.Errorf("interactive exec argv missing %q: %s", want, got2)
+		}
+	}
+}

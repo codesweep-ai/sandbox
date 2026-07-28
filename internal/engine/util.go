@@ -15,13 +15,14 @@ import (
 func nowUTC() string { return time.Now().UTC().Format("2006-01-02T15:04:05Z") }
 
 // allocPort wraps ports.Alloc with the live loopback probe.
-func allocPort(lo, hi int, vm bool, reserved map[int]bool) (int, error) {
-	return ports.Alloc(lo, hi, vm, reserved, ports.LoopbackBusy)
+func allocPort(lo, hi int, reserved map[int]bool) (int, error) {
+	return ports.Alloc(lo, hi, reserved, ports.LoopbackBusy)
 }
 
 // reservedPorts collects ports already claimed by any instance (podman labels
 // span running/stopped containers; state files cover removed ones + VMs),
-// spanning both engines so numbers never collide.
+// spanning both engines so numbers never collide. It sees only this instances
+// dir; allocPort's live probe covers ports held from outside it.
 func (d Deps) reservedPorts(ctx context.Context) map[int]bool {
 	m := map[int]bool{}
 	res, _ := d.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "ps", "-a",
@@ -59,4 +60,57 @@ func copyTreeArgv(isMacOS bool, src, dst string) []string {
 		return []string{"cp", "-a", "-c", src, dst}
 	}
 	return []string{"cp", "-a", "--reflink=auto", src, dst}
+}
+
+// Sandbox lifecycle states reported by `ls`. The vocabulary follows the stop/start
+// commands rather than each engine's own word (podman says "exited"), so what you
+// read is what you would type.
+const (
+	StatusRunning = "running"
+	StatusStopped = "stopped"
+	StatusUnknown = "unknown"
+)
+
+// Statuses reports each instance's lifecycle state. Container states come from a
+// single `podman ps -a`; a microVM's comes from its pid file — so listing costs at
+// most one subprocess regardless of how many sandboxes exist.
+func (d Deps) Statuses(ctx context.Context, insts []*state.Instance) map[string]string {
+	out := make(map[string]string, len(insts))
+	anyPodman := false
+	for _, in := range insts {
+		if in.Engine == state.Firecracker {
+			if fcRunning(d.InstanceDir(in.Name)) {
+				out[in.Name] = StatusRunning
+			} else {
+				out[in.Name] = StatusStopped
+			}
+			continue
+		}
+		anyPodman = true
+	}
+	if !anyPodman {
+		return out
+	}
+	res, err := d.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "ps", "-a",
+		"--filter", "label=cs-sandbox.managed=1", "--format", "{{.Names}} {{.State}}")
+	seen := map[string]string{}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if name, st, ok := strings.Cut(strings.TrimSpace(line), " "); ok {
+			seen[name] = st
+		}
+	}
+	for _, in := range insts {
+		if in.Engine == state.Firecracker {
+			continue
+		}
+		switch {
+		case err != nil:
+			out[in.Name] = StatusUnknown // podman unreachable: say so rather than guess
+		case seen[in.Name] == "running":
+			out[in.Name] = StatusRunning
+		default:
+			out[in.Name] = StatusStopped
+		}
+	}
+	return out
 }

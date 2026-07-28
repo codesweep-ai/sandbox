@@ -33,19 +33,18 @@ func autoEngine(isMacOS bool) string {
 }
 
 type createFlags struct {
-	typ         string
-	engine      string
-	yolo        bool
-	solo        bool
-	privileged  bool
-	noAgentKeys bool
-	noAgentAuth bool
-	cpus, mem   int
-	repos       []string
-	snapshots   []string
-	envs        []string
-	envFiles    []string
-	imageStores []string
+	typ               string
+	engine            string
+	yolo              bool
+	solo              bool
+	privileged        bool
+	inheritAgentLogin []string
+	cpus, mem         int
+	repos             []string
+	snapshots         []string
+	envs              []string
+	envFiles          []string
+	imageStores       []string
 }
 
 func newCreateCmd(app *App) *cobra.Command {
@@ -64,8 +63,8 @@ func newCreateCmd(app *App) *cobra.Command {
 	fl.BoolVar(&f.yolo, "yolo", false, "skip all agent permission prompts")
 	fl.BoolVar(&f.solo, "solo", false, "agent with no outbound SSH into the fabric (agent type only)")
 	fl.BoolVar(&f.privileged, "privileged", false, "podman: use --privileged instead of the scaled-down cap set")
-	fl.BoolVar(&f.noAgentKeys, "no-agent-keys", false, "do not carry the provider API-key/cloud credentials (the subscription login is still carried)")
-	fl.BoolVar(&f.noAgentAuth, "no-agent-auth", false, "do not carry ANY host agent auth (subscription + provider) — the sandbox starts login-free")
+	fl.StringSliceVar(&f.inheritAgentLogin, "inherit-agent-login", nil,
+		"inherit this agent's host login into the sandbox: "+strings.Join(seed.AgentNames(), " | ")+" (repeatable, comma-separated; default: inherit nothing)")
 	fl.IntVar(&f.cpus, "cpus", 4, "firecracker: vCPUs")
 	fl.IntVar(&f.mem, "mem", 4096, "firecracker: memory (MiB)")
 	fl.StringArrayVar(&f.repos, "repo", nil, "share a git repo: PATH[@REF][:NAME] (repeatable)")
@@ -113,6 +112,12 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	repos, err := spec.ResolveRepoClones(f.repos, opt)
 	if err != nil {
 		return err
+	}
+	for _, a := range f.inheritAgentLogin {
+		if !seed.ValidAgent(a) {
+			return fmt.Errorf("--inherit-agent-login: unknown agent %q: use one of %s",
+				a, strings.Join(seed.AgentNames(), ", "))
+		}
 	}
 	seenStores := make(map[string]struct{}, len(f.imageStores))
 	for _, name := range f.imageStores {
@@ -168,7 +173,7 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	cs := engine.CreateSpec{
 		Name: name, Type: f.typ, Yolo: f.yolo, Solo: f.solo, Privileged: f.privileged,
 		CPUs: f.cpus, MemMiB: f.mem, Snapshots: snaps, RepoClones: repos,
-		ImageStores: f.imageStores, InjectedEnv: injected, NoAgentKeys: f.noAgentKeys, NoAgentAuth: f.noAgentAuth,
+		ImageStores: f.imageStores, InjectedEnv: injected, InheritAgentLogin: f.inheritAgentLogin,
 	}
 	inst, err := eng.Create(ctx, cs)
 	if err != nil {
@@ -187,6 +192,12 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "created %s (type=%s, engine=%s, ssh port=%d)\n", name, f.typ, f.engine, inst.Port)
 	fmt.Fprintf(out, "  shell: ssh %s\n", name)
+	if len(inst.AgentLogins) > 0 {
+		fmt.Fprintf(out, "  agent login: %s (inherited from your host)\n", strings.Join(inst.AgentLogins, " + "))
+	} else {
+		fmt.Fprintf(out, "  agent login: none — add --inherit-agent-login %s, or run 'cs-sandbox agent-login %s %s'\n",
+			seed.AgentNames()[0], seed.AgentNames()[0], name)
+	}
 	for _, sn := range snaps {
 		fmt.Fprintf(out, "  snapshot: %s -> ~/%s (read-only, frozen at create)\n", sn.HostPath, sn.Name)
 	}

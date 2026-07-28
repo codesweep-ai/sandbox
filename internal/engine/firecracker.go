@@ -14,6 +14,7 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/fcdisk"
 	"github.com/codesweep-ai/sandbox/internal/fcnet"
 	"github.com/codesweep-ai/sandbox/internal/lock"
+	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/ports"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/spec"
@@ -51,7 +52,7 @@ func (fe *Firecracker) fabric() fcnet.Fabric {
 		Runner:  fe.d.Runner,
 		Network: fe.d.Network,
 		Image:   fe.d.Image,
-		NetDir:  fe.cache().NetDir(),
+		NetDir:  paths.FCNet(),
 	}
 }
 
@@ -127,11 +128,11 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	if gw == "" {
 		return nil, fmt.Errorf("fc: cannot read podman network %q gateway", d.Network)
 	}
-	ip, err = fe.allocIP(gw)
+	ip, err = fe.allocIP(ctx, fab, gw)
 	if err != nil {
 		return nil, err
 	}
-	port, err := allocPort(ports.Split, ports.Max, true, d.reservedPorts(ctx))
+	port, err := allocPort(ports.Split, ports.Max, d.reservedPorts(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -165,9 +166,6 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	if err = fab.Up(ctx); err != nil {
 		return nil, err
 	}
-	if err = fab.Register(s.Name, ip); err != nil {
-		return nil, err
-	}
 	unlock()
 
 	// --- per-instance seed (built unlocked) ---
@@ -175,8 +173,16 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	if err = os.MkdirAll(seedDir, 0o700); err != nil {
 		return nil, err
 	}
-	if err = d.writeSeed(ctx, seedDir, s, gw); err != nil {
+	agentLogins, err := d.writeSeed(ctx, seedDir, s, gw)
+	if err != nil {
 		return nil, err
+	}
+	// The ip+port claim was persisted above; record the inherited logins too.
+	if len(agentLogins) > 0 {
+		inst.AgentLogins = agentLogins
+		if err = state.Save(d.InstDir, inst); err != nil {
+			return nil, err
+		}
 	}
 
 	// --- auxiliary disks (repos/snapshots/image-stores) + manifests ---
@@ -256,6 +262,12 @@ func (fe *Firecracker) launch(ctx context.Context, name string, inst *state.Inst
 	if err := fab.TapUp(ctx, tap); err != nil {
 		return err
 	}
+	// Publish the name only now that the tap exists. The two share a lifetime, so
+	// a name record always has a link behind it — which is what lets the fabric
+	// recognise a record left by a killed create as stale (fcnet.sweepNames).
+	if err := fab.Register(name, inst.FCIP); err != nil {
+		return err
+	}
 	if err := fab.FwdUp(idir, inst.Port, inst.FCIP, d.SSHBind); err != nil {
 		return err
 	}
@@ -297,16 +309,11 @@ func (fe *Firecracker) waitReady(ctx context.Context, name string) error {
 	return fmt.Errorf("fc: microVM %q failed to become ready within %s (see %s)", name, budget, serial)
 }
 
-// Start re-launches a stopped microVM (re-asserts its dnsmasq name).
+// Start re-launches a stopped microVM (launch re-asserts its dnsmasq name).
 func (fe *Firecracker) Start(ctx context.Context, name string) error {
 	in, err := state.Load(fe.d.InstDir, name)
 	if err != nil {
 		return err
-	}
-	if in.FCIP != "" {
-		if err := fe.fabric().Register(name, in.FCIP); err != nil {
-			return err
-		}
 	}
 	if err := fe.launch(ctx, name, in); err != nil {
 		return err
@@ -320,7 +327,7 @@ func (fe *Firecracker) Stop(ctx context.Context, name string) error {
 	idir := fe.d.InstanceDir(name)
 	fe.shutdown(ctx, name)
 	fe.fabric().FwdDown(idir)
-	fe.fabric().GC(ctx, fe.anyVMRunning)
+	fe.fabric().GC(ctx, func() bool { return fe.anyVMRunning(ctx) })
 	return nil
 }
 
@@ -349,7 +356,7 @@ func (fe *Firecracker) Remove(ctx context.Context, name string, purge bool) erro
 			}
 		}
 	}
-	fab.GC(ctx, fe.anyVMRunning)
+	fab.GC(ctx, func() bool { return fe.anyVMRunning(ctx) })
 	return nil
 }
 
@@ -371,7 +378,12 @@ func (fe *Firecracker) shutdown(ctx context.Context, name string) {
 }
 
 // anyVMRunning reports whether any firecracker instance is still up (for GC).
-func (fe *Firecracker) anyVMRunning() bool {
+// A tap on the fabric counts: it belongs to a VM this instances dir cannot see,
+// and tearing the fabric down would cut that VM off the network.
+func (fe *Firecracker) anyVMRunning(ctx context.Context) bool {
+	if len(fe.fabric().TapOctets(ctx)) > 0 {
+		return true
+	}
 	insts, _ := state.List(fe.d.InstDir)
 	for _, in := range insts {
 		if in.Engine == state.Firecracker && fcRunning(fe.d.InstanceDir(in.Name)) {
@@ -427,7 +439,7 @@ func (fe *Firecracker) sshArgs(name string, port int) []string {
 
 // allocIP picks the next free VM address from the high end of the /24 (.200-.250),
 // avoiding addresses already claimed by other instances.
-func (fe *Firecracker) allocIP(gw string) (string, error) {
+func (fe *Firecracker) allocIP(ctx context.Context, fab fcnet.Fabric, gw string) (string, error) {
 	prefix := gw
 	if i := strings.LastIndexByte(gw, '.'); i > 0 {
 		prefix = gw[:i]
@@ -439,10 +451,13 @@ func (fe *Firecracker) allocIP(gw string) (string, error) {
 			used[in.FCIP] = true
 		}
 	}
+	// Instances in other roots (another CS_SANDBOX_HOME, a test run) are invisible
+	// to the list above, but their taps are not — so ask the fabric too.
+	taps := fab.TapOctets(ctx)
 	const lo, hi = 200, 250
 	for n := lo; n <= hi; n++ {
 		ip := fmt.Sprintf("%s.%d", prefix, n)
-		if !used[ip] {
+		if !used[ip] && !taps[strconv.Itoa(n)] {
 			return ip, nil
 		}
 	}

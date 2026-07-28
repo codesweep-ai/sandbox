@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestParsePortSpec covers VMPORT and HOSTPORT:VMPORT forms and the rejected
@@ -87,5 +88,65 @@ func TestBatchError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "1 of 2") {
 		t.Errorf("batchError = %q, want failure count", err)
+	}
+}
+
+// TestInheritAgentLoginValidation: an unknown agent is rejected before anything
+// is created, and the error names the valid ones. Nothing is inherited by
+// default, so a plain create needs no flag.
+func TestInheritAgentLoginValidation(t *testing.T) {
+	app := &App{InstDir: t.TempDir(), TierDir: t.TempDir()}
+	_, err := runRoot(t, app, "create", "box", "--inherit-agent-login", "bogus")
+	if err == nil || !strings.Contains(err.Error(), "unknown agent") {
+		t.Fatalf("err = %v, want an unknown-agent error", err)
+	}
+	for _, want := range []string{"claude", "codex"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should list %q as valid: %v", want, err)
+		}
+	}
+	// A valid agent gets past validation (it fails later, on the real engine).
+	if _, err := runRoot(t, app, "create", "box2", "--inherit-agent-login", "claude"); err != nil &&
+		strings.Contains(err.Error(), "unknown agent") {
+		t.Errorf("claude should be accepted: %v", err)
+	}
+}
+
+// TestAgentLoginArgValidation: agent-login rejects an unknown agent before it
+// touches any sandbox state.
+func TestAgentLoginArgValidation(t *testing.T) {
+	app := &App{InstDir: t.TempDir(), TierDir: t.TempDir()}
+	_, err := runRoot(t, app, "agent-login", "bogus", "box")
+	if err == nil || !strings.Contains(err.Error(), "unknown agent") {
+		t.Fatalf("err = %v, want an unknown-agent error", err)
+	}
+	// A known agent gets past the agent check and fails on the missing sandbox.
+	_, err = runRoot(t, app, "agent-login", "claude", "nosuchbox")
+	if err == nil || strings.Contains(err.Error(), "unknown agent") {
+		t.Fatalf("err = %v, want a no-such-sandbox error", err)
+	}
+}
+
+// TestAge renders the largest single unit, kubectl-style, and refuses to invent
+// a duration it can't compute.
+func TestAge(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
+	cases := map[string]string{
+		at(30 * time.Second):    "30s",
+		at(90 * time.Second):    "1m",
+		at(45 * time.Minute):    "45m",
+		at(3 * time.Hour):       "3h",
+		at(23 * time.Hour):      "23h",
+		at(26 * time.Hour):      "1d",
+		at(15 * 24 * time.Hour): "15d",
+		"":                      "-", // no timestamp
+		"not-a-time":            "-", // unparseable
+		at(-2 * time.Hour):      "-", // clock skew: never a negative age
+	}
+	for in, want := range cases {
+		if got := age(in, now); got != want {
+			t.Errorf("age(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

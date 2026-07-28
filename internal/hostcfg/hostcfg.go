@@ -1,7 +1,7 @@
 // Package hostcfg generates the host-side SSH material: the reusable ssh option
 // set for reaching a sandbox by published port (keyed by HostKeyAlias so a
 // recycled port never trips "host key changed"), and the managed
-// ~/.ssh/config.d/cs-sandbox include that makes `ssh <name>` work.
+// ~/.ssh/config.d include that makes `ssh <name>` work.
 package hostcfg
 
 import (
@@ -59,10 +59,13 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
-// SyncSSHConfig regenerates ~/.ssh/config.d/cs-sandbox with one Host block per
-// instance and ensures ~/.ssh/config includes it. It works off the typed state
-// records, so containers and microVMs are written the same way.
-func SyncSSHConfig(h hostenv.Host, tierDir string, insts []*state.Instance) error {
+// SyncSSHConfig regenerates this instances root's ~/.ssh/config.d fragment with
+// one Host block per instance and ensures ~/.ssh/config includes it. It works
+// off the typed state records, so containers and microVMs are written the same
+// way. Only this root's fragment is touched: ~/.ssh is shared by every root on
+// the host, so rewriting a single shared file would drop the Host blocks of
+// sandboxes this root cannot see.
+func SyncSSHConfig(h hostenv.Host, tierDir, instDir string, insts []*state.Instance) error {
 	if err := os.MkdirAll(h.SSHConfigDir(), 0o700); err != nil {
 		return err
 	}
@@ -71,10 +74,12 @@ func SyncSSHConfig(h hostenv.Host, tierDir string, insts []*state.Instance) erro
 	kh := KnownHostsFile(h)
 	userKey := filepath.Join(tierDir, "id_cs-sandbox_user")
 	idLines := h.IdentityLines() // host keys (H), if any
+	blocks := 0
 	for _, in := range insts {
 		if in.Port == 0 {
 			continue
 		}
+		blocks++
 		fmt.Fprintf(&b, "\nHost %s\n", in.Name)
 		fmt.Fprintf(&b, "    HostName 127.0.0.1\n")
 		fmt.Fprintf(&b, "    Port %d\n", in.Port)
@@ -88,27 +93,55 @@ func SyncSSHConfig(h hostenv.Host, tierDir string, insts []*state.Instance) erro
 		b.WriteString("    StrictHostKeyChecking accept-new\n")
 		fmt.Fprintf(&b, "    UserKnownHostsFile %s\n", hostenv.QuoteConfigArg(kh))
 	}
-	if err := writeFileAtomic(h.SSHConfigFile(), []byte(b.String()), 0o600); err != nil {
+	if blocks == 0 {
+		// A root with nothing to describe leaves no fragment behind, so a
+		// throwaway root does not litter ~/.ssh/config.d permanently.
+		if err := os.Remove(h.SSHConfigFile(instDir)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return ensureInclude(h)
+	}
+	if err := writeFileAtomic(h.SSHConfigFile(instDir), []byte(b.String()), 0o600); err != nil {
 		return err
 	}
 	return ensureInclude(h)
 }
 
-// ensureInclude prepends the Include directive to ~/.ssh/config if absent.
+// includeDirective is the one line cs-sandbox maintains in ~/.ssh/config. The
+// pattern is a glob so a single directive covers every instances root's
+// fragment; ssh reads glob matches in sorted order, so the default root (the
+// plain name) wins if two roots use the same sandbox name.
+const includeDirective = "Include ~/.ssh/config.d/cs-sandbox*"
+
+// ensureInclude points ~/.ssh/config at the managed fragments: an Include of a
+// cs-sandbox fragment is updated in place (keeping the user's ordering), and one
+// is prepended if there is none.
 func ensureInclude(h hostenv.Host) error {
 	cfg := filepath.Join(h.SSHDir(), "config")
-	inc := "Include ~/.ssh/config.d/cs-sandbox"
 	existing, err := os.ReadFile(cfg)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	for _, line := range strings.Split(string(existing), "\n") {
-		if strings.TrimSpace(line) == inc {
+	lines := strings.Split(string(existing), "\n")
+	for i, line := range lines {
+		if !isManagedInclude(line) {
+			continue
+		}
+		if strings.TrimSpace(line) == includeDirective {
 			return nil
 		}
+		lines[i] = includeDirective
+		return writeFileAtomic(cfg, []byte(strings.Join(lines, "\n")), 0o600)
 	}
-	merged := inc + "\n\n" + string(existing)
-	return writeFileAtomic(cfg, []byte(merged), 0o600)
+	return writeFileAtomic(cfg, []byte(includeDirective+"\n\n"+string(existing)), 0o600)
+}
+
+// isManagedInclude reports whether a ~/.ssh/config line is the Include of a
+// cs-sandbox fragment — the line this package owns and rewrites.
+func isManagedInclude(line string) bool {
+	f := strings.Fields(strings.TrimSpace(line))
+	return len(f) == 2 && strings.EqualFold(f[0], "Include") &&
+		strings.Contains(f[1], "config.d/cs-sandbox")
 }
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) (err error) {

@@ -1,7 +1,7 @@
 // Package ports allocates host SSH ports for instances. The pool is split so
 // podman-published ports never collide with the per-VM host ports the
-// firecracker engine binds. Allocation scans a reserved set
-// (spanning both engines) then, for containers, probes the port live.
+// firecracker engine binds. Allocation scans a reserved set (spanning both
+// engines) and probes each candidate live.
 package ports
 
 import (
@@ -18,7 +18,7 @@ const (
 )
 
 // Dialer reports whether something is listening on 127.0.0.1:port. Injectable
-// for tests; the default probes loopback.
+// for tests; callers pass LoopbackBusy.
 type Dialer func(port int) bool
 
 // LoopbackBusy is the production Dialer: a successful connect means "in use".
@@ -31,18 +31,18 @@ func LoopbackBusy(port int) bool {
 	return true
 }
 
-// Alloc returns the first port in [lo,hi] not in reserved and (unless vmMode)
-// not currently listening. A VM's host port is bound later (a per-VM socat), so
-// vmMode skips the live probe.
-func Alloc(lo, hi int, vmMode bool, reserved map[int]bool, busy Dialer) (int, error) {
-	if busy == nil {
-		busy = LoopbackBusy
-	}
+// Alloc returns the first port in [lo,hi] that is neither reserved nor
+// currently listening.
+//
+// Both checks are load-bearing. The reserved set covers instances that are
+// stopped (nothing is listening for them right now), while the live probe
+// covers ports held by anything the reserved set cannot see — a forwarder from
+// a sandbox under a different CS_SANDBOX_HOME, or an unrelated program that
+// happens to sit in the range. Skipping the probe hands out a port someone else
+// already answers on, which silently routes `ssh <name>` to the wrong host.
+func Alloc(lo, hi int, reserved map[int]bool, busy Dialer) (int, error) {
 	for p := lo; p <= hi; p++ {
-		if reserved[p] {
-			continue
-		}
-		if !vmMode && busy(p) {
+		if reserved[p] || busy(p) {
 			continue
 		}
 		return p, nil

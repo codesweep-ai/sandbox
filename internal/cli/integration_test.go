@@ -30,6 +30,7 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/run"
+	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
 // runID is a per-process random suffix so namespaced names can't collide with a
@@ -80,7 +81,18 @@ func liveSetup(t *testing.T) (*run.Exec, hostenv.Host) {
 	}
 	t.Setenv("CS_SANDBOX_INSTANCES_DIR", filepath.Join(t.TempDir(), "instances"))
 	t.Setenv("CS_SANDBOX_TIER_DIR", filepath.Join(t.TempDir(), "tier"))
+	cleanSSHFragment(t, host)
 	return r, host
+}
+
+// cleanSSHFragment removes this test root's ~/.ssh/config.d fragment at test
+// end. The instances dir is a temp dir but ~/.ssh is the real one, so without
+// this every run would leave another dead fragment in the developer's config.
+// (The user's own fragment is a different file and is never touched.)
+func cleanSSHFragment(t *testing.T, host hostenv.Host) {
+	t.Helper()
+	frag := host.SSHConfigFile(paths.Instances())
+	t.Cleanup(func() { _ = os.Remove(frag) })
 }
 
 // shareDir returns a temp dir usable as a --repo / --snapshot source. On macOS
@@ -116,7 +128,7 @@ func step(t *testing.T, format string, args ...any) {
 
 // createBox creates a podman sandbox via the CLI and registers teardown — the
 // container plus its named volumes, so no test leaks the home/containers volumes.
-func createBox(t *testing.T, r *run.Exec, name string, extra ...string) {
+func createBox(t *testing.T, r *run.Exec, name string, extra ...string) string {
 	t.Helper()
 	t.Cleanup(func() {
 		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", name)
@@ -126,10 +138,12 @@ func createBox(t *testing.T, r *run.Exec, name string, extra ...string) {
 	step(t, "creating podman sandbox %s…", name)
 	start := time.Now()
 	args := append([]string{"create", name, "--engine", "podman"}, extra...)
-	if out, err := execRoot(t, args...); err != nil {
+	out, err := execRoot(t, args...)
+	if err != nil {
 		t.Fatalf("create %s: %v (out=%q)", name, err, out)
 	}
 	step(t, "sandbox %s ready (%s)", name, time.Since(start).Round(time.Millisecond))
+	return out
 }
 
 // inBox runs a command inside the sandbox as the dev user and returns stdout.
@@ -225,80 +239,99 @@ func TestCLIAgentToolSetLive(t *testing.T) {
 	}
 }
 
-// TestCLIAgentAuthInheritedLive: a fresh sandbox inherits the host Claude login —
-// create snapshots ~/.cs-claude/.credentials.json into the seed and the entrypoint
-// installs it at 0600 on first boot. Checks existence/mode only, never contents.
-func TestCLIAgentAuthInheritedLive(t *testing.T) {
+// TestCLIAgentLoginInheritedLive: --inherit-agent-login claude snapshots the host
+// login into the seed and first boot installs it at 0600. Existence/mode only,
+// never contents.
+func TestCLIAgentLoginInheritedLive(t *testing.T) {
 	r, host := liveSetup(t)
 	ctx := context.Background()
-	hostCred := filepath.Join(host.Home, ".cs-claude", ".credentials.json")
-	if !fileExists(hostCred) {
+	if !fileExists(filepath.Join(host.Home, ".cs-claude", ".credentials.json")) {
 		t.Skip("host has no ~/.cs-claude/.credentials.json to inherit")
 	}
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
-	name := boxName(t, "auth")
-	createBox(t, r, name)
+	name := boxName(t, "login")
+	out := createBox(t, r, name, "--inherit-agent-login", "claude")
 
-	// The seed snapshotted the credential...
-	if !fileExists(filepath.Join(instDir, name, "seed", "claude", ".credentials.json")) {
-		t.Error("create did not snapshot the host Claude credential into the seed")
+	// create reports what the sandbox ended up with.
+	if !strings.Contains(out, "agent login: claude") {
+		t.Errorf("create should report the inherited login, got:\n%s", out)
 	}
-	// ...and first boot installed it into the sandbox profile at 0600.
+	if !fileExists(filepath.Join(instDir, name, "seed", "claude", ".credentials.json")) {
+		t.Error("create did not snapshot the host Claude login into the seed")
+	}
 	got := strings.TrimSpace(inBox(ctx, r, host, name,
 		"stat -c %a ~/.cs-claude/.credentials.json 2>/dev/null"))
 	if got != "600" {
 		t.Errorf("sandbox ~/.cs-claude/.credentials.json missing or wrong mode: %q (want 600)", got)
 	}
+	// The instance record remembers the choice, so it stays inspectable.
+	in, err := state.Load(instDir, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(in.AgentLogins, ",") != "claude" {
+		t.Errorf("state AgentLogins = %v, want [claude]", in.AgentLogins)
+	}
+	// With a login present the first-run wizard is pre-completed.
+	if got := strings.TrimSpace(inBox(ctx, r, host, name,
+		"test -f ~/.cs-claude/.claude.json && echo yes || echo no")); got != "yes" {
+		t.Errorf("a signed-in sandbox should skip Claude's onboarding wizard, got %q", got)
+	}
 }
 
-// TestCLINoAgentAuthLive: --no-agent-auth suppresses the login that would
-// otherwise be inherited — no credential in the seed or the sandbox.
-func TestCLINoAgentAuthLive(t *testing.T) {
+// TestCLIAgentLoginOptInLive: inheriting is opt-in — a plain create carries no
+// login even when the host has one, and asking for one agent never carries the
+// other.
+func TestCLIAgentLoginOptInLive(t *testing.T) {
 	r, host := liveSetup(t)
 	ctx := context.Background()
 	if !fileExists(filepath.Join(host.Home, ".cs-claude", ".credentials.json")) {
-		t.Skip("host has no ~/.cs-claude/.credentials.json (nothing to suppress)")
+		t.Skip("host has no ~/.cs-claude/.credentials.json (nothing that could leak in)")
 	}
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
-	name := boxName(t, "noauth")
-	createBox(t, r, name, "--no-agent-auth")
 
-	if fileExists(filepath.Join(instDir, name, "seed", "claude", ".credentials.json")) {
-		t.Error("--no-agent-auth should not snapshot the host credential into the seed")
+	plain := boxName(t, "nologin")
+	out := createBox(t, r, plain)
+	if !strings.Contains(out, "agent login: none") || !strings.Contains(out, "--inherit-agent-login") {
+		t.Errorf("create should say no login was inherited and how to get one, got:\n%s", out)
 	}
-	if got := strings.TrimSpace(inBox(ctx, r, host, name,
+	if fileExists(filepath.Join(instDir, plain, "seed", "claude", ".credentials.json")) {
+		t.Error("a plain create must not carry the host login")
+	}
+	// Without a login Claude must reach its own sign-in flow, so the onboarding
+	// wizard must NOT be pre-completed for it.
+	if got := strings.TrimSpace(inBox(ctx, r, host, plain,
+		"test -f ~/.cs-claude/.claude.json && echo yes || echo no")); got != "no" {
+		t.Errorf("a login-free sandbox must not have onboarding pre-completed (got %q) — "+
+			"claude would show API billing instead of the sign-in options", got)
+	}
+	if got := strings.TrimSpace(inBox(ctx, r, host, plain,
 		"test -f ~/.cs-claude/.credentials.json && echo present || echo absent")); got != "absent" {
-		t.Errorf("sandbox should have no ~/.cs-claude/.credentials.json under --no-agent-auth, got %q", got)
+		t.Errorf("sandbox should be login-free by default, got %q", got)
+	}
+
+	one := boxName(t, "onelogin")
+	createBox(t, r, one, "--inherit-agent-login", "claude")
+	if fileExists(filepath.Join(instDir, one, "seed", "codex", "auth.json")) {
+		t.Error("codex login carried when only claude was requested")
 	}
 }
 
-// TestCLINoAgentKeysLive: --no-agent-keys drops the provider API-key/cloud carry
-// (an auto-captured ANTHROPIC_API_KEY is not seeded) while still carrying the
-// subscription login — the opposite of --no-agent-auth.
-func TestCLINoAgentKeysLive(t *testing.T) {
-	r, host := liveSetup(t)
-	// A provider key in the create environment is auto-captured by default.
+// TestCLIProviderKeysNotCarriedLive: provider API keys are never carried, even
+// when set in the create environment — --env is the explicit way to pass one.
+func TestCLIProviderKeysNotCarriedLive(t *testing.T) {
+	r, _ := liveSetup(t)
 	t.Setenv("ANTHROPIC_API_KEY", "cs-test-fake-key")
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
 
-	// Default: the key lands in the seed provider env.
-	base := boxName(t, "keys")
-	createBox(t, r, base)
-	baseEnv := filepath.Join(instDir, base, "seed", "claude", "env")
-	if data, err := os.ReadFile(baseEnv); err != nil || !strings.Contains(string(data), "ANTHROPIC_API_KEY") {
-		t.Fatalf("default create should auto-capture the provider key into %s (err=%v)", baseEnv, err)
-	}
+	name := boxName(t, "nokeys")
+	createBox(t, r, name, "--inherit-agent-login", "claude")
 
-	// --no-agent-keys: no provider env carried...
-	nk := boxName(t, "nokeys")
-	createBox(t, r, nk, "--no-agent-keys")
-	if _, err := os.Stat(filepath.Join(instDir, nk, "seed", "claude", "env")); !os.IsNotExist(err) {
-		t.Errorf("--no-agent-keys should not carry the provider env (err=%v)", err)
+	if _, err := os.Stat(filepath.Join(instDir, name, "seed", "claude", "env")); !os.IsNotExist(err) {
+		t.Errorf("a provider key in the environment must not be carried into the seed (err=%v)", err)
 	}
-	// ...but the subscription login is still carried (if the host has one).
-	if fileExists(filepath.Join(host.Home, ".cs-claude", ".credentials.json")) &&
-		!fileExists(filepath.Join(instDir, nk, "seed", "claude", ".credentials.json")) {
-		t.Error("--no-agent-keys must still carry the subscription credential")
+	if _, err := os.Stat(filepath.Join(instDir, name, "seed", "claude", "creds")); !os.IsNotExist(err) {
+		t.Errorf("no creds/ dir should be carried (err=%v)", err)
 	}
 }
 
@@ -488,6 +521,33 @@ func TestCLIListShowsInstanceLive(t *testing.T) {
 	if !strings.Contains(out, name) || !strings.Contains(out, "podman") {
 		t.Errorf("ls output missing %s/podman:\n%s", name, out)
 	}
+	// A sandbox that create just returned is running, and its age is fresh.
+	for _, want := range []string{"NAME", "STATUS", "AGE", "running"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ls output missing %q:\n%s", want, out)
+		}
+	}
+
+	// Stopping it must be visible in the same column.
+	if _, err := execRoot(t, "stop", name); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	out, err = execRoot(t, "ls")
+	if err != nil {
+		t.Fatalf("ls after stop: %v", err)
+	}
+	if !strings.Contains(out, "stopped") {
+		t.Errorf("ls should report the stopped sandbox as stopped:\n%s", out)
+	}
+
+	// -q is the scripting form: bare names, no header.
+	q, err := execRoot(t, "ls", "-q")
+	if err != nil {
+		t.Fatalf("ls -q: %v", err)
+	}
+	if !strings.Contains(q, name) || strings.Contains(q, "NAME") || strings.Contains(q, "podman") {
+		t.Errorf("ls -q should print bare names only:\n%s", q)
+	}
 }
 
 // TestCLIPortForwardLive: forward a host port to a listener inside a sandbox,
@@ -623,7 +683,9 @@ func TestCLIHostRouteReadOnlyLive(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("host-route is Linux-only")
 	}
-	t.Setenv("CS_SANDBOX_FC_CACHE", t.TempDir()) // no marker file -> guaranteed inactive
+	// The fabric working dir is host-global, so isolate it explicitly: an empty
+	// one has no marker file, making host-route guaranteed inactive.
+	t.Setenv("CS_SANDBOX_FC_NET", t.TempDir())
 
 	out, err := execRoot(t, "host-route", "status")
 	if err != nil {

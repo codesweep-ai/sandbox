@@ -3,11 +3,12 @@ package cli
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	assets "github.com/codesweep-ai/sandbox"
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/run"
-	"github.com/codesweep-ai/sandbox/internal/state"
 	"github.com/spf13/cobra"
 )
 
@@ -113,40 +114,53 @@ func normalizeInsecure(v string) string {
 	}
 }
 
-func newLoginCmd(app *App, agent string) *cobra.Command {
-	use := agent + "-login"
-	launch := "cs-" + agent
-	if agent == "codex" {
-		launch = "cs-codex login"
+// agentLaunch maps an agent name to the in-sandbox command that starts its login
+// flow. Codex is the odd one: its login lives behind a subcommand.
+var agentLaunch = map[string]string{
+	"claude": "cs-claude",
+	"codex":  "cs-codex login",
+}
+
+// agentNames lists the supported agents, sorted, for errors and completion.
+func agentNames() []string {
+	out := make([]string, 0, len(agentLaunch))
+	for a := range agentLaunch {
+		out = append(out, a)
 	}
+	sort.Strings(out)
+	return out
+}
+
+// newAgentLoginCmd authenticates one agent inside a sandbox. Both engines go
+// through Engine.Exec, which lands as the dev user in their home.
+func newAgentLoginCmd(app *App) *cobra.Command {
 	return &cobra.Command{
-		Use:               use + " <name>",
-		Short:             fmt.Sprintf("Authenticate the %s agent inside a sandbox", agent),
-		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: app.completeSandbox,
+		Use:   "agent-login <agent> <name>",
+		Short: "Authenticate an agent (" + strings.Join(agentNames(), " | ") + ") inside a sandbox",
+		Args:  cobra.ExactArgs(2),
+		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			switch len(args) {
+			case 0:
+				return agentNames(), cobra.ShellCompDirectiveNoFileComp
+			case 1:
+				return app.completeSandbox(cmd, args, toComplete)
+			}
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			in, err := state.Load(app.InstDir, args[0])
+			agent, name := args[0], args[1]
+			launch, ok := agentLaunch[agent]
+			if !ok {
+				return fmt.Errorf("unknown agent %q: use one of %s", agent, strings.Join(agentNames(), ", "))
+			}
+			e, _, err := app.engineFor(name)
 			if err != nil {
-				return fmt.Errorf("no such sandbox %q", args[0])
+				return err
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "cs-sandbox: launching %s inside %s — follow the prompts, then exit.\n", launch, args[0])
-			if in.Engine == state.Firecracker {
-				// Reach the microVM over ssh as the dev user and launch the agent.
-				e, _, err := app.engineFor(args[0])
-				if err != nil {
-					return err
-				}
-				return e.Exec(cmd.Context(), args[0], engine.ExecIO{
-					Interactive: true, Argv: []string{"bash", "-lc", launch},
-				})
-			}
-			// podman exec -it as the dev user in their home.
-			argv := []string{"podman", "exec", "-it",
-				"--user", app.Host.User,
-				"--workdir", fmt.Sprintf("/home/%s", app.Host.User),
-				args[0], "bash", "-lc", launch}
-			_, err = app.Runner.Run(cmd.Context(), run.Opts{Interactive: true}, argv...)
-			return err
+			fmt.Fprintf(cmd.ErrOrStderr(), "cs-sandbox: launching %s inside %s — follow the prompts, then exit.\n", launch, name)
+			return e.Exec(cmd.Context(), name, engine.ExecIO{
+				Interactive: true, Argv: []string{"bash", "-lc", launch},
+			})
 		},
 	}
 }

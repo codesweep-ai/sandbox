@@ -2,16 +2,16 @@ package cli
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"github.com/codesweep-ai/sandbox/internal/fcnet"
 	"github.com/codesweep-ai/sandbox/internal/hostroute"
+	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/spf13/cobra"
 )
 
 // hostRoute builds the HostRoute driver from the resolved App config.
 func (a *App) hostRoute() hostroute.HostRoute {
-	netDir := filepath.Join(a.FCCache, "net")
+	netDir := paths.FCNet()
 	return hostroute.HostRoute{
 		Fab:     fcnet.Fabric{Runner: a.Runner, Network: a.Network, Image: a.Image, NetDir: netDir},
 		Runner:  a.Runner,

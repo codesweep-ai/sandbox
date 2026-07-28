@@ -39,15 +39,16 @@ func TestSyncSSHConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := hostenv.Host{User: "dev", Home: home}
+	instDir := filepath.Join(t.TempDir(), "instances")
 	insts := []*state.Instance{
 		{Name: "a", Port: 2200},
 		{Name: "b", Port: 2301},
 		{Name: "skip", Port: 0}, // no port -> skipped
 	}
-	if err := SyncSSHConfig(h, "/tier", insts); err != nil {
+	if err := SyncSSHConfig(h, "/tier", instDir, insts); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(h.SSHConfigFile())
+	data, err := os.ReadFile(h.SSHConfigFile(instDir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +73,7 @@ func TestSyncSSHConfig(t *testing.T) {
 	}
 
 	// Idempotent: a second sync doesn't duplicate the Include.
-	if err := SyncSSHConfig(h, "/tier", insts); err != nil {
+	if err := SyncSSHConfig(h, "/tier", instDir, insts); err != nil {
 		t.Fatal(err)
 	}
 	main2, _ := os.ReadFile(filepath.Join(home, ".ssh", "config"))
@@ -91,11 +92,12 @@ func TestSyncSSHConfigQuotesSpacedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := hostenv.Host{User: "dev", Home: home}
+	instDir := filepath.Join(t.TempDir(), "instances")
 	tierDir := filepath.Join(home, "cs-sandbox", "keys")
-	if err := SyncSSHConfig(h, tierDir, []*state.Instance{{Name: "a", Port: 2200}}); err != nil {
+	if err := SyncSSHConfig(h, tierDir, instDir, []*state.Instance{{Name: "a", Port: 2200}}); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(h.SSHConfigFile())
+	data, err := os.ReadFile(h.SSHConfigFile(instDir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +110,7 @@ func TestSyncSSHConfigQuotesSpacedPaths(t *testing.T) {
 			t.Errorf("spaced path must be quoted, want %q:\n%s", want, cfg)
 		}
 	}
-	assertSSHAccepts(t, h.SSHConfigFile(), "a")
+	assertSSHAccepts(t, h.SSHConfigFile(instDir), "a")
 }
 
 func TestSyncSSHConfigPreservesSymlinkedMainConfig(t *testing.T) {
@@ -131,7 +133,8 @@ func TestSyncSSHConfigPreservesSymlinkedMainConfig(t *testing.T) {
 	}
 
 	h := hostenv.Host{User: "dev", Home: home}
-	if err := SyncSSHConfig(h, "/tier", []*state.Instance{{Name: "a", Port: 2200}}); err != nil {
+	instDir := filepath.Join(t.TempDir(), "instances")
+	if err := SyncSSHConfig(h, "/tier", instDir, []*state.Instance{{Name: "a", Port: 2200}}); err != nil {
 		t.Fatal(err)
 	}
 	fi, err := os.Lstat(link)
@@ -163,5 +166,105 @@ func assertSSHAccepts(t *testing.T, path, host string) {
 	out, err := exec.Command(ssh, "-F", path, "-G", host).CombinedOutput()
 	if err != nil {
 		t.Errorf("ssh rejected the generated config: %v\n%s", err, out)
+	}
+}
+
+// TestSyncSSHConfigIsolatesInstancesRoots: ~/.ssh is shared by every instances
+// root on the host, so a sync in one root must not erase the Host blocks of
+// sandboxes another root owns — otherwise a second sandbox set (or a test run)
+// silently breaks `ssh <name>` for the first.
+func TestSyncSSHConfigIsolatesInstancesRoots(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h := hostenv.Host{User: "dev", Home: home}
+
+	rootA := filepath.Join(t.TempDir(), "rootA")
+	if err := SyncSSHConfig(h, "/tier", rootA, []*state.Instance{{Name: "alpha", Port: 2200}}); err != nil {
+		t.Fatal(err)
+	}
+	fragA := h.SSHConfigFile(rootA)
+
+	rootB := filepath.Join(t.TempDir(), "rootB")
+	if err := SyncSSHConfig(h, "/tier", rootB, []*state.Instance{{Name: "beta", Port: 2201}}); err != nil {
+		t.Fatal(err)
+	}
+	fragB := h.SSHConfigFile(rootB)
+
+	if fragA == fragB {
+		t.Fatalf("both roots wrote the same fragment %q", fragA)
+	}
+	a, err := os.ReadFile(fragA)
+	if err != nil {
+		t.Fatalf("rootA's fragment was destroyed by rootB's sync: %v", err)
+	}
+	if !strings.Contains(string(a), "Host alpha") {
+		t.Errorf("rootA's Host block lost:\n%s", a)
+	}
+	b, _ := os.ReadFile(fragB)
+	if !strings.Contains(string(b), "Host beta") {
+		t.Errorf("rootB's Host block missing:\n%s", b)
+	}
+	if strings.Contains(string(b), "Host alpha") {
+		t.Errorf("rootB's fragment describes another root's sandbox:\n%s", b)
+	}
+
+	// One glob Include covers every root's fragment.
+	main, _ := os.ReadFile(filepath.Join(home, ".ssh", "config"))
+	if strings.Count(string(main), "Include ~/.ssh/config.d/cs-sandbox*") != 1 {
+		t.Errorf("want exactly one glob Include:\n%s", main)
+	}
+}
+
+// TestSyncSSHConfigRemovesEmptyFragment: a root with no sandboxes leaves nothing
+// behind, so throwaway roots don't accumulate in ~/.ssh/config.d.
+func TestSyncSSHConfigRemovesEmptyFragment(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h := hostenv.Host{User: "dev", Home: home}
+	instDir := filepath.Join(t.TempDir(), "instances")
+	if err := SyncSSHConfig(h, "/tier", instDir, []*state.Instance{{Name: "a", Port: 2200}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(h.SSHConfigFile(instDir)); err != nil {
+		t.Fatalf("fragment should exist while a sandbox does: %v", err)
+	}
+	if err := SyncSSHConfig(h, "/tier", instDir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(h.SSHConfigFile(instDir)); !os.IsNotExist(err) {
+		t.Errorf("fragment should be gone once no sandbox has a port, got err=%v", err)
+	}
+}
+
+// TestEnsureIncludeUpdatesInPlace: an Include that predates the glob is rewritten
+// where it sits, so a sandbox set added later is picked up without the user
+// editing ~/.ssh/config or ending up with two directives.
+func TestEnsureIncludeUpdatesInPlace(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(home, ".ssh", "config")
+	if err := os.WriteFile(cfg, []byte("Host work\n  User me\n\nInclude ~/.ssh/config.d/cs-sandbox\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := hostenv.Host{User: "dev", Home: home}
+	if err := SyncSSHConfig(h, "/tier", filepath.Join(t.TempDir(), "instances"),
+		[]*state.Instance{{Name: "a", Port: 2200}}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(cfg)
+	if n := strings.Count(string(got), "Include ~/.ssh/config.d/cs-sandbox"); n != 1 {
+		t.Errorf("want exactly one managed Include, got %d:\n%s", n, got)
+	}
+	if !strings.Contains(string(got), "Include ~/.ssh/config.d/cs-sandbox*") {
+		t.Errorf("Include not updated to the glob:\n%s", got)
+	}
+	if !strings.Contains(string(got), "Host work") {
+		t.Errorf("user's own config lost:\n%s", got)
 	}
 }

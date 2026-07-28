@@ -51,39 +51,3 @@ func TestResolveInjectedEnv(t *testing.T) {
 		t.Errorf("expected one warning about BAD NAME, got %v", warns)
 	}
 }
-
-func TestProviderEnvLines(t *testing.T) {
-	env := lookup(map[string]string{
-		"ANTHROPIC_API_KEY": "sk-abc",
-		"AWS_REGION":        "us-west-2",
-		"IGNORED":           "x",
-	})
-	got := ProviderEnvLines(ClaudeKeyVars, env)
-	if !strings.Contains(got, "export ANTHROPIC_API_KEY='sk-abc'") {
-		t.Errorf("missing quoted key line:\n%s", got)
-	}
-	if !strings.Contains(got, "export AWS_REGION='us-west-2'") {
-		t.Errorf("missing region line:\n%s", got)
-	}
-	if strings.Contains(got, "IGNORED") {
-		t.Errorf("non-allowlisted var leaked:\n%s", got)
-	}
-	// allowlist order is preserved: ANTHROPIC_API_KEY precedes AWS_REGION.
-	if strings.Index(got, "ANTHROPIC_API_KEY") > strings.Index(got, "AWS_REGION") {
-		t.Errorf("allowlist order not preserved:\n%s", got)
-	}
-}
-
-func TestShellQuote(t *testing.T) {
-	cases := map[string]string{
-		"":       "''",
-		"simple": "'simple'",
-		"a b":    "'a b'",
-		"it's":   `'it'\''s'`,
-	}
-	for in, want := range cases {
-		if got := shellQuote(in); got != want {
-			t.Errorf("shellQuote(%q) = %q, want %q", in, got, want)
-		}
-	}
-}

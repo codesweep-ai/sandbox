@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"text/tabwriter"
+	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
@@ -69,7 +70,7 @@ func (a *App) engineDeps() engine.Deps {
 }
 
 // note prints an always-shown advisory to stderr (not verbosity-gated) — e.g. the
-// agent-auth carry notices from create.
+// agent-login notices from create.
 func (a *App) note(msg string) {
 	fmt.Fprintln(a.stderr(), "cs-sandbox: "+msg)
 }
@@ -163,8 +164,7 @@ func newRootCmd(app *App) *cobra.Command {
 	root.AddCommand(newUnforwardCmd(app))
 	root.AddCommand(newBuildCmd(app))
 	root.AddCommand(newDoctorCmd(app))
-	root.AddCommand(newLoginCmd(app, "claude"))
-	root.AddCommand(newLoginCmd(app, "codex"))
+	root.AddCommand(newAgentLoginCmd(app))
 	root.AddCommand(newInstallAgentToolsCmd(app))
 	root.AddCommand(newHostRouteCmd(app))
 	for _, c := range newInstanceCmds(app) {
@@ -190,28 +190,69 @@ func newVersionCmd() *cobra.Command {
 }
 
 func newLsCmd(app *App) *cobra.Command {
-	return &cobra.Command{
+	var quiet bool
+	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: "List sandboxes",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runLs(cmd.Context(), app, cmd.OutOrStdout())
+			return runLs(cmd.Context(), app, cmd.OutOrStdout(), quiet)
 		},
 	}
+	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "print only sandbox names, one per line (for scripting)")
+	return cmd
 }
 
-func runLs(_ context.Context, app *App, out interface{ Write([]byte) (int, error) }) error {
+func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, error) }, quiet bool) error {
 	insts, err := state.List(app.InstDir)
 	if err != nil {
 		return err
 	}
+	// Names only: pipeable, so `cs-sandbox ls -q | xargs -n1 cs-sandbox destroy -f`
+	// works. Skips the status lookup, which needs a subprocess nothing here reads.
+	if quiet {
+		for _, in := range insts {
+			fmt.Fprintln(out, in.Name)
+		}
+		return nil
+	}
+	// STATUS sits next to NAME, as it does in `kubectl get` — it is the column you
+	// scan for. Costs one `podman ps` for the whole listing.
+	status := app.engineDeps().Statuses(ctx, insts)
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tTYPE\tENGINE\tPORT\tYOLO\tSOLO")
+	// No PORT column: you reach a sandbox by name (`ssh <name>`, from the managed
+	// ssh config), so a port here would suggest a way of working the tool doesn't
+	// want. `cs-sandbox port <name>` prints it for the cases that need it.
+	fmt.Fprintln(tw, "NAME\tSTATUS\tAGE\tTYPE\tENGINE\tYOLO\tSOLO")
 	for _, in := range insts {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n",
-			in.Name, in.Type, in.Engine, in.Port, yn(in.Yolo), yn(in.Solo))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			in.Name, status[in.Name], age(in.Created, time.Now()), in.Type, in.Engine,
+			yn(in.Yolo), yn(in.Solo))
 	}
 	return tw.Flush()
+}
+
+// age renders how long ago created (RFC3339) was, in kubectl's compact style:
+// the largest single unit, e.g. 45s, 12m, 3h, 6d. Empty or unparseable input
+// gives "-" rather than a misleading duration.
+func age(created string, now time.Time) string {
+	t, err := time.Parse(time.RFC3339, created)
+	if err != nil {
+		return "-"
+	}
+	d := now.Sub(t)
+	switch {
+	case d < 0:
+		return "-" // clock skew: better than reporting a negative age
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 func yn(b bool) string {

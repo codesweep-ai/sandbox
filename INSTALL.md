@@ -7,13 +7,15 @@ put it on your PATH, then set up the host once with the steps below - then see t
 > **`cs-sandbox doctor` checks every prerequisite below and prints the exact fix for anything
 > missing.** Run it once it's on your PATH; it's the fastest path through this page.
 
-## 1. Get `cs-sandbox`
+## 1. Install the binary
 
 `cs-sandbox` is a **single self-contained binary** — the image build assets are embedded, so it can
 build the sandbox image and boot microVMs with no source checkout. Two ways to get it:
 
-**a) Download the release binary** (nothing to clone). From the releases page grab the archive for
-your OS/arch (`cs-sandbox_<version>_<os>_<arch>.tar.gz`) and `checksums.txt`, verify, then install:
+### Download a release
+
+From the releases page grab the archive for your OS/arch
+(`cs-sandbox_<version>_<os>_<arch>.tar.gz`) and `checksums.txt`, verify, then install:
 
 ```bash
 sha256sum -c --ignore-missing checksums.txt          # releases are checksummed + cosign-signed
@@ -21,8 +23,9 @@ tar xzf cs-sandbox_*.tar.gz cs-sandbox               # unpack the binary from yo
 install -m755 cs-sandbox ~/.local/bin/cs-sandbox     # anywhere on your PATH
 ```
 
-**b) Build from a clone** (needs **Go 1.25+**, **git**, and **goreleaser**, which produces the
-version-stamped static binary):
+### Or build from source
+
+Needs **Go 1.25+**, **git**, and **goreleaser** (which produces the version-stamped static binary):
 
 ```bash
 # --- Go (1.25 or newer) ---
@@ -50,29 +53,9 @@ make install          # installs bin/cs-sandbox into ~/.local/bin, plus CS_SANDB
                       # beside it (PREFIX=… to override)
 ```
 
-Either way, put it on your PATH. **State lives in your home, not next to the binary** — instances and
-tier keys under `$XDG_DATA_HOME/cs-sandbox` (`~/.local/share/cs-sandbox`), the firecracker artifact
-cache under `$XDG_CACHE_HOME/cs-sandbox` (`~/.cache/cs-sandbox`); override with
-`CS_SANDBOX_INSTANCES_DIR` / `CS_SANDBOX_TIER_DIR` / `CS_SANDBOX_FC_CACHE`, or `CS_SANDBOX_HOME` for all of it. The rest of
-this guide assumes `cs-sandbox` is on your PATH.
+## 2. Check the host
 
-**Shell completion** (optional). `cs-sandbox` generates completion scripts for bash / zsh / fish /
-PowerShell, with **live** completion of sandbox names, store names, and flag values (`ssh <TAB>`,
-`destroy <TAB>`, `--engine <TAB>`, …):
-
-```bash
-# bash (per-user, no sudo — needs the bash-completion package, which lazy-loads this on demand):
-mkdir -p ~/.local/share/bash-completion/completions
-cs-sandbox completion bash > ~/.local/share/bash-completion/completions/cs-sandbox
-cs-sandbox completion zsh  > "${fpath[1]}/_cs-sandbox"                     # zsh
-cs-sandbox completion fish > ~/.config/fish/completions/cs-sandbox.fish   # fish
-# or, ad hoc for the current shell (any of them):  source <(cs-sandbox completion bash)
-```
-
-For bash system-wide instead of per-user: `cs-sandbox completion bash | sudo tee
-/etc/bash_completion.d/cs-sandbox`. Run `cs-sandbox completion --help` for per-shell setup details.
-
-## 2. Podman + SSH + git (required on every host)
+### Base packages
 
 Podman builds the image and provides the shared network fabric - both engines need it. The OpenSSH
 client (`ssh` / `ssh-keygen`) reaches every sandbox by name, and `git` shares your repos into
@@ -98,13 +81,13 @@ The machine shares your home directory into the VM, and only that — so a `--re
 source has to live under `$HOME`. `cs-sandbox create` rejects one that doesn't, rather than handing
 the sandbox a path the VM can't see (macOS temp dirs like `/var/folders/…` are outside the share).
 
-## 3. Firecracker engine (default on Linux + KVM, x86_64) - extra host packages
+### Firecracker packages (Linux + KVM, x86_64)
 
-`cs-sandbox build` (next section) downloads the SHA256-verified Firecracker binary and builds the
+`cs-sandbox build` (step 3) downloads the SHA256-verified Firecracker binary and builds the
 guest kernel + base rootfs; you provide a few host packages and `/dev/kvm` access first.
 
 ```bash
-# Fedora  (podman + ssh + git from section 2 also required)
+# Fedora  (the base packages above are required too)
 sudo dnf install passt dnsmasq fakeroot e2fsprogs socat python3 shadow-utils iproute curl
 # Ubuntu / Debian  (uidmap not shadow-utils, dnsmasq-base not dnsmasq, iproute2 not iproute)
 sudo apt install passt dnsmasq-base fakeroot e2fsprogs socat python3 uidmap iproute2 curl
@@ -122,7 +105,7 @@ reproducible, with no dependency on the host's `/boot` kernel. Full detail:
 [`docs/firecracker.md`](docs/firecracker.md#prerequisites). On macOS / non-KVM hosts this step is
 skipped and sandboxes default to Podman.
 
-## 4. Build the sandbox artifacts
+## 3. Build the sandbox artifacts
 
 Every sandbox runs from one generic image (no user identity baked in - your user is created at first
 boot). `cs-sandbox build` sets up the reusable, host-wide artifacts once so later `create`s are fast:
@@ -133,7 +116,7 @@ cs-sandbox build                       # image + (on Linux/KVM) the Firecracker 
 
 With no flags it prepares **every engine the host supports**: the podman image always, plus the
 Firecracker binary/kernel/base-rootfs on a Firecracker-capable host (**it fails** if the Firecracker
-packages from section 3 are missing). Restrict it when you want to:
+packages above are missing). Restrict it when you want to:
 
 ```bash
 cs-sandbox build --engine podman       # image only (skip Firecracker)
@@ -147,7 +130,22 @@ It bundles a broad toolchain (podman/skopeo/buildah, tmux, chromium, java/maven,
 (ripgrep, fd, fzf, bat, git-delta, jq/yq, gh, uv), Neovim, pyenv/Python + nvm/Node, and the Claude
 Code & Codex agents. See the [`image/Containerfile`](image/Containerfile) for the full list.
 
-## 5. Install the agent tools
+## 4. Verify the installation
+
+```bash
+cs-sandbox doctor                       # re-run: everything should be green
+cs-sandbox create smoke --repo .        # create a throwaway sandbox with this repo
+ssh smoke                               # shell in by name
+cs-sandbox destroy smoke -f             # tear it down
+```
+
+You're set - head to the [README](README.md) walkthroughs.
+
+## Optional: host agent tools and sign-in
+
+Sign in on the host once and any sandbox can inherit that login on demand, with
+`cs-sandbox create <name> --inherit-agent-login claude` — it is never carried unless you ask. Skip
+this section entirely and sign in inside each sandbox instead (`cs-sandbox agent-login claude <name>`).
 
 Sandboxes already carry the agent toolset (`cs-claude` / `cs-codex` and the remote-delegation
 families) at `~/.local/bin` — nothing to install inside them. This step puts the same tools on your
@@ -160,10 +158,9 @@ cs-sandbox install-agent-tools    # -> ~/.local/bin  (pass a directory to instal
 `cs-claude` / `cs-codex` invoke the `claude` / `codex` CLIs, so those must be installed on the host
 too; `install-agent-tools` tells you if either is missing.
 
-## 6. Sign in to the agents (sandboxes inherit it)
-
-Sign in to **Claude Code & Codex** once on the host. Every sandbox you create afterward inherits the
-credentials - they're snapshotted into the sandbox on first boot, **never baked into the image**.
+Sign in to **Claude Code & Codex** once on the host. A sandbox created with
+`--inherit-agent-login claude` (or `codex`, or both) then starts already signed in — the credential
+is snapshotted into that sandbox on first boot, **never baked into the image**.
 
 ```bash
 cs-claude          # launch Claude Code - sign in with /login, then exit
@@ -174,22 +171,46 @@ On macOS (where Claude's credentials live in the Keychain with no file to copy),
 sandbox its own independent session, sign in *inside* a sandbox instead:
 
 ```bash
-cs-sandbox claude-login <name>     # or: cs-sandbox codex-login <name>
+cs-sandbox agent-login claude <name>     # or: agent-login codex <name>
 ```
 
 **Using an API key or a cloud provider** (a direct Anthropic/OpenAI key, Amazon Bedrock, Google
-Vertex, …) instead of a subscription? Put the provider's environment in `~/.cs-claude/env` /
-`~/.cs-codex/env` (credential files under `~/.cs-<agent>/creds/`); it's carried into sandboxes like a
-login. Full provider matrix and the SSO/ADC caveat:
-[`docs/design.md`](docs/design.md#bundled-agent-tooling-and-auth).
-
-## Verify
+Vertex, …) instead of a subscription? Keys are never copied from your host — pass the ones a sandbox
+needs explicitly at create time:
 
 ```bash
-cs-sandbox doctor                       # re-run: everything should be green
-cs-sandbox create smoke --repo .        # create a throwaway sandbox with this repo
-ssh smoke                               # shell in by name
-cs-sandbox destroy smoke -f             # tear it down
+cs-sandbox create dev --env ANTHROPIC_API_KEY          # passes the value through from your shell
 ```
 
-You're set - head to the [README](README.md) walkthroughs.
+See [`docs/agent-login.md`](docs/agent-login.md) for cloud targets and credential files.
+
+## Optional: shell completion
+
+`cs-sandbox` generates completion scripts for bash / zsh / fish /
+PowerShell, with **live** completion of sandbox names, store names, and flag values (`ssh <TAB>`,
+`destroy <TAB>`, `--engine <TAB>`, …):
+
+```bash
+# bash (per-user, no sudo — needs the bash-completion package, which lazy-loads this on demand):
+mkdir -p ~/.local/share/bash-completion/completions
+cs-sandbox completion bash > ~/.local/share/bash-completion/completions/cs-sandbox
+cs-sandbox completion zsh  > "${fpath[1]}/_cs-sandbox"                     # zsh
+cs-sandbox completion fish > ~/.config/fish/completions/cs-sandbox.fish   # fish
+# or, ad hoc for the current shell (any of them):  source <(cs-sandbox completion bash)
+```
+
+For bash system-wide instead of per-user: `cs-sandbox completion bash | sudo tee
+/etc/bash_completion.d/cs-sandbox`. Run `cs-sandbox completion --help` for per-shell setup details.
+
+## State and cache locations
+
+**State lives in your home, not next to the binary** — instances and
+tier keys under `$XDG_DATA_HOME/cs-sandbox` (`~/.local/share/cs-sandbox`), the firecracker artifact
+cache under `$XDG_CACHE_HOME/cs-sandbox` (`~/.cache/cs-sandbox`); override with
+`CS_SANDBOX_INSTANCES_DIR` / `CS_SANDBOX_TIER_DIR` / `CS_SANDBOX_FC_CACHE`, or `CS_SANDBOX_HOME` for all of it.
+
+Separate state directories give you separate sets of sandboxes that can run side by side, because
+the network underneath is per-host and shared: addresses and SSH ports are checked against what is
+actually live on the host rather than against one directory's records, each directory gets its own
+`~/.ssh/config.d` fragment, and the network's own working dir (`~/.cache/cs-sandbox/net`, moved by
+`CS_SANDBOX_FC_NET`) stays put when you relocate the rest.

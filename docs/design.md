@@ -14,6 +14,7 @@ Three companion documents cover the engine- and feature-specific parts:
 - [`podman.md`](podman.md) - the Podman container engine.
 - [`firecracker.md`](firecracker.md) - the Firecracker microVM engine.
 - [`repo-sharing.md`](repo-sharing.md) - the `--repo` checkout model.
+- [`agent-login.md`](agent-login.md) - how a sandbox gets a signed-in agent, and what is never copied.
 
 ## Overview
 
@@ -72,8 +73,8 @@ the interface between `cs-sandbox` and the entrypoint. The seed builder (`intern
 - `host_hosts` - the host-by-name map (see [Networking](#reaching-the-host-by-name-from-inside-a-sandbox));
 - `inject-env` - `--env` / `--env-file` vars (see [Injecting environment variables](#injecting-environment-variables));
 - `git_identity` - the host's global git `user.name`/`email`, seeded into the sandbox's `~/.gitconfig`;
-- `claude/` + `codex/` - the agent credentials, plus the API-key/cloud `env` + `creds/` when present
-  (subscription always; `env`/`creds/` unless `--no-agent-keys`; both omitted under `--no-agent-auth`).
+- `claude/` + `codex/` - the host login of each agent named by `--inherit-agent-login` (nothing by
+  default).
 
 On boot the guest init (the container entrypoint or the microVM's `/fc-init`) splits work by a sentinel:
 
@@ -130,24 +131,8 @@ Access is governed by sandbox **type**, independent of engine. The matrix (clien
 | **user** sandbox   | ✓ | ✓ |
 | **agent** sandbox  | ✗ | ✓ |
 
-In words: the host and user sandboxes reach everything; agents reach other agents but **not**
-user sandboxes (so an agent can never reach a forwarded `ssh -A` socket in a user sandbox). The
-allowed reaches - note that nothing points *into* a user sandbox from an agent:
-
-```
-                    ┌──────┐
-                    │ host │
-                    └──┬───┘
-              ┌────────┴────────┐
-              ▼                 ▼
-        ┌───────────┐     ┌───────────┐
-        │   user    │ ──▶ │   agent   │
-        │ sandboxes │     │ sandboxes │
-        └───────────┘     └───────────┘
-          ↺ itself          ↺ itself
-
-        ──▶ = "may SSH into".  An agent never ──▶ a user sandbox.
-```
+In words: the host and user sandboxes reach everything; agents reach other agents but **not** user
+sandboxes — so an agent can never reach a forwarded `ssh -A` socket in a user sandbox.
 
 Three key identities produce this matrix:
 
@@ -213,8 +198,12 @@ reaches any other as `ssh <name>` (internal port 22), container↔VM included.
 **Reach by name, from the host.** Every sandbox's sshd listens on **22** internally; the host
 publishes it on `127.0.0.1:<PORT>`, where `<PORT>` is the first free port in **2200-2399**:
 containers draw from 2200-2299, microVMs from 2300-2399 (recorded in `instances/<name>/state.json`).
-`cs-sandbox` maintains `~/.ssh/config.d/cs-sandbox` (included from `~/.ssh/config`) with one
-`Host <name>` block per sandbox, so `ssh <name>` works from the host too. Each block:
+"Free" means both unrecorded *and* unanswered - allocation probes loopback, because a port can be
+held by a sandbox under a different `CS_SANDBOX_INSTANCES_DIR`, or by an unrelated program.
+`cs-sandbox` maintains a fragment under `~/.ssh/config.d` (included from `~/.ssh/config` by a single
+globbed `Include`) with one `Host <name>` block per sandbox, so `ssh <name>` works from the host too.
+The fragment is per instances root — `cs-sandbox` for the default one, a distinct name for any other
+— so that two sandbox sets sharing one `~/.ssh` cannot overwrite each other. Each block:
 
 - points at `127.0.0.1:<PORT>` and emits an `IdentityFile` line for **every** authorized host
   key plus `IdentitiesOnly yes` - otherwise ssh only tries the default key names and a sandbox
@@ -226,7 +215,11 @@ containers draw from 2200-2299, microVMs from 2300-2399 (recorded in `instances/
   are generated once at create time and persisted, so its identity is stable across restarts.
 
 `cs-sandbox sync-ssh-config` regenerates the host config (both engines). Discover sandboxes with
-`cs-sandbox ls`, `cs-sandbox port <name>`.
+`cs-sandbox ls`, `cs-sandbox port <name>`. `ls` also reports each sandbox's lifecycle state in a
+`STATUS` column — `running` or `stopped`, the same words `start`/`stop` use — read from `podman ps`
+for a container and from the microVM's pid file for a VM, plus an `AGE` column. The SSH port is not
+a column — you reach a sandbox by name — so `cs-sandbox port <name>` prints it for the tools that
+need one. `ls -q` prints bare names for piping into other commands.
 
 **Reach a service from another machine** via `ssh -J <host> <name>` (ProxyJump, nothing
 exposed), or by binding the published ports on the network (`export CS_SANDBOX_SSH_BIND=0.0.0.0`
@@ -325,133 +318,39 @@ mechanism as the base rootfs); see
 writable primary is the supported way to share: independent engines writing one store risk lock
 contention and corruption.
 
-### Private registry
+## Bundled agent tooling and login
 
-Nested Podman can pull from a **private registry** - a local/internal registry rather than a
-public one. The registry to trust is baked into the image's `registries.conf` at build time and
-controlled by two env vars (read by `cs-sandbox` and forwarded to the build as the matching
-`--build-arg`s):
+Every sandbox ships the `cs-claude` and `cs-codex` toolsets, so the coding agents work without
+re-authenticating per sandbox. Everything non-secret is baked into the image skeleton from
+`image/rootfs/home/` in this repo; everything secret is carried per sandbox through the seed.
 
-| Env var | Default | Meaning |
-|---|---|---|
-| `CS_SANDBOX_PRIVATE_REGISTRY` | _(none)_ | Registry to trust, as a bare `host:port` (no `http://`/`https://` scheme). Empty registers none. |
-| `CS_SANDBOX_PRIVATE_REGISTRY_INSECURE` | `0` (secure) | `1`/`true`/`yes`/`on` → insecure: permit plain-HTTP and skip TLS verification. Anything else → secure: HTTPS with a verified cert. |
+**Baked in (non-secret):**
 
-Following standard docker/podman convention, the **protocol is implicit in the security setting**,
-not a scheme on the registry value: a registry is named by its bare `host:port`, a *secure* entry is
-reached over HTTPS with a verified TLS cert, and an *insecure* entry permits plain-HTTP and untrusted
-/ self-signed certs. (This mirrors Podman's `registries.conf` `location` + `insecure`, and Docker's
-`insecure-registries`.) **Secure is the default**; an insecure registry is opt-in.
+- **Launch wrappers** in `~/.local/bin`. `cs-claude` runs `claude` under `CLAUDE_CONFIG_DIR=~/.cs-claude`
+  in `--permission-mode auto`; `cs-codex` runs `codex` under `CODEX_HOME=~/.cs-codex` with
+  `approval_policy=on-request` + `sandbox_mode=workspace-write`. Each uses a dedicated profile, so the
+  sandbox's config never touches a personal `~/.claude`/`~/.codex`, and each pre-trusts the launch
+  directory so the agent never stops at a "do you trust this folder?" gate.
+- **Remote-delegation families**, also in `~/.local/bin`: `cs-claude-remote` and `cs-codex-remote`,
+  each with `-status`/`-output`/`-sessions`/`-forget` and a `-turn` driver. They delegate a task to an
+  agent session on another host over SSH, keeping it warm in tmux. The target host resolves per
+  session and defaults to the sandbox itself, so reaching anywhere else needs SSH access the sandbox
+  actually has — for a user sandbox, typically keys you forwarded with `ssh -A`.
+- **Settings and instruction hubs**: `~/.cs-claude` (a `settings.json`, a `CLAUDE.md` hub, and a
+  `CLAUDE_PERMISSIONS.md` reference) and `~/.cs-codex` (a `config.toml` and an `AGENTS.md` hub). Both
+  hubs describe **both** toolsets and point at the per-tool docs in `~/.local/bin`, so an in-sandbox
+  Claude can drive Codex remote sessions and vice versa.
 
-Both variables are read at **build** time (`cs-sandbox build`); rebuild the image after changing
-them. Examples:
+**YOLO mode.** `cs-sandbox create --yolo` writes a `.yolo` marker; the wrappers then skip all
+permission prompts. That is safe because the sandbox is the isolation boundary — it is disposable and
+cannot reach your host.
 
-```bash
-# Secure private registry (HTTPS, TLS-verified) - the default
-CS_SANDBOX_PRIVATE_REGISTRY=registry.corp.example:5000 cs-sandbox build
-
-# Insecure private registry (plain-HTTP or self-signed cert)
-CS_SANDBOX_PRIVATE_REGISTRY=registry.internal:5000 \
-CS_SANDBOX_PRIVATE_REGISTRY_INSECURE=1 cs-sandbox build
-```
-
-A secure registry writes only a `location` entry (TLS enforced); an insecure one adds
-`insecure = true`, which lets Podman use plain-HTTP and accept untrusted/self-signed certs for
-that host only. Other registries are unaffected.
-
-## Bundled agent tooling and auth
-
-Every sandbox ships the `cs-claude` and `cs-codex` toolsets so the coding agents work without
-re-authenticating per sandbox. The launch wrappers, helper scripts, and companion docs are
-maintained in this repo under `image/rootfs/home/` - generic and free of host/personal specifics.
-
-**Launch wrappers → `~/.local/bin`** (non-secret, baked into the image skeleton). Each agent gets a
-parallel wrapper that runs it under a dedicated profile (keeping the sandbox's config/auth isolated
-from any personal `~/.claude`/`~/.codex`) and pre-trusts the launch directory, so the agent never
-stops at a "do you trust this folder?" gate:
-
-- **`cs-claude`** runs `claude` with `CLAUDE_CONFIG_DIR=~/.cs-claude` in `--permission-mode auto`,
-  which honors the profile's allow/deny rules.
-- **`cs-codex`** runs `codex` with `CODEX_HOME=~/.cs-codex`; its `config.toml` supplies the defaults
-  `approval_policy=on-request` + `sandbox_mode=workspace-write` - the analogue of Claude's `auto` mode.
-
-**Remote-delegation families → `~/.local/bin`** (non-secret, baked). A parallel family for each agent -
-`cs-claude-remote` / `cs-codex-remote`, each plus `-status`/`-output`/`-sessions`/`-forget` and a
-`-turn` driver - delegates a task to an agent session on another host over SSH, keeping the session
-warm in tmux and reading output from the session JSONL. The target host resolves per session
-(`-H <host>` > a per-session stored host > `$CS_CLAUDE_REMOTE_HOST`/`$CS_CODEX_REMOTE_HOST` > this
-machine's short hostname - inside a sandbox, that is its own name), so by default they target the
-sandbox itself. Reaching an external host needs
-SSH access to it - in a user sandbox that comes from the keys forwarded by `ssh -A` (whatever keys
-you loaded on the host), so it works while you hold an active forwarded session; an agent can only
-reach hosts that trust the agent tier.
-
-**Settings + instruction hubs** (non-secret, baked into each profile dir):
-
-- **`~/.cs-claude`** - a `settings.json` (the allow/deny rules plus editor defaults `editorMode:
-  vim` and `remoteControlAtStartup: true`), a `CLAUDE.md` instruction hub, and a
-  `CLAUDE_PERMISSIONS.md` reference.
-- **`~/.cs-codex`** - a `config.toml` (the `approval_policy`/`sandbox_mode` defaults above) and an
-  `AGENTS.md` instruction hub.
-
-Both hubs (`CLAUDE.md` and `AGENTS.md`) describe **both** toolsets inline and point to the full
-per-tool reference docs in `~/.local/bin` (read on demand), so an in-sandbox Claude can drive Codex remote
-sessions and an in-sandbox Codex can drive Claude remote sessions.
-
-**YOLO mode (`--yolo`).** `cs-claude`/`cs-codex` skip all permission prompts
-(`--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`) when a
-`.yolo` marker exists; `cs-sandbox create --yolo` writes that marker (either type). Skipping prompts
-is safe because the sandbox is the isolation boundary - it's disposable and can't touch your host.
-
-**Subscription auth (secret, NEVER baked).** `cs-sandbox create` snapshots the host's agent
-credentials (`~/.cs-claude/.credentials.json`, `~/.cs-codex/auth.json`) into the per-sandbox
-seed; the entrypoint installs them into the home volume (mode 600) on **first boot
-only** (so a token the sandbox later refreshes isn't clobbered). Seeded into both sandbox types.
-Caveats:
-
-- **Single seat / concurrency.** One subscription shared across the host and many sandboxes shares
-  a rate-limit pool, and independent OAuth refreshes can log each other out. Accepted trade-off.
-- **macOS.** Agent credentials live in the Keychain (no file) on a Mac, so the copy-from-host path
-  needs a Linux host. On macOS, run `cs-sandbox claude-login <name>` / `codex-login <name>` to
-  authenticate once inside the sandbox - also the way to give any sandbox an independent session.
-- **Opting out.** The subscription credential is carried unconditionally - `--no-agent-keys` (below) skips
-  only the API-key/cloud bundle, not this login. To create a **login-free** sandbox that inherits no
-  host agent auth at all, use `create --no-agent-auth` (both agents, subscription + provider); then
-  sign in inside it, or `cs-sandbox claude-login <name>` / `codex-login <name>` for an independent
-  session (e.g. a separate account or rate-limit pool).
-
-**API-key / cloud-provider auth (secret, NEVER baked).** A subscription is one self-contained
-credential file; an API-key or cloud setup is a *bundle* - provider selection + a secret +
-region/project, sometimes an external credential file - and both agents read it from the
-**environment** (with provider config in `settings.json` / `config.toml`). So `cs-sandbox` carries,
-per agent, through the same per-sandbox-seed → first-boot-install (mode 600) path:
-
-- a **`~/.cs-<agent>/env`** file (`KEY=value`) the `cs-claude` / `cs-codex` wrapper **sources** at
-  launch - e.g. `ANTHROPIC_API_KEY`; `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX` + `AWS_*` / `CLOUD_ML_REGION`
-  / `ANTHROPIC_VERTEX_PROJECT_ID`; `OPENAI_API_KEY`; or a custom Codex provider's `env_key` var;
-- an optional **`~/.cs-<agent>/creds/`** dir for credential files. Because a sandbox reproduces the
-  host username/home, a path like `~/.cs-claude/creds/sa.json` resolves identically host↔sandbox, so
-  `GOOGLE_APPLICATION_CREDENTIALS` / `AWS_SHARED_CREDENTIALS_FILE` need no remapping.
-
-On top of the declarative `env`, `create` **auto-captures** a known scalar provider-var allowlist
-present in its environment (the declarative file wins). Path-valued vars
-(`GOOGLE_APPLICATION_CREDENTIALS`, `AWS_*_FILE`) are *not* auto-captured - they point at host files,
-so use `env` + `creds/` (a note fires if a cloud flag is set without them). More caveats:
-
-- **Precedence.** An injected `ANTHROPIC_API_KEY` / cloud flag overrides a subscription OAuth login,
-  so carrying is opt-in by virtue of creating the `env` file - subscription users (no `env`) are
-  unaffected.
-- **Scoping / blast radius.** Carried into both sandbox types by default. `create --no-agent-keys` opts out
-  of **this** API-key/cloud bundle (the subscription login is still carried); `create --no-agent-auth`
-  opts out of **all** host agent auth (subscription + provider). A warning fires when an **agent**
-  receives credentials - a cloud key handed to an autonomous agent is a bigger blast radius than a
-  model-only subscription token (prefer a least-privilege key for agents).
-- **Refresh limitation.** Static keys / service-account JSON / a Bedrock API key work headless;
-  **interactive AWS SSO / GCP user ADC** can't refresh in a sandbox - use static / service-account
-  credentials (or Claude Code's non-interactive `awsCredentialExport` / `gcpAuthRefresh` settings).
-- **Codex custom providers** (Azure/OpenRouter) also need a `config.toml` `[model_providers]` block
-  (`wire_api = "responses"`); carrying that into the seeded `config.toml` is a planned follow-up -
-  for now add it in-sandbox.
+**Carried per sandbox (secret, never baked).** Inheriting a host login is opt-in: `create
+--inherit-agent-login claude|codex` snapshots that agent's credential into the seed, and the guest
+installs it into the home volume (mode 600) on first boot only. A sandbox created without the flag
+starts login-free — sign in inside it, or with `cs-sandbox agent-login <agent> <name>`. Provider API
+keys are never carried; pass them with `--env` if a sandbox needs them. The single-seat and macOS
+caveats are in [`agent-login.md`](agent-login.md).
 
 ## Security model
 
@@ -460,57 +359,40 @@ so use `env` + `creds/` (a note fires if a cloud flag is set without them). More
   granting only the caps nested Podman needs. There is no host-root path absent a kernel bug.
   `--privileged` is an opt-in fallback that trades that defense-in-depth for breadth. The microVM
   engine removes the shared-kernel attack surface entirely.
-- **Passwordless sudo inside is safe - and is the usual setup for agent sandboxes.** The runtime
-  user gets `NOPASSWD:ALL`, but the trust boundary is the *engine*, not in-sandbox sudo. On the
-  container engine, "root" inside is just your unprivileged host uid through `--userns=keep-id`, so
-  `sudo` grants the agent nothing it doesn't already control over its own disposable sandbox - and
-  cannot reach anything outside the namespace. On the microVM engine, root is real but confined to
-  the guest's own kernel. Giving an autonomous coding agent full root *inside* a throwaway, isolated
-  sandbox, while delegating all real isolation to the host boundary, is the standard pattern for agent
-  sandboxes (rootless userns, gVisor/Kata, or a fresh microVM); restricting sudo inside would add
-  friction (the nested-Podman wrapper shells out to `sudo` on every call) without adding a boundary.
-  This holds **only** while that boundary is intact: running the image rootful, `--privileged`, or
-  `--userns=host` would turn the same passwordless sudo into genuine host-root.
+- **Passwordless sudo inside is safe**, and is the usual setup for agent sandboxes. The runtime user
+  gets `NOPASSWD:ALL`, because the trust boundary is the *engine*, not in-sandbox sudo: on the
+  container engine "root" inside is just your unprivileged host uid through `--userns=keep-id`, and
+  on the microVM engine root is real but confined to the guest's own kernel. Either way `sudo` grants
+  an agent nothing it does not already control over its own disposable sandbox, while restricting it
+  would add friction (the nested-Podman wrapper shells out to `sudo` on every call) for no boundary.
+  This holds **only** while that boundary is intact — running the image rootful, `--privileged`, or
+  `--userns=host` turns the same passwordless sudo into genuine host-root.
 - SSH ports bind `127.0.0.1` only; sandboxes are not exposed on the LAN by default.
 - **No host private keys inside any sandbox.** Nothing at rest to leak from a sandbox's disk/volume;
   sandboxes reach each other with generated tier keys. If a sandbox needs your own keys (e.g. to
   `ssh` on to another machine), you *lend* a specific set with `ssh -A` - the keys stay on the host,
   present only for the life of that session, never copied in. The agent credential snapshot lives
   only in the per-sandbox seed and the home volume - never in the image or git.
-- **Two layers, user above agent.** It's convenient to have a user layer above the agent layer: a
-  user sandbox can `ssh` into any sandbox (user or agent), while an agent sandbox reaches only other
-  agent sandboxes, never a user sandbox. Otherwise the two are the same (same image and capabilities).
-  Typically you spawn one user sandbox and oversee the work running across several agent sandboxes
-  from there.
-- **`ssh -A` is a deliberate, careful technique (optional, general).** Agent forwarding isn't a
-  property of any sandbox type - it's an opt-in technique you apply when a sandbox needs to reach an
-  SSH-protected resource. For the life of the connection any process running as you *inside* that
-  sandbox can use the forwarded socket (it cannot copy the key out). What makes a use safe is a
-  per-situation judgment: forward only the key you need (`ssh-add -c` to confirm each use on the
-  host), and only into a sandbox whose operator you trust for the session. A user sandbox is the
-  natural fit - you drive it yourself and no agent can `ssh` in to reach the socket - but that trust
-  judgment, not the type label, is what makes it safe.
+- **Type governs reach, not privilege.** An agent sandbox can never `ssh` into a user sandbox — see
+  [the trust model](#sandbox-types-and-the-ssh-trust-model) above for how the H/U/G keys enforce it.
+- **`ssh -A` is a technique, not a property of a type.** Forwarding an agent lends a sandbox specific
+  host keys for the life of a connection without copying any key in; anything running as you inside
+  that sandbox can *use* the socket while you are connected. Scope what you load and forward only
+  into a sandbox whose operator you trust — the README covers the judgment in
+  [Lending a sandbox specific SSH keys](../README.md#lending-a-sandbox-specific-ssh-keys-with-ssh--a).
 
 ## Testing
 
 Two tiers, split by whether they touch a real engine:
 
-- **Unit tests** (`make test` / `go test ./...`) - pure, fast, no external processes. They cover the
-  logic that a silent bug would be costly in: seed trust material + the agent-auth carry
-  (`internal/seed`), the `--snapshot`/`--repo` spec parsing (`internal/spec`), instance state
-  (`internal/state`), the Firecracker kernel rebuild/pin decision (`internal/fcdisk`), port allocation
-  (`internal/ports`), and the CLI behavior (`internal/cli`) - flag wiring, the quiet/verbose levels,
-  `podman build` argv, and `install-agent-tools` - driven through the real cobra tree with a fake
-  `Runner`, so no podman is invoked.
-- **Integration tests** (`make test-integration` / `go test -tags integration ./...`, guarded by a
-  `//go:build integration` tag) - live tests on a Linux/KVM host with podman. They create real,
-  namespaced sandboxes (`csgo*`) in temp state dirs and tear them down, and each **skips gracefully**
-  when podman or the built image is unavailable. Coverage includes create → boot → ssh → destroy on
-  both engines, the trust matrix, `--yolo`, `--repo` fetch/push, `--snapshot`, port `forward`, the
-  sudo-free `host-route` paths, shared image stores, cross-engine reachability (a podman container
-  resolving a Firecracker VM by name), the Fedora kernel-pin resolution, and the agent-auth carry
-  (default inheritance, `--no-agent-keys`, `--no-agent-auth`). The suite runs with `-p 1`: packages
-  share one network fabric and host SSH port pool, so parallel packages would collide.
+- **Unit tests** (`make test`) — pure and fast, no external processes. They cover the logic where a
+  silent bug would be costly: the seed trust material and agent-login inheritance, spec parsing, instance
+  state, the kernel rebuild/pin decision, port allocation, and the CLI itself, driven through the real
+  cobra tree with a fake `Runner`.
+- **Integration tests** (`make test-integration`, behind a `//go:build integration` tag) — live tests
+  on a Linux/KVM host with podman. They create namespaced sandboxes in temp state dirs, tear them
+  down, and **skip gracefully** when podman or the image is unavailable. The suite runs with `-p 1`,
+  because packages share one network fabric and host SSH port pool.
 
 ## Limitations
 

@@ -21,8 +21,9 @@ cs-sandbox create web --engine podman --snapshot ~/data # frozen read-only copy 
 
 ssh feature                     # shell in by name (preferred for interactive work)
 cs-sandbox exec feature ls      # run one command instead
-cs-sandbox ls                   # what exists, with type/engine/port
-cs-sandbox port feature         # just the host SSH port
+cs-sandbox ls                   # what exists: STATUS (running/stopped), AGE, type, engine
+cs-sandbox ls -q                # names only, one per line — pipe it into other commands
+cs-sandbox port feature         # its host SSH port, if a tool needs it (ssh <name> does not)
 
 cs-sandbox fetch feature        # pull the sandbox's commits back to the host (fast-forward only)
 cs-sandbox push feature         # send host commits in (fast-forward, clean tree)
@@ -103,11 +104,12 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
 | "make me a workspace I can drive" / "a user sandbox" | `cs-sandbox create <name> --type user --repo <path>` |
 | "throwaway / no prompts / let it rip" | `cs-sandbox create <name> --yolo` (add `--solo` to also deny outbound ssh) |
 | "stronger isolation" / "untrusted work" | `--engine firecracker` (Linux + `/dev/kvm` only) |
-| "what sandboxes do I have?" | `cs-sandbox ls` |
+| "what sandboxes do I have?" / "is it still running?" | `cs-sandbox ls` — the STATUS column says `running` or `stopped` |
 | "get its changes" / "pull the work back" | `cs-sandbox fetch <name>`, then report the branch |
 | "send my commits in" | `cs-sandbox push <name>` |
 | "I need to hit its port 8080" | `cs-sandbox forward <name> 8080` (or `HOSTPORT:VMPORT`) |
 | "clean it up" / "I'm done with it" | Ask whether data should be kept: `rm` keeps it, `destroy -f` deletes it |
+| "get rid of all of them" | Confirm first, then `cs-sandbox ls -q \| xargs -n1 cs-sandbox destroy -f` |
 | "pause it" / "free the resources" | `cs-sandbox stop <name>` (then `start` later) |
 | "why doesn't this work?" / "check my setup" | `cs-sandbox doctor` (add `--engine podman` to check that engine) |
 | "set it up" / "first run" | `cs-sandbox build`, then `cs-sandbox install-agent-tools` |
@@ -129,8 +131,12 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
   automatically. `--cpus` (default 4) and `--mem` MiB (default 4096) apply to Firecracker only.
 - On macOS everything runs in one podman-machine VM, and `--repo` / `--snapshot` sources must live
   under `$HOME` — `create` rejects paths outside it.
-- Agent sign-in is inherited from the host, so `cs-claude` / `cs-codex` work inside a new sandbox
-  with no login step. `--no-agent-auth` opts out entirely; `--no-agent-keys` drops only the
-  provider API-key credentials.
+- Agent sign-in is **not** inherited by default. Pass `--inherit-agent-login claude` (or `codex`,
+  or both comma-separated) at create to carry the host login in; `create` reports what the sandbox
+  ended up with. Otherwise the sandbox starts login-free — sign it in with
+  `cs-sandbox agent-login claude <name>`, which is also how you give a sandbox its own account
+  instead of sharing yours, and the only route on macOS (credentials live in the Keychain there).
+- Provider API keys are never carried. Pass one explicitly with `--env ANTHROPIC_API_KEY`, and use
+  `--snapshot` plus `--env` for a credential file.
 - Global flags: `-v` (per-command progress), `-q` (silence), `--dry-run` (print commands instead of
   running them — useful to show a user what would happen).

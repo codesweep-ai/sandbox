@@ -50,19 +50,22 @@ type RepoClone struct {
 
 // Instance is the canonical typed state of one sandbox.
 type Instance struct {
-	Name       string      `json:"name"`
-	Type       string      `json:"type"` // user | agent
-	Engine     Engine      `json:"engine"`
-	Port       int         `json:"port"`
-	FCIP       string      `json:"fcip,omitempty"` // firecracker VM address
-	CPUs       int         `json:"cpus,omitempty"` // firecracker
-	MemMiB     int         `json:"mem,omitempty"`  // firecracker
-	Created    string      `json:"created"`        // RFC3339 UTC
-	Yolo       bool        `json:"yolo,omitempty"`
-	Solo       bool        `json:"solo,omitempty"`
-	Shared     []string    `json:"shared,omitempty"`    // image-store names
-	Snapshots  []string    `json:"snapshots,omitempty"` // "hostpath:name"
-	RepoClones []RepoClone `json:"repoclones,omitempty"`
+	Name    string   `json:"name"`
+	Type    string   `json:"type"` // user | agent
+	Engine  Engine   `json:"engine"`
+	Port    int      `json:"port"`
+	FCIP    string   `json:"fcip,omitempty"` // firecracker VM address
+	CPUs    int      `json:"cpus,omitempty"` // firecracker
+	MemMiB  int      `json:"mem,omitempty"`  // firecracker
+	Created string   `json:"created"`        // RFC3339 UTC
+	Yolo    bool     `json:"yolo,omitempty"`
+	Solo    bool     `json:"solo,omitempty"`
+	Shared  []string `json:"shared,omitempty"` // image-store names
+	// AgentLogins are the agents whose host login was inherited at create
+	// (--inherit-agent-login), so `ls` can show which sandboxes hold credentials.
+	AgentLogins []string    `json:"agentlogins,omitempty"`
+	Snapshots   []string    `json:"snapshots,omitempty"` // "hostpath:name"
+	RepoClones  []RepoClone `json:"repoclones,omitempty"`
 }
 
 // Dir returns the on-disk instance directory for name under instDir.

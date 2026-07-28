@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/codesweep-ai/sandbox/internal/run"
+	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
 // TestVerbosityGating pins the three-level model: phase() shows unless --quiet;
@@ -139,4 +141,36 @@ func mode(t *testing.T, p string) os.FileMode {
 		t.Fatal(err)
 	}
 	return fi.Mode()
+}
+
+// TestLsQuietIsPipeable: -q prints bare names, one per line, with no header or
+// columns — so `cs-sandbox ls -q | xargs -n1 cs-sandbox destroy -f` works.
+func TestLsQuietIsPipeable(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"beta", "alpha"} {
+		if err := state.Save(dir, &state.Instance{
+			Name: n, Type: "agent", Engine: state.Podman, Port: 2200, Created: "2026-07-27T10:00:00Z",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	app := &App{InstDir: dir, TierDir: t.TempDir(), Runner: run.NewFake()}
+	if err := runLs(context.Background(), app, &buf, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); got != "alpha\nbeta\n" { // List sorts by name
+		t.Errorf("ls -q = %q, want bare sorted names", got)
+	}
+
+	// The table form keeps the header and columns.
+	buf.Reset()
+	if err := runLs(context.Background(), app, &buf, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"NAME", "STATUS", "AGE", "alpha", "beta"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("ls table missing %q:\n%s", want, buf.String())
+		}
+	}
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/lock"
+	"github.com/codesweep-ai/sandbox/internal/ports"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/seed"
 	"github.com/codesweep-ai/sandbox/internal/spec"
@@ -162,7 +163,8 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 	dnsPrimary := dnsmasqIP(gw)
 
 	// Build the trust seed (authorized_keys, tier key, ssh_config, host keys, …).
-	if err := d.writeSeed(ctx, seedDir, s, gw); err != nil {
+	agentLogins, err := d.writeSeed(ctx, seedDir, s, gw)
+	if err != nil {
 		return nil, err
 	}
 
@@ -194,7 +196,7 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 	}
 	inst = &state.Instance{
 		Name: s.Name, Type: s.Type, Engine: state.Podman, Yolo: s.Yolo, Solo: s.Solo,
-		Shared: s.ImageStores, Created: nowUTC(),
+		Shared: s.ImageStores, AgentLogins: agentLogins, Created: nowUTC(),
 	}
 	// Serialize the race-sensitive prefix — port allocation through the claim —
 	// as the firecracker engine does for its ip+port. Without this, two parallel
@@ -307,7 +309,11 @@ func (p *Podman) Exec(ctx context.Context, name string, io ExecIO) error {
 	if io.Interactive {
 		argv = append(argv, "-it")
 	}
-	argv = append(argv, name)
+	// Run as the dev user in their home, matching what `ssh <name>` gives and what the
+	// firecracker engine does over ssh. The container's main process runs as uid 0, so
+	// without this every command would run as root with HOME=/root — the wrong agent
+	// profile, and any file it creates owned by root.
+	argv = append(argv, "--user", p.d.Host.User, "--workdir", "/home/"+p.d.Host.User, name)
 	if len(io.Argv) > 0 {
 		argv = append(argv, io.Argv...)
 	} else {
@@ -345,7 +351,7 @@ func (d Deps) volumeExists(ctx context.Context, vol string) bool {
 
 func (d Deps) allocPodmanPort(ctx context.Context) (int, error) {
 	reserved := d.reservedPorts(ctx)
-	return allocPort(2200, 2299, false, reserved)
+	return allocPort(ports.Min, ports.Split-1, reserved)
 }
 
 func (d Deps) waitReady(ctx context.Context, name string) error {
@@ -410,7 +416,7 @@ func envFilePath(seedDir, block string) string {
 }
 
 // writeSeed resolves seed inputs from the host + spec and materializes the seed.
-func (d Deps) writeSeed(ctx context.Context, seedDir string, s CreateSpec, gw string) error {
+func (d Deps) writeSeed(ctx context.Context, seedDir string, s CreateSpec, gw string) ([]string, error) {
 	hostPubs, _ := d.Host.PubKeys()
 	userPub, _ := os.ReadFile(filepath.Join(d.TierDir, seed.TierUserKey+".pub"))
 	agentPub, _ := os.ReadFile(filepath.Join(d.TierDir, seed.TierAgentKey+".pub"))
@@ -428,12 +434,10 @@ func (d Deps) writeSeed(ctx context.Context, seedDir string, s CreateSpec, gw st
 	}
 	in.GitIdent = d.globalGitIdentity(ctx)
 	if err := seed.Write(ctx, d.Runner, seedDir, in); err != nil {
-		return err
+		return nil, err
 	}
-	// Snapshot the host's Claude/Codex auth into the seed so the sandbox inherits
-	// the host login (subscription always; provider env/creds unless --no-agent-keys;
-	// nothing at all under --no-agent-auth).
-	return seed.WriteAgentAuth(seedDir, d.Host.Home, s.Type, s.NoAgentAuth, s.NoAgentKeys, os.LookupEnv, d.note)
+	// Carry the host login of each agent the user asked to inherit (opt-in).
+	return seed.WriteAgentLogins(seedDir, d.Host.Home, s.InheritAgentLogin, d.note)
 }
 
 func (d Deps) globalGitIdentity(ctx context.Context) seed.GitIdentity {

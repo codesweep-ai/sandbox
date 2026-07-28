@@ -42,7 +42,7 @@ type Fabric struct {
 	Runner  run.Runner
 	Network string // podman network name (cs-sandbox-net)
 	Image   string // keepalive container image
-	NetDir  string // <fc-cache>/net: dnsmasq pid/hostsdir + logs
+	NetDir  string // the fabric working dir (paths.FCNet): dnsmasq hostsdir + log
 }
 
 // --- read-only queries (through the Runner) ---
@@ -79,9 +79,6 @@ func (f Fabric) keepaliveRunning(ctx context.Context) bool {
 // --- fabric bring-up / teardown ---
 
 func (f Fabric) hostsDir() string { return filepath.Join(f.NetDir, "hosts.d") }
-func (f Fabric) dnsmasqPidFile() string {
-	return filepath.Join(f.NetDir, "dnsmasq.pid")
-}
 
 // keepaliveUp ensures the keepalive container is running.
 func (f Fabric) keepaliveUp(ctx context.Context) error {
@@ -109,23 +106,92 @@ func (f Fabric) keepaliveUp(ctx context.Context) error {
 	return fmt.Errorf("fc: could not start the network keepalive container")
 }
 
-// dnsRunning verifies our dnsmasq is alive AND bound to our address (so a stale
-// or recycled pid can't masquerade as a healthy resolver).
-func (f Fabric) dnsRunning(ctx context.Context) bool {
-	data, err := os.ReadFile(f.dnsmasqPidFile())
+// dnsProc is a live dnsmasq: the address it answers on and the hostsdir it
+// serves, both read straight from its command line.
+type dnsProc struct {
+	pid      int
+	addr     string
+	hostsDir string
+}
+
+// scanDNSMasq lists every running dnsmasq on the host, with the address and
+// hostsdir each was started with. The fabric's DNS is a property of the host, so
+// this asks the host: a pidfile goes stale whenever the process outlives the
+// bookkeeping, and a root that never wrote one would otherwise miss a resolver
+// that is already running.
+func scanDNSMasq() []dnsProc {
+	ents, err := os.ReadDir("/proc")
 	if err != nil {
-		return false
+		return nil
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || !alive(pid) {
-		return false
+	var out []dnsProc
+	for _, e := range ents {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if err != nil || len(raw) == 0 {
+			continue
+		}
+		argv := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+		// argv[0] identifies the program: the launcher that execs dnsmasq carries
+		// the same flags in its own command line, but not as argv[0].
+		if filepath.Base(argv[0]) != "dnsmasq" {
+			continue
+		}
+		p := dnsProc{pid: pid}
+		for _, a := range argv[1:] {
+			if v, ok := strings.CutPrefix(a, "--listen-address="); ok {
+				p.addr = v
+			}
+			if v, ok := strings.CutPrefix(a, "--hostsdir="); ok {
+				p.hostsDir = filepath.Clean(v)
+			}
+		}
+		if p.addr != "" {
+			out = append(out, p)
+		}
 	}
-	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-	if err != nil {
-		return false
+	return out
+}
+
+// dnsState reports the fabric's resolver: its pid if it is up and ours, 0 if
+// nothing holds the address. One on our address serving a DIFFERENT hostsdir is
+// a conflict, not something to adopt — its answers come from another directory,
+// so names registered here would never resolve.
+func (f Fabric) dnsState(ctx context.Context) (int, error) {
+	return pickDNS(scanDNSMasq(), f.DNSIP(ctx), f.hostsDir())
+}
+
+// pickDNS applies dnsState's rules to an already-gathered process list.
+func pickDNS(procs []dnsProc, addr, hostsDir string) (int, error) {
+	want := filepath.Clean(hostsDir)
+	for _, p := range procs {
+		if p.addr != addr {
+			continue
+		}
+		if p.hostsDir != want {
+			return 0, fmt.Errorf("fc: dnsmasq (pid %d) already owns the fabric address %s "+
+				"but serves %s instead of %s — the fabric's working dir is host-global; "+
+				"unset CS_SANDBOX_FC_NET so every sandbox root shares one",
+				p.pid, addr, p.hostsDir, want)
+		}
+		return p.pid, nil
 	}
-	line := strings.ReplaceAll(string(cmdline), "\x00", " ")
-	return strings.Contains(line, "listen-address="+f.DNSIP(ctx))
+	return 0, nil
+}
+
+// dnsPid finds our dnsmasq by the hostsdir it serves, which identifies it
+// without needing the network read that resolving the address would cost.
+func (f Fabric) dnsPid() int {
+	want := filepath.Clean(f.hostsDir())
+	for _, p := range scanDNSMasq() {
+		if p.hostsDir == want {
+			return p.pid
+		}
+	}
+	return 0
 }
 
 // dnsUp starts the forwarding dnsmasq (in the netns) if not already running.
@@ -136,7 +202,9 @@ func (f Fabric) dnsUp(ctx context.Context) error {
 	if _, err := exec.LookPath("dnsmasq"); err != nil {
 		return fmt.Errorf("fc: dnsmasq not found")
 	}
-	if f.dnsRunning(ctx) {
+	if pid, err := f.dnsState(ctx); err != nil {
+		return err
+	} else if pid > 0 {
 		return nil
 	}
 	gw := f.Gateway(ctx)
@@ -149,22 +217,23 @@ func (f Fabric) dnsUp(ctx context.Context) error {
 		return fmt.Errorf("fc: cannot read podman network %q bridge interface", f.Network)
 	}
 	// Stay as (userns-)root so dnsmasq can traverse $HOME (mode 750) to re-read
-	// --hostsdir; the default drop to "nobody" cannot.
+	// --hostsdir; the default drop to "nobody" cannot. An empty --pid-file asks
+	// dnsmasq not to write one: the running process is the record (see dnsState).
 	// Values are passed as positional args, never interpolated into the script, so
 	// a path with a space or quote (e.g. under $HOME) can't split or inject.
 	const script = `set -eu
-DNS="$1"; BR="$2"; GW="$3"; HOSTSDIR="$4"; PIDFILE="$5"
+DNS="$1"; BR="$2"; GW="$3"; HOSTSDIR="$4"
 ip addr add "$DNS/24" dev "$BR" 2>/dev/null || true
 exec dnsmasq --keep-in-foreground --user=root --group=root --bind-interfaces \
   --listen-address="$DNS" --no-hosts --no-resolv --server="$GW" \
-  --hostsdir="$HOSTSDIR" --pid-file="$PIDFILE" --conf-file=/dev/null`
+  --hostsdir="$HOSTSDIR" --pid-file= --conf-file=/dev/null`
 	logf, err := os.Create(filepath.Join(f.NetDir, "dnsmasq.log"))
 	if err != nil {
 		return err
 	}
 	defer logf.Close()
 	cmd := exec.Command("podman", "unshare", "--rootless-netns", "bash", "-c", script,
-		"_", dns, br, gw, f.hostsDir(), f.dnsmasqPidFile())
+		"_", dns, br, gw, f.hostsDir())
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -172,15 +241,14 @@ exec dnsmasq --keep-in-foreground --user=root --group=root --bind-interfaces \
 	}
 	_ = cmd.Process.Release()
 	for i := 0; i < 40; i++ {
-		if f.dnsRunning(ctx) {
+		if pid, err := f.dnsState(ctx); err != nil {
+			return err
+		} else if pid > 0 {
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if !f.dnsRunning(ctx) {
-		return fmt.Errorf("fc: dnsmasq failed to start (%s)", filepath.Join(f.NetDir, "dnsmasq.log"))
-	}
-	return nil
+	return fmt.Errorf("fc: dnsmasq failed to start (%s)", filepath.Join(f.NetDir, "dnsmasq.log"))
 }
 
 // Up brings the whole fabric up: keepalive + dnsmasq (network creation is done
@@ -189,18 +257,56 @@ func (f Fabric) Up(ctx context.Context) error {
 	if err := f.keepaliveUp(ctx); err != nil {
 		return err
 	}
-	return f.dnsUp(ctx)
+	if err := f.dnsUp(ctx); err != nil {
+		return err
+	}
+	f.sweepNames(ctx)
+	return nil
+}
+
+// sweepNames drops name records a create left behind when it died outright, with
+// no chance to clean up.
+//
+// A name is registered only once its tap exists, so a record with no tap has no
+// VM answering. Testing taps rather than an instance list is what makes this safe
+// with several sandbox roots on one fabric: a root must not delete the live names
+// of sandboxes it cannot see. A stopped sandbox re-registers on start. Records
+// starting with "_" belong to other machinery and are left alone.
+func (f Fabric) sweepNames(ctx context.Context) {
+	ents, err := os.ReadDir(f.hostsDir())
+	if err != nil {
+		return
+	}
+	taps := f.TapOctets(ctx)
+	dropped := false
+	for _, e := range ents {
+		if e.IsDir() || strings.HasPrefix(e.Name(), "_") {
+			continue
+		}
+		rec := filepath.Join(f.hostsDir(), e.Name())
+		data, err := os.ReadFile(rec)
+		if err != nil {
+			continue
+		}
+		ip, _, _ := strings.Cut(strings.TrimSpace(string(data)), " ")
+		if taps[lastOctet(ip)] {
+			continue
+		}
+		if os.Remove(rec) == nil {
+			dropped = true
+		}
+	}
+	if dropped {
+		f.Reload()
+	}
 }
 
 // Down tears down the fabric (kills dnsmasq, drops the DNS address, removes the
 // keepalive).
 func (f Fabric) Down(ctx context.Context) {
-	if data, err := os.ReadFile(f.dnsmasqPidFile()); err == nil {
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
-			_ = syscall.Kill(pid, syscall.SIGTERM)
-		}
+	if pid := f.dnsPid(); pid > 0 {
+		_ = syscall.Kill(pid, syscall.SIGTERM)
 	}
-	_ = os.Remove(f.dnsmasqPidFile())
 	if f.keepaliveRunning(ctx) {
 		_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "unshare", "--rootless-netns",
 			"ip", "addr", "del", f.DNSIP(ctx)+"/24", "dev", f.Bridge(ctx))
@@ -228,12 +334,10 @@ func (f Fabric) GC(ctx context.Context, vmRunning func() bool) {
 
 // --- dnsmasq hostsdir registration ---
 
-// reload SIGHUPs dnsmasq to promptly re-read the hostsdir.
-func (f Fabric) reload() {
-	if data, err := os.ReadFile(f.dnsmasqPidFile()); err == nil {
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
-			_ = syscall.Kill(pid, syscall.SIGHUP)
-		}
+// Reload SIGHUPs dnsmasq to promptly re-read the hostsdir.
+func (f Fabric) Reload() {
+	if pid := f.dnsPid(); pid > 0 {
+		_ = syscall.Kill(pid, syscall.SIGHUP)
 	}
 }
 
@@ -245,20 +349,42 @@ func (f Fabric) Register(name, ip string) error {
 	if err := os.WriteFile(filepath.Join(f.hostsDir(), name), []byte(ip+" "+name+"\n"), 0o644); err != nil {
 		return err
 	}
-	f.reload()
+	f.Reload()
 	return nil
 }
 
 // Unregister removes a VM name from the hostsdir.
 func (f Fabric) Unregister(name string) {
 	_ = os.Remove(filepath.Join(f.hostsDir(), name))
-	f.reload()
+	f.Reload()
 }
 
 // --- per-VM tap ---
 
+// tapPrefix names a VM tap: tapPrefix + the address's last octet.
+const tapPrefix = "fdt"
+
 // TapName derives the tap name from the IP's last octet, e.g. 10.89.0.200 -> fdt200.
-func TapName(ip string) string { return "fdt" + lastOctet(ip) }
+func TapName(ip string) string { return tapPrefix + lastOctet(ip) }
+
+// TapOctets returns the last octet of every VM tap currently on the fabric (e.g.
+// "200"). Taps are host-global — they outlive whichever instances dir created
+// them — so this, not any single instance list, is the authoritative record of
+// which VM addresses are taken. Handing out an address that already has a tap
+// would put two VMs on one address and let either one's teardown delete the
+// other's tap.
+func (f Fabric) TapOctets(ctx context.Context) map[string]bool {
+	out := map[string]bool{}
+	for _, line := range strings.Split(
+		run.Output(ctx, f.Runner, "podman", "unshare", "--rootless-netns", "ip", "-br", "link", "show"), "\n") {
+		name, _, _ := strings.Cut(strings.TrimSpace(line), " ")
+		name, _, _ = strings.Cut(name, "@")
+		if oct, ok := strings.CutPrefix(name, tapPrefix); ok && oct != "" {
+			out[oct] = true
+		}
+	}
+	return out
+}
 
 // GuestMAC derives a stable MAC from the IP's last octet.
 func GuestMAC(ip string) string {
@@ -368,11 +494,4 @@ func lastOctet(ip string) string {
 		return ip[i+1:]
 	}
 	return ip
-}
-
-func alive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	return syscall.Kill(pid, 0) == nil
 }

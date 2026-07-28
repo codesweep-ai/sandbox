@@ -32,7 +32,7 @@ type HostRoute struct {
 	Fab     fcnet.Fabric
 	Runner  run.Runner
 	InstDir string
-	NetDir  string // <fc-cache>/net
+	NetDir  string // the fabric working dir (paths.FCNet)
 	UID     int
 	Network string
 	Suffix  string // DNS suffix (default cs.sandbox)
@@ -40,7 +40,6 @@ type HostRoute struct {
 
 func (h HostRoute) markFile() string     { return filepath.Join(h.NetDir, "host-route.on") }
 func (h HostRoute) dnsHostsFile() string { return filepath.Join(h.NetDir, "hosts.d", "_host-route") }
-func (h HostRoute) dnsmasqPid() string   { return filepath.Join(h.NetDir, "dnsmasq.pid") }
 
 // nsPath is where podman pins its rootless netns.
 func (h HostRoute) nsPath() string {
@@ -100,7 +99,7 @@ func (h HostRoute) Down(ctx context.Context) {
 	h.teardownVeth(ctx)
 	h.clearDNS()
 	_ = os.Remove(h.markFile())
-	h.Fab.GC(ctx, h.anyVMRunning)
+	h.Fab.GC(ctx, func() bool { return h.anyVMRunning(ctx) })
 }
 
 // Refresh re-asserts the veth, resolver, and names.
@@ -256,7 +255,13 @@ func (h HostRoute) instanceIP(ctx context.Context, in *state.Instance) string {
 		"--format", fmt.Sprintf("{{(index .NetworkSettings.Networks %q).IPAddress}}", h.Network))
 }
 
-func (h HostRoute) anyVMRunning() bool {
+// anyVMRunning reports whether any microVM still needs the fabric. A tap on the
+// fabric counts: it belongs to a VM this instances dir cannot see, and tearing
+// the fabric down would cut that VM off the network.
+func (h HostRoute) anyVMRunning(ctx context.Context) bool {
+	if len(h.Fab.TapOctets(ctx)) > 0 {
+		return true
+	}
 	insts, _ := state.List(h.InstDir)
 	for _, in := range insts {
 		if in.Engine == state.Firecracker {
@@ -272,15 +277,7 @@ func (h HostRoute) anyVMRunning() bool {
 }
 
 // reloadDNS SIGHUPs the fabric dnsmasq so it re-reads the hostsdir promptly.
-func (h HostRoute) reloadDNS() {
-	data, err := os.ReadFile(h.dnsmasqPid())
-	if err != nil {
-		return
-	}
-	if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
-		_ = syscall.Kill(pid, syscall.SIGHUP)
-	}
-}
+func (h HostRoute) reloadDNS() { h.Fab.Reload() }
 
 // pnet runs a command inside podman's rootless netns.
 func (h HostRoute) pnet(ctx context.Context, argv ...string) (run.Result, error) {

@@ -40,9 +40,10 @@ fi
 CC_DIR="$HOME/.cs-claude"
 mkdir -p "$CC_DIR" 2>/dev/null || true   # ensure the profile dir exists (first run / fresh host)
 
-# Carry host-provided provider auth (API key / cloud target). ~/.cs-claude/env is seeded from the
-# host (an API-key/cloud counterpart of the subscription credential); sourcing it puts
-# ANTHROPIC_API_KEY / CLAUDE_CODE_USE_BEDROCK|VERTEX / AWS_* / Vertex vars into claude's environment.
+# Provider auth (API key / cloud target), scoped to claude rather than the whole sandbox:
+# anything you put in ~/.cs-claude/env (ANTHROPIC_API_KEY, CLAUDE_CODE_USE_BEDROCK|VERTEX, AWS_*,
+# Vertex vars) is sourced here. Nothing creates this file for you — write it inside the sandbox,
+# or use `cs-sandbox create --env` to inject vars sandbox-wide instead.
 [ -f "$CC_DIR/env" ] && { set -a; . "$CC_DIR/env"; set +a; }
 
 # Auto-trust the current directory so launching claude in any repo never stops to ask.

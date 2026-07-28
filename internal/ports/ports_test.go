@@ -5,7 +5,7 @@ import "testing"
 func TestAllocSkipsReserved(t *testing.T) {
 	reserved := map[int]bool{2200: true, 2201: true}
 	free := func(int) bool { return false } // nothing listening
-	got, err := Alloc(2200, 2299, false, reserved, free)
+	got, err := Alloc(2200, 2299, reserved, free)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -16,7 +16,7 @@ func TestAllocSkipsReserved(t *testing.T) {
 
 func TestAllocSkipsBusy(t *testing.T) {
 	busy := func(p int) bool { return p == 2200 } // 2200 in use
-	got, err := Alloc(2200, 2299, false, nil, busy)
+	got, err := Alloc(2200, 2299, nil, busy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,25 +25,23 @@ func TestAllocSkipsBusy(t *testing.T) {
 	}
 }
 
-func TestAllocVMModeSkipsProbe(t *testing.T) {
-	// vmMode must not consult the busy probe (a VM's port is bound later).
-	probed := false
-	busy := func(int) bool { probed = true; return true }
-	got, err := Alloc(2300, 2399, true, nil, busy)
+// TestAllocSkipsBusyVMPort: a VM port answered by a forwarder outside this
+// instances dir is taken, even though nothing local reserves it. Handing it out
+// again would point `ssh <name>` at whichever sandbox already owns the port.
+func TestAllocSkipsBusyVMPort(t *testing.T) {
+	busy := func(p int) bool { return p == 2300 || p == 2301 }
+	got, err := Alloc(2300, 2399, nil, busy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 2300 {
-		t.Errorf("Alloc(vm) = %d, want 2300", got)
-	}
-	if probed {
-		t.Error("vmMode must not call the busy probe")
+	if got != 2302 {
+		t.Errorf("Alloc = %d, want 2302 (2300/2301 answered by foreign forwarders)", got)
 	}
 }
 
 func TestAllocExhausted(t *testing.T) {
 	reserved := map[int]bool{2200: true}
-	if _, err := Alloc(2200, 2200, false, reserved, func(int) bool { return false }); err == nil {
+	if _, err := Alloc(2200, 2200, reserved, func(int) bool { return false }); err == nil {
 		t.Fatal("expected exhaustion error")
 	}
 }

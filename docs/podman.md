@@ -47,6 +47,12 @@ permissions on both OSes (which sshd's strict checks require), with no virtiofs 
 trade-off: no direct host `cd` into the home - use `cs-sandbox exec`, `ssh`, or `podman cp`. It
 persists across stop/start; `cs-sandbox destroy` removes it.
 
+`cs-sandbox exec` runs as the **dev user** in their home, the same identity `ssh <name>` gives you
+(the container's main process runs as uid 0, so the exec passes `--user`/`--workdir` explicitly).
+That keeps the two engines consistent — the microVM reaches its guest over ssh, which lands as that
+user anyway — so a command behaves the same whichever engine it runs on, and files it creates are
+owned by you rather than root.
+
 ## Nested Podman
 
 In a **microVM** you are real root with your own kernel, so `podman` just works natively and the
@@ -122,3 +128,37 @@ Linux/KVM-only, so macOS always uses Podman). Everything behaves as on Linux:
 
 (`host-route` is Linux-only - see
 [design.md](design.md#optional-reach-sandboxes-directly-by-name-host-route).)
+
+## Private registry
+
+Nested Podman can pull from a **private registry** - a local/internal registry rather than a
+public one. The registry to trust is baked into the image's `registries.conf` at build time and
+controlled by two env vars (read by `cs-sandbox` and forwarded to the build as the matching
+`--build-arg`s):
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `CS_SANDBOX_PRIVATE_REGISTRY` | _(none)_ | Registry to trust, as a bare `host:port` (no `http://`/`https://` scheme). Empty registers none. |
+| `CS_SANDBOX_PRIVATE_REGISTRY_INSECURE` | `0` (secure) | `1`/`true`/`yes`/`on` → insecure: permit plain-HTTP and skip TLS verification. Anything else → secure: HTTPS with a verified cert. |
+
+Following standard docker/podman convention, the **protocol is implicit in the security setting**,
+not a scheme on the registry value: a registry is named by its bare `host:port`, a *secure* entry is
+reached over HTTPS with a verified TLS cert, and an *insecure* entry permits plain-HTTP and untrusted
+/ self-signed certs. (This mirrors Podman's `registries.conf` `location` + `insecure`, and Docker's
+`insecure-registries`.) **Secure is the default**; an insecure registry is opt-in.
+
+Both variables are read at **build** time (`cs-sandbox build`); rebuild the image after changing
+them. Examples:
+
+```bash
+# Secure private registry (HTTPS, TLS-verified) - the default
+CS_SANDBOX_PRIVATE_REGISTRY=registry.corp.example:5000 cs-sandbox build
+
+# Insecure private registry (plain-HTTP or self-signed cert)
+CS_SANDBOX_PRIVATE_REGISTRY=registry.internal:5000 \
+CS_SANDBOX_PRIVATE_REGISTRY_INSECURE=1 cs-sandbox build
+```
+
+A secure registry writes only a `location` entry (TLS enforced); an insecure one adds
+`insecure = true`, which lets Podman use plain-HTTP and accept untrusted/self-signed certs for
+that host only. Other registries are unaffected.

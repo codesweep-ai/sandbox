@@ -17,7 +17,7 @@ func (a *App) syncSSHConfig() error {
 	if err != nil {
 		return err
 	}
-	return hostcfg.SyncSSHConfig(a.Host, a.TierDir, insts)
+	return hostcfg.SyncSSHConfig(a.Host, a.TierDir, a.InstDir, insts)
 }
 
 func (a *App) transport(name string) (repo.Transport, *state.Instance, error) {

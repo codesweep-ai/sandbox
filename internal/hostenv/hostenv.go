@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/codesweep-ai/sandbox/internal/paths"
 )
 
 // Host is the host-side environment a sandbox is created from.
@@ -75,8 +77,11 @@ func (h Host) SSHDir() string { return filepath.Join(h.Home, ".ssh") }
 // SSHConfigDir is $HOME/.ssh/config.d.
 func (h Host) SSHConfigDir() string { return filepath.Join(h.SSHDir(), "config.d") }
 
-// SSHConfigFile is the managed include $HOME/.ssh/config.d/cs-sandbox.
-func (h Host) SSHConfigFile() string { return filepath.Join(h.SSHConfigDir(), "cs-sandbox") }
+// SSHConfigFile is the managed include under $HOME/.ssh/config.d describing the
+// instances root at instDir (see paths.SSHConfigFragment).
+func (h Host) SSHConfigFile(instDir string) string {
+	return filepath.Join(h.SSHConfigDir(), paths.SSHConfigFragment(instDir))
+}
 
 // pubFiles returns every non-empty ~/.ssh/*.pub, sorted, for determinism.
 func (h Host) pubFiles() []string {

@@ -155,16 +155,11 @@ mkdir -p "$CC_DIR"; chmod 700 "$CC_DIR" 2>/dev/null || true
 if [ -f "$SEED/claude/.credentials.json" ] && [ ! -f "$CC_DIR/.credentials.json" ]; then
   install -m 600 "$SEED/claude/.credentials.json" "$CC_DIR/.credentials.json"
 fi
-# API-key / cloud-provider auth (first boot only): the seeded env (sourced by the cs-claude
-# wrapper) + any creds/ files (referenced from env by their stable ~/.cs-claude/... path).
-if [ -f "$SEED/claude/env" ] && [ ! -f "$CC_DIR/env" ]; then
-  install -m 600 "$SEED/claude/env" "$CC_DIR/env"
-fi
-if [ -d "$SEED/claude/creds" ] && [ ! -d "$CC_DIR/creds" ]; then
-  cp -a "$SEED/claude/creds" "$CC_DIR/creds"; chmod -R go-rwx "$CC_DIR/creds"
-fi
-# Skip the first-run onboarding wizard for this profile.
-if command -v jq >/dev/null 2>&1; then
+# Skip the first-run onboarding wizard for this profile — but ONLY when the sandbox
+# actually has something to log in with. Marking onboarding complete on a sandbox with
+# no credentials skips the screen that offers the sign-in choices, and claude then presents
+# itself as "API Usage Billing" instead of prompting you to log in.
+if command -v jq >/dev/null 2>&1 && { [ -f "$CC_DIR/.credentials.json" ] || [ -f "$CC_DIR/env" ]; }; then
   if [ -f "$CC_DIR/.claude.json" ]; then
     jq '.hasCompletedOnboarding=true' "$CC_DIR/.claude.json" > "$CC_DIR/.claude.json.tmp" 2>/dev/null \
       && mv "$CC_DIR/.claude.json.tmp" "$CC_DIR/.claude.json" || rm -f "$CC_DIR/.claude.json.tmp"
@@ -189,13 +184,6 @@ CODEX_DIR="$CS_SANDBOX_HOME/.cs-codex"
 mkdir -p "$CODEX_DIR"; chmod 700 "$CODEX_DIR" 2>/dev/null || true
 if [ -f "$SEED/codex/auth.json" ] && [ ! -f "$CODEX_DIR/auth.json" ]; then
   install -m 600 "$SEED/codex/auth.json" "$CODEX_DIR/auth.json"
-fi
-# API-key / custom-provider auth (first boot only): the seeded env + creds/ (as for Claude above).
-if [ -f "$SEED/codex/env" ] && [ ! -f "$CODEX_DIR/env" ]; then
-  install -m 600 "$SEED/codex/env" "$CODEX_DIR/env"
-fi
-if [ -d "$SEED/codex/creds" ] && [ ! -d "$CODEX_DIR/creds" ]; then
-  cp -a "$SEED/codex/creds" "$CODEX_DIR/creds"; chmod -R go-rwx "$CODEX_DIR/creds"
 fi
 # YOLO marker for cs-codex (--yolo): the wrapper then runs codex with
 # --dangerously-bypass-approvals-and-sandbox. Mirrors the Claude marker above.

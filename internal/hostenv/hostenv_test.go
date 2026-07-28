@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/codesweep-ai/sandbox/internal/paths"
 )
 
 func writeKey(t *testing.T, dir, name, content string) {
@@ -97,7 +99,7 @@ func TestPubKeysEmpty(t *testing.T) {
 
 func TestSSHPaths(t *testing.T) {
 	h := Host{Home: "/home/u"}
-	if h.SSHConfigFile() != "/home/u/.ssh/config.d/cs-sandbox" {
-		t.Errorf("SSHConfigFile = %s", h.SSHConfigFile())
+	if h.SSHConfigFile(paths.Instances()) != "/home/u/.ssh/config.d/cs-sandbox" {
+		t.Errorf("SSHConfigFile = %s", h.SSHConfigFile(paths.Instances()))
 	}
 }

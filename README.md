@@ -11,8 +11,9 @@
 `cs-sandbox` is a single Go binary that creates and manages these sandboxes. Each one is a rootless
 Linux environment built from a single image, with a modern toolchain and the **Claude Code** &
 **Codex** agents preinstalled. Spin up many named sandboxes, reach each by name over SSH, and share
-**only** the repos or directories you choose. Nothing on your host is shared unless you ask. The loop
-is **create → work → fetch → destroy**.
+**only** the repos or directories you choose. Nothing on your host is shared unless you ask — not
+your files, not your SSH keys, not even your agent login. The loop is
+**create → work → fetch → destroy**.
 
 <p align="center">
   <img alt="cs-sandbox: create → work → fetch → destroy" src="docs/demo.gif" width="760">
@@ -36,9 +37,9 @@ One-time host setup (get the binary, Podman, `build`, `install-agent-tools`, sig
 **[INSTALL.md](INSTALL.md)** — then the whole loop is:
 
 ```bash
-cs-sandbox create feature --repo ~/projects/api   # spin up a sandbox with your repo, on its own branch
+cs-sandbox create feature --repo ~/projects/api --inherit-agent-login claude
 ssh feature                                        # shell in by name
-[feature]$ cd ~/api && cs-claude                   # run the agent — already signed in; then exit
+[feature]$ cd ~/api && cs-claude                   # run the agent — signed in; then exit
 cs-sandbox fetch feature                           # pull the agent's commits back to the host
 cs-sandbox destroy feature -f                      # throw the whole sandbox away
 ```
@@ -87,9 +88,10 @@ the Firecracker/KVM packages), run `cs-sandbox build` (sets up the image and, on
 Firecracker artifacts), run `cs-sandbox install-agent-tools` (puts the agent tools on your PATH),
 and **sign in once to the Claude Code and Codex coding agents** (on the host). It's a handful of
 commands - see **[INSTALL.md](INSTALL.md)** (and `cs-sandbox doctor` checks every prerequisite for
-you). That one host sign-in is inherited by every sandbox, so in the walkthroughs `cs-claude` and
-`cs-codex` just work, with no login step inside the sandbox. (To create a sandbox that does *not* inherit
-it, pass `create --no-agent-auth` — see [auth carry](docs/design.md#bundled-agent-tooling-and-auth).)
+you). A sandbox inherits that host sign-in only when you ask it to, with
+`create --inherit-agent-login claude` (or `codex`, or both) — so a sandbox never holds your
+credentials by accident. Without it the sandbox starts login-free and you sign in inside it, or with
+`cs-sandbox agent-login claude <name>`. See [agent login](docs/agent-login.md).
 
 ## Walkthroughs
 
@@ -102,11 +104,12 @@ Two repos go into one agent sandbox; the agent edits one, and you fetch its comm
 
 ```bash
 # Each repo lands at ~/<basename> on its own branch  cs-sandbox/<sandbox-name>.
-cs-sandbox create feature --repo ~/projects/api --repo ~/projects/web
+# --inherit-agent-login carries your host Claude sign-in into the sandbox.
+cs-sandbox create feature --repo ~/projects/api --repo ~/projects/web --inherit-agent-login claude
 
 # shell in, by name
 ssh feature
-# Launch Claude - already signed in (it inherits your host login).
+# Launch Claude - signed in, because we inherited the host login above.
 [feature]$ cd ~/api && cs-claude
 # then type a prompt like "add a /version endpoint and commit when done"
 # ...let it work, then exit Claude
@@ -127,7 +130,7 @@ with plain git — no host round-trip.
 
 ```bash
 # An agent sandbox does the work (its branch: cs-sandbox/worker).
-cs-sandbox create worker --repo ~/projects/api
+cs-sandbox create worker --repo ~/projects/api --inherit-agent-login claude
 ssh worker
 [worker]$ cd ~/api && cs-claude    # "add a /health endpoint and commit when done", then exit
 [worker]$ exit
@@ -144,14 +147,22 @@ ssh dev
 cs-sandbox destroy worker -f && cs-sandbox destroy dev -f
 ```
 
-### 3. An isolated experiment (`--yolo --solo`) → a live HTTP API
+### 3. Run a throwaway experiment on its own login (`--yolo --solo`)
 
-A throwaway `--yolo --solo` playground where the agent builds and runs a small HTTP API you hit from inside the sandbox.
+A throwaway `--yolo --solo` playground where the agent builds and runs a small HTTP API you hit from
+inside the sandbox. This one **doesn't** inherit your host login — the other walkthroughs pass
+`--inherit-agent-login`, so here is the other path: a sandbox that signs in on its own.
 
 ```bash
 #   --yolo  agent works with no approval prompts (the sandbox is the boundary)
 #   --solo  agent can't SSH out to your other sandboxes (it stays reachable)
+#   no --inherit-agent-login, so this sandbox starts login-free
 cs-sandbox create lab --yolo --solo
+
+# Sign it in: launches the agent inside the sandbox so you can complete its login.
+# (Use this on macOS too, where the host credentials live in the Keychain and can't be copied.)
+cs-sandbox agent-login claude lab
+# ...follow Claude's prompts, then exit. The login stays in this sandbox only.
 
 ssh lab
 [lab]$ cs-claude
@@ -205,16 +216,16 @@ cs-sandbox host-route down               # remove it when done
 cs-sandbox destroy web -f                # done with the walkthrough-4 sandbox
 ```
 
-### 7. One AI coding agent driving another, in a second sandbox
+### 7. Let one coding agent drive another
 
 One agent in a sandbox drives a second agent in another sandbox, over the built-in remote-delegation tooling.
 
 ```bash
 # Two agent sandboxes. Agents can SSH to each other
 # (but never into your user sandboxes).
-cs-sandbox create driver
+cs-sandbox create driver --inherit-agent-login claude,codex
 # worker holds the repo to work on
-cs-sandbox create worker --repo ~/projects/api
+cs-sandbox create worker --repo ~/projects/api --inherit-agent-login codex
 
 ssh driver
 [driver]$ cs-claude
@@ -227,7 +238,8 @@ ssh driver
 #   cs-codex-remote-output add-health   # see what codex did on worker
 ```
 
-> Both agents share your single host sign-in, so Codex on `worker` is already authenticated.
+> Each sandbox above inherited the host sign-in it needs (`--inherit-agent-login`), so Codex on
+> `worker` is already authenticated.
 > `cs-claude-remote` is the mirror of `cs-codex-remote`; either agent can drive either, on any host.
 
 ## Choosing an engine: Podman vs Firecracker
@@ -296,6 +308,10 @@ given use *safe* is a per-situation judgment, not the type name. Keep both condi
   autonomous work.
 - **Nothing shared by default.** Host data enters a sandbox only through `--repo` (a git checkout)
   or `--snapshot` (a frozen read-only copy). Results come back out with `cs-sandbox fetch`.
+- **Your agent login is not shared either**, unless you name it: `create --inherit-agent-login
+  claude` copies that sign-in in, and `create` prints what the sandbox ended up with. Without it the
+  sandbox is login-free — sign in inside it, on its own account if you prefer. Provider API keys are
+  never copied at all; pass one with `--env` when a sandbox needs it.
 - **No host SSH keys in any sandbox.** Neither type receives a copy of your host keys; sandboxes
   reach each other with generated per-tier keys. If a sandbox ever needs your own keys, you can lend
   a specific set for a session ([`ssh -A`](#lending-a-sandbox-specific-ssh-keys-with-ssh--a)) — they
@@ -314,10 +330,12 @@ given use *safe* is a per-situation judgment, not the type name. Keep both condi
 - [`INSTALL.md`](INSTALL.md): one-time host setup. Podman, the Firecracker/KVM prerequisites,
   building the image, installing the agent tools, and agent sign-in.
 - [`docs/design.md`](docs/design.md): the cross-engine model (types & trust, networking, the generic
-  image, the seed, shared image stores, agent tooling & auth, security).
-- [`docs/podman.md`](docs/podman.md): the Podman container engine (boot, nested Podman, storage, macOS).
+  image, the seed, shared image stores, agent tooling & login, security).
+- [`docs/podman.md`](docs/podman.md): the Podman container engine (boot, nested Podman, storage,
+  macOS, private registry).
 - [`docs/firecracker.md`](docs/firecracker.md): the Firecracker microVM engine.
 - [`docs/repo-sharing.md`](docs/repo-sharing.md): the `--repo` checkout / fetch / push model.
+- [`docs/agent-login.md`](docs/agent-login.md): how a sandbox gets a signed-in agent, and what is never copied.
 
 `cs-sandbox help` is the full command reference.
 

@@ -12,6 +12,8 @@
 package paths
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,6 +29,28 @@ func Instances() string {
 	if h := os.Getenv("CS_SANDBOX_HOME"); h != "" {
 		return filepath.Join(h, "instances")
 	}
+	return defaultInstances()
+}
+
+// SSHConfigFragment is the basename of the managed ~/.ssh/config.d file that
+// describes the instances root at instDir. Roots share one ~/.ssh, so each gets
+// its own fragment — otherwise a sync in one would erase another's Host blocks —
+// and the Include in ~/.ssh/config is a glob that picks up all of them. The
+// default root keeps the plain name, so the common case has a predictable file.
+func SSHConfigFragment(instDir string) string {
+	inst := instDir
+	if abs, err := filepath.Abs(inst); err == nil {
+		inst = abs
+	}
+	if inst == defaultInstances() {
+		return app
+	}
+	sum := sha256.Sum256([]byte(inst))
+	return app + "-" + hex.EncodeToString(sum[:])[:8]
+}
+
+// defaultInstances is Instances() with the env overrides ignored.
+func defaultInstances() string {
 	return filepath.Join(dataHome(), app, "instances")
 }
 
@@ -50,6 +74,22 @@ func FCCache() string {
 		return filepath.Join(h, "cache")
 	}
 	return filepath.Join(cacheHome(), app)
+}
+
+// FCNet is the fabric's working dir: the dnsmasq hostsdir + log and the
+// host-route marker.
+//
+// Unlike the rest of the cache this is deliberately HOST-GLOBAL. There is
+// exactly one rootless fabric per host, shared by every sandbox root, so its
+// bookkeeping must not follow a per-root CS_SANDBOX_HOME / CS_SANDBOX_FC_CACHE:
+// a second root that kept its own copy would see an empty hostsdir, conclude the
+// fabric's DNS was down, and try to start a second dnsmasq on an address the
+// first one already holds. CS_SANDBOX_FC_NET overrides it for isolated runs.
+func FCNet() string {
+	if d := os.Getenv("CS_SANDBOX_FC_NET"); d != "" {
+		return d
+	}
+	return filepath.Join(cacheHome(), app, "net")
 }
 
 // AssetDir is where the build assets (Containerfile + image/ tree) live on disk:

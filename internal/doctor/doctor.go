@@ -197,7 +197,7 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 	if len(agentMiss) == 0 {
 		ag.add(OK, "agent CLIs present (claude, codex)")
 	} else {
-		ag.add(HM, "agent CLI(s) not found: "+strings.Join(agentMiss, " ")+" — or sign in inside an instance: cs-sandbox claude-login <name>")
+		ag.add(HM, "agent CLI(s) not found: "+strings.Join(agentMiss, " ")+" — or sign in inside an instance: cs-sandbox agent-login claude <name>")
 	}
 	r.addGroup(ag)
 	return r

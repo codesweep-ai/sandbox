@@ -67,7 +67,7 @@ func newInstallAgentToolsCmd(app *App) *cobra.Command {
 			}
 			if len(miss) > 0 {
 				fmt.Fprintf(out, "note: %s not on PATH — cs-claude/cs-codex need the agent CLI(s) on the host,\n", strings.Join(miss, " "))
-				fmt.Fprintln(out, "  or sign in inside an instance: cs-sandbox claude-login <name> / codex-login <name>")
+				fmt.Fprintln(out, "  or sign in inside an instance: cs-sandbox agent-login claude <name>")
 			} else {
 				fmt.Fprintln(out, "next: sign in once on the host — 'cs-claude' (/login) and 'cs-codex login' — so new instances inherit your auth")
 			}

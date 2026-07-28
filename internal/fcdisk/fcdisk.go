@@ -45,9 +45,6 @@ func (c Cache) Initrd() string { return filepath.Join(c.Dir, "initrd.img") }
 // BaseRootfs is the cached base rootfs ext4 path.
 func (c Cache) BaseRootfs() string { return filepath.Join(c.Dir, "base-rootfs.ext4") }
 
-// NetDir is the fabric working dir (dnsmasq pid/hostsdir, forwarder records).
-func (c Cache) NetDir() string { return filepath.Join(c.Dir, "net") }
-
 // ReflinkRootfs makes the per-instance writable rootfs as a CoW copy of the base
 // (cp --reflink=auto -f base-rootfs.ext4 <idir>/rootfs.ext4).
 func (c Cache) ReflinkRootfs(ctx context.Context, r run.Runner, dst string) error {

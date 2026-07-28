@@ -2,6 +2,10 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/codesweep-ai/sandbox/internal/run"
@@ -63,10 +67,12 @@ func TestPodmanStartNetworkFailurePropagates(t *testing.T) {
 // TestFirecrackerAllocIP: the VM address pool starts at .200 and skips addresses
 // already recorded in instance state.
 func TestFirecrackerAllocIP(t *testing.T) {
+	ctx := context.Background()
 	dir := t.TempDir()
-	fe := NewFirecracker(Deps{InstDir: dir})
+	fe := NewFirecracker(Deps{InstDir: dir, Runner: run.NewFake()})
+	fab := fe.fabric()
 
-	ip, err := fe.allocIP("10.89.0.1")
+	ip, err := fe.allocIP(ctx, fab, "10.89.0.1")
 	if err != nil || ip != "10.89.0.200" {
 		t.Fatalf("allocIP(empty) = %q, %v; want 10.89.0.200", ip, err)
 	}
@@ -74,8 +80,93 @@ func TestFirecrackerAllocIP(t *testing.T) {
 	if err := state.Save(dir, &state.Instance{Name: "vm1", Type: "agent", Engine: state.Firecracker, FCIP: "10.89.0.200"}); err != nil {
 		t.Fatal(err)
 	}
-	ip, err = fe.allocIP("10.89.0.1")
+	ip, err = fe.allocIP(ctx, fab, "10.89.0.1")
 	if err != nil || ip != "10.89.0.201" {
 		t.Fatalf("allocIP(.200 used) = %q, %v; want 10.89.0.201", ip, err)
+	}
+}
+
+// TestFirecrackerAllocIPSkipsForeignTaps: an address whose tap is already on the
+// fabric is taken, even though no instance in THIS root records it — another
+// root's VM owns it. Handing it out again would put two VMs on one address and
+// let either one's teardown delete the other's tap.
+func TestFirecrackerAllocIPSkipsForeignTaps(t *testing.T) {
+	ctx := context.Background()
+	f := run.NewFake()
+	f.OnStdout("ip -br link show", "lo UNKNOWN 00:00\npodman1 UP aa:bb\nfdt200 UP 56:ac\nfdt201 UP 56:ad\n")
+	fe := NewFirecracker(Deps{InstDir: t.TempDir(), Runner: f})
+
+	ip, err := fe.allocIP(ctx, fe.fabric(), "10.89.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ip != "10.89.0.202" {
+		t.Errorf("allocIP = %q, want 10.89.0.202 (.200/.201 hold foreign taps)", ip)
+	}
+}
+
+// TestAnyVMRunningSeesForeignTaps: fabric GC must not tear the network down while
+// a VM from another root is still attached to it.
+func TestAnyVMRunningSeesForeignTaps(t *testing.T) {
+	f := run.NewFake()
+	f.OnStdout("ip -br link show", "podman1 UP aa:bb\nfdt200 UP 56:ac\n")
+	fe := NewFirecracker(Deps{InstDir: t.TempDir(), Runner: f})
+	if !fe.anyVMRunning(context.Background()) {
+		t.Error("a tap on the fabric means a VM still needs it")
+	}
+
+	f2 := run.NewFake()
+	f2.OnStdout("ip -br link show", "podman1 UP aa:bb\n")
+	fe2 := NewFirecracker(Deps{InstDir: t.TempDir(), Runner: f2})
+	if fe2.anyVMRunning(context.Background()) {
+		t.Error("no taps and no local instances means the fabric is idle")
+	}
+}
+
+// TestStatuses: `ls` reports running/stopped per engine, and says "unknown"
+// rather than guessing when podman can't be reached.
+func TestStatuses(t *testing.T) {
+	dir := t.TempDir()
+	insts := []*state.Instance{
+		{Name: "up", Engine: state.Podman},
+		{Name: "down", Engine: state.Podman},
+		{Name: "gone", Engine: state.Podman}, // not in podman ps at all
+		{Name: "vmup", Engine: state.Firecracker},
+		{Name: "vmdown", Engine: state.Firecracker},
+	}
+	// A microVM is "running" when its pid file names a live process.
+	if err := os.MkdirAll(filepath.Join(dir, "vmup"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "vmup", "fc.pid"),
+		[]byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := run.NewFake()
+	f.On("podman ps", run.Result{Stdout: "up running\ndown exited\n"}, nil)
+	d := Deps{Runner: f, InstDir: dir}
+
+	got := d.Statuses(context.Background(), insts)
+	want := map[string]string{
+		"up": StatusRunning, "down": StatusStopped, "gone": StatusStopped,
+		"vmup": StatusRunning, "vmdown": StatusStopped,
+	}
+	for name, w := range want {
+		if got[name] != w {
+			t.Errorf("status[%s] = %q, want %q", name, got[name], w)
+		}
+	}
+
+	// podman unreachable: report unknown rather than claiming everything is stopped.
+	f2 := run.NewFake()
+	f2.On("podman ps", run.Result{}, errors.New("podman unavailable"))
+	d2 := Deps{Runner: f2, InstDir: dir}
+	if got := d2.Statuses(context.Background(), insts); got["up"] != StatusUnknown {
+		t.Errorf("status with podman down = %q, want %q", got["up"], StatusUnknown)
+	}
+	// A microVM's state needs no podman, so it is still accurate.
+	if got := d2.Statuses(context.Background(), insts); got["vmup"] != StatusRunning {
+		t.Errorf("microVM status should not depend on podman: %q", got["vmup"])
 	}
 }
