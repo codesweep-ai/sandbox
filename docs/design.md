@@ -217,7 +217,11 @@ The fragment is per instances root — `cs-sandbox` for the default one, a disti
 `cs-sandbox sync-ssh-config` regenerates the host config (both engines). Discover sandboxes with
 `cs-sandbox ls`, `cs-sandbox port <name>`. `ls` also reports each sandbox's lifecycle state in a
 `STATUS` column — `running` or `stopped`, the same words `start`/`stop` use — read from `podman ps`
-for a container and from the microVM's pid file for a VM, plus an `AGE` column. The SSH port is not
+for a container and from the microVM's pid file for a VM, plus an `AGE` column. A third value,
+**`removed`**, covers data `rm` kept after its sandbox was gone (`internal/engine/orphan.go`): the
+home volume or `rootfs.ext4` with no state record beside it. Listing it keeps that data visible
+(rather than dangling silently, as removed containers' volumes do), and `destroy <name> -f` works on
+such a name — otherwise nothing could delete what `rm` deliberately kept. The SSH port is not
 a column — you reach a sandbox by name — so `cs-sandbox port <name>` prints it for the tools that
 need one. `ls -q` prints bare names for piping into other commands.
 

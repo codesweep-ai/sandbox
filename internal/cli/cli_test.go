@@ -174,3 +174,85 @@ func TestLsQuietIsPipeable(t *testing.T) {
 		}
 	}
 }
+
+// TestLsShowsRemovedSandboxData: data `rm` kept shows up as `removed`, with the
+// hint that says how to reuse or delete it — the alternative is data sitting on
+// disk that nothing lists (docker's dangling volumes).
+func TestLsShowsRemovedSandboxData(t *testing.T) {
+	dir := t.TempDir()
+	if err := state.Save(dir, &state.Instance{
+		Name: "alive", Type: "agent", Engine: state.Podman, Port: 2200, Created: "2026-07-27T10:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A microVM home disk with no state record: what `rm` leaves behind.
+	if err := os.MkdirAll(filepath.Join(dir, "leftover"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "leftover", "rootfs.ext4"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	app := &App{InstDir: dir, TierDir: t.TempDir(), Runner: run.NewFake()}
+	if err := runLs(context.Background(), app, &buf, false); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{"alive", "leftover", "removed", "destroy -f"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ls missing %q:\n%s", want, out)
+		}
+	}
+
+	// -q lists it too, so `ls -q | xargs -n1 cs-sandbox destroy -f` cleans it up.
+	buf.Reset()
+	if err := runLs(context.Background(), app, &buf, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); got != "alive\nleftover\n" {
+		t.Errorf("ls -q = %q, want the live sandbox and the leftover", got)
+	}
+}
+
+// TestDestroyReclaimsRemovedSandboxData: `rm` keeps the data and drops the state
+// record, so `destroy` has to work on the name afterwards — otherwise the data
+// it kept can never be deleted.
+func TestDestroyReclaimsRemovedSandboxData(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CS_SANDBOX_INSTANCES_DIR", dir) // the root command resolves state dirs from the env
+	idir := filepath.Join(dir, "leftover")
+	if err := os.MkdirAll(idir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(idir, "rootfs.ext4"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{InstDir: dir, TierDir: t.TempDir()}
+
+	// Without -f it only says what it would do; the data stays.
+	if _, err := runRoot(t, app, "destroy", "leftover"); err != nil {
+		t.Fatalf("destroy without -f: %v", err)
+	}
+	if _, err := os.Stat(idir); err != nil {
+		t.Fatal("destroy without -f must not delete anything")
+	}
+
+	if _, err := runRoot(t, app, "destroy", "leftover", "-f"); err != nil {
+		t.Fatalf("destroy -f: %v", err)
+	}
+	if _, err := os.Stat(idir); !os.IsNotExist(err) {
+		t.Error("destroy -f should have deleted the kept data")
+	}
+}
+
+// TestDestroyUnknownNameSaysThereIsNoData: nothing to destroy is reported as
+// such, rather than as a bare "no such sandbox" that hides whether data remains.
+func TestDestroyUnknownNameSaysThereIsNoData(t *testing.T) {
+	t.Setenv("CS_SANDBOX_INSTANCES_DIR", t.TempDir())
+	app := &App{TierDir: t.TempDir()}
+	_, err := runRoot(t, app, "destroy", "never-existed", "-f")
+	if err == nil || !strings.Contains(err.Error(), "no data") {
+		t.Fatalf("err = %v, want it to say there is no leftover data either", err)
+	}
+}

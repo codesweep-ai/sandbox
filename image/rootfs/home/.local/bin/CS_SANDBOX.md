@@ -26,7 +26,7 @@ cs-sandbox create web --engine podman --snapshot ~/data # frozen read-only copy 
 
 ssh feature                     # shell in by name (preferred for interactive work)
 cs-sandbox exec feature ls      # run one command instead
-cs-sandbox ls                   # what exists: STATUS (running/stopped), AGE, type, engine
+cs-sandbox ls                   # what exists: STATUS (running/stopped/removed), AGE, type, engine
 cs-sandbox ls -q                # names only, one per line — pipe it into other commands
 cs-sandbox port feature         # its host SSH port, if a tool needs it (ssh <name> does not)
 
@@ -38,6 +38,9 @@ cs-sandbox start feature        # bring it back
 cs-sandbox rm feature           # remove the sandbox, KEEP its data (recreate to reuse)
 cs-sandbox destroy feature -f   # delete the sandbox AND its data (-f skips the prompt)
 ```
+
+Data kept by `rm` stays listed by `ls` with STATUS `removed`, so it can't sit on disk unnoticed:
+`create` with the same name reuses it, `destroy <name> -f` deletes it.
 
 Names must be a single DNS-style label: letters, digits and dashes, starting and ending
 alphanumeric, 63 characters max. Dots are rejected (a dotted name would not resolve as a peer).
@@ -115,11 +118,12 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
 | "make me a workspace I can drive" / "a user sandbox" | `cs-sandbox create <name> --type user --repo <path>` |
 | "throwaway / no prompts / let it rip" | `cs-sandbox create <name> --yolo` (add `--solo` to also deny outbound ssh) |
 | "stronger isolation" / "untrusted work" | `--engine firecracker` (Linux + `/dev/kvm` only) |
-| "what sandboxes do I have?" / "is it still running?" | `cs-sandbox ls` — the STATUS column says `running` or `stopped` |
+| "what sandboxes do I have?" / "is it still running?" | `cs-sandbox ls` — the STATUS column says `running`, `stopped`, or `removed` (data an `rm` kept) |
 | "get its changes" / "pull the work back" | `cs-sandbox fetch <name>`, then report the branch |
 | "send my commits in" | `cs-sandbox push <name>` |
 | "I need to hit its port 8080" | `cs-sandbox forward <name> 8080` (or `HOSTPORT:VMPORT`) |
 | "clean it up" / "I'm done with it" | Ask whether data should be kept: `rm` keeps it, `destroy -f` deletes it |
+| "free up the disk" / "what's still taking space?" | `cs-sandbox ls` — anything with STATUS `removed` is data only; `destroy <name> -f` reclaims it |
 | "get rid of all of them" | Confirm first, then `cs-sandbox ls -q \| xargs -n1 cs-sandbox destroy -f` |
 | "pause it" / "free the resources" | `cs-sandbox stop <name>` (then `start` later) |
 | "why doesn't this work?" / "check my setup" | `cs-sandbox doctor` (add `--engine podman` to check that engine) |

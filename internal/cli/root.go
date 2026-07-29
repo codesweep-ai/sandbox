@@ -208,11 +208,19 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 	if err != nil {
 		return err
 	}
+	// Data `rm` kept, whose sandbox is gone: listed too, so it can't sit on disk
+	// unnoticed (docker's dangling volumes are the counter-example), and so
+	// `destroy` has something to complete.
+	orphans := app.engineDeps().Orphans(ctx)
 	// Names only: pipeable, so `cs-sandbox ls -q | xargs -n1 cs-sandbox destroy -f`
-	// works. Skips the status lookup, which needs a subprocess nothing here reads.
+	// works — which is also why leftovers belong here, or that idiom would leave
+	// them behind. Skips the status lookup, which needs a subprocess nothing here reads.
 	if quiet {
 		for _, in := range insts {
 			fmt.Fprintln(out, in.Name)
+		}
+		for _, o := range orphans {
+			fmt.Fprintln(out, o.Name)
 		}
 		return nil
 	}
@@ -229,7 +237,20 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 			in.Name, status[in.Name], age(in.Created, time.Now()), in.Type, in.Engine,
 			yn(in.Yolo), yn(in.Solo))
 	}
-	return tw.Flush()
+	// Leftovers last, under the sandboxes that still exist. Only the columns the
+	// data itself answers for are filled in; the rest went with the state record.
+	for _, o := range orphans {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			o.Name, engine.StatusRemoved, age(o.SinceRFC3339(), time.Now()), "-", o.Engine, "-", "-")
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if len(orphans) > 0 {
+		fmt.Fprintf(out, "\n%s = removed by `rm`, data kept: `create` with the same name reuses it, `destroy -f` deletes it.\n",
+			engine.StatusRemoved)
+	}
+	return nil
 }
 
 // age renders how long ago created (RFC3339) was, in kubectl's compact style:

@@ -120,9 +120,11 @@ git push worker:api HEAD:cs-sandbox/worker
 - **rm keeps the data** (the home volume on Podman, `rootfs.ext4` on Firecracker) and removes only
   the instance itself. Recreating with the **same name** reuses that home, so the checkout and its
   commits come back; pass the **same `--repo`** so the read-only source re-attaches (the clone borrows
-  its objects). The commits live in the home, so they survive the `rm`.
+  its objects). The commits live in the home, so they survive the `rm`. `ls` keeps listing that data
+  with status **`removed`** until you reuse or delete it.
 - **destroy** drops the home (volume / `rootfs.ext4`), so the sandbox's commits are gone - **`fetch`
-  before `destroy`** if it has unmerged work.
+  before `destroy`** if it has unmerged work. It also works on a name whose sandbox `rm` already
+  removed, which is how you reclaim data you decided not to keep after all.
 - **Don't `git gc --prune` the source** while a Podman sandbox has it borrowed (the source is
   bind-mounted read-only into the live container). A Firecracker sandbox is immune - its disk is a
   point-in-time copy.

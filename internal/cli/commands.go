@@ -69,7 +69,9 @@ func newDestroyCmd(app *App) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, _, err := app.engineFor(args[0])
 			if err != nil {
-				return err
+				// No state record — but `rm` may have kept this name's data,
+				// and destroy is what deletes data.
+				return destroyOrphan(cmd, app, args[0], force)
 			}
 			if !force {
 				fmt.Fprintf(cmd.OutOrStdout(), "destroying %q and all its data. Re-run with -f to confirm.\n", args[0])
@@ -89,6 +91,27 @@ func newDestroyCmd(app *App) *cobra.Command {
 	}
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "do not prompt")
 	return cmd
+}
+
+// destroyOrphan handles `destroy <name>` for a name with no sandbox: `rm` keeps
+// the data and drops the state record, so this is the only way to reclaim it.
+// Reports plainly when there is nothing left to delete, rather than pretending
+// the name is unknown.
+func destroyOrphan(cmd *cobra.Command, app *App, name string, force bool) error {
+	o, ok := app.engineDeps().Orphan(cmd.Context(), name)
+	if !ok {
+		return fmt.Errorf("no such sandbox %q, and no data left over from one", name)
+	}
+	if !force {
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"destroying the data kept when %q was removed. Re-run with -f to confirm.\n", name)
+		return nil
+	}
+	if err := app.engineDeps().PurgeOrphan(cmd.Context(), o); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "destroyed %s (the data kept when it was removed)\n", name)
+	return nil
 }
 
 // newRmCmd removes a sandbox but keeps its data (home volume / rootfs disk), so
@@ -112,8 +135,11 @@ func newRmCmd(app *App) *cobra.Command {
 			if err := app.syncSSHConfig(); err != nil {
 				return err
 			}
+			// Say how to get rid of the data too: `rm` drops the state record, so
+			// without this the kept data is easy to forget and hard to find again.
 			fmt.Fprintf(cmd.OutOrStdout(),
-				"removed %s — kept its data; recreate with the same name (and the same --repo/--snapshot) to reuse it\n", args[0])
+				"removed %s — kept its data; recreate with the same name (and the same --repo/--snapshot) to reuse it, or 'cs-sandbox destroy %s -f' to delete it\n",
+				args[0], args[0])
 			return nil
 		},
 	}
