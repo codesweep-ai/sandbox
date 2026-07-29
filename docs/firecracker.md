@@ -3,7 +3,7 @@
 `cs-sandbox --engine firecracker` - the **default** engine on a Linux/KVM host - runs each sandbox
 as a Firecracker **microVM** instead of a Podman container, reusing the same OCI image, the same
 `cs-sandbox` CLI, and the same SSH + repo capabilities. This document covers what is specific to the
-microVM engine; the cross-engine model (trust, the generic image, agent tooling) lives in
+microVM engine; the cross-engine model (trust, the generic image, agent tools) lives in
 [`design.md`](design.md).
 
 ## Why a microVM

@@ -4,7 +4,7 @@
 sandbox as a rootless **Podman container** instead of a Firecracker microVM, reusing the same OCI
 image, the same `cs-sandbox` CLI, and the same SSH + repo capabilities. This document covers what is
 specific to the container engine; the cross-engine model (trust, the generic image, networking,
-shared image stores, agent tooling) lives in [`design.md`](design.md).
+shared image stores, agent tools) lives in [`design.md`](design.md).
 
 ## Why a container
 

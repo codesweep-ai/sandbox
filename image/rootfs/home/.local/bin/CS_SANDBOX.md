@@ -5,6 +5,10 @@
 Nothing on the host is shared unless you ask: code goes in through `--repo` / `--snapshot`, and
 commits come back out with `fetch`. The loop is **create → work → fetch → destroy**.
 
+Every sandbox already carries a broad dev toolchain, the Claude Code and Codex agents with their
+`cs-claude` / `cs-codex` launch wrappers (ready-to-use, sandbox-local agent config), and the
+`cs-claude-remote` / `cs-codex-remote` tools for running an agent session on another sandbox.
+
 > **This is a host tool.** `cs-sandbox` is not installed *inside* sandboxes. If it is not on PATH,
 > you are probably already inside one — reach peers with plain `ssh <name>` and move commits with
 > plain `git` (see "From inside a sandbox" below) rather than looking for this CLI.
@@ -15,6 +19,7 @@ commits come back out with `fetch`. The loop is **create → work → fetch → 
 # Create: name + optional shares. Default type is agent; engine defaults to
 # firecracker on Linux/KVM, else podman.
 cs-sandbox create feature --repo ~/projects/api        # repo lands at ~/api on branch cs-sandbox/feature
+cs-sandbox create feature --repo ~/projects/api --inherit-agent-login claude   # ...agent logged in
 cs-sandbox create dev --type user --repo ~/projects/api
 cs-sandbox create lab --yolo --solo                    # throwaway playground, no outbound ssh
 cs-sandbox create web --engine podman --snapshot ~/data # frozen read-only copy at ~/data
@@ -62,14 +67,19 @@ SSH keys are copied into either type.
 
 ## Reaching a port
 
+A port bound inside a sandbox is private to it. Map one onto a host port with `forward`, or make them
+all reachable by name with `host-route`:
+
 ```bash
-cs-sandbox forward web 9000:8080   # host :9000 -> sandbox :8080 (no sudo, both engines, macOS ok)
+cs-sandbox forward web 9000:8080   # map host :9000 onto the port :8080 bound inside web
 cs-sandbox forward web --socks=1080 # SOCKS proxy into the sandbox (note the '=')
 cs-sandbox forwards web             # list active forwards
 cs-sandbox unforward web all        # tear them down
 
-cs-sandbox host-route up            # optional, Linux-only, one-time sudo: reach ANY sandbox port
-curl http://web.cs.sandbox:8080     #   by name, no per-port forward
+# host-route makes EVERY port a sandbox binds reachable from the host at <name>.cs.sandbox.
+# Optional, Linux-only; setting the route up asks for sudo once, nothing after that.
+cs-sandbox host-route up
+curl http://web.cs.sandbox:8080
 cs-sandbox host-route down
 ```
 
@@ -100,7 +110,8 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
 
 | User says | What to do |
 |---|---|
-| "spin up a sandbox for this repo" / "give the agent a sandbox with X" | `cs-sandbox create <name> --repo <path>`; report the name and that `ssh <name>` works |
+| "spin up a sandbox for this repo" / "give the agent a sandbox with X" | `cs-sandbox create <name> --repo <path> --inherit-agent-login claude` (drop the flag if they want it without a login); report the name and that `ssh <name>` works |
+| "it should already be logged in" / "don't make me log in again" | add `--inherit-agent-login claude` (or `codex`, or both) at create |
 | "make me a workspace I can drive" / "a user sandbox" | `cs-sandbox create <name> --type user --repo <path>` |
 | "throwaway / no prompts / let it rip" | `cs-sandbox create <name> --yolo` (add `--solo` to also deny outbound ssh) |
 | "stronger isolation" / "untrusted work" | `--engine firecracker` (Linux + `/dev/kvm` only) |
@@ -131,11 +142,12 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
   automatically. `--cpus` (default 4) and `--mem` MiB (default 4096) apply to Firecracker only.
 - On macOS everything runs in one podman-machine VM, and `--repo` / `--snapshot` sources must live
   under `$HOME` — `create` rejects paths outside it.
-- Agent sign-in is **not** inherited by default. Pass `--inherit-agent-login claude` (or `codex`,
-  or both comma-separated) at create to carry the host login in; `create` reports what the sandbox
-  ended up with. Otherwise the sandbox starts login-free — sign it in with
+- The agent login is **not** inherited by default — a sandbox starts with none. Pass
+  `--inherit-agent-login claude` (or `codex`, or both comma-separated) at create to carry the host
+  login in; that is the usual choice, since otherwise someone has to log in inside every
+  sandbox. `create` reports what the sandbox ended up with. Without the flag, log it in with
   `cs-sandbox agent-login claude <name>`, which is also how you give a sandbox its own account
-  instead of sharing yours, and the only route on macOS (credentials live in the Keychain there).
+  instead of sharing yours.
 - Provider API keys are never carried. Pass one explicitly with `--env ANTHROPIC_API_KEY`, and use
   `--snapshot` plus `--env` for a credential file.
 - Global flags: `-v` (per-command progress), `-q` (silence), `--dry-run` (print commands instead of

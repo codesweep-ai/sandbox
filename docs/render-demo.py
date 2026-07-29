@@ -22,8 +22,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CAST = os.path.join(HERE, "demo.cast")
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "demo.gif")
 
-COLS, ROWS = 78, 20          # terminal grid (matches the cast header)
-W, H = 1026, 638             # canvas pixels (matches the original GIF)
+COLS, ROWS = 78, 24          # terminal grid (matches the cast header)
+W, H = 1026, 756             # canvas pixels (78x24 cells of ~12.6x29.4 px)
 BG = (24, 24, 27)            # background (#18181b)
 DEF = (176, 176, 182)        # default foreground (SGR reset)
 PADX, PADY = 21, 25

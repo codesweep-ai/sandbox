@@ -126,53 +126,40 @@ cs-sandbox build --engine firecracker  # force the Firecracker set (implies the 
 `cs-sandbox create` assumes `build` has run: it **does not** build under the covers, and fails with a
 "run: cs-sandbox build" message if the image or Firecracker artifacts are missing.
 
-It bundles a broad toolchain (podman/skopeo/buildah, tmux, chromium, java/maven, go), CLI helpers
-(ripgrep, fd, fzf, bat, git-delta, jq/yq, gh, uv), Neovim, pyenv/Python + nvm/Node, and the Claude
-Code & Codex agents. See the [`image/Containerfile`](image/Containerfile) for the full list.
+The image bundles a broad toolchain (podman/skopeo/buildah, tmux, chromium, java/maven, go), CLI
+helpers (ripgrep, fd, fzf, bat, git-delta, jq/yq, gh, uv), Neovim, pyenv/Python + nvm/Node, and the
+Claude Code & Codex agents with their launch wrappers and remote tools — see
+[what's in a sandbox](README.md#whats-in-a-sandbox), and the
+[`image/Containerfile`](image/Containerfile) for the full package list.
 
-## 4. Verify the installation
+## 4. Host agent tools and login (recommended)
 
-```bash
-cs-sandbox doctor                       # re-run: everything should be green
-cs-sandbox create smoke --repo .        # create a throwaway sandbox with this repo
-ssh smoke                               # shell in by name
-cs-sandbox destroy smoke -f             # tear it down
-```
+**A sandbox does not get your Claude or Codex login by default.** Logging in once here, on the host,
+is what lets any sandbox inherit that login at create time with `cs-sandbox create <name>
+--inherit-agent-login claude` (or `codex`, or both) — usually the convenient choice, since it saves
+logging in inside every sandbox you create.
 
-You're set - head to the [README](README.md) walkthroughs.
-
-## Optional: host agent tools and sign-in
-
-Sign in on the host once and any sandbox can inherit that login on demand, with
-`cs-sandbox create <name> --inherit-agent-login claude` — it is never carried unless you ask. Skip
-this section entirely and sign in inside each sandbox instead (`cs-sandbox agent-login claude <name>`).
-
-Sandboxes already carry the agent toolset (`cs-claude` / `cs-codex` and the remote-delegation
-families) at `~/.local/bin` — nothing to install inside them. This step puts the same tools on your
-**host** PATH (the same `~/.local/bin`) so you can sign in (next) and delegate from the host:
+Every sandbox already carries the agent tools (`cs-claude` / `cs-codex` and the `cs-*-remote` family)
+at `~/.local/bin` — nothing to install inside them. This step puts the same tools on your **host**
+PATH (the same `~/.local/bin`), so you can log in with them and drive agents from the host:
 
 ```bash
 cs-sandbox install-agent-tools    # -> ~/.local/bin  (pass a directory to install elsewhere)
 ```
 
 `cs-claude` / `cs-codex` invoke the `claude` / `codex` CLIs, so those must be installed on the host
-too; `install-agent-tools` tells you if either is missing.
-
-Sign in to **Claude Code & Codex** once on the host. A sandbox created with
-`--inherit-agent-login claude` (or `codex`, or both) then starts already signed in — the credential
-is snapshotted into that sandbox on first boot, **never baked into the image**.
+too; `install-agent-tools` tells you if either is missing. Then log in once with each — the
+credential a sandbox inherits is snapshotted into it on first boot, **never baked into the image**:
 
 ```bash
-cs-claude          # launch Claude Code - sign in with /login, then exit
+cs-claude          # launch Claude Code - log in with /login, then exit
 cs-codex           # launch Codex - choose "Sign in with ChatGPT", then exit
 ```
 
-On macOS (where Claude's credentials live in the Keychain with no file to copy), or to give a
-sandbox its own independent session, sign in *inside* a sandbox instead:
-
-```bash
-cs-sandbox agent-login claude <name>     # or: agent-login codex <name>
-```
+You can skip this step: create sandboxes without the flag and log in inside each one with
+`cs-sandbox agent-login claude <name>` (or `agent-login codex <name>`). Do the same when you want a
+sandbox on its **own account** rather than sharing yours. See
+[`docs/agent-login.md`](docs/agent-login.md).
 
 **Using an API key or a cloud provider** (a direct Anthropic/OpenAI key, Amazon Bedrock, Google
 Vertex, …) instead of a subscription? Keys are never copied from your host — pass the ones a sandbox
@@ -183,6 +170,17 @@ cs-sandbox create dev --env ANTHROPIC_API_KEY          # passes the value throug
 ```
 
 See [`docs/agent-login.md`](docs/agent-login.md) for cloud targets and credential files.
+
+## 5. Verify the installation
+
+```bash
+cs-sandbox doctor                       # re-run: everything should be green
+cs-sandbox create smoke --repo .        # create a throwaway sandbox with this repo
+ssh smoke                               # shell in by name
+cs-sandbox destroy smoke -f             # tear it down
+```
+
+You're set - head to the [README](README.md) walkthroughs.
 
 ## Optional: shell completion
 

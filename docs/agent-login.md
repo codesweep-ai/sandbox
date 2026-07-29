@@ -1,15 +1,19 @@
 # sandbox - agent login
 
-How a sandbox gets a signed-in Claude Code or Codex, and what `cs-sandbox` will and will not copy
+How a sandbox gets a logged-in Claude Code or Codex, and what `cs-sandbox` will and will not copy
 from your host. The design-level summary lives in
-[`design.md`](design.md#bundled-agent-tooling-and-login).
+[`design.md`](design.md#bundled-agent-tools-and-login).
 
 ## Inheriting your host login is opt-in
 
+By default a sandbox has **no** Claude or Codex login. `--inherit-agent-login` carries your host
+login in at create time — usually the convenient choice, since it saves logging in inside the
+sandbox:
+
 ```bash
-cs-sandbox create dev --inherit-agent-login claude          # carry your Claude sign-in
+cs-sandbox create dev --inherit-agent-login claude          # carry your Claude login
 cs-sandbox create dev --inherit-agent-login claude,codex    # both
-cs-sandbox create lab                                       # default: login-free
+cs-sandbox create lab                                       # default: no agent login
 ```
 
 `create` snapshots the named agent's host credential (`~/.cs-claude/.credentials.json`,
@@ -26,15 +30,20 @@ created dev (type=agent, engine=podman, ssh port=2201)
   agent login: claude (inherited from your host)
 ```
 
-## Signing in inside a sandbox instead
+## Logging in inside a sandbox instead
 
 ```bash
 cs-sandbox agent-login claude <name>      # or: agent-login codex <name>
 ```
 
 Use this when you didn't inherit a login, or when you want the sandbox on a **separate account or
-rate-limit pool** rather than sharing yours. It is also the only route on **macOS**, where agent
-credentials live in the Keychain rather than a file and cannot be copied from the host.
+rate-limit pool** rather than sharing yours.
+
+It is also the route when the host keeps the credential in the **macOS Keychain** rather than in a
+file — both agents use the Keychain when one is available, and `--inherit-agent-login` copies a file,
+so there is nothing to carry (`create` says so). Where the credential does land in a file — a
+headless or SSH session, or Codex with `cli_auth_credentials_store = "file"` — inheriting works just
+as it does on Linux.
 
 ## One subscription, many sandboxes
 

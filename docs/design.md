@@ -4,7 +4,7 @@
 host. Each sandbox runs as either a rootless **Firecracker microVM** (the default on a
 Linux/KVM host) or a rootless **Podman container** (the default on macOS, and available on any
 host). The two engines are interchangeable: they share one image, one SSH trust model, one
-network fabric, the same directory-sharing flags, and the same agent tooling.
+network fabric, the same directory-sharing flags, and the same agent tools.
 
 This document describes the **cross-engine model** - what every sandbox shares regardless of engine,
 in the order a sandbox comes to life: what it's built from and how it boots, how you reach and trust
@@ -14,7 +14,7 @@ Three companion documents cover the engine- and feature-specific parts:
 - [`podman.md`](podman.md) - the Podman container engine.
 - [`firecracker.md`](firecracker.md) - the Firecracker microVM engine.
 - [`repo-sharing.md`](repo-sharing.md) - the `--repo` checkout model.
-- [`agent-login.md`](agent-login.md) - how a sandbox gets a signed-in agent, and what is never copied.
+- [`agent-login.md`](agent-login.md) - how a sandbox gets a logged-in agent, and what is never copied.
 
 ## Overview
 
@@ -79,7 +79,7 @@ the interface between `cs-sandbox` and the entrypoint. The seed builder (`intern
 On boot the guest init (the container entrypoint or the microVM's `/fc-init`) splits work by a sentinel:
 
 - **first boot** (`~/.cs-sandbox-initialized` absent): seed the skeleton home from the image
-  (`/sandbox/home` - dotfiles, `~/.local/bin` + the bundled agent tooling, pre-built Neovim plugins) and
+  (`/sandbox/home` - dotfiles, `~/.local/bin` + the bundled agent tools, pre-built Neovim plugins) and
   chown it; install the agent credentials. `--repo` clones use a separate
   `~/.cs-sandbox-repos-done` guard.
 - **every boot** (idempotent): refresh the *managed* ssh material - `authorized_keys`, the tier key,
@@ -227,8 +227,8 @@ before `create` - mind your firewall).
 
 **Port forwarding (host → sandbox service).** Tunnel a host port to a port inside a sandbox over
 SSH - the no-sudo, every-platform way to reach a service a sandbox binds (the alternative to
-[`host-route`](#optional-reach-sandboxes-directly-by-name-host-route), which reaches ports by name
-but is Linux-only and needs a one-time sudo):
+[`host-route`](#optional-reach-sandboxes-directly-by-name-host-route), which makes every port a
+sandbox binds reachable by name, but is Linux-only and needs sudo once, to set the route up):
 
 ```bash
 cs-sandbox forward <name> [HOSTPORT:]VMPORT...   # e.g. forward web 9000:8000  -> host :9000 → sandbox :8000
@@ -318,7 +318,7 @@ mechanism as the base rootfs); see
 writable primary is the supported way to share: independent engines writing one store risk lock
 contention and corruption.
 
-## Bundled agent tooling and login
+## Bundled agent tools and login
 
 Every sandbox ships the `cs-claude` and `cs-codex` toolsets, so the coding agents work without
 re-authenticating per sandbox. Everything non-secret is baked into the image skeleton from
@@ -331,11 +331,12 @@ re-authenticating per sandbox. Everything non-secret is baked into the image ske
   `approval_policy=on-request` + `sandbox_mode=workspace-write`. Each uses a dedicated profile, so the
   sandbox's config never touches a personal `~/.claude`/`~/.codex`, and each pre-trusts the launch
   directory so the agent never stops at a "do you trust this folder?" gate.
-- **Remote-delegation families**, also in `~/.local/bin`: `cs-claude-remote` and `cs-codex-remote`,
-  each with `-status`/`-output`/`-sessions`/`-forget` and a `-turn` driver. They delegate a task to an
-  agent session on another host over SSH, keeping it warm in tmux. The target host resolves per
-  session and defaults to the sandbox itself, so reaching anywhere else needs SSH access the sandbox
-  actually has — for a user sandbox, typically keys you forwarded with `ssh -A`.
+- **Remote agent tools**, also in `~/.local/bin`: `cs-claude-remote` and `cs-codex-remote`, each with
+  `-status`/`-output`/`-sessions`/`-forget` and a `-turn` driver. They start or resume an agent
+  session on another host over SSH, keeping it warm in tmux, so an agent in one sandbox can hand a
+  task to an agent in another. The target host resolves per session and defaults to the sandbox
+  itself, so reaching anywhere else needs SSH access the sandbox actually has — for a user sandbox,
+  typically keys you forwarded with `ssh -A`.
 - **Settings and instruction hubs**: `~/.cs-claude` (a `settings.json`, a `CLAUDE.md` hub, and a
   `CLAUDE_PERMISSIONS.md` reference) and `~/.cs-codex` (a `config.toml` and an `AGENTS.md` hub). Both
   hubs describe **both** toolsets and point at the per-tool docs in `~/.local/bin`, so an in-sandbox
@@ -345,10 +346,11 @@ re-authenticating per sandbox. Everything non-secret is baked into the image ske
 permission prompts. That is safe because the sandbox is the isolation boundary — it is disposable and
 cannot reach your host.
 
-**Carried per sandbox (secret, never baked).** Inheriting a host login is opt-in: `create
+**Carried per sandbox (secret, never baked).** Inheriting a host login is opt-in — but it is the
+common case, since the alternative is logging in inside every sandbox: `create
 --inherit-agent-login claude|codex` snapshots that agent's credential into the seed, and the guest
 installs it into the home volume (mode 600) on first boot only. A sandbox created without the flag
-starts login-free — sign in inside it, or with `cs-sandbox agent-login <agent> <name>`. Provider API
+has no agent login — log in inside it, or with `cs-sandbox agent-login <agent> <name>`. Provider API
 keys are never carried; pass them with `--env` if a sandbox needs them. The single-seat and macOS
 caveats are in [`agent-login.md`](agent-login.md).
 

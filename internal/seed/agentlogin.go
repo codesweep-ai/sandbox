@@ -12,7 +12,7 @@ import (
 type agentProfile struct {
 	name     string // "claude" | "codex": the seed subdir and ~/.cs-<name> profile dir
 	credFile string // subscription credential filename inside the profile dir
-	loginCmd string // in-sandbox command to sign in (used in advisories)
+	loginCmd string // in-sandbox command to log in (used in advisories)
 }
 
 var agentProfiles = []agentProfile{
@@ -74,7 +74,7 @@ func WriteAgentLogins(seedDir, home string, inherit []string, note func(string))
 		}
 		cred := filepath.Join(home, ".cs-"+ap.name, ap.credFile)
 		if !fileExists(cred) {
-			say(fmt.Sprintf("no host %s login to inherit — run '%s' on the host first, or sign in with 'cs-sandbox agent-login %s <name>' after create",
+			say(fmt.Sprintf("no host %s login to inherit — run '%s' on the host first, or log in with 'cs-sandbox agent-login %s <name>' after create",
 				capitalize(ap.name), ap.loginCmd, ap.name))
 			continue
 		}
