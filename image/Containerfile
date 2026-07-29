@@ -162,7 +162,9 @@ RUN mkdir -p "$NVM_DIR" \
 # pinned and reproducible (no background auto-update fighting the read-only tree). The binary IS
 # the full CLI — the launcher is only convenience + auto-update, neither of which we want here.
 # Bump CLAUDE_CODE_VERSION (or pass --build-arg) to upgrade; checksum is verified from the manifest.
-ARG CLAUDE_CODE_VERSION=2.1.212
+# This pin is ahead of the `stable` channel (2.1.212) on purpose: Opus 5 needs >= 2.1.219, below
+# which the `opus` alias resolves to Opus 4.8 and Opus 5 never appears.
+ARG CLAUDE_CODE_VERSION=2.1.220
 RUN base=https://downloads.claude.ai/claude-code-releases \
   && case "$(uname -m)" in x86_64|amd64) arch=x64 ;; arm64|aarch64) arch=arm64 ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
   && plat="linux-${arch}" \
