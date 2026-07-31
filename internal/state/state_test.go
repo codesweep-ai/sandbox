@@ -37,6 +37,28 @@ func TestValidName(t *testing.T) {
 	}
 }
 
+func TestValidNetwork(t *testing.T) {
+	for _, ok := range []string{DefaultNetwork, "campaign-a", "X9"} {
+		if err := ValidNetwork(ok); err != nil {
+			t.Errorf("ValidNetwork(%q) unexpected error: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "a/b", "campaign.a", "-lead", strings.Repeat("a", 64)} {
+		if err := ValidNetwork(bad); err == nil {
+			t.Errorf("ValidNetwork(%q) should fail", bad)
+		}
+	}
+}
+
+func TestNetworkNameBackwardsCompatibility(t *testing.T) {
+	if got := NetworkName(&Instance{}); got != DefaultNetwork {
+		t.Errorf("old record network = %q, want %q", got, DefaultNetwork)
+	}
+	if got := NetworkName(&Instance{Network: "campaign-a"}); got != "campaign-a" {
+		t.Errorf("persisted network = %q, want campaign-a", got)
+	}
+}
+
 func TestSaveLoad(t *testing.T) {
 	dir := t.TempDir()
 	in := &Instance{Name: "s1", Type: "agent", Engine: Podman, Port: 2202, Created: "t"}
@@ -49,6 +71,24 @@ func TestSaveLoad(t *testing.T) {
 	}
 	if got.Name != "s1" || got.Port != 2202 {
 		t.Errorf("load mismatch: %+v", got)
+	}
+}
+
+func TestSaveLoadNetwork(t *testing.T) {
+	dir := t.TempDir()
+	in := &Instance{Name: "s1", Type: "agent", Engine: Firecracker, Network: "campaign-a"}
+	if err := Save(dir, in); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Network != "campaign-a" {
+		t.Errorf("network = %q, want campaign-a", got.Network)
+	}
+	if err := Save(dir, &Instance{Name: "bad", Network: "not/a/network"}); err == nil {
+		t.Error("Save should reject an invalid network")
 	}
 }
 

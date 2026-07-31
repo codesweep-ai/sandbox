@@ -1,18 +1,18 @@
 #!/bin/bash
-# Show output from a background remote codex task.
-# Reads the local log file written by "cs-codex-remote -b".
+# Show output from a background remote opencode task.
+# Reads the local log file written by "cs-opencode-remote -b".
 #
 # Usage:
-#   cs-codex-remote-output <name>            # session name is REQUIRED
-#   cs-codex-remote-output <name> -f         # follow (tail -f) the log
-#   cs-codex-remote-output <name> -n 50      # show last 50 lines
-#   cs-codex-remote-output <name> --full     # show the entire log
-#   cs-codex-remote-output <name> -s         # status: finished/running/failed/unknown
+#   cs-opencode-remote-output <name>            # session name is REQUIRED
+#   cs-opencode-remote-output <name> -f         # follow (tail -f) the log
+#   cs-opencode-remote-output <name> -n 50      # show last 50 lines
+#   cs-opencode-remote-output <name> --full     # show the entire log
+#   cs-opencode-remote-output <name> -s         # status: finished/running/failed/unknown
 
 set -euo pipefail
 
-LOG_DIR="$HOME/.cs-codex-remote-logs"
-PID_DIR="$HOME/.cs-codex-remote-pids"
+LOG_DIR="$HOME/.cs-opencode-remote-logs"
+PID_DIR="$HOME/.cs-opencode-remote-pids"
 
 NUM_LINES=30; SESSION=""; FOLLOW=false; FULL=false; STATUS_ONLY=false
 
@@ -23,7 +23,7 @@ while [[ $# -gt 0 ]]; do
         --full) FULL=true; shift ;;
         -s|--status) STATUS_ONLY=true; shift ;;
         -h|--help)
-            echo "Usage: cs-codex-remote-output <name> [-n NUM] [-f] [--full] [-s]"
+            echo "Usage: cs-opencode-remote-output <name> [-n NUM] [-f] [--full] [-s]"
             echo "  name       Session name (REQUIRED)"
             echo "  -n NUM     Show last NUM lines (default: 30)"
             echo "  -f         Follow the log in real time (tail -f)"
@@ -36,7 +36,7 @@ done
 
 if [[ -z "$SESSION" ]]; then
     echo "Error: session name is required" >&2
-    echo "  List sessions: cs-codex-remote-sessions" >&2
+    echo "  List sessions: cs-opencode-remote-sessions" >&2
     exit 1
 fi
 

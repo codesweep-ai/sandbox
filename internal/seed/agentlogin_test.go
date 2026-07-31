@@ -28,16 +28,17 @@ func TestWriteAgentLoginsInheritsRequested(t *testing.T) {
 	home, seedDir := t.TempDir(), t.TempDir()
 	writeProfile(t, home, "claude", map[string]string{".credentials.json": `{"tok":"max"}`})
 	writeProfile(t, home, "codex", map[string]string{"auth.json": `{"tok":"chatgpt"}`})
+	writeProfile(t, home, "opencode", map[string]string{"auth.json": `{"tok":"oc"}`})
 
-	carried, err := WriteAgentLogins(seedDir, home, []string{"claude", "codex"}, nil)
+	carried, err := WriteAgentLogins(seedDir, home, []string{"claude", "codex", "opencode"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(carried, ",") != "claude,codex" {
-		t.Errorf("carried = %v, want both agents", carried)
+	if strings.Join(carried, ",") != "claude,codex,opencode" {
+		t.Errorf("carried = %v, want all three agents", carried)
 	}
 	for _, c := range []struct{ agent, file string }{
-		{"claude", ".credentials.json"}, {"codex", "auth.json"},
+		{"claude", ".credentials.json"}, {"codex", "auth.json"}, {"opencode", "auth.json"},
 	} {
 		p := filepath.Join(seedDir, c.agent, c.file)
 		fi, err := os.Stat(p)
@@ -47,6 +48,53 @@ func TestWriteAgentLoginsInheritsRequested(t *testing.T) {
 		if fi.Mode().Perm() != 0o600 {
 			t.Errorf("%s mode = %o, want 600", p, fi.Mode().Perm())
 		}
+	}
+}
+
+func TestWriteAgentLoginsClaudeDefaultProfileFallback(t *testing.T) {
+	home, seedDir := t.TempDir(), t.TempDir()
+	defaultDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(defaultDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultDir, ".credentials.json"), []byte(`{"source":"default"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultDir, "unrelated.json"), []byte(`{"must":"not copy"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var notes []string
+	carried, err := WriteAgentLogins(seedDir, home, []string{"claude"}, func(s string) { notes = append(notes, s) })
+	if err != nil || strings.Join(carried, ",") != "claude" {
+		t.Fatalf("carried=%v err=%v", carried, err)
+	}
+	b, err := os.ReadFile(filepath.Join(seedDir, "claude", ".credentials.json"))
+	if err != nil || !strings.Contains(string(b), "default") {
+		t.Fatalf("fallback credential=%q err=%v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(seedDir, "claude", "unrelated.json")); !os.IsNotExist(err) {
+		t.Fatalf("unrelated default-profile state copied: %v", err)
+	}
+	if !strings.Contains(strings.Join(notes, "\n"), "~/.claude") {
+		t.Fatalf("fallback source not reported: %v", notes)
+	}
+}
+
+func TestWriteAgentLoginsPrefersIsolatedClaudeProfile(t *testing.T) {
+	home, seedDir := t.TempDir(), t.TempDir()
+	writeProfile(t, home, "claude", map[string]string{".credentials.json": `{"source":"isolated"}`})
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", ".credentials.json"), []byte(`{"source":"default"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteAgentLogins(seedDir, home, []string{"claude"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(seedDir, "claude", ".credentials.json"))
+	if err != nil || !strings.Contains(string(b), "isolated") {
+		t.Fatalf("precedence credential=%q err=%v", b, err)
 	}
 }
 
@@ -122,7 +170,7 @@ func TestWriteAgentLoginsClearsStale(t *testing.T) {
 
 // TestAgentNamesAndValidAgent pin the set the CLI validates --inherit-agent-login against.
 func TestAgentNamesAndValidAgent(t *testing.T) {
-	if got := strings.Join(AgentNames(), ","); got != "claude,codex" {
+	if got := strings.Join(AgentNames(), ","); got != "claude,codex,opencode" {
 		t.Errorf("AgentNames() = %s", got)
 	}
 	for _, ok := range AgentNames() {

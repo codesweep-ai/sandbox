@@ -36,6 +36,27 @@ func TestTapName(t *testing.T) {
 	}
 }
 
+func TestFabricResourcesAreNetworkScoped(t *testing.T) {
+	def := Fabric{Network: "cs-sandbox-net"}
+	a := Fabric{Network: "campaign-a"}
+	b := Fabric{Network: "campaign-b"}
+	if def.keepaliveName() != KeepaliveName {
+		t.Errorf("default keepalive = %q", def.keepaliveName())
+	}
+	if a.keepaliveName() != "campaign-a-keepalive" {
+		t.Errorf("custom keepalive = %q", a.keepaliveName())
+	}
+	if a.TapName("10.89.1.200") == b.TapName("10.89.2.200") {
+		t.Errorf("custom-network taps collide: %q", a.TapName("10.89.1.200"))
+	}
+	if def.TapName("10.89.0.200") != TapName("10.89.0.200") {
+		t.Errorf("default tap naming changed: %q", def.TapName("10.89.0.200"))
+	}
+	if len(a.TapName("10.89.1.200")) > 15 {
+		t.Errorf("tap name exceeds Linux interface limit: %q", a.TapName("10.89.1.200"))
+	}
+}
+
 // TestGuestMAC pins the stable per-IP MAC derivation (octet -> 2-hex low byte).
 func TestGuestMAC(t *testing.T) {
 	cases := map[string]string{

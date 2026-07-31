@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/state"
+	"github.com/spf13/cobra"
 )
 
 // TestVerbosityGating pins the three-level model: phase() shows unless --quiet;
@@ -71,6 +73,46 @@ func TestQuietVerboseMutualExclusion(t *testing.T) {
 	}
 	if _, err := runRoot(t, &App{}, "--verbose", "version"); err != nil {
 		t.Errorf("--verbose alone: %v", err)
+	}
+}
+
+func TestCreateNetworkFlagDefaultAndEnvironment(t *testing.T) {
+	t.Setenv("CS_SANDBOX_NETWORK", "campaign-env")
+	cmd := newCreateCmd(&App{})
+	if got := cmd.Flag("network").Value.String(); got != "campaign-env" {
+		t.Errorf("environment default = %q, want campaign-env", got)
+	}
+	if err := cmd.ParseFlags([]string{"--network", "campaign-cli"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := cmd.Flag("network").Value.String(); got != "campaign-cli" {
+		t.Errorf("explicit flag = %q, want campaign-cli", got)
+	}
+}
+
+func TestCreateRejectsInvalidNetworkBeforeSideEffects(t *testing.T) {
+	f := &createFlags{typ: "agent", network: "bad/network"}
+	if err := runCreate(context.Background(), &App{}, "box", f, &cobra.Command{}); err == nil || !strings.Contains(err.Error(), "invalid network") {
+		t.Fatalf("runCreate invalid network error = %v", err)
+	}
+}
+
+func TestEngineForUsesPersistedNetwork(t *testing.T) {
+	dir := t.TempDir()
+	if err := state.Save(dir, &state.Instance{Name: "box", Engine: state.Podman, Network: "campaign-a"}); err != nil {
+		t.Fatal(err)
+	}
+	fake := run.NewFake().OnStdout("podman network inspect campaign-a", "true|1\n")
+	app := &App{InstDir: dir, Runner: fake}
+	e, _, err := app.engineFor("box")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Start(context.Background(), "box"); err != nil {
+		t.Fatal(err)
+	}
+	if !fake.Contains("network exists campaign-a") {
+		t.Errorf("start did not use persisted network; calls: %s", fake)
 	}
 }
 
@@ -168,10 +210,73 @@ func TestLsQuietIsPipeable(t *testing.T) {
 	if err := runLs(context.Background(), app, &buf, false); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"NAME", "STATUS", "AGE", "alpha", "beta"} {
+	for _, want := range []string{"NAME", "STATUS", "AGE", "NETWORK", state.DefaultNetwork, "alpha", "beta"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("ls table missing %q:\n%s", want, buf.String())
 		}
+	}
+}
+
+func TestLsGroupsByNetworkThenName(t *testing.T) {
+	dir := t.TempDir()
+	for _, in := range []*state.Instance{
+		{Name: "zeta", Network: "campaign-a", Type: "agent", Engine: state.Podman, Port: 2200},
+		{Name: "alpha", Network: "campaign-b", Type: "agent", Engine: state.Podman, Port: 2201},
+		{Name: "beta", Network: "campaign-a", Type: "agent", Engine: state.Podman, Port: 2202},
+	} {
+		if err := state.Save(dir, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	app := &App{InstDir: dir, TierDir: t.TempDir(), Runner: run.NewFake()}
+	if err := runLs(context.Background(), app, &buf, false); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("ls lines = %d, want 4:\n%s", len(lines), buf.String())
+	}
+	if fields := strings.Fields(lines[0]); len(fields) < 2 || fields[0] != "NETWORK" || fields[1] != "NAME" {
+		t.Fatalf("ls header = %q, want NETWORK then NAME", lines[0])
+	}
+	for i, want := range []string{"campaign-a beta", "campaign-a zeta", "campaign-b alpha"} {
+		fields := strings.Fields(lines[i+1])
+		got := strings.Join(fields[:2], " ")
+		if got != want {
+			t.Errorf("ls row %d = %q, want %q\n%s", i+1, got, want, buf.String())
+		}
+	}
+}
+
+func TestLsJSONIsStableAndNetworkGrouped(t *testing.T) {
+	dir := t.TempDir()
+	for _, in := range []*state.Instance{
+		{Name: "zeta", Network: "campaign-a", Type: "agent", Engine: state.Podman, Port: 2200},
+		{Name: "alpha", Network: "campaign-b", Type: "agent", Engine: state.Firecracker, Port: 2300, Solo: true},
+		{Name: "beta", Network: "campaign-a", Type: "agent", Engine: state.Podman, Port: 2201},
+	} {
+		if err := state.Save(dir, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	app := &App{InstDir: dir, TierDir: t.TempDir(), Runner: run.NewFake()}
+	if err := runLsJSON(context.Background(), app, &buf); err != nil {
+		t.Fatal(err)
+	}
+	var got []lsJSONItem
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	wantNames := []string{"beta", "zeta", "alpha"}
+	for i, want := range wantNames {
+		if got[i].Name != want {
+			t.Errorf("item %d name = %q, want %q", i, got[i].Name, want)
+		}
+	}
+	if got[0].Network != "campaign-a" || got[2].Network != "campaign-b" || !got[2].Solo {
+		t.Fatalf("unexpected JSON items: %+v", got)
 	}
 }
 

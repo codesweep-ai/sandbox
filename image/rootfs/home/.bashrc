@@ -92,7 +92,7 @@ fi
 # Native AI coding agents (shared, under /opt — pinned single binaries, no npm/Node).
 # Added here too because sshd resets PATH and bash sources ~/.bashrc for `ssh <instance> <cmd>`,
 # so the image's ENV PATH (which `podman exec` inherits) wouldn't otherwise cover SSH shells.
-for d in /opt/claude/bin /opt/codex/bin; do
+for d in /opt/claude/bin /opt/codex/bin /opt/opencode/bin; do
   [[ -d $d ]] && [[ ":$PATH:" != *":$d:"* ]] && export PATH="$d:$PATH"
 done
 unset d

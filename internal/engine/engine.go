@@ -17,6 +17,7 @@ import (
 // CreateSpec is the engine-agnostic description of a sandbox to create.
 type CreateSpec struct {
 	Name              string
+	Network           string
 	Type              string // user | agent
 	Yolo              bool
 	Solo              bool

@@ -30,6 +30,7 @@ func (p *Podman) Name() state.Engine { return state.Podman }
 // from Create so buildRunArgs is a pure, golden-testable function.
 type runParams struct {
 	Name       string // container + hostname (bare instance name)
+	Network    string
 	Type       string
 	Port       int
 	SSHBind    string
@@ -72,10 +73,14 @@ func macOSGroup(h hostenv.Host) string {
 // buildRunArgs assembles the full `podman run` argv, in a fixed order (so a
 // golden test can pin it). Pure.
 func buildRunArgs(p runParams) []string {
+	network := p.Network
+	if network == "" {
+		network = state.DefaultNetwork
+	}
 	a := []string{
 		"podman", "run", "-d",
 		"--name", p.Name, "--hostname", p.Name,
-		"--network", "cs-sandbox-net",
+		"--network", network,
 		"-p", fmt.Sprintf("%s:%d:%d", p.SSHBind, p.Port, p.IntPort),
 		"--dns", p.DNSPrimary, "--dns", p.DNSGateway,
 		"--init",
@@ -114,6 +119,7 @@ func buildRunArgs(p runParams) []string {
 		"--label", "cs-sandbox.type="+p.Type,
 		"--label", fmt.Sprintf("cs-sandbox.ssh_port=%d", p.Port),
 		"--label", "cs-sandbox.name="+p.Name,
+		"--label", "cs-sandbox.network="+network,
 		"-v", p.HomeVol+":"+p.Home,
 		"-v", p.ContVol+":/var/lib/containers",
 		"-v", p.SeedDir+":/run/cs-sandbox-seed:ro",
@@ -186,7 +192,7 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 	}
 
 	params := runParams{
-		Name: s.Name, Type: s.Type, Port: 0, SSHBind: d.SSHBind, IntPort: 22,
+		Name: s.Name, Network: d.Network, Type: s.Type, Port: 0, SSHBind: d.SSHBind, IntPort: 22,
 		DNSPrimary: dnsPrimary, DNSGateway: gw, Privileged: s.Privileged,
 		Yolo: s.Yolo, Solo: s.Solo, User: d.Host.User, UID: d.Host.UID, GID: d.Host.GID,
 		Group: macOSGroup(d.Host), Home: fmt.Sprintf("/home/%s", d.Host.User), TZ: d.TZ,
@@ -195,7 +201,7 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 		EnvFile: envFilePath(seedDir, s.InjectedEnv), Stores: storePaths, StoreVols: storeVols, Mounts: mounts,
 	}
 	inst = &state.Instance{
-		Name: s.Name, Type: s.Type, Engine: state.Podman, Yolo: s.Yolo, Solo: s.Solo,
+		Name: s.Name, Type: s.Type, Engine: state.Podman, Network: d.Network, Yolo: s.Yolo, Solo: s.Solo,
 		Shared: s.ImageStores, AgentLogins: agentLogins, Created: nowUTC(),
 	}
 	// Serialize the race-sensitive prefix — port allocation through the claim —
@@ -301,6 +307,7 @@ func (p *Podman) Remove(ctx context.Context, name string, purge bool) error {
 	// createable again. On `rm` the home volume is kept, so `create <name>` reuses
 	// it (podman remounts the existing named volume); only `destroy` deletes it.
 	_ = os.RemoveAll(p.d.InstanceDir(name))
+	p.d.ReclaimNetwork(ctx)
 	return nil
 }
 

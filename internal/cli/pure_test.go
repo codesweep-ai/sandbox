@@ -100,7 +100,7 @@ func TestInheritAgentLoginValidation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unknown agent") {
 		t.Fatalf("err = %v, want an unknown-agent error", err)
 	}
-	for _, want := range []string{"claude", "codex"} {
+	for _, want := range []string{"claude", "codex", "opencode"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should list %q as valid: %v", want, err)
 		}

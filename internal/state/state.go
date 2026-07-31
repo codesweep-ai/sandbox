@@ -19,6 +19,8 @@ import (
 // !*.*"), so a dotted sandbox name would not resolve as a peer.
 var nameRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$`)
 
+const DefaultNetwork = "cs-sandbox-net"
+
 // ValidName reports whether a sandbox name is acceptable. Besides keeping names
 // resolvable, this is the gate that keeps a name from escaping the instances dir
 // (filepath.Join resolves "..") or injecting into the generated ssh config.
@@ -28,6 +30,19 @@ func ValidName(name string) error {
 	}
 	if !nameRe.MatchString(name) {
 		return fmt.Errorf("invalid sandbox name %q: use letters, digits and dashes only (must start and end alphanumeric)", name)
+	}
+	return nil
+}
+
+// ValidNetwork reports whether a network name is safe to pass to Podman and use
+// as a DNS-scoped fabric identifier. Keep it to one DNS label so derived
+// resource names and paths remain predictable.
+func ValidNetwork(name string) error {
+	if len(name) > 63 {
+		return fmt.Errorf("network name %q is too long (max 63 characters)", name)
+	}
+	if !nameRe.MatchString(name) {
+		return fmt.Errorf("invalid network name %q: use letters, digits and dashes only (must start and end alphanumeric)", name)
 	}
 	return nil
 }
@@ -53,6 +68,7 @@ type Instance struct {
 	Name    string   `json:"name"`
 	Type    string   `json:"type"` // user | agent
 	Engine  Engine   `json:"engine"`
+	Network string   `json:"network,omitempty"`
 	Port    int      `json:"port"`
 	FCIP    string   `json:"fcip,omitempty"` // firecracker VM address
 	CPUs    int      `json:"cpus,omitempty"` // firecracker
@@ -68,6 +84,15 @@ type Instance struct {
 	RepoClones  []RepoClone `json:"repoclones,omitempty"`
 }
 
+// NetworkName returns the persisted network, mapping records created before
+// network grouping to the original shared fabric.
+func NetworkName(in *Instance) string {
+	if in == nil || in.Network == "" {
+		return DefaultNetwork
+	}
+	return in.Network
+}
+
 // Dir returns the on-disk instance directory for name under instDir.
 func Dir(instDir, name string) string { return filepath.Join(instDir, name) }
 
@@ -80,6 +105,11 @@ func Save(instDir string, in *Instance) error {
 	}
 	if err := ValidName(in.Name); err != nil {
 		return err
+	}
+	if in.Network != "" {
+		if err := ValidNetwork(in.Network); err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(Dir(instDir, in.Name), 0o700); err != nil {
 		return err

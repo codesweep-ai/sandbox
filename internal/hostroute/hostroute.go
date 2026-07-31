@@ -224,6 +224,9 @@ func (h HostRoute) writeDNS(ctx context.Context) error {
 	}
 	var b strings.Builder
 	for _, in := range insts {
+		if state.NetworkName(in) != h.Network {
+			continue
+		}
 		ip := h.instanceIP(ctx, in)
 		if ip == "" {
 			continue
@@ -264,7 +267,7 @@ func (h HostRoute) anyVMRunning(ctx context.Context) bool {
 	}
 	insts, _ := state.List(h.InstDir)
 	for _, in := range insts {
-		if in.Engine == state.Firecracker {
+		if in.Engine == state.Firecracker && state.NetworkName(in) == h.Network {
 			pid := filepath.Join(state.Dir(h.InstDir, in.Name), "fc.pid")
 			if data, err := os.ReadFile(pid); err == nil {
 				if p, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && alive(p) {

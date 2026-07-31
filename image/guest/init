@@ -139,6 +139,20 @@ else
 fi
 chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CODEX_DIR" 2>/dev/null || true
 
+# --- OpenCode auth (cs-opencode profile), first boot only — mirrors Codex above. The cs-opencode
+# wrapper folds a seeded auth.json into OPENCODE_AUTH_CONTENT (inline env), so the credential
+# never lands in opencode's data dir next to the session db. ---
+OC_DIR="$HOME_DIR/.cs-opencode"; mkdir -p "$OC_DIR"; chmod 700 "$OC_DIR" 2>/dev/null || true
+if [ -f "$SEED/opencode/auth.json" ] && [ ! -f "$OC_DIR/auth.json" ]; then
+  install -m600 "$SEED/opencode/auth.json" "$OC_DIR/auth.json"
+fi
+if [ "${CS_SANDBOX_YOLO:-0}" = "1" ]; then
+  : > "$OC_DIR/.yolo"
+else
+  rm -f "$OC_DIR/.yolo" 2>/dev/null || true
+fi
+chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$OC_DIR" 2>/dev/null || true
+
 # RO data disks follow the rootfs (vda) and seed (vdb): the --repo objects disks first
 # (seed/repos), then the --snapshot disks (seed/snapshots), in the SAME order cs-sandbox appended
 # them to run.json — so one device-letter cursor (vdc, vdd, …) lines up with both lists.

@@ -227,7 +227,7 @@ func TestCLIAgentToolSetLive(t *testing.T) {
 	name := boxName(t, "tools")
 	createBox(t, r, name)
 
-	for _, tool := range []string{"cs-claude", "cs-codex", "cs-claude-remote", "cs-codex-remote", "mdtohtml"} {
+	for _, tool := range []string{"cs-claude", "cs-codex", "cs-opencode", "cs-claude-remote", "cs-codex-remote", "cs-opencode-remote", "mdtohtml"} {
 		got := strings.TrimSpace(inBox(ctx, r, host, name, "command -v "+tool))
 		if !strings.HasSuffix(got, "/.local/bin/"+tool) {
 			t.Errorf("%s resolved to %q, want ~/.local/bin/%s", tool, got, tool)

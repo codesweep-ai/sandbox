@@ -19,6 +19,7 @@ package fcnet
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -43,6 +44,13 @@ type Fabric struct {
 	Network string // podman network name (cs-sandbox-net)
 	Image   string // keepalive container image
 	NetDir  string // the fabric working dir (paths.FCNet): dnsmasq hostsdir + log
+}
+
+func (f Fabric) keepaliveName() string {
+	if f.Network == "" || f.Network == "cs-sandbox-net" {
+		return KeepaliveName
+	}
+	return f.Network + "-keepalive"
 }
 
 // --- read-only queries (through the Runner) ---
@@ -72,7 +80,7 @@ func (f Fabric) Bridge(ctx context.Context) string {
 }
 
 func (f Fabric) keepaliveRunning(ctx context.Context) bool {
-	return run.Output(ctx, f.Runner, "podman", "inspect", KeepaliveName,
+	return run.Output(ctx, f.Runner, "podman", "inspect", f.keepaliveName(),
 		"--format", "{{.State.Running}}") == "true"
 }
 
@@ -82,24 +90,25 @@ func (f Fabric) hostsDir() string { return filepath.Join(f.NetDir, "hosts.d") }
 
 // keepaliveUp ensures the keepalive container is running.
 func (f Fabric) keepaliveUp(ctx context.Context) error {
+	keepalive := f.keepaliveName()
 	if f.keepaliveRunning(ctx) {
 		return nil
 	}
 	// Try to start an existing (stopped) one.
-	if _, err := f.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "container", "exists", KeepaliveName); err == nil {
-		_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "start", KeepaliveName)
+	if _, err := f.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "container", "exists", keepalive); err == nil {
+		_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "start", keepalive)
 		if f.keepaliveRunning(ctx) {
 			return nil
 		}
 	}
-	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "run", "-d", "--name", KeepaliveName,
+	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "run", "-d", "--name", keepalive,
 		"--network", f.Network, "--restart=always",
 		"--label", "cs-sandbox.managed=1", "--label", "cs-sandbox.keepalive=1",
 		f.Image, "sleep", "infinity")
 	if f.keepaliveRunning(ctx) {
 		return nil
 	}
-	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "start", KeepaliveName)
+	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "start", keepalive)
 	if f.keepaliveRunning(ctx) {
 		return nil
 	}
@@ -311,7 +320,7 @@ func (f Fabric) Down(ctx context.Context) {
 		_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "unshare", "--rootless-netns",
 			"ip", "addr", "del", f.DNSIP(ctx)+"/24", "dev", f.Bridge(ctx))
 	}
-	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", KeepaliveName)
+	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", f.keepaliveName())
 }
 
 // GC tears down the fabric only if nothing uses it: no VM is running AND no
@@ -322,10 +331,12 @@ func (f Fabric) GC(ctx context.Context, vmRunning func() bool) {
 		return
 	}
 	names := run.Output(ctx, f.Runner, "podman", "ps", "-a",
-		"--filter", "label=cs-sandbox.managed=1", "--format", "{{.Names}}")
+		"--filter", "label=cs-sandbox.managed=1", "--filter", "network="+f.Network,
+		"--format", "{{.Names}}")
+	keepalive := f.keepaliveName()
 	for _, n := range strings.Split(names, "\n") {
 		n = strings.TrimSpace(n)
-		if n != "" && n != KeepaliveName {
+		if n != "" && n != keepalive {
 			return // a sandbox container remains — keep the fabric
 		}
 	}
@@ -367,6 +378,18 @@ const tapPrefix = "fdt"
 // TapName derives the tap name from the IP's last octet, e.g. 10.89.0.200 -> fdt200.
 func TapName(ip string) string { return tapPrefix + lastOctet(ip) }
 
+func (f Fabric) tapPrefix() string {
+	if f.Network == "" || f.Network == "cs-sandbox-net" {
+		return tapPrefix
+	}
+	sum := sha256.Sum256([]byte(f.Network))
+	return fmt.Sprintf("fd%x", sum[:2])
+}
+
+// TapName derives a network-scoped tap name. Linux interface names are
+// host-global even though the taps attach to different bridges.
+func (f Fabric) TapName(ip string) string { return f.tapPrefix() + lastOctet(ip) }
+
 // TapOctets returns the last octet of every VM tap currently on the fabric (e.g.
 // "200"). Taps are host-global — they outlive whichever instances dir created
 // them — so this, not any single instance list, is the authoritative record of
@@ -375,11 +398,12 @@ func TapName(ip string) string { return tapPrefix + lastOctet(ip) }
 // other's tap.
 func (f Fabric) TapOctets(ctx context.Context) map[string]bool {
 	out := map[string]bool{}
+	prefix := f.tapPrefix()
 	for _, line := range strings.Split(
 		run.Output(ctx, f.Runner, "podman", "unshare", "--rootless-netns", "ip", "-br", "link", "show"), "\n") {
 		name, _, _ := strings.Cut(strings.TrimSpace(line), " ")
 		name, _, _ = strings.Cut(name, "@")
-		if oct, ok := strings.CutPrefix(name, tapPrefix); ok && oct != "" {
+		if oct, ok := strings.CutPrefix(name, prefix); ok && oct != "" {
 			out[oct] = true
 		}
 	}

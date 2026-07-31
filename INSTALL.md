@@ -207,8 +207,9 @@ tier keys under `$XDG_DATA_HOME/cs-sandbox` (`~/.local/share/cs-sandbox`), the f
 cache under `$XDG_CACHE_HOME/cs-sandbox` (`~/.cache/cs-sandbox`); override with
 `CS_SANDBOX_INSTANCES_DIR` / `CS_SANDBOX_TIER_DIR` / `CS_SANDBOX_FC_CACHE`, or `CS_SANDBOX_HOME` for all of it.
 
-Separate state directories give you separate sets of sandboxes that can run side by side, because
-the network underneath is per-host and shared: addresses and SSH ports are checked against what is
-actually live on the host rather than against one directory's records, each directory gets its own
-`~/.ssh/config.d` fragment, and the network's own working dir (`~/.cache/cs-sandbox/net`, moved by
-`CS_SANDBOX_FC_NET`) stays put when you relocate the rest.
+Separate state directories give you separate sets of sandboxes that can run side by side. Named
+networks are host-wide: addresses and SSH ports are checked against what is actually live on the host
+rather than against one directory's records, each directory gets its own `~/.ssh/config.d` fragment,
+and the networks' working dirs (`~/.cache/cs-sandbox/net`, moved by `CS_SANDBOX_FC_NET`) stay put when
+you relocate the rest. `CS_SANDBOX_NETWORK` selects the default network for new sandboxes; an explicit
+`create --network` overrides it, and the selected value is persisted in instance state.

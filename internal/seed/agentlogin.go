@@ -13,11 +13,16 @@ type agentProfile struct {
 	name     string // "claude" | "codex": the seed subdir and ~/.cs-<name> profile dir
 	credFile string // subscription credential filename inside the profile dir
 	loginCmd string // in-sandbox command to log in (used in advisories)
+	fallback string // optional standard host profile dir when ~/.cs-<name> is absent
 }
 
 var agentProfiles = []agentProfile{
-	{"claude", ".credentials.json", "cs-claude"},
-	{"codex", "auth.json", "cs-codex login"},
+	{"claude", ".credentials.json", "cs-claude", ".claude"},
+	{"codex", "auth.json", "cs-codex login", ""},
+	// No fallback dir: opencode's personal auth.json lives in its DATA dir
+	// (~/.local/share/opencode, beside the session db), and API-key envs are the
+	// primary opencode path anyway — inheriting personal state stays opt-in-less.
+	{"opencode", "auth.json", "cs-opencode providers login", ""},
 }
 
 // AgentNames returns the agents whose login can be inherited, in a stable order.
@@ -73,6 +78,14 @@ func WriteAgentLogins(seedDir, home string, inherit []string, note func(string))
 			continue
 		}
 		cred := filepath.Join(home, ".cs-"+ap.name, ap.credFile)
+		if !fileExists(cred) && ap.fallback != "" {
+			fallback := filepath.Join(home, ap.fallback, ap.credFile)
+			if fileExists(fallback) {
+				cred = fallback
+				say(fmt.Sprintf("inheriting host %s login from ~/%s (isolated ~/.cs-%s credential not found)",
+					capitalize(ap.name), ap.fallback, ap.name))
+			}
+		}
 		if !fileExists(cred) {
 			say(fmt.Sprintf("no host %s login to inherit — run '%s' on the host first, or log in with 'cs-sandbox agent-login %s <name>' after create",
 				capitalize(ap.name), ap.loginCmd, ap.name))

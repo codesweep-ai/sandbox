@@ -1,39 +1,39 @@
 #!/bin/bash
-# Delegate a task to a Codex session on a remote SSH host (the Codex counterpart of
+# Delegate a task to a OpenCode session on a remote SSH host (the OpenCode counterpart of
 # cs-claude-remote). The target host is resolved per session (--host / stored host /
-# $CS_CODEX_REMOTE_HOST / this machine's hostname). Uses the remote's Codex auth.
+# $CS_OPENCODE_REMOTE_HOST / this machine's hostname). Uses the remote's OpenCode auth.
 #
 # Usage:
-#   cs-codex-remote --new --name <name> "prompt"      # start a new named session (required form)
-#   cs-codex-remote --resume <name> "prompt"          # resume a specific named session
-#   cs-codex-remote --resume <name> -d /path "prompt" # with a specific working directory
-#   cs-codex-remote --resume <name> -j "prompt"       # full JSON (the turn's raw session JSONL)
-#   cs-codex-remote --resume <name> -b "prompt"       # run in background (async), log locally
+#   cs-opencode-remote --new --name <name> "prompt"      # start a new named session (required form)
+#   cs-opencode-remote --resume <name> "prompt"          # resume a specific named session
+#   cs-opencode-remote --resume <name> -d /path "prompt" # with a specific working directory
+#   cs-opencode-remote --resume <name> -j "prompt"       # raw JSON events for the turn
+#   cs-opencode-remote --resume <name> -b "prompt"       # run in background (async), log locally
 #
 # A session name is MANDATORY on every call. Like cs-claude-remote, a turn is driven against an
-# INTERACTIVE codex kept warm in a tmux session on the remote (via cs-codex-turn), and output is
-# read from the codex session JSONL — never scraped from the pane.
+# INTERACTIVE opencode TUI kept warm in a tmux session on the remote (via cs-opencode-turn); the
+# turn is driven over the TUI's HTTP API — never scraped from the pane.
 #
-# Difference from Claude: codex assigns its own session id, so the tmux session is named by a
-# stable local token and the codex session id is learned from the first turn (captured from the
+# Difference from Claude: opencode assigns its own session id, so the tmux session is named by a
+# stable local token and the opencode session id is learned from the first turn (captured from the
 # driver's trailing sentinel) and stored for subsequent --resume.
 
 set -euo pipefail
 
-REMOTE_DRIVER="cs-codex-turn"
-DRIVER_SRC="${CS_CODEX_TURN_SRC:-$HOME/.local/bin/cs-codex-turn}"
-SESSION_FILE="$HOME/.cs-codex-remote-session"
-SESSION_MAP_DIR="$HOME/.cs-codex-remote-sessions"
-LOG_DIR="$HOME/.cs-codex-remote-logs"
-PID_DIR="$HOME/.cs-codex-remote-pids"
-LOCK_DIR="$HOME/.cs-codex-remote-locks"
+REMOTE_DRIVER="cs-opencode-turn"
+DRIVER_SRC="${CS_OPENCODE_TURN_SRC:-$HOME/.local/bin/cs-opencode-turn}"
+SESSION_FILE="$HOME/.cs-opencode-remote-session"
+SESSION_MAP_DIR="$HOME/.cs-opencode-remote-sessions"
+LOG_DIR="$HOME/.cs-opencode-remote-logs"
+PID_DIR="$HOME/.cs-opencode-remote-pids"
+LOCK_DIR="$HOME/.cs-opencode-remote-locks"
 mkdir -p "$SESSION_MAP_DIR" "$LOG_DIR" "$PID_DIR" "$LOCK_DIR"
 
-LOCK_WAIT="${CS_CODEX_LOCK_WAIT:-900}"
-MAX_LOG_BYTES="${CS_CODEX_MAX_LOG_BYTES:-1048576}"
+LOCK_WAIT="${CS_OPENCODE_LOCK_WAIT:-900}"
+MAX_LOG_BYTES="${CS_OPENCODE_MAX_LOG_BYTES:-1048576}"
 
 HOST_FLAG=""
-# Resolve the SSH target host: --host > the session's stored host > $CS_CODEX_REMOTE_HOST >
+# Resolve the SSH target host: --host > the session's stored host > $CS_OPENCODE_REMOTE_HOST >
 # this machine's short hostname.
 resolve_remote_host() {
     local name="${1:-}" h
@@ -42,14 +42,14 @@ resolve_remote_host() {
         h="$(cat "$SESSION_MAP_DIR/${name}.host" 2>/dev/null)"
         [[ -n "$h" ]] && { printf '%s\n' "$h"; return; }
     fi
-    if [[ -n "${CS_CODEX_REMOTE_HOST:-}" ]]; then printf '%s\n' "$CS_CODEX_REMOTE_HOST"; return; fi
+    if [[ -n "${CS_OPENCODE_REMOTE_HOST:-}" ]]; then printf '%s\n' "$CS_OPENCODE_REMOTE_HOST"; return; fi
     hostname -s
 }
 
 usage() {
     cat <<'EOF'
-Usage: cs-codex-remote --new --name <name> "prompt" [options]
-       cs-codex-remote --resume <name> "prompt" [options]
+Usage: cs-opencode-remote --new --name <name> "prompt" [options]
+       cs-opencode-remote --resume <name> "prompt" [options]
 
 A session name is MANDATORY. Either start a new named session or resume an existing one.
 
@@ -59,7 +59,7 @@ Options:
   --name <name>            Session name (required with --new)
   -d <dir>                 Working directory on the remote machine
   -H, --host <host>        SSH target host or ssh_config alias for this session
-  -j                       Output the turn's raw session JSONL (instead of text)
+  -j                       Output the turn's raw JSON events (instead of text)
   -b, --bg                 Run in background: log output locally, return immediately
   --redeploy               Force re-copy of the remote driver to the host
 
@@ -135,8 +135,8 @@ stop_background() {
 # --- lifecycle actions (kill/attach): perform and exit ----------------------
 if [[ -n "$ACTION" ]]; then
     TOKEN="$(token_of "$ACTION_NAME")"
-    [[ -n "$TOKEN" ]] || { echo "Error: no known session named '$ACTION_NAME'" >&2; echo "  List: cs-codex-remote-sessions" >&2; exit 1; }
-    TMUX_SESSION="cs-codex-$TOKEN"
+    [[ -n "$TOKEN" ]] || { echo "Error: no known session named '$ACTION_NAME'" >&2; echo "  List: cs-opencode-remote-sessions" >&2; exit 1; }
+    TMUX_SESSION="cs-opencode-$TOKEN"
     REMOTE_HOST="$(resolve_remote_host "$ACTION_NAME")"
     case "$ACTION" in
         kill)
@@ -164,7 +164,7 @@ elif [[ -z "$SESSION_NAME" ]]; then
 fi
 echo "$SESSION_NAME" > "$SESSION_FILE"   # reference only; never read back to target a session
 
-UUID_FILE="$SESSION_MAP_DIR/$SESSION_NAME"          # codex session id (learned after 1st turn)
+UUID_FILE="$SESSION_MAP_DIR/$SESSION_NAME"          # opencode session id (learned after 1st turn)
 TOKEN_FILE="$SESSION_MAP_DIR/${SESSION_NAME}.token"  # stable tmux handle
 WORKDIR_FILE="$SESSION_MAP_DIR/${SESSION_NAME}.workdir"
 
@@ -173,9 +173,9 @@ WORKDIR_FILE="$SESSION_MAP_DIR/${SESSION_NAME}.workdir"
 if $NEW_SESSION; then
     if [[ -f "$TOKEN_FILE" ]]; then
         old="$(cat "$TOKEN_FILE")"
-        [[ -n "$old" ]] && ssh "$(resolve_remote_host "$SESSION_NAME")" "tmux kill-session -t 'cs-codex-$old' 2>/dev/null" >/dev/null 2>&1 || true
+        [[ -n "$old" ]] && ssh "$(resolve_remote_host "$SESSION_NAME")" "tmux kill-session -t 'cs-opencode-$old' 2>/dev/null" >/dev/null 2>&1 || true
     fi
-    : > "$UUID_FILE"   # clear any prior codex id; the new session learns its own
+    : > "$UUID_FILE"   # clear any prior opencode id; the new session learns its own
     TOKEN="$(uuidgen | tr 'A-Z' 'a-z' | tr -d '-')"; echo "$TOKEN" > "$TOKEN_FILE"
 else
     TOKEN="$(token_of "$SESSION_NAME")"
@@ -193,7 +193,7 @@ printf '%s\n' "$REMOTE_HOST" > "$SESSION_MAP_DIR/${SESSION_NAME}.host"
 deploy_driver() {
     if [[ ! -f "$DRIVER_SRC" ]]; then
         if ! $REDEPLOY && ssh "$REMOTE_HOST" "test -x \$HOME/.local/bin/$REMOTE_DRIVER" 2>/dev/null; then return 0; fi
-        echo "Error: driver source not found at $DRIVER_SRC (set CS_CODEX_TURN_SRC)" >&2; exit 1
+        echo "Error: driver source not found at $DRIVER_SRC (set CS_OPENCODE_TURN_SRC)" >&2; exit 1
     fi
     local local_sum remote_sum
     local_sum=$(md5sum "$DRIVER_SRC" | awk '{print $1}')
@@ -214,16 +214,16 @@ REMOTE_CMD="$REMOTE_DRIVER --tmux $TOKEN --format $DRIVER_FMT --name \"$SESSION_
 [[ -n "$WORKDIR" ]] && REMOTE_CMD="$REMOTE_CMD --workdir \"$WORKDIR\""
 
 LOCK_FILE="$LOCK_DIR/${SESSION_NAME}.lock"
-UUID_CAPTURE="$(mktemp "${TMPDIR:-/tmp}/cs-codex-cap.XXXXXX")"
+UUID_CAPTURE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-cap.XXXXXX")"
 trap 'rm -f "$UUID_CAPTURE"' EXIT
 
 # Stream the remote output, pulling out the session-id sentinel (so a new session learns its
-# codex id) and dropping that line from what the user sees.
+# opencode id) and dropping that line from what the user sees.
 filter_sentinel() {
     local line
     while IFS= read -r line; do
         case "$line" in
-            "__CS_CODEX_SESSION_ID__ "*) printf '%s' "${line#__CS_CODEX_SESSION_ID__ }" > "$UUID_CAPTURE" ;;
+            "__CS_OPENCODE_SESSION_ID__ "*) printf '%s' "${line#__CS_OPENCODE_SESSION_ID__ }" > "$UUID_CAPTURE" ;;
             *) printf '%s\n' "$line" ;;
         esac
     done
@@ -237,11 +237,11 @@ rotate_log() {
     [[ -n "$size" ]] && (( size > MAX_LOG_BYTES )) && mv -f "$f" "$f.1" || true
 }
 
-# Persist the codex session id the driver reported (maps name -> id for future --resume).
+# Persist the opencode session id the driver reported (maps name -> id for future --resume).
 store_uuid() {
     [[ -s "$UUID_CAPTURE" ]] || return 0
     local cap; cap="$(cat "$UUID_CAPTURE")"
-    [[ "$cap" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] && echo "$cap" > "$UUID_FILE" || true
+    [[ "$cap" =~ ^ses_[A-Za-z0-9]{20,40}$ ]] && echo "$cap" > "$UUID_FILE" || true
 }
 
 # Run one turn under the per-session lock (serializes turns to the same warm session).
@@ -300,7 +300,7 @@ if $BACKGROUND; then
     echo "Session:  $SESSION_NAME"
     echo "Running:  background (PID $BG_PID)"
     echo "Log:      $LOG_FILE"
-    echo "Check:    cs-codex-remote-output $SESSION_NAME"
+    echo "Check:    cs-opencode-remote-output $SESSION_NAME"
 else
     ssh_turn
 fi

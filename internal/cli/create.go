@@ -35,6 +35,7 @@ func autoEngine(isMacOS bool) string {
 type createFlags struct {
 	typ               string
 	engine            string
+	network           string
 	yolo              bool
 	solo              bool
 	privileged        bool
@@ -60,6 +61,7 @@ func newCreateCmd(app *App) *cobra.Command {
 	fl := cmd.Flags()
 	fl.StringVar(&f.typ, "type", "agent", "sandbox type: agent | user")
 	fl.StringVar(&f.engine, "engine", envOr("CS_SANDBOX_ENGINE", ""), "engine: podman | firecracker (default: firecracker on Linux/KVM, else podman)")
+	fl.StringVar(&f.network, "network", envOr("CS_SANDBOX_NETWORK", state.DefaultNetwork), "sandbox network (default: cs-sandbox-net)")
 	fl.BoolVar(&f.yolo, "yolo", false, "skip all agent permission prompts")
 	fl.BoolVar(&f.solo, "solo", false, "agent with no outbound SSH into the fabric (agent type only)")
 	fl.BoolVar(&f.privileged, "privileged", false, "podman: use --privileged instead of the scaled-down cap set")
@@ -99,6 +101,9 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	if f.solo && f.typ != "agent" {
 		return fmt.Errorf("--solo is only valid for agent sandboxes")
 	}
+	if err := state.ValidNetwork(f.network); err != nil {
+		return err
+	}
 	if _, err := state.Load(app.InstDir, name); err == nil {
 		return fmt.Errorf("sandbox %q already exists", name)
 	}
@@ -137,6 +142,7 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	}
 
 	d := app.engineDeps()
+	d.Network = f.network
 	if f.engine == "" {
 		f.engine = autoEngine(app.Host.IsMacOS) // firecracker on Linux/KVM, else podman
 	}
@@ -171,7 +177,7 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	}
 
 	cs := engine.CreateSpec{
-		Name: name, Type: f.typ, Yolo: f.yolo, Solo: f.solo, Privileged: f.privileged,
+		Name: name, Network: f.network, Type: f.typ, Yolo: f.yolo, Solo: f.solo, Privileged: f.privileged,
 		CPUs: f.cpus, MemMiB: f.mem, Snapshots: snaps, RepoClones: repos,
 		ImageStores: f.imageStores, InjectedEnv: injected, InheritAgentLogin: f.inheritAgentLogin,
 	}
@@ -190,7 +196,8 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	app.refreshHostRoute(cmd) // republish names if host-route is on (rootless, best-effort)
 
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "created %s (type=%s, engine=%s, ssh port=%d)\n", name, f.typ, f.engine, inst.Port)
+	fmt.Fprintf(out, "created %s (type=%s, engine=%s, network=%s, ssh port=%d)\n",
+		name, f.typ, f.engine, state.NetworkName(inst), inst.Port)
 	fmt.Fprintf(out, "  shell: ssh %s\n", name)
 	if len(inst.AgentLogins) > 0 {
 		fmt.Fprintf(out, "  agent login: %s (inherited from your host)\n", strings.Join(inst.AgentLogins, " + "))

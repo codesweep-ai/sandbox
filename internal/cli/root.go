@@ -4,10 +4,12 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"runtime"
+	"sort"
 	"text/tabwriter"
 	"time"
 
@@ -142,7 +144,7 @@ func newRootCmd(app *App) *cobra.Command {
 			app.FCCache = paths.FCCache()
 			app.AssetDir = paths.AssetDir()
 			app.Image = envOr("CS_SANDBOX_IMAGE", "localhost/cs-sandbox:44")
-			app.Network = "cs-sandbox-net"
+			app.Network = envOr("CS_SANDBOX_NETWORK", state.DefaultNetwork)
 			app.SSHBind = envOr("CS_SANDBOX_SSH_BIND", "127.0.0.1")
 			app.TZ = envOr("CS_SANDBOX_TZ", "America/Los_Angeles")
 			app.Timeout = 120
@@ -190,17 +192,65 @@ func newVersionCmd() *cobra.Command {
 }
 
 func newLsCmd(app *App) *cobra.Command {
-	var quiet bool
+	var quiet, jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: "List sandboxes",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if quiet && jsonOutput {
+				return fmt.Errorf("--quiet and --json are mutually exclusive")
+			}
+			if jsonOutput {
+				return runLsJSON(cmd.Context(), app, cmd.OutOrStdout())
+			}
 			return runLs(cmd.Context(), app, cmd.OutOrStdout(), quiet)
 		},
 	}
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "print only sandbox names, one per line (for scripting)")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "print stable machine-readable JSON")
 	return cmd
+}
+
+type lsJSONItem struct {
+	Name    string       `json:"name"`
+	Status  string       `json:"status"`
+	Created string       `json:"created,omitempty"`
+	Type    string       `json:"type,omitempty"`
+	Engine  state.Engine `json:"engine"`
+	Yolo    bool         `json:"yolo,omitempty"`
+	Solo    bool         `json:"solo,omitempty"`
+	Network string       `json:"network,omitempty"`
+}
+
+func runLsJSON(ctx context.Context, app *App, out io.Writer) error {
+	insts, err := state.List(app.InstDir)
+	if err != nil {
+		return err
+	}
+	sort.SliceStable(insts, func(i, j int) bool {
+		ni, nj := state.NetworkName(insts[i]), state.NetworkName(insts[j])
+		if ni != nj {
+			return ni < nj
+		}
+		return insts[i].Name < insts[j].Name
+	})
+	status := app.engineDeps().Statuses(ctx, insts)
+	items := make([]lsJSONItem, 0, len(insts))
+	for _, in := range insts {
+		items = append(items, lsJSONItem{
+			Name: in.Name, Status: status[in.Name], Created: in.Created, Type: in.Type,
+			Engine: in.Engine, Yolo: in.Yolo, Solo: in.Solo, Network: state.NetworkName(in),
+		})
+	}
+	for _, o := range app.engineDeps().Orphans(ctx) {
+		items = append(items, lsJSONItem{
+			Name: o.Name, Status: engine.StatusRemoved, Created: o.SinceRFC3339(), Engine: o.Engine,
+		})
+	}
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(items)
 }
 
 func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, error) }, quiet bool) error {
@@ -224,6 +274,16 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 		}
 		return nil
 	}
+	// The table is primarily a view of network groups. Keep campaign members
+	// adjacent, with deterministic name ordering inside each network. Quiet mode
+	// retains its historical global name ordering for scripting compatibility.
+	sort.SliceStable(insts, func(i, j int) bool {
+		ni, nj := state.NetworkName(insts[i]), state.NetworkName(insts[j])
+		if ni != nj {
+			return ni < nj
+		}
+		return insts[i].Name < insts[j].Name
+	})
 	// STATUS sits next to NAME, as it does in `kubectl get` — it is the column you
 	// scan for. Costs one `podman ps` for the whole listing.
 	status := app.engineDeps().Statuses(ctx, insts)
@@ -231,17 +291,17 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 	// No PORT column: you reach a sandbox by name (`ssh <name>`, from the managed
 	// ssh config), so a port here would suggest a way of working the tool doesn't
 	// want. `cs-sandbox port <name>` prints it for the cases that need it.
-	fmt.Fprintln(tw, "NAME\tSTATUS\tAGE\tTYPE\tENGINE\tYOLO\tSOLO")
+	fmt.Fprintln(tw, "NETWORK\tNAME\tSTATUS\tAGE\tTYPE\tENGINE\tYOLO\tSOLO")
 	for _, in := range insts {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			in.Name, status[in.Name], age(in.Created, time.Now()), in.Type, in.Engine,
-			yn(in.Yolo), yn(in.Solo))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			state.NetworkName(in), in.Name, status[in.Name], age(in.Created, time.Now()), in.Type,
+			in.Engine, yn(in.Yolo), yn(in.Solo))
 	}
 	// Leftovers last, under the sandboxes that still exist. Only the columns the
 	// data itself answers for are filled in; the rest went with the state record.
 	for _, o := range orphans {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			o.Name, engine.StatusRemoved, age(o.SinceRFC3339(), time.Now()), "-", o.Engine, "-", "-")
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			"-", o.Name, engine.StatusRemoved, age(o.SinceRFC3339(), time.Now()), "-", o.Engine, "-", "-")
 	}
 	if err := tw.Flush(); err != nil {
 		return err

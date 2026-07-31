@@ -52,7 +52,7 @@ func (fe *Firecracker) fabric() fcnet.Fabric {
 		Runner:  fe.d.Runner,
 		Network: fe.d.Network,
 		Image:   fe.d.Image,
-		NetDir:  paths.FCNet(),
+		NetDir:  paths.FCNetFor(fe.d.Network),
 	}
 }
 
@@ -139,7 +139,8 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 
 	inst = &state.Instance{
 		Name: s.Name, Type: s.Type, Engine: state.Firecracker,
-		FCIP: ip, Port: port, CPUs: s.CPUs, MemMiB: s.MemMiB,
+		Network: d.Network,
+		FCIP:    ip, Port: port, CPUs: s.CPUs, MemMiB: s.MemMiB,
 		Yolo: s.Yolo, Solo: s.Solo, Shared: s.ImageStores, Created: nowUTC(),
 	}
 	for _, sn := range s.Snapshots {
@@ -228,7 +229,7 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	cfg := fcconfig.Build(fcconfig.Spec{
 		KernelPath: fe.cache().Kernel(), InitrdPath: fe.cache().Initrd(),
 		RootfsPath: rootfs, SeedPath: seedImg,
-		TapName: fcnet.TapName(ip), MAC: fcnet.GuestMAC(ip), VsockPath: vsock,
+		TapName: fab.TapName(ip), MAC: fcnet.GuestMAC(ip), VsockPath: vsock,
 		VCPUs: s.CPUs, MemMiB: s.MemMiB,
 		RepoDisks: repoDisks, SnapshotDisks: snapDisks, StoreDisks: storeDisks,
 	})
@@ -254,8 +255,14 @@ func (fe *Firecracker) launch(ctx context.Context, name string, inst *state.Inst
 	d := fe.d
 	idir := d.InstanceDir(name)
 	fab := fe.fabric()
-	tap := fcnet.TapName(inst.FCIP)
+	tap := fab.TapName(inst.FCIP)
 	removeVsock(idir)
+	// A stopped VM retains its recorded network membership. Recreate that
+	// network if host maintenance or a reboot removed it; never fall back to the
+	// default fabric.
+	if err := d.EnsureNetwork(ctx); err != nil {
+		return err
+	}
 	if err := fab.Up(ctx); err != nil {
 		return err
 	}
@@ -338,7 +345,7 @@ func (fe *Firecracker) Remove(ctx context.Context, name string, purge bool) erro
 	fe.shutdown(ctx, name)
 	fab.FwdDown(idir)
 	if in, err := state.Load(fe.d.InstDir, name); err == nil && in.FCIP != "" {
-		fab.TapDel(ctx, fcnet.TapName(in.FCIP))
+		fab.TapDel(ctx, fab.TapName(in.FCIP))
 	}
 	fab.Unregister(name)
 	if purge {
@@ -357,6 +364,7 @@ func (fe *Firecracker) Remove(ctx context.Context, name string, purge bool) erro
 		}
 	}
 	fab.GC(ctx, func() bool { return fe.anyVMRunning(ctx) })
+	fe.d.ReclaimNetwork(ctx)
 	return nil
 }
 
@@ -386,7 +394,7 @@ func (fe *Firecracker) anyVMRunning(ctx context.Context) bool {
 	}
 	insts, _ := state.List(fe.d.InstDir)
 	for _, in := range insts {
-		if in.Engine == state.Firecracker && fcRunning(fe.d.InstanceDir(in.Name)) {
+		if in.Engine == state.Firecracker && state.NetworkName(in) == fe.d.Network && fcRunning(fe.d.InstanceDir(in.Name)) {
 			return true
 		}
 	}

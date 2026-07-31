@@ -174,12 +174,15 @@ skips the keep-id / runtime-user dance - the VM is genuinely root with its own u
 
 Boot to ready is ~1-2 s.
 
-## Networking - one unified fabric
+## Networking - network-scoped fabrics
 
-Containers and VMs share **one** rootless L2 fabric - a dedicated Podman network `cs-sandbox-net` -
-so they reach each other directly and by name across engines. Rather than a separate namespace, a VM
+Containers and VMs assigned to the same network share a rootless L2 fabric. The default is the
+Podman network `cs-sandbox-net`; `create --network` selects a netavark `isolate=true` fabric. Members reach each
+other directly and by name across engines, while separate fabrics are not routed together. Rather
+than a separate namespace, a VM
 runs **inside Podman's own rootless network namespace** (entered with `podman unshare
---rootless-netns`), with a tap on the network's bridge (tap `fdt<lastoctet>`, MAC
+--rootless-netns`), with a network-scoped tap on the network's bridge (the default uses
+`fdt<lastoctet>`; custom networks use a short network hash plus the last octet), MAC
 `02:fc:0a:59:00:<lastoctet>`) and a static address from the **high end of the subnet**
 (`<prefix>.200-.250`, above the low addresses netavark hands containers, so no clash).
 
@@ -204,7 +207,7 @@ runs **inside Podman's own rootless network namespace** (entered with `podman un
 (The `10.89.x` addresses are illustrative - `cs-sandbox` reads back whatever Podman assigns
 `cs-sandbox-net`.)
 
-Two helpers keep the fabric usable independent of user containers:
+Two per-network helpers keep each fabric usable independent of user containers:
 
 - **keepalive container** (`cs-sandbox-net-keepalive`, hidden from `ls`): netavark builds and tears
   down the bridge + aardvark-dns around *running containers*, so a lone VM would otherwise lose its

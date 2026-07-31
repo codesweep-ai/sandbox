@@ -92,6 +92,16 @@ func FCNet() string {
 	return filepath.Join(cacheHome(), app, "net")
 }
 
+// FCNetFor returns the host-global working directory for one network fabric.
+// Preserve the historical directory for the default fabric; custom networks
+// get isolated DNS/name bookkeeping beneath it.
+func FCNetFor(network string) string {
+	if network == "" || network == "cs-sandbox-net" {
+		return FCNet()
+	}
+	return filepath.Join(FCNet(), network)
+}
+
 // AssetDir is where the build assets (Containerfile + image/ tree) live on disk:
 // an explicit CS_SANDBOX_ASSETS_DIR, else the checkout root (bin/cs-sandbox next
 // to go.mod), else the cwd. A downloaded binary with no checkout uses its

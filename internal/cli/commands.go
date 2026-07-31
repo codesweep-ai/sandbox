@@ -18,6 +18,7 @@ func (a *App) engineFor(name string) (engine.Engine, *state.Instance, error) {
 		return nil, nil, fmt.Errorf("no such sandbox %q", name)
 	}
 	d := a.engineDeps()
+	d.Network = state.NetworkName(in)
 	switch in.Engine {
 	case state.Firecracker:
 		return engine.NewFirecracker(d), in, nil

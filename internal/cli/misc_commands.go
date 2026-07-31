@@ -117,8 +117,9 @@ func normalizeInsecure(v string) string {
 // agentLaunch maps an agent name to the in-sandbox command that starts its login
 // flow. Codex is the odd one: its login lives behind a subcommand.
 var agentLaunch = map[string]string{
-	"claude": "cs-claude",
-	"codex":  "cs-codex login",
+	"claude":   "cs-claude",
+	"codex":    "cs-codex login",
+	"opencode": "cs-opencode providers login",
 }
 
 // agentNames lists the supported agents, sorted, for errors and completion.

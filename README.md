@@ -1,7 +1,7 @@
 # sandbox
 
-> **Disposable, isolated Linux dev sandboxes (rootless Podman containers or Firecracker microVMs on
-> one shared network) for running AI coding agents.**
+> **Disposable, isolated Linux dev sandboxes (rootless Podman containers or Firecracker microVMs)
+> for running AI coding agents.**
 
 [![CI](https://github.com/codesweep-ai/sandbox/actions/workflows/ci.yml/badge.svg)](https://github.com/codesweep-ai/sandbox/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -9,12 +9,12 @@
 ![Platforms](https://img.shields.io/badge/platform-Linux%20%C2%B7%20macOS-lightgrey)
 
 `cs-sandbox` is a self-contained CLI that creates and manages these sandboxes. Each one is a rootless
-Linux environment built from a single image, with a modern toolchain and the **Claude Code** &
-**Codex** agents preinstalled. Spin up many named sandboxes, reach each by name over SSH, and share
+Linux environment built from a single image, with a modern toolchain and the **Claude Code**,
+**Codex** & **OpenCode** agents preinstalled. Spin up many named sandboxes, reach each by name over SSH, and share
 **only** the repos or directories you choose. Nothing on your host is shared unless you ask — not
 your files, not your SSH keys.
 
-By default your Claude and Codex logins aren't shared either — but a sandbox can easily inherit them
+By default your agent logins aren't shared either — but a sandbox can easily inherit them
 when you want it to, with `--inherit-agent-login`. That's usually the convenient choice: it saves you
 logging in inside the sandbox. Some of the walkthroughs below show it. The loop is
 **create → work → fetch → destroy**.
@@ -57,8 +57,9 @@ containers inside a sandbox, port forwarding, agents driving agents).
 ## How it fits together
 
 You drive everything from your host with the `cs-sandbox` CLI. Each sandbox runs on one of two
-engines (a Podman container or a Firecracker microVM) but they all join a single shared network, so
-every sandbox is reachable by name. You share data into a sandbox explicitly, as a git repo
+engines (a Podman container or a Firecracker microVM). By default they join one shared network; use
+`--network` to create isolated groups whose members remain reachable to each other by name. You
+share data into a sandbox explicitly, as a git repo
 or a frozen snapshot, and pull commits back out. The diagram below traces that: the
 host on top, the shared network holding the sandboxes, and how data moves in and out.
 
@@ -94,12 +95,13 @@ Every sandbox boots from the same image, so there is nothing to install inside o
 - **A broad dev toolchain** — git, Podman, Node, Python, Go, Java, Neovim, tmux, and the usual CLI
   helpers (ripgrep, fd, fzf, bat, jq/yq, gh, uv). Full list in
   [`image/Containerfile`](image/Containerfile).
-- **The Claude Code and Codex agents**, with **`cs-claude` / `cs-codex`** — small wrappers that
-  launch each agent on a ready-to-use, sandbox-local configuration. Each agent gets its own profile
-  directory (never your personal `~/.claude` / `~/.codex`), sane permission defaults, and the working
-  directory pre-trusted, so it starts working instead of asking setup questions. Run `cs-claude`
+- **The Claude Code, Codex, and OpenCode agents**, with **`cs-claude` / `cs-codex` /
+  `cs-opencode`** — small wrappers that launch each agent on a ready-to-use, sandbox-local
+  configuration. Each agent gets its own profile directory (never your personal `~/.claude` /
+  `~/.codex` / `~/.config/opencode`), sane permission defaults, and the working directory
+  pre-trusted, so it starts working instead of asking setup questions. Run `cs-claude`
   rather than `claude` and it's configured.
-- **Remote agent tools** — `cs-claude-remote` and `cs-codex-remote` (each with `-status`,
+- **Remote agent tools** — `cs-claude-remote`, `cs-codex-remote`, and `cs-opencode-remote` (each with `-status`,
   `-output`, `-sessions`, `-forget` companions). These tools start or resume an agent session on
   *another* sandbox over SSH, keep it warm, and hand back its output — so an agent working in one
   sandbox can give a task to an agent in another
@@ -116,7 +118,7 @@ Codex on the host. It's a handful of commands, and `cs-sandbox doctor` checks ev
 prints the fix for anything missing.
 
 **About the agent login.** A sandbox does *not* get your Claude or Codex login by default. Some of the
-walkthroughs below pass `--inherit-agent-login claude` (or `codex`, or both), which copies that host
+walkthroughs below pass `--inherit-agent-login claude` (or `codex`/`opencode`), which copies that host
 login into the sandbox as it is created — the convenient choice we normally make, since it saves
 logging in inside every sandbox. When you'd rather keep a sandbox on its own account, leave the flag
 off and log in inside it with `cs-sandbox agent-login claude <name>`. See
@@ -241,7 +243,8 @@ cs-sandbox unforward web all
 Instead of mapping ports one at a time, `host-route` makes **every** port bound inside a sandbox
 reachable from the host at `<name>.cs.sandbox`. Setting the route up asks for `sudo` once
 (`host-route up`); after that, creating sandboxes and reaching their ports needs none. Optional and
-Linux-only. Continuing from walkthrough 4:
+Linux-only. It publishes only members of the default `cs-sandbox-net`; isolated `--network` groups
+remain reachable through SSH and explicit `forward`. Continuing from walkthrough 4:
 
 ```bash
 cs-sandbox host-route up                 # sets up the host route; asks for sudo, once
@@ -285,7 +288,7 @@ ssh driver
 ## Choosing an engine: Podman vs Firecracker
 
 Both engines work the same way for almost everything: same image, trust model, sharing flags, and
-shared network. They differ mostly in isolation versus weight. Pick with `--engine podman|firecracker`.
+network behavior. They differ mostly in isolation versus weight. Pick with `--engine podman|firecracker`.
 
 | | **Podman container** | **Firecracker microVM** |
 |---|---|---|
@@ -343,7 +346,7 @@ independent of sandbox type. Lend deliberately — two conditions to keep in min
   autonomous work.
 - **Nothing shared by default.** Host data enters a sandbox only through `--repo` (a git checkout)
   or `--snapshot` (a frozen read-only copy). Results come back out with `cs-sandbox fetch`.
-- **Your Claude and Codex logins are not shared either**, unless you name one: `create
+- **Your agent logins are not shared either**, unless you name one: `create
   --inherit-agent-login claude` copies that login in, and `create` prints what the sandbox ended up
   with. Without it the sandbox has no agent login — log in inside it, on its own account if you
   prefer. Provider API keys are never copied at all; pass one with `--env` when a sandbox needs it.

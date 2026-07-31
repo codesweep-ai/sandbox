@@ -210,6 +210,27 @@ RUN case "$(uname -m)" in x86_64|amd64) tgt=x86_64-unknown-linux-musl ;; arm64|a
   && rm -rf /tmp/codex-dl \
   && /opt/codex/bin/codex --version
 
+# OpenCode (anomalyco/opencode) — single bun-compiled binary, same pinned read-only /opt model as
+# Claude Code and Codex above. Upstream publishes no SHA256SUMS for the CLI tarballs (its minisign
+# signatures cover only the desktop-app assets), so the checksums below were recorded from the
+# release assets at authoring time; bumping OPENCODE_VERSION requires re-recording both. Its one
+# external runtime dependency (ripgrep) is already installed from Fedora above. The cs-opencode
+# wrapper sets OPENCODE_DISABLE_AUTOUPDATE (the binary can't write /opt, but silence the nag).
+ARG OPENCODE_VERSION=1.18.10
+RUN case "$(uname -m)" in \
+       x86_64|amd64) arch=x64;   want=6b1113da704253fb4da12b41e4236acecb9f2b62949c945f6eeacaa15111b976 ;; \
+       arm64|aarch64) arch=arm64; want=41ae3041e91b894e4c0dc06a73a9a2796254bf390ffb99626a43af5e2912d170 ;; \
+       *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
+  && asset="opencode-linux-${arch}.tar.gz" \
+  && mkdir -p /opt/opencode/bin /tmp/opencode-dl \
+  && curl -fsSL -o "/tmp/opencode-dl/$asset" "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/$asset" \
+  && got=$(sha256sum "/tmp/opencode-dl/$asset" | cut -d' ' -f1) \
+  && { [ "$want" = "$got" ] || { echo "opencode checksum mismatch: want=$want got=$got" >&2; exit 1; }; } \
+  && tar -xzf "/tmp/opencode-dl/$asset" -C /opt/opencode/bin --no-same-owner \
+  && chmod 0755 /opt/opencode/bin/opencode \
+  && rm -rf /tmp/opencode-dl \
+  && /opt/opencode/bin/opencode --version
+
 # Python CLI tools in an isolated, root-owned venv
 RUN python3 -m venv /opt/py-tools \
   && /opt/py-tools/bin/pip install --no-cache-dir claude-code-transcripts
@@ -220,7 +241,7 @@ RUN chmod -R a+rX /opt
 # Toolchains on PATH for ALL shells (incl. non-interactive `ssh cs-sandbox-x <cmd>`), so node,
 # the agents (claude, codex), and the py-tools are found without sourcing ~/.bashrc. (~/.bashrc
 # additionally runs pyenv/nvm init for interactive version switching.)
-ENV PATH=/opt/nvm/versions/node/v24.4.1/bin:/opt/py-tools/bin:/opt/claude/bin:/opt/codex/bin:/opt/pyenv/bin:${PATH}
+ENV PATH=/opt/nvm/versions/node/v24.4.1/bin:/opt/py-tools/bin:/opt/claude/bin:/opt/codex/bin:/opt/opencode/bin:/opt/pyenv/bin:${PATH}
 
 # Make `podman` run ROOTFUL by default — the nested engine must (rootless-inner fails
 # under keep-id). A thin wrapper ahead of /usr/bin in PATH routes podman through the

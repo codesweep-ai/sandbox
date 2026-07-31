@@ -1,13 +1,15 @@
 # Managing Dev Sandboxes with cs-sandbox
 
 `cs-sandbox` creates and manages disposable Linux dev sandboxes — rootless **Podman containers** or
-**Firecracker microVMs** — that all join one shared network, so each is reachable by name over SSH.
+**Firecracker microVMs** — on a shared default network or isolated named networks, with members
+reachable to each other by name over SSH.
 Nothing on the host is shared unless you ask: code goes in through `--repo` / `--snapshot`, and
 commits come back out with `fetch`. The loop is **create → work → fetch → destroy**.
 
-Every sandbox already carries a broad dev toolchain, the Claude Code and Codex agents with their
-`cs-claude` / `cs-codex` launch wrappers (ready-to-use, sandbox-local agent config), and the
-`cs-claude-remote` / `cs-codex-remote` tools for running an agent session on another sandbox.
+Every sandbox already carries a broad dev toolchain, the Claude Code, Codex, and OpenCode agents
+with their `cs-claude` / `cs-codex` / `cs-opencode` launch wrappers (ready-to-use, sandbox-local
+agent config), and the `cs-claude-remote` / `cs-codex-remote` / `cs-opencode-remote` tools for
+running an agent session on another sandbox.
 
 > **This is a host tool.** `cs-sandbox` is not installed *inside* sandboxes. If it is not on PATH,
 > you are probably already inside one — reach peers with plain `ssh <name>` and move commits with
@@ -22,11 +24,12 @@ cs-sandbox create feature --repo ~/projects/api        # repo lands at ~/api on 
 cs-sandbox create feature --repo ~/projects/api --inherit-agent-login claude   # ...agent logged in
 cs-sandbox create dev --type user --repo ~/projects/api
 cs-sandbox create lab --yolo --solo                    # throwaway playground, no outbound ssh
+cs-sandbox create worker --network campaign-a --solo  # isolated group; controller can SSH in
 cs-sandbox create web --engine podman --snapshot ~/data # frozen read-only copy at ~/data
 
 ssh feature                     # shell in by name (preferred for interactive work)
 cs-sandbox exec feature ls      # run one command instead
-cs-sandbox ls                   # what exists: STATUS (running/stopped/removed), AGE, type, engine
+cs-sandbox ls                   # STATUS, AGE, type, engine, solo flag, and NETWORK
 cs-sandbox ls -q                # names only, one per line — pipe it into other commands
 cs-sandbox port feature         # its host SSH port, if a tool needs it (ssh <name> does not)
 
@@ -114,7 +117,7 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
 | User says | What to do |
 |---|---|
 | "spin up a sandbox for this repo" / "give the agent a sandbox with X" | `cs-sandbox create <name> --repo <path> --inherit-agent-login claude` (drop the flag if they want it without a login); report the name and that `ssh <name>` works |
-| "it should already be logged in" / "don't make me log in again" | add `--inherit-agent-login claude` (or `codex`, or both) at create |
+| "it should already be logged in" / "don't make me log in again" | add `--inherit-agent-login claude` (or `codex`/`opencode`) at create |
 | "make me a workspace I can drive" / "a user sandbox" | `cs-sandbox create <name> --type user --repo <path>` |
 | "throwaway / no prompts / let it rip" | `cs-sandbox create <name> --yolo` (add `--solo` to also deny outbound ssh) |
 | "stronger isolation" / "untrusted work" | `--engine firecracker` (Linux + `/dev/kvm` only) |
@@ -147,7 +150,7 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
 - On macOS everything runs in one podman-machine VM, and `--repo` / `--snapshot` sources must live
   under `$HOME` — `create` rejects paths outside it.
 - The agent login is **not** inherited by default — a sandbox starts with none. Pass
-  `--inherit-agent-login claude` (or `codex`, or both comma-separated) at create to carry the host
+  `--inherit-agent-login claude` (or `codex`/`opencode`, comma-separated) at create to carry the host
   login in; that is the usual choice, since otherwise someone has to log in inside every
   sandbox. `create` reports what the sandbox ended up with. Without the flag, log it in with
   `cs-sandbox agent-login claude <name>`, which is also how you give a sandbox its own account

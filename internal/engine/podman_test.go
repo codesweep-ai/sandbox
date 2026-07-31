@@ -54,6 +54,18 @@ func TestBuildRunArgsScaledDownCaps(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgsCustomNetwork(t *testing.T) {
+	p := baseParams()
+	p.Network = "campaign-a"
+	got := strings.Join(buildRunArgs(p), " ")
+	if !strings.Contains(got, "--network campaign-a") {
+		t.Errorf("custom network missing:\n%s", got)
+	}
+	if !strings.Contains(got, "--label cs-sandbox.network=campaign-a") {
+		t.Errorf("custom network label missing:\n%s", got)
+	}
+}
+
 // The host group NAME is passed on macOS only; a Linux host leaves the guest's
 // existing name for that gid alone.
 func TestBuildRunArgsGroupIsMacOSOnly(t *testing.T) {

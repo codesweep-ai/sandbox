@@ -6,6 +6,7 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/fcnet"
 	"github.com/codesweep-ai/sandbox/internal/hostroute"
 	"github.com/codesweep-ai/sandbox/internal/paths"
+	"github.com/codesweep-ai/sandbox/internal/state"
 	"github.com/spf13/cobra"
 )
 
@@ -13,12 +14,12 @@ import (
 func (a *App) hostRoute() hostroute.HostRoute {
 	netDir := paths.FCNet()
 	return hostroute.HostRoute{
-		Fab:     fcnet.Fabric{Runner: a.Runner, Network: a.Network, Image: a.Image, NetDir: netDir},
+		Fab:     fcnet.Fabric{Runner: a.Runner, Network: state.DefaultNetwork, Image: a.Image, NetDir: netDir},
 		Runner:  a.Runner,
 		InstDir: a.InstDir,
 		NetDir:  netDir,
 		UID:     a.Host.UID,
-		Network: a.Network,
+		Network: state.DefaultNetwork,
 		Suffix:  envOr("CS_SANDBOX_DNS_SUFFIX", "cs.sandbox"),
 	}
 }

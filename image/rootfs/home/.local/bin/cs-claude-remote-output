@@ -7,9 +7,7 @@
 #   cs-claude-remote-output <name> -f         # follow (tail -f) the log
 #   cs-claude-remote-output <name> -n 50      # show last 50 lines
 #   cs-claude-remote-output <name> --full     # show the entire log
-#   cs-claude-remote-output <name> -s         # status only: print "running"
-#                                                  # or "finished" and exit
-#                                                  # (exit 0 = finished, 2 = running)
+#   cs-claude-remote-output <name> -s         # status: finished/running/failed/unknown
 
 set -euo pipefail
 
@@ -34,8 +32,8 @@ while [[ $# -gt 0 ]]; do
             echo "  -n NUM     Show last NUM lines (default: 30)"
             echo "  -f         Follow the log in real time (tail -f)"
             echo "  --full     Show the entire log file"
-            echo "  -s         Status only: print 'running' or 'finished' and exit."
-            echo "             Exit code: 0=finished, 2=running, 1=unknown/error."
+            echo "  -s         Status only: finished/running/failed/unknown."
+            echo "             Exit code: 0=finished, 2=running, 3=failed, 1=unknown/error."
             echo "             Cheap local-only check; no SSH, no log tail."
             exit 0
             ;;
@@ -104,12 +102,18 @@ fi
 #   no footer + PID not alive -> worker died without writing a footer: crashed
 RUNNING=false
 CRASHED=false
+FAILED=false
+LAST_EXIT=""
 if $LOG_FINISHED; then
     RUNNING=false
 elif $PID_ALIVE; then
     RUNNING=true
 else
     CRASHED=true
+fi
+if $LOG_FINISHED && [[ -n "$last_finish_ln" ]]; then
+    LAST_EXIT="$(sed -n "${last_finish_ln}p" "$LOG_FILE" | sed -E 's/.*finished \(exit ([0-9]+)\).*/\1/')"
+    [[ "$LAST_EXIT" == "0" ]] || FAILED=true
 fi
 
 if $STATUS_ONLY; then
@@ -120,6 +124,9 @@ if $STATUS_ONLY; then
         echo "unknown"
         echo "Session '$SESSION' has no completion footer and no live process — it likely crashed mid-turn." >&2
         exit 1
+    elif $FAILED; then
+        echo "failed"
+        exit 3
     else
         echo "finished"
         exit 0
@@ -135,6 +142,8 @@ if $RUNNING; then
     dim "Session '$SESSION' is still running${PID:+ (PID $PID)}"
 elif $CRASHED; then
     dim "Session '$SESSION' appears to have crashed (no completion footer, no live process)"
+elif $FAILED; then
+    dim "Session '$SESSION' failed (exit $LAST_EXIT)"
 else
     dim "Session '$SESSION' has finished"
 fi

@@ -45,7 +45,7 @@ build serves every developer and machine and you never rebuild to match your loc
 Two pieces make this work:
 
 - **Toolchains live under `/opt`** (shared, root-owned), not in a per-user `$HOME`: pyenv+Python,
-  nvm+Node, the native coding-agent binaries (Claude Code, Codex), and Python CLI tools in a venv.
+  nvm+Node, the native coding-agent binaries (Claude Code, Codex, OpenCode), and Python CLI tools in a venv.
   All are on `PATH` for every shell (so non-interactive `ssh <name> <cmd>` finds them too). Being
   root-owned, they are effectively read-only for the dev user - adding language versions or global
   packages needs `sudo`; per-project virtualenvs and `node_modules` in your repos are unaffected.
@@ -186,14 +186,17 @@ your other sandboxes (you keep full reach into it).
 
 ## Networking and name resolution
 
-Sandboxes run on a rootless bridge network (`cs-sandbox-net`), created on demand - **not**
-host networking. A bridge keeps each sandbox's network stack isolated, gives DNS for free
+Sandboxes run on a rootless bridge network, created on demand - **not** host networking. The default
+is `cs-sandbox-net`; `create --network <name>` selects a separate `isolate=true` bridge and persists
+that membership in instance state. The isolate option blocks netavark routing between custom bridge
+subnets; a bridge keeps each sandbox's network stack isolated and gives DNS for free
 (so name-based reach is automatic), forwards cleanly on macOS, and keeps sandbox services off
 the host's loopback by default.
 
-**Reach by name, between sandboxes.** Podman's aardvark-dns resolves container names on the
-network, and the microVM engine adds a small forwarding dnsmasq for VM names - so any sandbox
-reaches any other as `ssh <name>` (internal port 22), container↔VM included.
+**Reach by name, between sandboxes.** Podman's aardvark-dns resolves container names on the selected
+network, and the microVM engine adds a per-network forwarding dnsmasq for VM names - so members of
+the same network reach one another as `ssh <name>` (internal port 22), container↔VM included.
+Sandboxes on different networks neither resolve nor connect to one another through the fabric.
 
 **Reach by name, from the host.** Every sandbox's sshd listens on **22** internally; the host
 publishes it on `127.0.0.1:<PORT>`, where `<PORT>` is the first free port in **2200-2399**:
@@ -215,7 +218,8 @@ The fragment is per instances root — `cs-sandbox` for the default one, a disti
   are generated once at create time and persisted, so its identity is stable across restarts.
 
 `cs-sandbox sync-ssh-config` regenerates the host config (both engines). Discover sandboxes with
-`cs-sandbox ls`, `cs-sandbox port <name>`. `ls` also reports each sandbox's lifecycle state in a
+`cs-sandbox ls`, `cs-sandbox port <name>`. `ls` reports the persisted network in `NETWORK` and each
+sandbox's lifecycle state in a
 `STATUS` column — `running` or `stopped`, the same words `start`/`stop` use — read from `podman ps`
 for a container and from the microVM's pid file for a VM, plus an `AGE` column. A third value,
 **`removed`**, covers data `rm` kept after its sandbox was gone (`internal/engine/orphan.go`): the
@@ -272,7 +276,8 @@ at the fabric's own DNS resolver for the **`.cs.sandbox`** domain. After that, `
 <name>.cs.sandbox`, `curl http://<name>.cs.sandbox:8000`, and any other protocol work from the
 host, for both engines. Names are published into the resolver **rootlessly**, so create/destroy
 need no further sudo, and `/etc/hosts` is never touched. It is **off by default, Linux-only,
-needs systemd-resolved**, and is the **only** feature that uses `sudo` (and only for `up`/`down`,
+needs systemd-resolved**, applies only to the default `cs-sandbox-net` (custom networks use SSH or
+explicit `forward` from the host), and is the **only** feature that uses `sudo` (and only for `up`/`down`,
 never in the create/exec path). Mechanism and rationale (including why a name suffix is required)
 are in [`firecracker.md`](firecracker.md#optional-reach-sandboxes-directly-from-the-host-host-route).
 
@@ -324,27 +329,34 @@ contention and corruption.
 
 ## Bundled agent tools and login
 
-Every sandbox ships the `cs-claude` and `cs-codex` toolsets, so the coding agents work without
+Every sandbox ships the `cs-claude`, `cs-codex`, and `cs-opencode` toolsets, so the coding agents work without
 re-authenticating per sandbox. Everything non-secret is baked into the image skeleton from
 `image/rootfs/home/` in this repo; everything secret is carried per sandbox through the seed.
 
 **Baked in (non-secret):**
 
-- **Launch wrappers** in `~/.local/bin`. `cs-claude` runs `claude` under `CLAUDE_CONFIG_DIR=~/.cs-claude`
+- **Launch wrappers** in `~/.local/bin` (the OpenCode adapter's internals — driver architecture,
+  verified upstream behaviors, version-bump procedure — have their own reference,
+  [opencode.md](opencode.md)). `cs-claude` runs `claude` under `CLAUDE_CONFIG_DIR=~/.cs-claude`
   in `--permission-mode auto`; `cs-codex` runs `codex` under `CODEX_HOME=~/.cs-codex` with
-  `approval_policy=on-request` + `sandbox_mode=workspace-write`. Each uses a dedicated profile, so the
-  sandbox's config never touches a personal `~/.claude`/`~/.codex`, and each pre-trusts the launch
-  directory so the agent never stops at a "do you trust this folder?" gate.
-- **Remote agent tools**, also in `~/.local/bin`: `cs-claude-remote` and `cs-codex-remote`, each with
+  `approval_policy=on-request` + `sandbox_mode=workspace-write`; `cs-opencode` runs `opencode` under
+  `OPENCODE_CONFIG_DIR=~/.cs-opencode` with a profile-scoped session db (`OPENCODE_DB`) and inline
+  auth (`OPENCODE_AUTH_CONTENT`), with a pinned model and blanket-allow permissions in its
+  `opencode.json`. Each uses a dedicated profile, so the sandbox's config never touches a personal
+  `~/.claude`/`~/.codex`/`~/.config/opencode`, and each pre-trusts the launch directory (or has no
+  trust gate) so the agent never stops at a "do you trust this folder?" gate.
+- **Remote agent tools**, also in `~/.local/bin`: `cs-claude-remote`, `cs-codex-remote`, and
+  `cs-opencode-remote`, each with
   `-status`/`-output`/`-sessions`/`-forget` and a `-turn` driver. They start or resume an agent
   session on another host over SSH, keeping it warm in tmux, so an agent in one sandbox can hand a
   task to an agent in another. The target host resolves per session and defaults to the sandbox
   itself, so reaching anywhere else needs SSH access the sandbox actually has — for a user sandbox,
   typically keys you forwarded with `ssh -A`.
 - **Settings and instruction hubs**: `~/.cs-claude` (a `settings.json`, a `CLAUDE.md` hub, and a
-  `CLAUDE_PERMISSIONS.md` reference) and `~/.cs-codex` (a `config.toml` and an `AGENTS.md` hub). Both
-  hubs describe **both** toolsets and point at the per-tool docs in `~/.local/bin`, so an in-sandbox
-  Claude can drive Codex remote sessions and vice versa.
+  `CLAUDE_PERMISSIONS.md` reference), `~/.cs-codex` (a `config.toml` and an `AGENTS.md` hub), and
+  `~/.cs-opencode` (an `opencode.json` and an `AGENTS.md` hub). Every hub describes **all three**
+  toolsets and points at the per-tool docs in `~/.local/bin`, so an in-sandbox Claude can drive
+  Codex or OpenCode remote sessions and vice versa.
 
 **YOLO mode.** `cs-sandbox create --yolo` writes a `.yolo` marker; the wrappers then skip all
 permission prompts. That is safe because the sandbox is the isolation boundary — it is disposable and
@@ -352,7 +364,7 @@ cannot reach your host.
 
 **Carried per sandbox (secret, never baked).** Inheriting a host login is opt-in — but it is the
 common case, since the alternative is logging in inside every sandbox: `create
---inherit-agent-login claude|codex` snapshots that agent's credential into the seed, and the guest
+--inherit-agent-login claude|codex|opencode` snapshots that agent's credential into the seed, and the guest
 installs it into the home volume (mode 600) on first boot only. A sandbox created without the flag
 has no agent login — log in inside it, or with `cs-sandbox agent-login <agent> <name>`. Provider API
 keys are never carried; pass them with `--env` if a sandbox needs them. The single-seat and macOS
