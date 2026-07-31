@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -364,6 +365,56 @@ func TestEnsureFirecrackerBinDigestMismatch(t *testing.T) {
 	}
 	if f.Contains("tar -xzf") {
 		t.Errorf("unpacked a tarball that failed verification: %s", f)
+	}
+}
+
+// TestInstallBinOverRunningBinary is the ETXTBSY regression: refreshing the
+// cached firecracker binary must work while a microVM is still executing the old
+// one. Copying onto the target in place fails with "text file busy"; renaming
+// into place swaps the directory entry and leaves the running process on its
+// inode.
+func TestInstallBinOverRunningBinary(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "firecracker")
+
+	// A "VMM" that runs until killed, standing in for a booted microVM.
+	old := "#!/bin/sh\nexec sleep 60\n"
+	if err := os.WriteFile(dst, []byte(old), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(dst)
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot exec the stand-in binary here: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+
+	src := filepath.Join(dir, "new-release")
+	if err := os.WriteFile(src, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := installBin(src, dst); err != nil {
+		t.Fatalf("installBin over a running binary = %v, want nil", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) == old {
+		t.Error("installBin left the old binary in place")
+	}
+	fi, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&0o111 == 0 {
+		t.Errorf("installed binary mode = %v, want executable", fi.Mode())
+	}
+	// No temp file left behind for the next build to trip over.
+	if exists(dst + ".new") {
+		t.Error("installBin left its temp file in the cache")
 	}
 }
 

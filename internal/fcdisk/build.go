@@ -204,14 +204,11 @@ func (c Cache) ensureFirecrackerBin(ctx context.Context, r run.Runner, bc BuildC
 	if len(matches) == 0 {
 		return fmt.Errorf("fc: firecracker binary not found in release tarball")
 	}
-	// Drop the stamp before overwriting the binary so a failure mid-install leaves
+	// Drop the stamp before replacing the binary so a failure mid-install leaves
 	// the cache "unknown version" (refetched next time) rather than a stamp that
 	// claims a release the binary on disk is not.
 	_ = os.Remove(c.stampPath("fc-version"))
-	if _, err := r.Run(ctx, run.Opts{}, "cp", matches[0], fc); err != nil {
-		return err
-	}
-	if err := os.Chmod(fc, 0o755); err != nil {
+	if err := installBin(matches[0], fc); err != nil {
 		return err
 	}
 	if rel, _ := filepath.Glob(filepath.Join(c.Dir, "release-*")); len(rel) > 0 {
@@ -221,6 +218,34 @@ func (c Cache) ensureFirecrackerBin(ctx context.Context, r run.Runner, bc BuildC
 	}
 	_ = os.Remove(dl)
 	return c.writeStamp("fc-version", bc.FCVersion)
+}
+
+// installBin puts src at dst by writing a temp file beside it and renaming it
+// into place. The rename only swaps the directory entry, so it succeeds while a
+// running microVM is still executing the old binary — copying onto dst directly
+// fails there with ETXTBSY ("text file busy"), and would leave a half-written
+// VMM behind if it were interrupted. Live VMs keep the inode they booted with;
+// the next one gets the new release.
+func installBin(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	tmp := dst + ".new"
+	if err := os.WriteFile(tmp, data, 0o755); err != nil {
+		return err
+	}
+	// WriteFile only applies the mode when it creates the file, and umask masks
+	// it — set the exec bits explicitly.
+	if err := os.Chmod(tmp, 0o755); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // fcWantDigest returns the SHA256 the downloaded tarball must match, and whether
