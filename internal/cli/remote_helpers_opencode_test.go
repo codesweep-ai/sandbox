@@ -7,6 +7,7 @@ package cli
 // while the provider recorded an error on the session (verified against opencode 1.18.10).
 
 import (
+	"github.com/codesweep-ai/sandbox/internal/covemit"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,6 +76,7 @@ func TestOpenCodeRemoteKillLeavesUnrelatedPIDAlone(t *testing.T) {
 	if b, err := os.ReadFile(log); err != nil || !strings.Contains(string(b), "finished (exit 130)") {
 		t.Fatalf("interrupted footer missing: %v: %s", err, b)
 	}
+	covemit.Prove(t, "interrupt", "opencode", "", "scripts")
 }
 
 // The -s contract consumed by cs-campaign: finished=0, unknown=1, running=2, failed=3, decided
@@ -129,6 +131,7 @@ func TestOpenCodeRemoteOutputStatusContract(t *testing.T) {
 			}
 		})
 	}
+	covemit.Prove(t, "status-contract", "opencode", "", "scripts")
 }
 
 // installOpenCodeTurnStubs fakes the driver's dependencies: a tmux whose session is always
@@ -225,4 +228,5 @@ func TestOpenCodeTurnCompletionSemantics(t *testing.T) {
 			}
 		})
 	}
+	covemit.Prove(t, "turn-driver-semantics", "opencode", "", "scripts")
 }

@@ -1,6 +1,7 @@
 package seed
 
 import (
+	"github.com/codesweep-ai/sandbox/internal/covemit"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,11 @@ func writeProfile(t *testing.T, home, agent string, files map[string]string) {
 // TestWriteAgentLoginsInheritsRequested: each requested agent's login is snapshotted
 // into the seed at 0600, and reported back to the caller.
 func TestWriteAgentLoginsInheritsRequested(t *testing.T) {
+	defer func() {
+		if !t.Failed() {
+			covemit.Prove(t, "login-seeding", "", "", "unit")
+		}
+	}()
 	home, seedDir := t.TempDir(), t.TempDir()
 	writeProfile(t, home, "claude", map[string]string{".credentials.json": `{"tok":"max"}`})
 	writeProfile(t, home, "codex", map[string]string{"auth.json": `{"tok":"chatgpt"}`})
@@ -52,6 +58,11 @@ func TestWriteAgentLoginsInheritsRequested(t *testing.T) {
 }
 
 func TestWriteAgentLoginsClaudeDefaultProfileFallback(t *testing.T) {
+	defer func() {
+		if !t.Failed() {
+			covemit.Prove(t, "login-seeding", "", "", "unit")
+		}
+	}()
 	home, seedDir := t.TempDir(), t.TempDir()
 	defaultDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(defaultDir, 0700); err != nil {
@@ -81,6 +92,11 @@ func TestWriteAgentLoginsClaudeDefaultProfileFallback(t *testing.T) {
 }
 
 func TestWriteAgentLoginsPrefersIsolatedClaudeProfile(t *testing.T) {
+	defer func() {
+		if !t.Failed() {
+			covemit.Prove(t, "login-seeding", "", "", "unit")
+		}
+	}()
 	home, seedDir := t.TempDir(), t.TempDir()
 	writeProfile(t, home, "claude", map[string]string{".credentials.json": `{"source":"isolated"}`})
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0700); err != nil {
@@ -101,6 +117,11 @@ func TestWriteAgentLoginsPrefersIsolatedClaudeProfile(t *testing.T) {
 // TestWriteAgentLoginsIsOptIn: nothing is carried by default, and asking for one
 // agent never carries the other.
 func TestWriteAgentLoginsIsOptIn(t *testing.T) {
+	defer func() {
+		if !t.Failed() {
+			covemit.Prove(t, "login-seeding", "", "", "unit")
+		}
+	}()
 	home := t.TempDir()
 	writeProfile(t, home, "claude", map[string]string{".credentials.json": `{"tok":"max"}`})
 	writeProfile(t, home, "codex", map[string]string{"auth.json": `{"tok":"chatgpt"}`})
@@ -133,6 +154,11 @@ func TestWriteAgentLoginsIsOptIn(t *testing.T) {
 // TestWriteAgentLoginsNoHostLogin: asking to inherit a login the host doesn't have
 // is not an error — it advises how to sign in instead.
 func TestWriteAgentLoginsNoHostLogin(t *testing.T) {
+	defer func() {
+		if !t.Failed() {
+			covemit.Prove(t, "login-seeding", "", "", "unit")
+		}
+	}()
 	home, seedDir := t.TempDir(), t.TempDir()
 	var notes []string
 	carried, err := WriteAgentLogins(seedDir, home, []string{"claude"}, func(m string) { notes = append(notes, m) })
@@ -151,6 +177,11 @@ func TestWriteAgentLoginsNoHostLogin(t *testing.T) {
 // TestWriteAgentLoginsClearsStale: re-creating a sandbox that no longer inherits a
 // login must not leave the previous carry behind in the seed.
 func TestWriteAgentLoginsClearsStale(t *testing.T) {
+	defer func() {
+		if !t.Failed() {
+			covemit.Prove(t, "login-seeding", "", "", "unit")
+		}
+	}()
 	home, seedDir := t.TempDir(), t.TempDir()
 	writeProfile(t, home, "claude", map[string]string{".credentials.json": `{"tok":"max"}`})
 
@@ -170,6 +201,11 @@ func TestWriteAgentLoginsClearsStale(t *testing.T) {
 
 // TestAgentNamesAndValidAgent pin the set the CLI validates --inherit-agent-login against.
 func TestAgentNamesAndValidAgent(t *testing.T) {
+	defer func() {
+		if !t.Failed() {
+			covemit.Prove(t, "login-seeding", "", "", "unit")
+		}
+	}()
 	if got := strings.Join(AgentNames(), ","); got != "claude,codex,opencode" {
 		t.Errorf("AgentNames() = %s", got)
 	}

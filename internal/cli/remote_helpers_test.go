@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/codesweep-ai/sandbox/internal/covemit"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,6 +75,7 @@ func TestRemoteKillLeavesUnrelatedPIDAlone(t *testing.T) {
 	if b, err := os.ReadFile(log); err != nil || !strings.Contains(string(b), "finished (exit 130)") {
 		t.Fatalf("interrupted footer missing: %v: %s", err, b)
 	}
+	covemit.Prove(t, "interrupt", "codex", "", "scripts")
 }
 
 func TestRemoteKillStopsBackgroundRunner(t *testing.T) {
@@ -154,6 +156,8 @@ func TestRemoteKillStopsBackgroundRunner(t *testing.T) {
 			if !ok || exitErr.ExitCode() != 3 || strings.TrimSpace(string(out)) != "failed" {
 				t.Fatalf("interrupted status = %q, %v; want failed/3", out, statusErr)
 			}
+			covemit.Prove(t, "interrupt", tc.name, "", "scripts")
+			covemit.Prove(t, "status-contract", tc.name, "", "scripts")
 		})
 	}
 }
