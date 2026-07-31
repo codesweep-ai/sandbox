@@ -23,6 +23,36 @@ import (
 // base-image major bump (e.g. 44 → 45), to that release's GA kernel-core NVR.
 const DefaultKVerPin = "6.19.10-300.fc44"
 
+// DefaultFCVersion is the firecracker release tag the host VMM binary is pinned
+// to when CS_SANDBOX_FC_VERSION is unset. The cached binary carries an
+// `fc-version` stamp, so bumping this pin re-downloads it on the next build —
+// bump fcDigests in the same commit.
+const DefaultFCVersion = "v1.16.0"
+
+// fcDigests pins the SHA256 of the DefaultFCVersion release tarballs, keyed by
+// the firecracker arch name. Verifying against a digest committed *here* — not
+// only against the `.sha256.txt` served next to the tarball — is what makes the
+// download tamper-evident: a checksum fetched from the same origin as the
+// artifact it describes proves nothing if that origin is compromised. An
+// overridden CS_SANDBOX_FC_VERSION has no digest here and falls back to the
+// published checksum, which catches corruption but is not a trust anchor.
+var fcDigests = map[string]string{
+	"x86_64":  "bd04e26952d4e158085778c6230a0b383d2619c319182e27eaa9d61a212e92d6",
+	"aarch64": "531c713cdbc37d4b8bc2533d851aabc0267096afa1768086a37672abb668efd7",
+}
+
+// fcArch maps GOARCH to the arch name firecracker uses in its release assets.
+func fcArch() (string, error) {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "x86_64", nil
+	case "arm64":
+		return "aarch64", nil
+	default:
+		return "", fmt.Errorf("fc: unsupported architecture %s", runtime.GOARCH)
+	}
+}
+
 // BuildConfig carries the inputs the artifact BUILD path needs; the caller
 // resolves them from the environment. A zero BuildConfig is valid (its
 // Defaulted() fills the pins).
@@ -47,7 +77,7 @@ func (b BuildConfig) Defaulted() BuildConfig {
 		b.RootfsGB = 14
 	}
 	if b.FCVersion == "" {
-		b.FCVersion = "v1.16.0"
+		b.FCVersion = DefaultFCVersion
 	}
 	return b
 }
@@ -106,25 +136,39 @@ func (c Cache) EnsureArtifacts(ctx context.Context, r run.Runner, bc BuildConfig
 	return c.ensureBaseRootfs(ctx, r, bc)
 }
 
-// ensureFirecrackerBin downloads + checksum-verifies the firecracker binary on a
-// miss.
+// fcRefreshReason reports why the cached firecracker binary must be
+// (re)downloaded for bc, or "" when the cache holds the wanted release. The
+// stamp check is what makes a CS_SANDBOX_FC_VERSION / DefaultFCVersion bump take
+// effect: without it a cache populated once would pin itself to whatever release
+// happened to be current then, forever. A binary with no stamp predates version
+// tracking, so its release is unknown and it is refetched once — which also
+// re-verifies it against the digest pinned in this repo.
+func (c Cache) fcRefreshReason(bc BuildConfig) string {
+	switch {
+	case !exists(c.FirecrackerBin()):
+		return "firecracker binary missing"
+	case c.readStamp("fc-version") == "":
+		return "cached firecracker binary has no recorded version"
+	case c.readStamp("fc-version") != bc.FCVersion:
+		return "pinned firecracker version changed"
+	}
+	return ""
+}
+
+// ensureFirecrackerBin downloads + checksum-verifies the firecracker binary when
+// the cache is missing it or holds a different release than bc pins.
 func (c Cache) ensureFirecrackerBin(ctx context.Context, r run.Runner, bc BuildConfig) error {
-	fc := c.FirecrackerBin()
-	if exists(fc) {
+	if c.fcRefreshReason(bc) == "" {
 		return nil
+	}
+	fc := c.FirecrackerBin()
+	arch, err := fcArch()
+	if err != nil {
+		return err
 	}
 	c.say("downloading firecracker %s…", bc.FCVersion)
 	if err := os.MkdirAll(filepath.Join(c.Dir, "bin"), 0o755); err != nil {
 		return err
-	}
-	var arch string
-	switch runtime.GOARCH {
-	case "amd64":
-		arch = "x86_64"
-	case "arm64":
-		arch = "aarch64"
-	default:
-		return fmt.Errorf("fc: unsupported architecture %s", runtime.GOARCH)
 	}
 	base := "https://github.com/firecracker-microvm/firecracker/releases/download/" + bc.FCVersion
 	tgz := fmt.Sprintf("firecracker-%s-%s.tgz", bc.FCVersion, arch)
@@ -132,15 +176,10 @@ func (c Cache) ensureFirecrackerBin(ctx context.Context, r run.Runner, bc BuildC
 	if _, err := r.Run(ctx, run.Opts{}, "curl", "-fsSL", "-o", dl, base+"/"+tgz); err != nil {
 		return fmt.Errorf("fc: failed to download %s: %w", tgz, err)
 	}
-	// Verify against the release's published checksum ("<sha256>  <file>.tgz").
-	want := ""
-	if res, err := r.Run(ctx, run.Opts{ReadOnly: true}, "curl", "-fsSL", base+"/"+tgz+".sha256.txt"); err == nil {
-		for _, line := range strings.Split(res.Stdout, "\n") {
-			if f := strings.Fields(line); len(f) > 0 {
-				want = f[0]
-				break
-			}
-		}
+	want, pinned, err := c.fcWantDigest(ctx, r, bc, arch, base, tgz)
+	if err != nil {
+		_ = os.Remove(dl)
+		return err
 	}
 	data, err := os.ReadFile(dl)
 	if err != nil {
@@ -148,9 +187,14 @@ func (c Cache) ensureFirecrackerBin(ctx context.Context, r run.Runner, bc BuildC
 	}
 	sum := sha256.Sum256(data)
 	got := hex.EncodeToString(sum[:])
-	if want == "" || want != got {
+	if want != got {
 		_ = os.Remove(dl)
-		return fmt.Errorf("fc: firecracker %s checksum mismatch (want=%q got=%s)", bc.FCVersion, want, got)
+		src := "checksum published with the release"
+		if pinned {
+			src = "digest pinned in fcDigests"
+		}
+		return fmt.Errorf("fc: firecracker %s (%s) does not match the %s (want=%s got=%s)",
+			bc.FCVersion, arch, src, want, got)
 	}
 	if _, err := r.Run(ctx, run.Opts{}, "tar", "-xzf", dl, "-C", c.Dir); err != nil {
 		return err
@@ -160,6 +204,10 @@ func (c Cache) ensureFirecrackerBin(ctx context.Context, r run.Runner, bc BuildC
 	if len(matches) == 0 {
 		return fmt.Errorf("fc: firecracker binary not found in release tarball")
 	}
+	// Drop the stamp before overwriting the binary so a failure mid-install leaves
+	// the cache "unknown version" (refetched next time) rather than a stamp that
+	// claims a release the binary on disk is not.
+	_ = os.Remove(c.stampPath("fc-version"))
 	if _, err := r.Run(ctx, run.Opts{}, "cp", matches[0], fc); err != nil {
 		return err
 	}
@@ -172,7 +220,33 @@ func (c Cache) ensureFirecrackerBin(ctx context.Context, r run.Runner, bc BuildC
 		}
 	}
 	_ = os.Remove(dl)
-	return nil
+	return c.writeStamp("fc-version", bc.FCVersion)
+}
+
+// fcWantDigest returns the SHA256 the downloaded tarball must match, and whether
+// it came from the in-repo pin. The pin only covers DefaultFCVersion; any other
+// release falls back to the checksum published alongside it, which is
+// corruption-only protection — so that path warns.
+func (c Cache) fcWantDigest(ctx context.Context, r run.Runner, bc BuildConfig, arch, base, tgz string) (digest string, pinned bool, err error) {
+	why := fmt.Sprintf("%s is not the pinned release (%s)", bc.FCVersion, DefaultFCVersion)
+	if bc.FCVersion == DefaultFCVersion {
+		if d := fcDigests[arch]; d != "" {
+			return d, true, nil
+		}
+		why = fmt.Sprintf("no digest is pinned for %s", arch)
+	}
+	c.say("warning: %s — verifying against the checksum published with it, which is not a trust anchor", why)
+	res, err := r.Run(ctx, run.Opts{ReadOnly: true}, "curl", "-fsSL", base+"/"+tgz+".sha256.txt")
+	if err != nil {
+		return "", false, fmt.Errorf("fc: failed to fetch the published checksum for %s: %w", tgz, err)
+	}
+	// "<sha256>  <file>.tgz"
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if f := strings.Fields(line); len(f) > 0 {
+			return f[0], false, nil
+		}
+	}
+	return "", false, fmt.Errorf("fc: no checksum found in %s.sha256.txt", tgz)
 }
 
 // kernelRebuildReason reports why the cached fedora guest kernel must be

@@ -24,7 +24,8 @@ block devices — ext4 disks built on the host and attached to the guest.
 
 All rootless - no host `sudo` to *run* it - but the engine shells out to host packages, which
 `cs-sandbox` preflight-checks (failing with an actionable install line). `cs-sandbox build`
-downloads the SHA256-verified Firecracker binary and builds the guest kernel + base rootfs into the
+downloads the version-pinned, SHA256-verified Firecracker binary (see [Firecracker
+binary](#firecracker-binary)) and builds the guest kernel + base rootfs into the
 artifact cache (`$XDG_CACHE_HOME/cs-sandbox`, i.e. `~/.cache/cs-sandbox`); `create` then just boots
 from it. **`cs-sandbox doctor` (which defaults to `--engine firecracker`) checks all of the below and
 prints the exact fix for anything missing.**
@@ -113,6 +114,29 @@ PVH boot protocol). Two ways to obtain the `vmlinux`:
 
 The cached artifacts are `vmlinux.elf` + `initrd.img` + `modules.tar` (+ `kver`) under the artifact
 cache (`~/.cache/cs-sandbox`).
+
+### Firecracker binary
+
+The VMM itself is **not** bundled in the `cs-sandbox` binary: it is a ~3.5 MB Linux-only executable,
+and embedding it would mean carrying a per-architecture blob in git and redistributing a third-party
+binary under our own signatures. `cs-sandbox build` downloads it instead — into `bin/firecracker`
+under the artifact cache — which adds no precondition, since that build already needs the network and
+podman for the kernel and the base rootfs.
+
+The release is **pinned**, never "latest":
+
+- **`CS_SANDBOX_FC_VERSION` (default `v1.16.0`):** the firecracker release tag to fetch. The cached
+  binary records the release it came from (the `fc-version` stamp), so changing the pin re-downloads
+  it on the next `cs-sandbox build` rather than leaving whatever was fetched first in place.
+- **Verification:** the pinned release is checked against a **SHA256 committed in this repo**
+  (`fcDigests` in `internal/fcdisk/build.go`) — not merely against the `.sha256.txt` that upstream
+  serves next to the tarball, which proves nothing about an artifact from the same origin. Bumping
+  the version pin means bumping those digests in the same commit. An overridden
+  `CS_SANDBOX_FC_VERSION` has no committed digest, so it falls back to the published checksum
+  (corruption protection only) and says so.
+
+`cs-sandbox doctor --engine firecracker` reports the release actually cached, and flags it when that
+has drifted from the pin.
 
 ### Disks
 

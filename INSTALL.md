@@ -83,8 +83,10 @@ the sandbox a path the VM can't see (macOS temp dirs like `/var/folders/…` are
 
 ### Firecracker packages (Linux + KVM, x86_64)
 
-`cs-sandbox build` (step 3) downloads the SHA256-verified Firecracker binary and builds the
-guest kernel + base rootfs; you provide a few host packages and `/dev/kvm` access first.
+`cs-sandbox build` (step 3) downloads the Firecracker binary — pinned to a release (default
+`v1.16.0`, override with `CS_SANDBOX_FC_VERSION`) and verified against a SHA256 committed in the
+source — and builds the guest kernel + base rootfs; you provide a few host packages and `/dev/kvm`
+access first.
 
 ```bash
 # Fedora  (the base packages above are required too)

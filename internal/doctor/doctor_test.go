@@ -3,7 +3,9 @@ package doctor
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -98,6 +100,66 @@ func TestDiagnoseLinuxKeepsSubuidAdvice(t *testing.T) {
 	if all := reportText(rep); !strings.Contains(all, "usermod --add-subuids") {
 		t.Errorf("Linux host without subuid ranges should advise usermod:\n%s", all)
 	}
+}
+
+// The firecracker line must describe the binary actually on disk, not the pin:
+// a cache left at an older release (or one downloaded before the version was
+// tracked) has to say so, or doctor reports a version the host does not have.
+func TestDiagnoseFirecrackerVersionReporting(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "firecracker")
+	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, cached, want string
+		wantStatus         Status
+	}{
+		{"matches the pin", "v1.16.0", "firecracker binary cached (v1.16.0)", OK},
+		{"stale cache", "v1.15.0", "cached (v1.15.0) but pinned to v1.16.0", HM},
+		{"unstamped cache", "", "version unrecorded", HM},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
+			rep := Diagnose(context.Background(), "firecracker", Deps{
+				Runner: run.NewFake(), User: "jsdelfino",
+				FCBinPath: bin, FCVersionPin: "v1.16.0", FCVersionCache: tc.cached,
+			})
+			all := reportText(rep)
+			if !strings.Contains(all, tc.want) {
+				t.Errorf("report should contain %q:\n%s", tc.want, all)
+			}
+			if got := fcCheckStatus(t, rep); got != tc.wantStatus {
+				t.Errorf("firecracker binary check status = %v, want %v", got, tc.wantStatus)
+			}
+		})
+	}
+
+	// Nothing cached at all — the pin must not be presented as if it were.
+	stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
+	all := reportText(Diagnose(context.Background(), "firecracker", Deps{
+		Runner: run.NewFake(), User: "jsdelfino",
+		FCBinPath: filepath.Join(t.TempDir(), "absent"), FCVersionPin: "v1.16.0",
+	}))
+	if !strings.Contains(all, "not downloaded yet") {
+		t.Errorf("empty cache should report the binary as missing:\n%s", all)
+	}
+	if strings.Contains(all, "cached (v1.16.0)") {
+		t.Errorf("empty cache must not claim a cached version:\n%s", all)
+	}
+}
+
+// fcCheckStatus returns the status of the "firecracker binary" check line.
+func fcCheckStatus(t *testing.T, r *Report) Status {
+	t.Helper()
+	for _, g := range r.Groups {
+		for _, c := range g.Checks {
+			if strings.HasPrefix(c.Message, "firecracker binary") {
+				return c.Status
+			}
+		}
+	}
+	t.Fatal("no firecracker binary check in the report")
+	return OK
 }
 
 // runningMachine is a Fake whose podman machine inspect reports a running VM.

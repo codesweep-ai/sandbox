@@ -2,8 +2,12 @@ package fcdisk
 
 import (
 	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codesweep-ai/sandbox/internal/run"
@@ -21,8 +25,8 @@ func TestDefaulted(t *testing.T) {
 	if got.RootfsGB != 14 {
 		t.Errorf("RootfsGB = %d, want 14", got.RootfsGB)
 	}
-	if got.FCVersion != "v1.16.0" {
-		t.Errorf("FCVersion = %q, want v1.16.0", got.FCVersion)
+	if got.FCVersion != DefaultFCVersion {
+		t.Errorf("FCVersion = %q, want default %q", got.FCVersion, DefaultFCVersion)
 	}
 
 	// Explicit values win over the defaults.
@@ -187,6 +191,179 @@ func TestEnsureKernelHostModeMissing(t *testing.T) {
 	}
 	if len(f.Calls) != 0 {
 		t.Errorf("host-mode ensureKernel shelled out: %s", f)
+	}
+}
+
+// TestFCDigestsPinned: every architecture the downloader supports must have a
+// committed digest for the pinned release, or that arch silently degrades to
+// trusting the checksum served next to the tarball.
+func TestFCDigestsPinned(t *testing.T) {
+	for _, arch := range []string{"x86_64", "aarch64"} {
+		d, ok := fcDigests[arch]
+		if !ok {
+			t.Errorf("no pinned digest for %s (firecracker %s)", arch, DefaultFCVersion)
+			continue
+		}
+		if len(d) != 64 {
+			t.Errorf("fcDigests[%s] = %q, want a 64-char sha256", arch, d)
+		}
+		if _, err := hex.DecodeString(d); err != nil {
+			t.Errorf("fcDigests[%s] is not hex: %v", arch, err)
+		}
+	}
+}
+
+// TestFCRefreshReason is the decision that makes a version bump take effect: a
+// cache holding the pinned release is reused, while a missing binary, an
+// unstamped one (predating version tracking), and a stale stamp each force a
+// re-download.
+func TestFCRefreshReason(t *testing.T) {
+	bc := BuildConfig{}.Defaulted()
+
+	fresh := func(t *testing.T) Cache {
+		c := Cache{Dir: t.TempDir()}
+		writeFile(t, c.FirecrackerBin())
+		if err := c.writeStamp("fc-version", bc.FCVersion); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	if r := fresh(t).fcRefreshReason(bc); r != "" {
+		t.Errorf("cache at the pinned version reason = %q, want reuse", r)
+	}
+
+	// Version bump (DefaultFCVersion / CS_SANDBOX_FC_VERSION) -> re-download.
+	c := fresh(t)
+	if err := c.writeStamp("fc-version", "v0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if r := c.fcRefreshReason(bc); r == "" {
+		t.Error("changed pinned version reason = reuse, want re-download")
+	}
+
+	// Binary from before version tracking (no stamp) -> re-download, which also
+	// re-verifies it against the pinned digest.
+	c = fresh(t)
+	if err := os.Remove(c.stampPath("fc-version")); err != nil {
+		t.Fatal(err)
+	}
+	if r := c.fcRefreshReason(bc); r == "" {
+		t.Error("unstamped binary reason = reuse, want re-download")
+	}
+
+	// No binary at all -> re-download.
+	c = fresh(t)
+	if err := os.Remove(c.FirecrackerBin()); err != nil {
+		t.Fatal(err)
+	}
+	if r := c.fcRefreshReason(bc); r == "" {
+		t.Error("missing binary reason = reuse, want re-download")
+	}
+}
+
+// TestEnsureFirecrackerBinReusesFreshCache: a cache already at the pinned
+// version must not curl anything.
+func TestEnsureFirecrackerBinReusesFreshCache(t *testing.T) {
+	bc := BuildConfig{}.Defaulted()
+	c := Cache{Dir: t.TempDir()}
+	writeFile(t, c.FirecrackerBin())
+	if err := c.writeStamp("fc-version", bc.FCVersion); err != nil {
+		t.Fatal(err)
+	}
+	f := run.NewFake()
+	if err := c.ensureFirecrackerBin(context.Background(), f, bc); err != nil {
+		t.Fatalf("ensureFirecrackerBin(fresh) = %v, want nil", err)
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("ensureFirecrackerBin(fresh) shelled out %d times: %s", len(f.Calls), f)
+	}
+}
+
+// TestFCWantDigestPinned: the pinned release is verified against the in-repo
+// digest without asking the network for a checksum at all.
+func TestFCWantDigestPinned(t *testing.T) {
+	arch, err := fcArch()
+	if err != nil {
+		t.Skipf("unsupported test architecture: %v", err)
+	}
+	c := Cache{Dir: t.TempDir()}
+	f := run.NewFake()
+	got, pinned, err := c.fcWantDigest(context.Background(), f, BuildConfig{}.Defaulted(), arch, "base", "t.tgz")
+	if err != nil {
+		t.Fatalf("fcWantDigest = %v, want nil", err)
+	}
+	if !pinned || got != fcDigests[arch] {
+		t.Errorf("fcWantDigest = (%q, %v), want the pinned %q", got, pinned, fcDigests[arch])
+	}
+	if len(f.Calls) != 0 {
+		t.Errorf("pinned digest should need no network: %s", f)
+	}
+}
+
+// TestFCWantDigestOverride: an overridden CS_SANDBOX_FC_VERSION has no committed
+// digest, so it falls back to the published checksum — parsing the first field —
+// and reports pinned=false so the mismatch message names the weaker source.
+func TestFCWantDigestOverride(t *testing.T) {
+	c := Cache{Dir: t.TempDir()}
+	const sum = "aa04e26952d4e158085778c6230a0b383d2619c319182e27eaa9d61a212e92d6"
+	f := run.NewFake().OnStdout("sha256.txt", sum+"  firecracker-v9.9.9-x86_64.tgz\n")
+	got, pinned, err := c.fcWantDigest(context.Background(), f, BuildConfig{FCVersion: "v9.9.9"}.Defaulted(), "x86_64", "base", "t.tgz")
+	if err != nil {
+		t.Fatalf("fcWantDigest = %v, want nil", err)
+	}
+	if got != sum || pinned {
+		t.Errorf("fcWantDigest = (%q, %v), want (%q, false)", got, pinned, sum)
+	}
+}
+
+// TestFCWantDigestFetchFails: an unreachable checksum must be a clear error, not
+// an empty "want" that surfaces later as a bogus mismatch.
+func TestFCWantDigestFetchFails(t *testing.T) {
+	c := Cache{Dir: t.TempDir()}
+	f := run.NewFake().On("sha256.txt", run.Result{ExitCode: 22}, errors.New("curl: (22) 404"))
+	_, _, err := c.fcWantDigest(context.Background(), f, BuildConfig{FCVersion: "v9.9.9"}.Defaulted(), "x86_64", "base", "t.tgz")
+	if err == nil {
+		t.Fatal("fcWantDigest with an unreachable checksum = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "published checksum") {
+		t.Errorf("error = %v, want it to name the failed checksum fetch", err)
+	}
+}
+
+// TestEnsureFirecrackerBinDigestMismatch: a tarball that does not match the
+// pinned digest is deleted and never installed, and no version stamp is written
+// (so the next build retries rather than trusting the cache).
+func TestEnsureFirecrackerBinDigestMismatch(t *testing.T) {
+	arch, err := fcArch()
+	if err != nil {
+		t.Skipf("unsupported test architecture: %v", err)
+	}
+	bc := BuildConfig{}.Defaulted()
+	c := Cache{Dir: t.TempDir()}
+	// The Fake's `curl -o` is a no-op, so plant the "downloaded" tarball itself.
+	tgz := filepath.Join(c.Dir, fmt.Sprintf("firecracker-%s-%s.tgz", bc.FCVersion, arch))
+	writeFile(t, tgz)
+
+	f := run.NewFake()
+	err = c.ensureFirecrackerBin(context.Background(), f, bc)
+	if err == nil {
+		t.Fatal("ensureFirecrackerBin with a mismatched tarball = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "pinned in fcDigests") {
+		t.Errorf("error = %v, want it to name the pinned digest as the source", err)
+	}
+	if exists(tgz) {
+		t.Error("mismatched tarball was left in the cache")
+	}
+	if exists(c.FirecrackerBin()) {
+		t.Error("mismatched tarball was installed as the firecracker binary")
+	}
+	if v := c.FirecrackerVersion(); v != "" {
+		t.Errorf("fc-version stamp = %q after a failed download, want empty", v)
+	}
+	if f.Contains("tar -xzf") {
+		t.Errorf("unpacked a tarball that failed verification: %s", f)
 	}
 }
 

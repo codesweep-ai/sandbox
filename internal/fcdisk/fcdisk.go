@@ -36,6 +36,12 @@ func (c Cache) say(format string, a ...any) {
 // FirecrackerBin is the cached firecracker binary path.
 func (c Cache) FirecrackerBin() string { return filepath.Join(c.Dir, "bin", "firecracker") }
 
+// FirecrackerVersion is the release tag of the cached firecracker binary, read
+// from the `fc-version` stamp EnsureArtifacts writes. It returns "" when nothing
+// is cached, or when the binary was downloaded before the version was tracked —
+// so report it as unknown rather than assuming the current pin.
+func (c Cache) FirecrackerVersion() string { return c.readStamp("fc-version") }
+
 // Kernel is the cached vmlinux.elf path.
 func (c Cache) Kernel() string { return filepath.Join(c.Dir, "vmlinux.elf") }
 

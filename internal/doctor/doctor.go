@@ -41,14 +41,16 @@ type Report struct {
 
 // Deps are the inputs doctor needs.
 type Deps struct {
-	Runner    run.Runner
-	User      string
-	TierDir   string
-	Image     string
-	Network   string
-	FCBinPath string
-	FCVersion string
-	IsMacOS   bool
+	Runner  run.Runner
+	User    string
+	TierDir string
+	Image   string
+	Network string
+	IsMacOS bool
+
+	FCBinPath      string // cached firecracker binary
+	FCVersionPin   string // release the build pins to (CS_SANDBOX_FC_VERSION / the default)
+	FCVersionCache string // release actually cached (fc-version stamp); "" = unknown
 }
 
 // Diagnose runs the checks for the given engine ("podman" | "firecracker").
@@ -173,10 +175,17 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		} else {
 			fg.add(NO, "missing host packages — install:  "+sudo+pkg+" "+strings.Join(miss, " "))
 		}
-		if d.FCBinPath != "" && isExecutable(d.FCBinPath) {
-			fg.add(OK, "firecracker binary cached ("+d.FCVersion+")")
-		} else {
+		// Report what is actually on disk, not the pin — they diverge after a
+		// version bump, and the refresh only happens on the next build.
+		switch {
+		case d.FCBinPath == "" || !isExecutable(d.FCBinPath):
 			fg.add(HM, "firecracker binary not downloaded yet — fetched (SHA256-verified) on first 'create'")
+		case d.FCVersionCache == "":
+			fg.add(HM, "firecracker binary cached, version unrecorded (downloaded before it was tracked) — re-fetched and digest-verified by:  cs-sandbox build")
+		case d.FCVersionCache != d.FCVersionPin:
+			fg.add(HM, "firecracker binary cached ("+d.FCVersionCache+") but pinned to "+d.FCVersionPin+" — refreshed by:  cs-sandbox build")
+		default:
+			fg.add(OK, "firecracker binary cached ("+d.FCVersionCache+")")
 		}
 		r.addGroup(fg)
 	}

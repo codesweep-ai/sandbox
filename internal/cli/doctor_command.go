@@ -3,9 +3,9 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 
 	"github.com/codesweep-ai/sandbox/internal/doctor"
+	"github.com/codesweep-ai/sandbox/internal/fcdisk"
 	"github.com/spf13/cobra"
 )
 
@@ -28,15 +28,18 @@ func newDoctorCmd(app *App) *cobra.Command {
 			default:
 				return fmt.Errorf("--engine must be podman or firecracker")
 			}
+			fc := fcdisk.Cache{Dir: app.FCCache}
 			d := doctor.Deps{
-				Runner:    app.Runner,
-				User:      app.Host.User,
-				TierDir:   app.TierDir,
-				Image:     app.Image,
-				Network:   app.Network,
-				FCBinPath: filepath.Join(app.FCCache, "bin", "firecracker"),
-				FCVersion: envOr("CS_SANDBOX_FC_VERSION", "v1.16.0"),
-				IsMacOS:   app.Host.IsMacOS,
+				Runner:  app.Runner,
+				User:    app.Host.User,
+				TierDir: app.TierDir,
+				Image:   app.Image,
+				Network: app.Network,
+				IsMacOS: app.Host.IsMacOS,
+
+				FCBinPath:      fc.FirecrackerBin(),
+				FCVersionPin:   envOr("CS_SANDBOX_FC_VERSION", fcdisk.DefaultFCVersion),
+				FCVersionCache: fc.FirecrackerVersion(),
 			}
 			rep := doctor.Diagnose(cmd.Context(), engine, d)
 			printReport(cmd.OutOrStdout(), rep)
