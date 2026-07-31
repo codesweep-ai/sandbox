@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/codesweep-ai/sandbox/internal/lock"
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
 
@@ -99,6 +100,24 @@ func (c Cache) writeStamp(name, val string) error {
 
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 
+// isExt4 reports whether p carries an ext4 superblock — magic 0xEF53, stored
+// little-endian at offset 0x438. "The file exists" is too weak a test for the
+// base rootfs: an interrupted build leaves the 14 GiB truncate placeholder in
+// place, which is a hole, not a filesystem, and a microVM booted from it fails
+// in ways that point nowhere near the real cause.
+func isExt4(p string) bool {
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var b [2]byte
+	if _, err := f.ReadAt(b[:], 0x438); err != nil {
+		return false
+	}
+	return b[0] == 0x53 && b[1] == 0xEF
+}
+
 // VerifyArtifacts returns an actionable error if any cached artifact a microVM
 // boots from is missing — the firecracker binary, the guest kernel + initrd, and
 // the base rootfs. It never builds anything; `cs-sandbox build` does that.
@@ -113,6 +132,9 @@ func (c Cache) VerifyArtifacts() error {
 			return fmt.Errorf("%s missing (%s) — run: cs-sandbox build", a.what, a.path)
 		}
 	}
+	if !isExt4(c.BaseRootfs()) {
+		return fmt.Errorf("base rootfs is not a filesystem (%s) — an interrupted build left a placeholder; run: cs-sandbox build", c.BaseRootfs())
+	}
 	return nil
 }
 
@@ -125,15 +147,56 @@ func (c Cache) VerifyArtifacts() error {
 // (rootfs image) and curl (firecracker download) through the Runner. It requires
 // bc.Image and, for the rootfs, bc.InitPath. If the build inputs are unavailable
 // and an artifact is missing, it returns an actionable error.
+// It holds the artifact lock throughout, so a `build` and a `create` (or two
+// creates) cannot interleave here — see withArtifactLock.
 func (c Cache) EnsureArtifacts(ctx context.Context, r run.Runner, bc BuildConfig) error {
 	bc = bc.Defaulted()
-	if err := c.ensureFirecrackerBin(ctx, r, bc); err != nil {
+	return c.withArtifactLock(func() error {
+		if err := c.ensureFirecrackerBin(ctx, r, bc); err != nil {
+			return err
+		}
+		if err := c.ensureKernel(ctx, r, bc); err != nil {
+			return err
+		}
+		return c.ensureBaseRootfs(ctx, r, bc)
+	})
+}
+
+// artifactLock is the lock file serializing access to one artifact cache.
+const artifactLock = ".artifacts.lock"
+
+// withArtifactLock runs fn holding an exclusive lock on the cache directory.
+//
+// `cs-sandbox build` and `cs-sandbox create` run the same artifact path over one
+// shared cache, and interleaving them corrupts it: a create that finishes its
+// base rootfs and stamps it, followed by a build that deletes that rootfs and
+// truncates a fresh one, leaves a stamp claiming "fresh" over an empty disk —
+// which VerifyArtifacts accepts and the next microVM boots as garbage. The two
+// processes also share one rootfs.tar export path, so either one's cleanup pulls
+// the file out from under the other mid-build.
+//
+// The lock covers reads of the base rootfs too (ReflinkRootfs): copying it while
+// another process rewrites it in place would hand the new instance a torn disk.
+// A blocked caller is told why, since holding it across a rootfs build means
+// minutes of waiting. flock releases on close, so a crashed build cannot wedge
+// the cache. Locks are per *Lock, not per process — never nest these.
+func (c Cache) withArtifactLock(fn func() error) error {
+	if err := os.MkdirAll(c.Dir, 0o755); err != nil {
 		return err
 	}
-	if err := c.ensureKernel(ctx, r, bc); err != nil {
+	l := lock.NewAt(filepath.Join(c.Dir, artifactLock))
+	ok, err := l.TryAcquire()
+	if err != nil {
 		return err
 	}
-	return c.ensureBaseRootfs(ctx, r, bc)
+	if !ok {
+		c.say("waiting for another cs-sandbox process to finish with the artifact cache…")
+		if err := l.Acquire(); err != nil {
+			return err
+		}
+	}
+	defer l.Release()
+	return fn()
 }
 
 // fcRefreshReason reports why the cached firecracker binary must be
@@ -396,13 +459,20 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 		}
 	}
 	cur := fmt.Sprintf("%s|%s|%s|%s", imgid, kver, bc.Kernel, inithash)
-	if exists(c.BaseRootfs()) && c.readStamp("base-rootfs.stamp") == cur {
+	// The stamp alone is not enough: it can vouch for a placeholder left by an
+	// interrupted build, so require the disk to actually be a filesystem.
+	if exists(c.BaseRootfs()) && isExt4(c.BaseRootfs()) && c.readStamp("base-rootfs.stamp") == cur {
 		return nil
 	}
 	if bc.Image == "" || bc.InitPath == "" {
 		return fmt.Errorf("fc: base rootfs missing/stale and cannot build (need image + init path)")
 	}
 	c.say("building the base sandbox filesystem…")
+	// Drop the stamp before deleting what it describes, so an interrupted build
+	// leaves "no stamp" (rebuild next time) rather than a stamp vouching for the
+	// empty truncate placeholder below — the state VerifyArtifacts would accept
+	// and a microVM would boot as garbage.
+	_ = os.Remove(c.stampPath("base-rootfs.stamp"))
 	_ = os.Remove(c.BaseRootfs())
 	tmp := filepath.Join(c.Dir, "build")
 	tarPath := filepath.Join(c.Dir, "rootfs.tar")

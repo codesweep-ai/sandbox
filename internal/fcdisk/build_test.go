@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/codesweep-ai/sandbox/internal/lock"
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
 
@@ -68,11 +70,13 @@ func TestVerifyArtifacts(t *testing.T) {
 		t.Fatal("VerifyArtifacts on empty cache = nil, want error")
 	}
 
-	// Lay down the four artifacts a microVM boots from.
+	// Lay down the four artifacts a microVM boots from. The base rootfs has to
+	// carry an ext4 superblock — a bare file is the placeholder case, covered by
+	// TestVerifyArtifactsRejectsPlaceholderRootfs.
 	writeFile(t, c.FirecrackerBin())
 	writeFile(t, c.Kernel())
 	writeFile(t, c.Initrd())
-	writeFile(t, c.BaseRootfs())
+	writeExt4(t, c.BaseRootfs())
 	if err := c.VerifyArtifacts(); err != nil {
 		t.Fatalf("VerifyArtifacts with all artifacts = %v, want nil", err)
 	}
@@ -83,6 +87,80 @@ func TestVerifyArtifacts(t *testing.T) {
 	}
 	if err := c.VerifyArtifacts(); err == nil {
 		t.Error("VerifyArtifacts with missing initrd = nil, want error")
+	}
+}
+
+// TestIsExt4 tells a real filesystem from the truncate placeholder an
+// interrupted build leaves behind — the state that made a corrupt cache look
+// fresh, since both are 14 GiB files that exist.
+func TestIsExt4(t *testing.T) {
+	dir := t.TempDir()
+
+	placeholder := filepath.Join(dir, "placeholder.ext4")
+	if err := os.Truncate(placeholder, 0); err != nil {
+		if err := os.WriteFile(placeholder, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Truncate(placeholder, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+	if isExt4(placeholder) {
+		t.Error("isExt4(sparse placeholder) = true, want false")
+	}
+
+	img := filepath.Join(dir, "real.ext4")
+	data := make([]byte, 0x440)
+	data[0x438], data[0x439] = 0x53, 0xEF // ext4 magic, little-endian
+	if err := os.WriteFile(img, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !isExt4(img) {
+		t.Error("isExt4(image with the ext4 magic) = false, want true")
+	}
+
+	if isExt4(filepath.Join(dir, "absent.ext4")) {
+		t.Error("isExt4(missing file) = true, want false")
+	}
+}
+
+// TestVerifyArtifactsRejectsPlaceholderRootfs: the corruption that shipped a
+// garbage disk to a microVM must be caught here, not at boot.
+func TestVerifyArtifactsRejectsPlaceholderRootfs(t *testing.T) {
+	c := Cache{Dir: t.TempDir()}
+	writeFile(t, c.FirecrackerBin())
+	writeFile(t, c.Kernel())
+	writeFile(t, c.Initrd())
+	writeFile(t, c.BaseRootfs()) // present, but not a filesystem
+
+	err := c.VerifyArtifacts()
+	if err == nil {
+		t.Fatal("VerifyArtifacts with a placeholder base rootfs = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "not a filesystem") {
+		t.Errorf("error = %v, want it to name the placeholder", err)
+	}
+}
+
+// TestEnsureBaseRootfsRejectsFreshStampOverPlaceholder: even a stamp that
+// matches must not let a placeholder through — this is exactly the state a
+// racing build and create left in a real cache.
+func TestEnsureBaseRootfsRejectsFreshStampOverPlaceholder(t *testing.T) {
+	c := Cache{Dir: t.TempDir()}
+	writeFile(t, c.BaseRootfs())
+	// Stamp for a zero BuildConfig: no image, no kver, no init hash.
+	if err := c.writeStamp("base-rootfs.stamp", "||fedora|"); err != nil {
+		t.Fatal(err)
+	}
+	// A matching stamp over a real filesystem is reused (nothing to do, no error).
+	// Over the placeholder it must instead try to rebuild — and with no image
+	// configured that surfaces as the actionable "cannot build" error.
+	err := c.ensureBaseRootfs(context.Background(), run.NewFake(), BuildConfig{Kernel: "fedora"})
+	if err == nil {
+		t.Fatal("ensureBaseRootfs reused a placeholder because the stamp matched")
+	}
+	if !strings.Contains(err.Error(), "cannot build") {
+		t.Errorf("error = %v, want the missing-build-inputs error", err)
 	}
 }
 
@@ -415,6 +493,100 @@ func TestInstallBinOverRunningBinary(t *testing.T) {
 	// No temp file left behind for the next build to trip over.
 	if exists(dst + ".new") {
 		t.Error("installBin left its temp file in the cache")
+	}
+}
+
+// TestWithArtifactLockSerializes: the cache is exclusive. This is the race that
+// corrupted a real cache — a create finishing its base rootfs while a build was
+// truncating a new one, leaving a fresh-looking stamp over an empty disk.
+func TestWithArtifactLockSerializes(t *testing.T) {
+	c := Cache{Dir: t.TempDir()}
+	other := lock.NewAt(filepath.Join(c.Dir, artifactLock))
+	if err := other.Acquire(); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- c.withArtifactLock(func() error { close(entered); return nil })
+	}()
+
+	select {
+	case <-entered:
+		t.Fatal("withArtifactLock ran fn while another process held the cache")
+	case err := <-done:
+		t.Fatalf("withArtifactLock returned early: %v", err)
+	case <-time.After(150 * time.Millisecond):
+		// Still blocked, as it must be.
+	}
+
+	other.Release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("withArtifactLock after release = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("withArtifactLock never proceeded after the holder released")
+	}
+}
+
+// TestWithArtifactLockReports: a caller that has to wait is told why, rather
+// than appearing to hang — the lock is held across multi-minute rootfs builds.
+func TestWithArtifactLockReports(t *testing.T) {
+	var said []string
+	c := Cache{Dir: t.TempDir(), Progress: func(s string) { said = append(said, s) }}
+
+	// Uncontended: no waiting line.
+	if err := c.withArtifactLock(func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(said) != 0 {
+		t.Errorf("uncontended lock said %q, want silence", said)
+	}
+
+	other := lock.NewAt(filepath.Join(c.Dir, artifactLock))
+	if err := other.Acquire(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.withArtifactLock(func() error { return nil }) }()
+	// Give the goroutine time to report and block, then let it through.
+	time.Sleep(150 * time.Millisecond)
+	other.Release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(said) != 1 || !strings.Contains(said[0], "waiting") {
+		t.Errorf("contended lock said %q, want a waiting notice", said)
+	}
+}
+
+// TestEnsureArtifactsTakesTheLock: the guarantee has to hold at the real entry
+// point, not just in the helper. EnsureArtifacts fails here (the fake runner
+// downloads nothing) — what matters is that it locked the cache on the way.
+func TestEnsureArtifactsTakesTheLock(t *testing.T) {
+	c := Cache{Dir: t.TempDir()}
+	if err := c.EnsureArtifacts(context.Background(), run.NewFake(), BuildConfig{}); err == nil {
+		t.Fatal("EnsureArtifacts on an empty cache with a fake runner = nil, want error")
+	}
+	if !exists(filepath.Join(c.Dir, artifactLock)) {
+		t.Error("EnsureArtifacts did not take the artifact lock")
+	}
+}
+
+// writeExt4 lays down a file that passes isExt4 — enough superblock for the
+// magic check, standing in for a real base rootfs.
+func writeExt4(t *testing.T, p string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := make([]byte, 0x440)
+	data[0x438], data[0x439] = 0x53, 0xEF
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
