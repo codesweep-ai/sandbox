@@ -52,10 +52,14 @@ func (c Cache) Initrd() string { return filepath.Join(c.Dir, "initrd.img") }
 func (c Cache) BaseRootfs() string { return filepath.Join(c.Dir, "base-rootfs.ext4") }
 
 // ReflinkRootfs makes the per-instance writable rootfs as a CoW copy of the base
-// (cp --reflink=auto -f base-rootfs.ext4 <idir>/rootfs.ext4).
+// (cp --reflink=auto -f base-rootfs.ext4 <idir>/rootfs.ext4). It takes the
+// artifact lock: a build rewriting the base in place while this copy runs would
+// hand the new instance a torn disk.
 func (c Cache) ReflinkRootfs(ctx context.Context, r run.Runner, dst string) error {
-	_, err := r.Run(ctx, run.Opts{}, "cp", "--reflink=auto", "-f", c.BaseRootfs(), dst)
-	return err
+	return c.withArtifactLock(func() error {
+		_, err := r.Run(ctx, run.Opts{}, "cp", "--reflink=auto", "-f", c.BaseRootfs(), dst)
+		return err
+	})
 }
 
 // DiskMiB sizes an ext4 disk (in MiB) to a directory's content plus overhead and
