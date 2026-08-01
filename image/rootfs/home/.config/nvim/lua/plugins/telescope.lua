@@ -1,11 +1,22 @@
+-- Unpinned by `version` on purpose (lazy-lock.json holds the tested revision): 0.2.x is
+-- where telescope dropped Nvim 0.9 and started fixing the 0.12 deprecations, but that
+-- work continues past the latest tag, so a tag pin would sit on stale-for-0.12 code.
 return {
   "nvim-telescope/telescope.nvim",
-  -- branch = "0.1.x",
+  cmd = "Telescope",
   dependencies = {
     "nvim-lua/plenary.nvim",
     { "nvim-telescope/telescope-fzf-native.nvim", build = "make" },
     "nvim-tree/nvim-web-devicons",
     "folke/todo-comments.nvim",
+    "folke/trouble.nvim",
+  },
+  keys = {
+    { "<leader>ff", "<cmd>Telescope find_files<cr>", desc = "Fuzzy find files in cwd" },
+    { "<leader>fr", "<cmd>Telescope oldfiles<cr>", desc = "Fuzzy find recent files" },
+    { "<leader>fs", "<cmd>Telescope live_grep<cr>", desc = "Find string in cwd" },
+    { "<leader>fc", "<cmd>Telescope grep_string<cr>", desc = "Find string under cursor in cwd" },
+    { "<leader>ft", "<cmd>TodoTelescope<cr>", desc = "Find todos" },
   },
   config = function()
     local telescope = require("telescope")
@@ -17,8 +28,8 @@ return {
 
     -- or create your custom action
     local custom_actions = transform_mod({
-      open_trouble_qflist = function(prompt_bufnr)
-        trouble.toggle("quickfix")
+      open_trouble_qflist = function(_)
+        trouble.toggle("qflist")
       end,
     })
 
@@ -37,14 +48,5 @@ return {
     })
 
     telescope.load_extension("fzf")
-
-    -- set keymaps
-    local keymap = vim.keymap -- for conciseness
-
-    keymap.set("n", "<leader>ff", "<cmd>Telescope find_files<cr>", { desc = "Fuzzy find files in cwd" })
-    keymap.set("n", "<leader>fr", "<cmd>Telescope oldfiles<cr>", { desc = "Fuzzy find recent files" })
-    keymap.set("n", "<leader>fs", "<cmd>Telescope live_grep<cr>", { desc = "Find string in cwd" })
-    keymap.set("n", "<leader>fc", "<cmd>Telescope grep_string<cr>", { desc = "Find string under cursor in cwd" })
-    keymap.set("n", "<leader>ft", "<cmd>TodoTelescope<cr>", { desc = "Find todos" })
   end,
 }

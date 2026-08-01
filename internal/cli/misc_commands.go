@@ -50,14 +50,22 @@ func runBuild(cmd *cobra.Command, app *App, engines []string) error {
 	app.phase(fmt.Sprintf("building image %s (this can take several minutes)…", app.Image))
 	// Generic image — no identity baked in.
 	args := []string{"podman", "build"}
+	// BUILD_VERBOSE mirrors -q into the build itself. `podman build -q` only silences a
+	// RUN's stdout — its stderr still reaches the terminal, and the steps that drive
+	// `nvim --headless` write everything there. Those steps capture their own output and
+	// replay it only on failure unless BUILD_VERBOSE=1, so --verbose stays fully verbose.
+	buildVerbose := "0"
 	if !app.Verbose {
 		// Only --verbose shows podman's step output; otherwise run -q (it still
 		// prints the image id).
 		args = append(args, "-q")
+	} else {
+		buildVerbose = "1"
 	}
 	args = append(args,
 		"-t", app.Image,
 		"-f", filepath.Join(imgDir, "Containerfile"),
+		"--build-arg", "BUILD_VERBOSE="+buildVerbose,
 		"--build-arg", "CS_SANDBOX_PRIVATE_REGISTRY="+envOr("CS_SANDBOX_PRIVATE_REGISTRY", ""),
 		"--build-arg", "CS_SANDBOX_PRIVATE_REGISTRY_INSECURE="+normalizeInsecure(envOr("CS_SANDBOX_PRIVATE_REGISTRY_INSECURE", "0")),
 		filepath.Join(imgDir, "rootfs"),

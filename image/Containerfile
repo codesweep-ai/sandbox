@@ -34,8 +34,6 @@ RUN dnf update -y && dnf install -y \
   dnf-utils rclone bash-completion \
   ripgrep fzf bat git-delta tree htop less wget nmap-ncat gh uv \
   ninja-build gettext glibc-gconv-extra \
-  java-latest-openjdk java-latest-openjdk-devel maven \
-  golang-bin \
   pandoc && \
   dnf clean all
 
@@ -128,13 +126,40 @@ RUN mkdir -p /var/run/sshd \
   && sed -i 's/^#\?Port .*/Port 2222/' /etc/ssh/sshd_config \
   && ssh-keygen -A
 
-# Build Neovim v0.11.4
-RUN mkdir -p /usr/src \
-  && cd /usr/src \
-  && git clone --branch v0.11.4 --depth=1 https://github.com/neovim/neovim.git neovim-v0.11.4 \
-  && cd neovim-v0.11.4 \
-  && make CMAKE_BUILD_TYPE=Release \
-  && make install
+# Neovim — the official prebuilt release tarball, not a source build. Upstream publishes a
+# self-contained Linux tarball for both arches (it links only libc/libm/libgcc_s), so there is
+# nothing to gain from compiling it here: this turns a multi-minute build of Neovim plus its
+# bundled deps into an 11 MB download. It installs into /usr/local exactly where `make install`
+# used to put it, so $VIMRUNTIME and PATH are unchanged.
+#
+# Bump NVIM_VERSION (or pass --build-arg) to upgrade, and update BOTH checksums — Neovim
+# publishes no checksum file for these assets, so the digests are pinned here (GitHub release
+# assets are immutable, so this is a genuine pin, verified on every build).
+#
+# 0.12 is a hard requirement of the config in image/rootfs/home/.config/nvim: nvim-treesitter's
+# `main` branch (the only maintained one) refuses to run on anything older.
+ARG NVIM_VERSION=0.12.4
+ARG NVIM_SHA256_X86_64=012bf3fcac5ade43914df3f174668bf64d05e049a4f032a388c027b1ebd78628
+ARG NVIM_SHA256_ARM64=ceb7e88c6b681f0515d135dcdfad54f5eb4373b25ce6172197cd9a69c758063f
+RUN case "$(uname -m)" in \
+      x86_64|amd64)  arch=x86_64; want="$NVIM_SHA256_X86_64" ;; \
+      arm64|aarch64) arch=arm64;  want="$NVIM_SHA256_ARM64" ;; \
+      *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; \
+    esac \
+  && curl -fsSL -o /tmp/nvim.tar.gz \
+       "https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/nvim-linux-${arch}.tar.gz" \
+  && got=$(sha256sum /tmp/nvim.tar.gz | cut -d' ' -f1) \
+  && { [ "$want" = "$got" ] || { echo "nvim checksum mismatch: want=$want got=$got" >&2; exit 1; }; } \
+  && tar -xzf /tmp/nvim.tar.gz -C /usr/local --strip-components=1 --no-same-owner \
+  && rm -f /tmp/nvim.tar.gz \
+  && nvim --version | head -2
+
+# tree-sitter CLI: a hard requirement of nvim-treesitter's `main` branch, which uses it to
+# install/update parsers (`:TSInstall`, `:TSUpdate`, and the parser pre-build below).
+# --setopt=install_weak_deps=False: its Recommends pull in a second, unwanted Node
+# (gcc is already installed, and the shared /opt/nvm Node is on PATH for `tree-sitter generate`).
+RUN dnf install -y --setopt=install_weak_deps=False tree-sitter-cli && dnf clean all \
+  && tree-sitter --version
 
 # --- Toolchains under /opt (shared, root-owned, path-independent) ---------------
 # No developer user is created at build time (the entrypoint does that on first boot),
@@ -143,18 +168,91 @@ RUN mkdir -p /usr/src \
 # more Python/Node versions or global npm/pip packages, use `sudo`. Per-project work
 # (virtualenvs, node_modules) is unaffected — it lives in the user's repos.
 
-# Pyenv + Python 3.12.10 (PYENV_ROOT=/opt/pyenv)
+# Pyenv + Python 3.12.13 (PYENV_ROOT=/opt/pyenv)
+# 3.12 (not the newest 3.14) on purpose: it is the line the ecosystem actually runs — ~28% of
+# PyPI downloads vs ~12% for 3.13 and ~5% for 3.14 — so wheels and C extensions are most
+# likely to exist for it. `sudo pyenv install <ver>` adds another version alongside.
 ENV PYENV_ROOT=/opt/pyenv
-RUN curl -fsSL https://pyenv.run | PYENV_GIT_TAG=v2.6.5 bash \
-  && PATH="$PYENV_ROOT/bin:$PATH" pyenv install -s 3.12.10 \
-  && PATH="$PYENV_ROOT/bin:$PATH" pyenv global 3.12.10
+RUN curl -fsSL https://pyenv.run | PYENV_GIT_TAG=v2.8.1 bash \
+  && PATH="$PYENV_ROOT/bin:$PATH" pyenv install -s 3.12.13 \
+  && PATH="$PYENV_ROOT/bin:$PATH" pyenv global 3.12.13
 
-# NVM + Node 24.4.1 (NVM_DIR=/opt/nvm): a general JS/TS runtime; npm -g lands in shared node.
+# NVM + Node 24.18.1 (NVM_DIR=/opt/nvm): a general JS/TS runtime; npm -g lands in shared node.
+# 24.x is the Active LTS line ("Krypton", LTS since 2025-10, maintenance from 2026-10).
 # (The Claude Code & Codex agents are self-contained binaries under /opt, not npm packages.)
 ENV NVM_DIR=/opt/nvm
 RUN mkdir -p "$NVM_DIR" \
   && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash \
-  && bash -c '. "$NVM_DIR/nvm.sh" && nvm install v24.4.1 && nvm alias default v24.4.1'
+  && bash -c '. "$NVM_DIR/nvm.sh" && nvm install v24.18.1 && nvm alias default v24.18.1'
+
+# Go 1.26.5 (GOROOT=/opt/go) — the upstream tarball, pinned and checksum-verified, replacing
+# Fedora's golang-bin. Go is a first-class runtime here, on the same footing as the pyenv and
+# nvm toolchains above rather than whatever `dnf update` last pulled in:
+#   * pinned + reproducible, and an unpatched upstream build (Fedora ships a patched
+#     `go1.26.4-X:nodwarf5`);
+#   * GOTOOLCHAIN stays at upstream's `auto` (Fedora forces `local`), so a repo whose go.mod
+#     asks for a different `go 1.x` fetches that toolchain on demand into the user's module
+#     cache — Go's own answer to nvm/pyenv version switching, and it works despite /opt being
+#     read-only because the download lands in $GOPATH, not $GOROOT;
+#   * ~/.bashrc sets GOPATH/GOBIN and puts $GOPATH/bin on PATH, so `go install x@latest`
+#     produces a runnable command the way `npm -g` and `pip install` already do.
+# go.dev publishes the digests in its release JSON (https://go.dev/dl/?mode=json); bump
+# GO_VERSION and both checksums together to upgrade.
+# Temurin JDK 25 (JAVA_HOME=/opt/java) + Maven (/opt/maven), replacing Fedora's
+# java-latest-openjdk/maven. Pinned like every other runtime here, and it removes a mess:
+# `java-latest-openjdk` installed a 256 MB JDK 26 that nothing used, because `maven` dragged
+# in java-25-openjdk as its own dependency and /usr/bin/java resolved to THAT — so the image
+# shipped two JDKs, ran the one it never asked for, and floated on both. One pinned JDK on
+# PATH now, which is also what mason's `jdtls` language server runs on.
+# 25 is the current LTS line and is the version the image was already running (25.0.4).
+# Checksums are Adoptium's published digests (https://api.adoptium.net/v3/assets/…);
+# bump JAVA_VERSION/JAVA_BUILD and both checksums together to upgrade.
+ARG JAVA_VERSION=25.0.4
+ARG JAVA_BUILD=7
+ARG JAVA_SHA256_X64=e58fcdcd637b25c03ca84cbbcefc70d11efb8f4b4cbd05decc9f661769d77f94
+ARG JAVA_SHA256_AARCH64=621f7196f0b682fb557da58bec89bd7dfe5419811fe1c0ba75c9cc8432f084c7
+RUN case "$(uname -m)" in \
+      x86_64|amd64)  jarch=x64;     want="$JAVA_SHA256_X64" ;; \
+      arm64|aarch64) jarch=aarch64; want="$JAVA_SHA256_AARCH64" ;; \
+      *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; \
+    esac \
+  && curl -fsSL -o /tmp/jdk.tar.gz \
+       "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-${JAVA_VERSION}%2B${JAVA_BUILD}/OpenJDK25U-jdk_${jarch}_linux_hotspot_${JAVA_VERSION}_${JAVA_BUILD}.tar.gz" \
+  && got=$(sha256sum /tmp/jdk.tar.gz | cut -d' ' -f1) \
+  && { [ "$want" = "$got" ] || { echo "jdk checksum mismatch: want=$want got=$got" >&2; exit 1; }; } \
+  && mkdir -p /opt/java \
+  && tar -xzf /tmp/jdk.tar.gz -C /opt/java --strip-components=1 --no-same-owner \
+  && rm -f /tmp/jdk.tar.gz \
+  && /opt/java/bin/java -version 2>&1 | head -1
+# (java -version writes to stderr, which `podman build -q` does NOT suppress — the 2>&1
+#  keeps this sanity check out of a quiet build's console.)
+
+# Maven is a pure-Java tarball; Apache publishes a .sha512 next to it, verified here.
+ARG MAVEN_VERSION=3.9.16
+ARG MAVEN_SHA512=831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6
+RUN curl -fsSL -o /tmp/maven.tar.gz \
+       "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+  && got=$(sha512sum /tmp/maven.tar.gz | cut -d' ' -f1) \
+  && { [ "$MAVEN_SHA512" = "$got" ] || { echo "maven checksum mismatch" >&2; exit 1; }; } \
+  && mkdir -p /opt/maven \
+  && tar -xzf /tmp/maven.tar.gz -C /opt/maven --strip-components=1 --no-same-owner \
+  && rm -f /tmp/maven.tar.gz \
+  && JAVA_HOME=/opt/java /opt/maven/bin/mvn --version | head -1
+
+ARG GO_VERSION=1.26.5
+ARG GO_SHA256_AMD64=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053
+ARG GO_SHA256_ARM64=fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49
+RUN case "$(uname -m)" in \
+      x86_64|amd64)  garch=amd64; want="$GO_SHA256_AMD64" ;; \
+      arm64|aarch64) garch=arm64; want="$GO_SHA256_ARM64" ;; \
+      *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; \
+    esac \
+  && curl -fsSL -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-${garch}.tar.gz" \
+  && got=$(sha256sum /tmp/go.tar.gz | cut -d' ' -f1) \
+  && { [ "$want" = "$got" ] || { echo "go checksum mismatch: want=$want got=$got" >&2; exit 1; }; } \
+  && tar -xzf /tmp/go.tar.gz -C /opt --no-same-owner \
+  && rm -f /tmp/go.tar.gz \
+  && /opt/go/bin/go version
 
 # Claude Code — native single-binary install (no Node/npm runtime dependency). Anthropic's
 # install.sh normally drops a self-updating launcher in ~/.local/bin; instead we fetch the same
@@ -212,8 +310,10 @@ RUN case "$(uname -m)" in x86_64|amd64) tgt=x86_64-unknown-linux-musl ;; arm64|a
   && /opt/codex/bin/codex --version
 
 # Python CLI tools in an isolated, root-owned venv
+# --disable-pip-version-check: pip's "a new release of pip is available" notice goes to
+# stderr, which `podman build -q` does not suppress, so it would show up in a quiet build.
 RUN python3 -m venv /opt/py-tools \
-  && /opt/py-tools/bin/pip install --no-cache-dir claude-code-transcripts
+  && /opt/py-tools/bin/pip install --no-cache-dir --disable-pip-version-check claude-code-transcripts
 
 # Everything under /opt readable/traversable by every runtime user
 RUN chmod -R a+rX /opt
@@ -221,7 +321,8 @@ RUN chmod -R a+rX /opt
 # Toolchains on PATH for ALL shells (incl. non-interactive `ssh cs-sandbox-x <cmd>`), so node,
 # the agents (claude, codex), and the py-tools are found without sourcing ~/.bashrc. (~/.bashrc
 # additionally runs pyenv/nvm init for interactive version switching.)
-ENV PATH=/opt/nvm/versions/node/v24.4.1/bin:/opt/py-tools/bin:/opt/claude/bin:/opt/codex/bin:/opt/pyenv/bin:${PATH}
+ENV JAVA_HOME=/opt/java
+ENV PATH=/opt/nvm/versions/node/v24.18.1/bin:/opt/py-tools/bin:/opt/claude/bin:/opt/codex/bin:/opt/pyenv/bin:/opt/go/bin:/opt/java/bin:/opt/maven/bin:${PATH}
 
 # Make `podman` run ROOTFUL by default — the nested engine must (rootless-inner fails
 # under keep-id). A thin wrapper ahead of /usr/bin in PATH routes podman through the
@@ -237,12 +338,71 @@ RUN printf '#!/bin/sh\nexec sudo /usr/bin/podman "$@"\n' > /usr/local/bin/podman
 # the toolchain compiles — so edits to these files don't bust the expensive cache above.
 COPY . /sandbox
 
-# Pre-build the Neovim plugin set into the home SEED (/sandbox/home). The entrypoint
-# copies that seed into the user's home on first boot, so nvim is ready immediately
-# (config comes from the repo via the COPY above; plugins land alongside it here).
-RUN HOME=/sandbox/home XDG_CONFIG_HOME=/sandbox/home/.config \
-    XDG_DATA_HOME=/sandbox/home/.local/share XDG_STATE_HOME=/sandbox/home/.local/state \
-    nvim --headless -c 'autocmd User LazySync quitall' -c 'Lazy! sync'
+# Pre-build the ENTIRE Neovim setup, so the first `nvim` in a sandbox is instant and needs
+# no network. Three kinds of artifact, and they can't all live in the same place:
+#
+#   1. plugins  -> the home SEED (/sandbox/home/.local/share/nvim/lazy). The entrypoint copies
+#                  the seed into the user's home on first boot. `install` + `restore` (NOT
+#                  `sync`) so the checked-in lazy-lock.json decides the revisions and the build
+#                  is reproducible — `sync` updates to whatever is HEAD today and rewrites the
+#                  lockfile inside the image, where nobody ever sees it.
+#   2. treesitter parsers -> also the seed (~18 MB of .so + queries, position-independent).
+#                  `:TSInstallSync` is defined by lua/plugins/treesitter.lua; nvim-treesitter's
+#                  own install is async, so a plain headless call would exit before it finished.
+#   3. LSP servers / formatters -> /opt/nvim/mason, NOT the home. Mason bakes the absolute
+#                  install path into its bin/ wrappers (and into the venv it builds for
+#                  basedpyright), so ~1 GB of servers pre-installed under /sandbox/home would
+#                  still point at /sandbox/home after being copied to a developer's home. They
+#                  go under /opt with the other shared toolchains instead: one root-owned,
+#                  path-stable copy, never duplicated into an instance's home. lua/plugins/
+#                  mason.lua picks that root up automatically (override with $MASON_ROOT).
+#
+# The `!` on the two sync commands makes them exit non-zero when something did not install,
+# so a partial pre-build fails the image build here instead of shipping a sandbox that
+# quietly downloads half its editor the first time you open a file.
+#
+# The rm near the end drops build-time caches — mason's installers leave npm/pip/Go caches
+# behind (gopls alone leaves ~550 MB in ~/.cache/go-build and ~/go), plus the path-keyed Lua
+# bytecode cache and logs — which would otherwise be copied into every sandbox home. That
+# leak is invisible (the build still succeeds), so the final `du` check fails the build if
+# the seed grows past ~100 MB: ~80 MB is plugins + treesitter parsers, and anything beyond
+# means a newly added package left a cache that needs adding to the rm list.
+#
+# `step` keeps the console quiet. `podman build -q` (what `cs-sandbox build` uses unless
+# you pass --verbose) only suppresses a RUN's stdout — its stderr goes straight to the
+# terminal, and `nvim --headless` writes everything there, so these four commands used to
+# spray ~120 lines of lazy/mason/treesitter progress over every build. This layer sits
+# after `COPY . /sandbox`, so ANY edit in the repo re-runs it. Output is captured instead
+# and replayed only if a step fails; BUILD_VERBOSE=1 (set by `cs-sandbox build --verbose`)
+# passes it through live.
+ARG BUILD_VERBOSE=0
+RUN set -e; \
+    export HOME=/sandbox/home \
+           XDG_CONFIG_HOME=/sandbox/home/.config \
+           XDG_DATA_HOME=/sandbox/home/.local/share \
+           XDG_STATE_HOME=/sandbox/home/.local/state \
+           XDG_CACHE_HOME=/sandbox/home/.cache; \
+    mkdir -p /opt/nvim/mason; \
+    log=/tmp/nvim-setup.log; \
+    step() { \
+      if [ "${BUILD_VERBOSE:-0}" = 1 ]; then "$@"; \
+      else "$@" >>"$log" 2>&1 \
+        || { echo "cs-sandbox: neovim pre-install failed: $*" >&2; cat "$log" >&2; exit 1; }; \
+      fi; \
+    }; \
+    step nvim --headless '+Lazy! install' +qa; \
+    step nvim --headless '+Lazy! restore' +qa; \
+    step nvim --headless '+TSInstallSync!' +qa; \
+    step nvim --headless '+MasonInstallSync!' +qa; \
+    rm -f "$log"; \
+    chmod -R a+rX /opt/nvim; \
+    rm -rf "$HOME/.npm" "$HOME/.cache/pip" "$HOME/.cache/go-build" "$HOME/go" \
+           "$HOME/.cache/tree-sitter" \
+           "$XDG_CACHE_HOME/nvim/luac" "$XDG_STATE_HOME/nvim" \
+           "$XDG_DATA_HOME/nvim/mason"; \
+    seed_mb=$(du -sm "$HOME" | cut -f1); \
+    echo "home seed: ${seed_mb} MB"; \
+    [ "$seed_mb" -lt 100 ] || { echo "home seed too large (${seed_mb} MB) — a build cache leaked into /sandbox/home" >&2; du -sm "$HOME"/* "$HOME"/.[a-z]* 2>/dev/null | sort -n | tail -10 >&2; exit 1; }
 
 # Image metadata. Placed here — after the heavy toolchain/COPY layers — so editing a
 # label only rebuilds this cheap layer, not the build above. The :44 tag is a rolling

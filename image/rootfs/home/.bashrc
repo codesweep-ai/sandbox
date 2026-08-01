@@ -81,13 +81,25 @@ export NVM_DIR="${NVM_DIR:-/opt/nvm}"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
 
-# Java
-if command -v java >/dev/null 2>&1; then
-  JAVA_BIN=$(readlink -f "$(command -v java)")
-  JAVA_HOME=$(dirname "$(dirname "$JAVA_BIN")")
-  export JAVA_HOME
-  export PATH="$JAVA_HOME/bin:$PATH"
-fi
+# Go (shared toolchain under /opt — see docs/design.md; `sudo` to change the toolchain
+# itself). GOTOOLCHAIN is left at upstream's "auto", so a repo whose go.mod names a
+# different `go 1.x` downloads that toolchain into GOPATH on demand — no sudo needed,
+# which is Go's equivalent of switching versions with nvm/pyenv.
+export GOROOT="${GOROOT:-/opt/go}"
+export GOPATH="${GOPATH:-$HOME/go}"
+export GOBIN="${GOBIN:-$GOPATH/bin}"
+[[ -d $GOROOT/bin ]] && [[ ":$PATH:" != *":$GOROOT/bin:"* ]] && export PATH="$GOROOT/bin:$PATH"
+# so `go install <pkg>@latest` yields a command you can actually run
+[[ ":$PATH:" != *":$GOBIN:"* ]] && export PATH="$GOBIN:$PATH"
+
+# Java + Maven (pinned Temurin JDK under /opt, like the other toolchains). JAVA_HOME is
+# set outright rather than derived from `readlink -f $(command -v java)`: that used to
+# resolve to whichever JDK the distro's alternatives happened to point at.
+export JAVA_HOME="${JAVA_HOME:-/opt/java}"
+for d in "$JAVA_HOME/bin" /opt/maven/bin; do
+  [[ -d $d ]] && [[ ":$PATH:" != *":$d:"* ]] && export PATH="$d:$PATH"
+done
+unset d
 
 # Native AI coding agents (shared, under /opt — pinned single binaries, no npm/Node).
 # Added here too because sshd resets PATH and bash sources ~/.bashrc for `ssh <instance> <cmd>`,

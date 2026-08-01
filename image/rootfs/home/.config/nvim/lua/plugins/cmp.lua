@@ -6,13 +6,15 @@ return {
     "hrsh7th/cmp-path", -- source for file system paths
     {
       "L3MON4D3/LuaSnip",
-      -- follow latest release.
-      -- version = "v2.*", -- Replace <CurrentMajor> by the latest released major (first number of latest release)
+      -- No `version = "v2.*"`: the v2.5.0 tag predates LuaSnip's Nvim 0.12 fixes
+      -- (deprecated-API replacements, the vim.F shim). lazy-lock.json pins the
+      -- tested revision instead.
       -- install jsregexp (optional!).
       build = "make install_jsregexp",
     },
     "saadparwaiz1/cmp_luasnip", -- for autocompletion
     "onsails/lspkind.nvim", -- vs-code like pictograms
+    "folke/lazydev.nvim", -- completion source for the Neovim lua API
   },
   config = function()
     local cmp = require("cmp")
@@ -26,7 +28,7 @@ return {
 
     cmp.setup({
       completion = {
-        autocomplete =false,
+        autocomplete = false,
         completeopt = "menu,menuone,preview,noselect",
       },
       snippet = { -- configure how nvim-cmp interacts with snippet engine
@@ -45,9 +47,11 @@ return {
       }),
       -- sources for autocompletion
       sources = cmp.config.sources({
-        { name = "nvim_lsp"},
+        -- group_index 0: answer `require("…")` / `---@module` from lazydev instead of
+        -- asking LuaLS to load every module in the workspace
+        { name = "lazydev", group_index = 0 },
+        { name = "nvim_lsp" },
         { name = "luasnip" }, -- snippets
-        { name = "copilot"},
         { name = "buffer" }, -- text within current buffer
         { name = "path" }, -- file system paths
       }),
@@ -61,4 +65,3 @@ return {
     })
   end,
 }
-

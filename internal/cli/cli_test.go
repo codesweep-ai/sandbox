@@ -75,7 +75,9 @@ func TestQuietVerboseMutualExclusion(t *testing.T) {
 }
 
 // TestBuildPodmanQuietFlag: podman build runs -q by default and under --quiet,
-// and WITHOUT -q under --verbose.
+// and WITHOUT -q under --verbose. BUILD_VERBOSE tracks it, so the RUN steps that
+// drive `nvim --headless` (whose stderr -q does not suppress) stay quiet unless
+// the user asked for detail.
 func TestBuildPodmanQuietFlag(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -106,6 +108,14 @@ func TestBuildPodmanQuietFlag(t *testing.T) {
 			hasQ := slices.Contains(argv, "-q")
 			if hasQ != c.wantQ {
 				t.Errorf("podman build -q present=%v, want %v (%v)", hasQ, c.wantQ, argv)
+			}
+			// BUILD_VERBOSE is the inverse of -q: quiet build -> quiet RUN steps.
+			wantBV := "BUILD_VERBOSE=1"
+			if c.wantQ {
+				wantBV = "BUILD_VERBOSE=0"
+			}
+			if !slices.Contains(argv, wantBV) {
+				t.Errorf("podman build missing %s (%v)", wantBV, argv)
 			}
 		})
 	}

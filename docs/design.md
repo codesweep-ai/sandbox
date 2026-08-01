@@ -45,10 +45,18 @@ build serves every developer and machine and you never rebuild to match your loc
 Two pieces make this work:
 
 - **Toolchains live under `/opt`** (shared, root-owned), not in a per-user `$HOME`: pyenv+Python,
-  nvm+Node, the native coding-agent binaries (Claude Code, Codex), and Python CLI tools in a venv.
+  nvm+Node, the Go toolchain, the Temurin JDK + Maven, the native coding-agent binaries (Claude
+  Code, Codex), Python CLI tools in a venv, and Neovim's Mason packages (the language servers and
+  formatters, `/opt/nvim/mason`). Each is pinned in the `Containerfile` and wired up by
+  `~/.bashrc`, so the versions are reproducible rather than whatever the distro last shipped
+  (which also means one JDK on `PATH`, not whichever the distro's alternatives point at). Go
+  additionally keeps
+  upstream's `GOTOOLCHAIN=auto`, so a repo whose `go.mod` names another `go 1.x` fetches that
+  toolchain into `$GOPATH` on demand — no `sudo`, despite `/opt` being read-only.
   All are on `PATH` for every shell (so non-interactive `ssh <name> <cmd>` finds them too). Being
   root-owned, they are effectively read-only for the dev user - adding language versions or global
   packages needs `sudo`; per-project virtualenvs and `node_modules` in your repos are unaffected.
+  Mason additionally honours `$MASON_ROOT` if you want a private, writable package set.
 - **The runtime user is created at first boot.** `cs-sandbox` passes your identity and the sandbox
   config as environment (`CS_SANDBOX_USER`/`UID`/`GID`/`HOME`, plus `CS_SANDBOX_TYPE` / `YOLO` /
   `SSH_PORT` / `IMAGE_STORES`), and the guest **init** - the container entrypoint, or the microVM's
@@ -79,7 +87,8 @@ the interface between `cs-sandbox` and the entrypoint. The seed builder (`intern
 On boot the guest init (the container entrypoint or the microVM's `/fc-init`) splits work by a sentinel:
 
 - **first boot** (`~/.cs-sandbox-initialized` absent): seed the skeleton home from the image
-  (`/sandbox/home` - dotfiles, `~/.local/bin` + the bundled agent tools, pre-built Neovim plugins) and
+  (`/sandbox/home` - dotfiles, `~/.local/bin` + the bundled agent tools, pre-built Neovim plugins and
+  treesitter parsers; the Neovim language servers are shared under `/opt` instead) and
   chown it; install the agent credentials. `--repo` clones use a separate
   `~/.cs-sandbox-repos-done` guard.
 - **every boot** (idempotent): refresh the *managed* ssh material - `authorized_keys`, the tier key,

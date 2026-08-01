@@ -1,22 +1,24 @@
+-- LSP.
+--
+-- nvim-lspconfig is now only a *collection of server configs* (its `lsp/` directory);
+-- the old `require("lspconfig").<server>.setup{}` framework is deprecated upstream and
+-- is being removed. Servers are therefore configured with Nvim's own `vim.lsp.config()`
+-- and turned on with `vim.lsp.enable()` — the latter done by mason-lspconfig for every
+-- server it actually has installed (see mason.lua), so a server that is missing is
+-- simply not enabled instead of erroring on every buffer you open.
+--
+-- Loaded eagerly (`lazy = false`): the plugin only puts `lsp/*.lua` on 'runtimepath'
+-- (nothing is executed), and mason-lspconfig must not enable a server before the
+-- `vim.lsp.config()` calls below have registered its settings.
 return {
   "neovim/nvim-lspconfig",
-  version = "v2.4.0",
-  event = { "BufReadPre", "BufNewFile" },
+  version = "^2",
+  lazy = false,
   dependencies = {
     "hrsh7th/cmp-nvim-lsp",
     { "antosha417/nvim-lsp-file-operations", config = true },
-    { "folke/neodev.nvim", opts = {} },
   },
   config = function()
-    -- import lspconfig plugin
-    local lspconfig = require("lspconfig")
-
-    -- import mason_lspconfig plugin
-    local mason_lspconfig = require("mason-lspconfig")
-
-    -- import cmp-nvim-lsp plugin
-    local cmp_nvim_lsp = require("cmp_nvim_lsp")
-
     local keymap = vim.keymap -- for conciseness
 
     vim.api.nvim_create_autocmd("LspAttach", {
@@ -54,48 +56,64 @@ return {
         opts.desc = "Show line diagnostics"
         keymap.set("n", "<leader>d", vim.diagnostic.open_float, opts) -- show diagnostics for line
 
+        -- vim.diagnostic.goto_prev/goto_next were deprecated in Nvim 0.11
         opts.desc = "Go to previous diagnostic"
-        keymap.set("n", "[d", vim.diagnostic.goto_prev, opts) -- jump to previous diagnostic in buffer
+        keymap.set("n", "[d", function()
+          vim.diagnostic.jump({ count = -1, float = true })
+        end, opts) -- jump to previous diagnostic in buffer
 
         opts.desc = "Go to next diagnostic"
-        keymap.set("n", "]d", vim.diagnostic.goto_next, opts) -- jump to next diagnostic in buffer
+        keymap.set("n", "]d", function()
+          vim.diagnostic.jump({ count = 1, float = true })
+        end, opts) -- jump to next diagnostic in buffer
 
         opts.desc = "Show documentation for what is under cursor"
         keymap.set("n", "K", vim.lsp.buf.hover, opts) -- show documentation for what is under cursor
 
+        -- Nvim 0.12 has its own :lsp command; nvim-lspconfig only defines :LspRestart
+        -- (and friends) on 0.11 and older.
         opts.desc = "Restart LSP"
-        keymap.set("n", "<leader>rs", ":LspRestart<CR>", opts) -- mapping to restart lsp if necessary
+        keymap.set("n", "<leader>rs", function()
+          vim.cmd(vim.fn.exists(":lsp") == 2 and "lsp restart" or "LspRestart")
+        end, opts) -- mapping to restart lsp if necessary
       end,
     })
 
-    -- used to enable autocompletion (assign to every lsp server config)
-    local capabilities = cmp_nvim_lsp.default_capabilities()
+    -- Autocompletion capabilities for every server ("*" is the fallback config that
+    -- vim.lsp.config merges into all of them).
+    vim.lsp.config("*", {
+      capabilities = require("cmp_nvim_lsp").default_capabilities(),
+    })
 
-    lspconfig["svelte"].setup({
-      capabilities = capabilities,
-      on_attach = function(client, bufnr)
+    vim.lsp.config("svelte", {
+      on_attach = function(client, _)
         vim.api.nvim_create_autocmd("BufWritePost", {
           pattern = { "*.js", "*.ts" },
           callback = function(ctx)
             -- Here use ctx.match instead of ctx.file
-            client.notify("$/onDidChangeTsOrJsFile", { uri = ctx.match })
+            client:notify("$/onDidChangeTsOrJsFile", { uri = ctx.match })
           end,
         })
       end,
     })
 
-    lspconfig["graphql"].setup({
-      capabilities = capabilities,
+    vim.lsp.config("graphql", {
       filetypes = { "graphql", "gql", "svelte", "typescriptreact", "javascriptreact" },
     })
 
-    lspconfig["emmet_ls"].setup({
-      capabilities = capabilities,
+    vim.lsp.config("emmet_ls", {
       filetypes = { "html", "typescriptreact", "javascriptreact", "css", "sass", "scss", "less", "svelte" },
     })
 
-    lspconfig["lua_ls"].setup({
-      capabilities = capabilities,
+    vim.lsp.config("lua_ls", {
+      -- LuaLS defaults its log + metadata directories to its own install directory,
+      -- which is the shared read-only Mason root in a sandbox (see mason.lua); left
+      -- alone it exits 1 with "create_directories … Permission denied".
+      cmd = {
+        "lua-language-server",
+        "--logpath=" .. vim.fn.stdpath("state") .. "/lua-language-server/log",
+        "--metapath=" .. vim.fn.stdpath("state") .. "/lua-language-server/meta",
+      },
       settings = {
         Lua = {
           -- make the language server recognize "vim" global
@@ -124,30 +142,36 @@ return {
       return nil
     end
 
+    -- Pyenv is shared and lives under /opt in the sandbox (PYENV_ROOT), not in ~/.pyenv.
+    local pyenv_root = vim.env.PYENV_ROOT
+    if not pyenv_root or pyenv_root == "" then
+      pyenv_root = vim.fn.expand("~/.pyenv")
+    end
+
     local lsp_pyenv_version = find_pyenv_version_file(vim.fn.getcwd())
     if lsp_pyenv_version and lsp_pyenv_version ~= "" then
       -- print("Set LSP PYENV_VERSION to: " .. lsp_pyenv_version)
-      vim.fn.setenv('PYENV_VERSION', lsp_pyenv_version)
+      vim.fn.setenv("PYENV_VERSION", lsp_pyenv_version)
 
       -- Also set the python host prog
-      local lsp_python_path = vim.fn.system("pyenv prefix " .. lsp_pyenv_version .. " 2>/dev/null"):gsub("%s+$", "") .. "/bin/python"
+      local lsp_python_path = vim.fn.system("pyenv prefix " .. lsp_pyenv_version .. " 2>/dev/null"):gsub("%s+$", "")
+        .. "/bin/python"
       if vim.fn.executable(lsp_python_path) == 1 then
         -- print("Set LSP PYTHON_PATH to: " .. lsp_python_path)
         vim.g.python3_host_prog = lsp_python_path
       end
     end
 
-    lspconfig["basedpyright"].setup({
-      capabilities = capabilities,
+    vim.lsp.config("basedpyright", {
       settings = {
         basedpyright = {
           typeCheckingMode = "standard",
-          venvPath = vim.fn.expand("~/.pyenv/versions"),
+          venvPath = pyenv_root .. "/versions",
           venv = lsp_pyenv_version,
           analysis = {
-            exclude = { "**/log/**", "**/.cache/**" }
-          }
-        }
+            exclude = { "**/log/**", "**/.cache/**" },
+          },
+        },
       },
       on_attach = function(client, bufnr)
         -- Auto-detect and set PYENV_VERSION and the Python path from .python-version
@@ -157,10 +181,12 @@ return {
         local venv = find_pyenv_version_file(file_dir)
         if venv and venv ~= "" then
           -- print("Set LSP on_attach PYENV_VERSION to: " .. venv)
-          vim.fn.setenv('PYENV_VERSION', venv)
+          vim.fn.setenv("PYENV_VERSION", venv)
 
           -- Also set the python host prog
-          local python_path = vim.fn.system("bash -lc \"(cd " .. file_dir .. " && pyenv prefix " .. venv .. ") 2>/dev/null\""):gsub("%s+$", "") .. "/bin/python"
+          local python_path = vim.fn.system(
+            'bash -lc "(cd ' .. file_dir .. " && pyenv prefix " .. venv .. ') 2>/dev/null"'
+          ):gsub("%s+$", "") .. "/bin/python"
           if vim.fn.executable(python_path) == 1 then
             -- print("Set LSP on_attach PYTHON_PATH to: " .. python_path)
             vim.g.python3_host_prog = python_path
@@ -168,8 +194,8 @@ return {
 
           -- Update the basedpyright settings
           client.config.settings.basedpyright.venv = venv
-          client.config.settings.basedpyright.venvPath = vim.fn.expand("~/.pyenv/versions")
-          client.notify("workspace/didChangeConfiguration", {
+          client.config.settings.basedpyright.venvPath = pyenv_root .. "/versions"
+          client:notify("workspace/didChangeConfiguration", {
             settings = client.config.settings,
           })
         end
@@ -179,15 +205,14 @@ return {
     -- Configure how diagnostics are displayed
     vim.diagnostic.config({
       virtual_text = {
-        prefix = "●",   -- could be "■", "●", "▎", or ""
-        spacing = 2,    -- space between text and message
+        prefix = "●", -- could be "■", "●", "▎", or ""
+        spacing = 2, -- space between text and message
         source = "if_many", -- show source name (like [BasedPyright])
       },
-      signs = true,       -- show signs in the gutter
-      underline = true,   -- underline errors
-      update_in_insert = false, -- don’t update while typing
-      severity_sort = true,     -- sort by severity
+      signs = true, -- show signs in the gutter
+      underline = true, -- underline errors
+      update_in_insert = false, -- don't update while typing
+      severity_sort = true, -- sort by severity
     })
-
   end,
 }

@@ -60,6 +60,16 @@ vim.opt.number = true
 -- disable mouse
 vim.opt.mouse = ""
 
+-- Remote-plugin providers. None of the bundled plugins are remote plugins (they are all
+-- Lua), and probing for the Python one costs ~400ms of startup on its own here, because
+-- it walks the pyenv shims looking for a pynvim. Drop the "python3" line if you install a
+-- plugin that needs `:python3` — lua/plugins/lsp.lua still points g:python3_host_prog at
+-- the project's pyenv interpreter for that case.
+vim.g.loaded_python3_provider = 0
+vim.g.loaded_ruby_provider = 0
+vim.g.loaded_perl_provider = 0
+vim.g.loaded_node_provider = 0
+
 -- sign column
 vim.opt.signcolumn = "no"
 vim.cmd("highlight! link SignColumn LineNr")
@@ -95,7 +105,18 @@ if false then
   })
 end
 
--- Use nvim.lazy for plugins
+-- Use nvim.lazy for plugins.
+--
+-- Version policy — the thing that keeps this config from rotting:
+--   * lazy-lock.json is the pin. Every plugin revision in it is one this config has been
+--     tested against on the Neovim in the image, and the image build installs exactly
+--     those revisions (`Lazy! install` + `Lazy! restore`, never `sync`).
+--   * A plugin spec only adds `version = "^N"` where the major IS the API this config
+--     targets and upstream tags releases promptly — currently mason, mason-lspconfig and
+--     nvim-lspconfig. Elsewhere a tag pin is a trap: trouble, telescope and LuaSnip all
+--     have latest releases that predate their Neovim 0.12 fixes, so pinning to the tag
+--     would hold them on code that is broken here. Those specs say so inline.
+--   * To move: `:Lazy update`, exercise things, then commit the new lazy-lock.json.
 local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
 if not (vim.uv or vim.loop).fs_stat(lazypath) then
   vim.fn.system({
@@ -109,7 +130,15 @@ if not (vim.uv or vim.loop).fs_stat(lazypath) then
 end
 vim.opt.rtp:prepend(lazypath)
 
-require("lazy").setup({{import = "plugins"}})
+require("lazy").setup({
+  spec = { { import = "plugins" } },
+  -- The sandbox image ships the plugins pre-installed at the lazy-lock.json revisions
+  -- and /opt is read-only, so never check for updates in the background: an update
+  -- would silently drift off the versions this config is tested against.
+  checker = { enabled = false },
+  change_detection = { enabled = false },
+  rocks = { enabled = false }, -- no luarocks in the image; nothing here needs it
+})
 
 -- github theme
 if true then
@@ -164,20 +193,14 @@ vim.api.nvim_create_autocmd({"BufRead", "BufNewFile"}, {
     callback = function() vim.bo.filetype = "make" end
 })
 
+-- treesitter folding for json/yaml (nvim_treesitter#foldexpr() belonged to the old
+-- nvim-treesitter `master` branch; folds are provided by Neovim itself now)
 if false then
   vim.api.nvim_create_autocmd("FileType", {
-    pattern = "json",
+    pattern = { "json", "yaml" },
     callback = function()
-      vim.opt_local.foldmethod = "expr"
-      vim.opt_local.foldexpr = "nvim_treesitter#foldexpr()"
-    end,
-  })
-
-  vim.api.nvim_create_autocmd("FileType", {
-    pattern = "yaml",
-    callback = function()
-      vim.opt_local.foldmethod = "expr"
-      vim.opt_local.foldexpr = "nvim_treesitter#foldexpr()"
+      vim.wo[0][0].foldmethod = "expr"
+      vim.wo[0][0].foldexpr = "v:lua.vim.treesitter.foldexpr()"
     end,
   })
 end
