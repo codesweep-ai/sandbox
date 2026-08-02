@@ -89,6 +89,10 @@ PY
 }
 
 line_count() { local f="$1"; [[ -f "$f" ]] && wc -l < "$f" | tr -d ' ' || echo 0; }
+newest_rollout() {
+    find "$SESS" -type f -name '*.jsonl' -printf '%T@ %p\n' 2>/dev/null \
+        | sort -nr | head -1 | cut -d' ' -f2-
+}
 
 pane() { tmux capture-pane -p -t "$TMUX_SESSION" 2>/dev/null; }
 session_alive() { tmux has-session -t "$TMUX_SESSION" 2>/dev/null; }
@@ -156,16 +160,37 @@ ensure_session() {
 
 # --- run one turn ---------------------------------------------------------
 
+# Snapshot rollouts before launching a missing TUI. The ready screen can appear
+# a fraction before Codex creates its rollout, so selecting the globally newest
+# file after startup can accidentally bind this turn to a previous session.
+BEFORE_LAUNCH="$(find "$SESS" -type f -name '*.jsonl' 2>/dev/null | sort)"
+WAS_ALIVE=false; session_alive && WAS_ALIVE=true
 ensure_session || exit $?
 wait_ready || exit $?
 
-# Snapshot which rollout files exist now, so a brand-new session's file (created only once the
-# first prompt is submitted) can be identified afterwards.
+# Snapshot which rollout files exist before submission. Older Codex versions
+# create the file only after the first prompt, so the post-submit fallback below
+# still compares against this set.
 BEFORE="$(find "$SESS" -type f -name '*.jsonl' 2>/dev/null | sort)"
 # If we already know this session's file, snapshot its turn/line counts for the wait below.
 JSONL=""; PRE_TASKS=0; PRE_LINES=0
 if [[ -n "$UUID" ]]; then
     JSONL="$(sess_file_for "$UUID")"
+    PRE_TASKS="$(task_count "$JSONL")"; PRE_LINES="$(line_count "$JSONL")"
+else
+    # Current Codex creates the rollout at TUI startup. For a newly launched
+    # session, wait for and select the file absent from the pre-launch snapshot.
+    # Only an already-warm session without a recorded UUID uses newest_rollout.
+    if ! $WAS_ALIVE; then
+        for _ in $(seq 1 30); do
+            AFTER_LAUNCH="$(find "$SESS" -type f -name '*.jsonl' 2>/dev/null | sort)"
+            JSONL="$(comm -13 <(printf '%s\n' "$BEFORE_LAUNCH") <(printf '%s\n' "$AFTER_LAUNCH") | head -1)"
+            [[ -n "$JSONL" ]] && break
+            sleep 0.2
+        done
+    else
+        JSONL="$(newest_rollout)"
+    fi
     PRE_TASKS="$(task_count "$JSONL")"; PRE_LINES="$(line_count "$JSONL")"
 fi
 

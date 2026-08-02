@@ -728,3 +728,68 @@ func TestClaudeTurnReadyStates(t *testing.T) {
 		})
 	}
 }
+
+// TestCodexTurnBindsToItsOwnRollout: current Codex creates its rollout at TUI startup, and
+// the ready screen can appear a moment before the file exists. Picking the globally newest
+// *.jsonl after startup can therefore bind the turn to a PREVIOUS session — the turn then
+// reports another conversation's content as its own. The driver snapshots before launching
+// and takes the file that appeared since.
+func TestCodexTurnBindsToItsOwnRollout(t *testing.T) {
+	skipUnlessLinux(t)
+	home, bin := agentHome(t, ".cs-codex-remote")
+	sess := filepath.Join(home, ".cs-codex", "sessions")
+	if err := os.MkdirAll(sess, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A stale rollout from an earlier session, deliberately left as the newest file on disk
+	// so "newest wins" would pick exactly the wrong one.
+	stale := filepath.Join(sess, "rollout-2026-01-01-11111111-1111-4111-8111-111111111111.jsonl")
+	staleBody := `{"payload":{"type":"agent_message","message":"STALE SESSION"}}` + "\n" +
+		`{"payload":{"type":"task_complete"}}` + "\n"
+	if err := os.WriteFile(stale, []byte(staleBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fresh := filepath.Join(sess, "rollout-2026-01-02-22222222-2222-4222-8222-222222222222.jsonl")
+	stubDir := t.TempDir()
+
+	// tmux: no session until new-session runs (so the driver takes the launch path), which
+	// creates the fresh rollout the way Codex does at startup. The submitting send-keys then
+	// appends this turn's answer and its task_complete.
+	writeStub(t, bin, "codex", "#!/bin/sh\nexit 0\n")
+	writeStub(t, bin, "cs-codex", "#!/bin/sh\nexit 0\n")
+	writeStub(t, bin, "tmux", `#!/bin/sh
+case "$1" in
+  has-session) [ -f "$STUB_DIR/.launched" ] && exit 0 || exit 1 ;;
+  new-session)
+    touch "$STUB_DIR/.launched"
+    : > "$FRESH_ROLLOUT"
+    exit 0 ;;
+  capture-pane) echo "gpt-5 default · /work"; exit 0 ;;
+  send-keys)
+    if [ -f "$STUB_DIR/.launched" ] && [ ! -f "$STUB_DIR/.submitted" ]; then
+      touch "$STUB_DIR/.submitted"
+      printf '%s\n' '{"payload":{"type":"agent_message","message":"FRESH ANSWER"}}' >> "$FRESH_ROLLOUT"
+      printf '%s\n' '{"payload":{"type":"task_complete"}}' >> "$FRESH_ROLLOUT"
+    fi
+    exit 0 ;;
+esac
+exit 0
+`)
+	// Make the stale file the newest on disk, so mtime ordering favours the wrong choice.
+	if err := os.Chtimes(stale, time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	out, exit := runScriptStdin(t, home, bin,
+		[]string{"STUB_DIR=" + stubDir, "FRESH_ROLLOUT=" + fresh, "CS_CODEX_STALL_SECS=0"},
+		"do the thing\n", "cs-codex-turn", "--tmux", "codextoken", "--timeout", "30")
+	if exit != 0 {
+		t.Fatalf("exit = %d: %s", exit, out)
+	}
+	if !strings.Contains(out, "FRESH ANSWER") {
+		t.Errorf("turn did not bind to the rollout its own launch created: %s", out)
+	}
+	if strings.Contains(out, "STALE SESSION") {
+		t.Errorf("turn reported a previous session's content as its own: %s", out)
+	}
+}
