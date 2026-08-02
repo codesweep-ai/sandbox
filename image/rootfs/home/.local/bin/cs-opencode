@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Launch opencode under the cs-opencode profile — the OpenCode counterpart of cs-claude/cs-codex.
+# A dedicated profile keeps the sandbox's opencode config, sessions, and auth isolated from any
+# personal ~/.config/opencode or ~/.local/share/opencode, using opencode's first-class overrides
+# (NOT blunt XDG redirection, which children of opencode's bash tool would inherit):
+#   OPENCODE_CONFIG_DIR  -> ~/.cs-opencode          (opencode.json with the pinned model, AGENTS.md)
+#   OPENCODE_DB          -> ~/.cs-opencode/opencode.db   (session store, isolated per profile)
+#   OPENCODE_AUTH_CONTENT <- ~/.cs-opencode/auth.json    (inline; the credential is NEVER written
+#                            into opencode's data dir, where it would sit beside the session db)
+#
+# YOLO mode is enabled when CS_OPENCODE_YOLO is set or the marker ~/.cs-opencode/.yolo exists;
+# cs-sandbox creates that marker for `--yolo` agent instances. YOLO appends --auto (auto-approve
+# permissions not explicitly denied) to TUI and `run` invocations — the profile's opencode.json
+# already blanket-allows tool permissions, so --auto is belt-and-braces for the residual asks.
+OC_DIR="$HOME/.cs-opencode"
+mkdir -p "$OC_DIR" 2>/dev/null || true   # ensure the profile dir exists (first run / fresh host)
+
+# Provider auth (API key), scoped to opencode rather than the whole sandbox: anything in
+# ~/.cs-opencode/env (FIREWORKS_API_KEY, OPENAI_API_KEY, ...) is sourced here. Nothing creates
+# this file for you — write it inside the sandbox, or use `cs-sandbox create --env` to inject
+# vars sandbox-wide instead.
+[ -f "$OC_DIR/env" ] && { set -a; . "$OC_DIR/env"; set +a; }
+
+export OPENCODE_CONFIG_DIR="$OC_DIR"
+export OPENCODE_DB="$OC_DIR/opencode.db"
+# The binary can't write read-only /opt anyway; silence the upgrade nag and any shadow-install
+# attempt, and keep sessions private.
+export OPENCODE_DISABLE_AUTOUPDATE=1
+export OPENCODE_DISABLE_SHARE=1
+
+# Fold a seeded credential file into the inline-auth env var (short-circuits auth.json reads).
+if [ -f "$OC_DIR/auth.json" ] && [ -z "${OPENCODE_AUTH_CONTENT:-}" ]; then
+  OPENCODE_AUTH_CONTENT="$(cat "$OC_DIR/auth.json")"
+  export OPENCODE_AUTH_CONTENT
+fi
+
+if [ -n "${CS_OPENCODE_YOLO:-}" ] || [ -f "$OC_DIR/.yolo" ]; then
+  # --auto exists on the TUI (default command) and `run` only; injecting it into other
+  # subcommands (serve, export, session, db, ...) would be an unknown-flag error.
+  case "${1:-}" in
+    run) shift; exec opencode run --auto "$@" ;;
+    completion|acp|mcp|attach|debug|providers|auth|agent|upgrade|uninstall|serve|web|models|stats|export|import|github|pr|session|plugin|plug|db) ;;
+    *) exec opencode --auto "$@" ;;
+  esac
+fi
+exec opencode "$@"

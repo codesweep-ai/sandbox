@@ -227,7 +227,10 @@ func TestCLIAgentToolSetLive(t *testing.T) {
 	name := boxName(t, "tools")
 	createBox(t, r, name)
 
-	for _, tool := range []string{"cs-claude", "cs-codex", "cs-claude-remote", "cs-codex-remote", "mdtohtml"} {
+	for _, tool := range []string{
+		"cs-claude", "cs-codex", "cs-opencode",
+		"cs-claude-remote", "cs-codex-remote", "cs-opencode-remote", "mdtohtml",
+	} {
 		got := strings.TrimSpace(inBox(ctx, r, host, name, "command -v "+tool))
 		if !strings.HasSuffix(got, "/.local/bin/"+tool) {
 			t.Errorf("%s resolved to %q, want ~/.local/bin/%s", tool, got, tool)
@@ -279,6 +282,46 @@ func TestCLIAgentLoginInheritedLive(t *testing.T) {
 	}
 }
 
+// TestCLIOpenCodeLoginInheritedLive is the opencode half of the test above: the
+// credential lands in the seed and at 0600 in the profile the cs-opencode wrapper
+// binds, and the wrapper hands it to opencode inline rather than leaving it on
+// disk for opencode to find beside the session db.
+func TestCLIOpenCodeLoginInheritedLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	if !fileExists(filepath.Join(host.Home, ".cs-opencode", "auth.json")) {
+		t.Skip("host has no ~/.cs-opencode/auth.json to inherit")
+	}
+	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
+	name := boxName(t, "oclogin")
+	out := createBox(t, r, name, "--inherit-agent-login", "opencode")
+
+	if !strings.Contains(out, "agent login: opencode") {
+		t.Errorf("create should report the inherited login, got:\n%s", out)
+	}
+	if !fileExists(filepath.Join(instDir, name, "seed", "opencode", "auth.json")) {
+		t.Error("create did not snapshot the host OpenCode login into the seed")
+	}
+	if got := strings.TrimSpace(inBox(ctx, r, host, name,
+		"stat -c %a ~/.cs-opencode/auth.json 2>/dev/null")); got != "600" {
+		t.Errorf("sandbox ~/.cs-opencode/auth.json missing or wrong mode: %q (want 600)", got)
+	}
+	in, err := state.Load(instDir, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(in.AgentLogins, ",") != "opencode" {
+		t.Errorf("state AgentLogins = %v, want [opencode]", in.AgentLogins)
+	}
+	// The wrapper folds the credential into OPENCODE_AUTH_CONTENT; opencode's own
+	// data dir must stay free of it.
+	if got := strings.TrimSpace(inBox(ctx, r, host, name,
+		"OPENCODE_AUTH_CONTENT= cs-opencode --version >/dev/null 2>&1; "+
+			"test -f ~/.local/share/opencode/auth.json && echo leaked || echo clean")); got != "clean" {
+		t.Errorf("credential reached opencode's data dir: %q", got)
+	}
+}
+
 // TestCLIAgentLoginOptInLive: inheriting is opt-in — a plain create carries no
 // login even when the host has one, and asking for one agent never carries the
 // other.
@@ -312,8 +355,10 @@ func TestCLIAgentLoginOptInLive(t *testing.T) {
 
 	one := boxName(t, "onelogin")
 	createBox(t, r, one, "--inherit-agent-login", "claude")
-	if fileExists(filepath.Join(instDir, one, "seed", "codex", "auth.json")) {
-		t.Error("codex login carried when only claude was requested")
+	for _, other := range []string{"codex", "opencode"} {
+		if fileExists(filepath.Join(instDir, one, "seed", other, "auth.json")) {
+			t.Errorf("%s login carried when only claude was requested", other)
+		}
 	}
 }
 
@@ -366,8 +411,12 @@ func TestCLIYoloLive(t *testing.T) {
 	for _, typ := range []string{"agent", "user"} {
 		name := boxName(t, "yolo"+typ)
 		createBox(t, r, name, "--type", typ, "--yolo")
-		if got := strings.TrimSpace(inBox(ctx, r, host, name, "test -f ~/.cs-claude/.yolo && echo yes")); got != "yes" {
-			t.Errorf("%s --yolo missing ~/.cs-claude/.yolo marker: %q", typ, got)
+		// Every agent's wrapper keys off its own marker.
+		for _, profile := range []string{".cs-claude", ".cs-codex", ".cs-opencode"} {
+			if got := strings.TrimSpace(inBox(ctx, r, host, name,
+				"test -f ~/"+profile+"/.yolo && echo yes")); got != "yes" {
+				t.Errorf("%s --yolo missing ~/%s/.yolo marker: %q", typ, profile, got)
+			}
 		}
 	}
 }

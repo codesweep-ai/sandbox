@@ -192,19 +192,19 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 
 	// agent tooling (optional).
 	ag := Group{Title: "agent tooling (optional — host-side sign-in that instances inherit)"}
-	if have("cs-claude") && have("cs-codex") {
-		ag.add(OK, "agent tools on PATH (cs-claude, cs-codex)")
+	if have("cs-claude") && have("cs-codex") && have("cs-opencode") {
+		ag.add(OK, "agent tools on PATH (cs-claude, cs-codex, cs-opencode)")
 	} else {
 		ag.add(HM, "agent tools not on PATH — install them:  cs-sandbox install-agent-tools")
 	}
 	var agentMiss []string
-	for _, b := range []string{"claude", "codex"} {
+	for _, b := range []string{"claude", "codex", "opencode"} {
 		if !have(b) {
 			agentMiss = append(agentMiss, b)
 		}
 	}
 	if len(agentMiss) == 0 {
-		ag.add(OK, "agent CLIs present (claude, codex)")
+		ag.add(OK, "agent CLIs present (claude, codex, opencode)")
 	} else {
 		ag.add(HM, "agent CLI(s) not found: "+strings.Join(agentMiss, " ")+" — or sign in inside an instance: cs-sandbox agent-login claude <name>")
 	}

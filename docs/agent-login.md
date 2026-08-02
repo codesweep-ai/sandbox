@@ -12,12 +12,13 @@ sandbox:
 
 ```bash
 cs-sandbox create dev --inherit-agent-login claude          # carry your Claude login
-cs-sandbox create dev --inherit-agent-login claude,codex    # both
+cs-sandbox create dev --inherit-agent-login claude,codex    # several at once (also: opencode)
 cs-sandbox create lab                                       # default: no agent login
 ```
 
 `create` snapshots the named agent's host credential (`~/.cs-claude/.credentials.json`,
-`~/.cs-codex/auth.json`) into the per-sandbox seed, and the guest installs it into the home volume
+`~/.cs-codex/auth.json`, `~/.cs-opencode/auth.json`) into the per-sandbox seed, and the guest
+installs it into the home volume
 (mode 600) on **first boot only** — so a token the sandbox later refreshes is never clobbered.
 
 Nothing is carried unless you ask. Copying your credentials into a sandbox — especially one an
@@ -33,7 +34,7 @@ created dev (type=agent, engine=podman, ssh port=2201)
 ## Logging in inside a sandbox instead
 
 ```bash
-cs-sandbox agent-login claude <name>      # or: agent-login codex <name>
+cs-sandbox agent-login claude <name>      # or: agent-login codex|opencode <name>
 ```
 
 Use this when you didn't inherit a login, or when you want the sandbox on a **separate account or
@@ -75,8 +76,9 @@ and it works for any provider: a variable a vendor adds tomorrow needs no change
 use for any other host directory.
 
 For a key scoped to the agent rather than the whole sandbox, write it to `~/.cs-claude/env` (or
-`~/.cs-codex/env`) *inside* the sandbox — the `cs-claude` / `cs-codex` wrappers source that file at
-launch.
+`~/.cs-codex/env`, `~/.cs-opencode/env`) *inside* the sandbox — the `cs-claude` / `cs-codex` /
+`cs-opencode` wrappers source that file at launch. For OpenCode this is the usual path rather than
+the exception: it is normally driven by a provider API key (see [opencode.md](opencode.md)).
 
 Note that an API key **overrides** a subscription login, so there is rarely a reason to inherit a
 login and inject a key into the same sandbox.

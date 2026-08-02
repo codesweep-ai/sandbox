@@ -46,7 +46,7 @@ Two pieces make this work:
 
 - **Toolchains live under `/opt`** (shared, root-owned), not in a per-user `$HOME`: pyenv+Python,
   nvm+Node, the Go toolchain, the Temurin JDK + Maven, the native coding-agent binaries (Claude
-  Code, Codex), Python CLI tools in a venv, and Neovim's Mason packages (the language servers and
+  Code, Codex, OpenCode), Python CLI tools in a venv, and Neovim's Mason packages (the language servers and
   formatters, `/opt/nvim/mason`). Each is pinned in the `Containerfile` and wired up by
   `~/.bashrc`, so the versions are reproducible rather than whatever the distro last shipped
   (which also means one JDK on `PATH`, not whichever the distro's alternatives point at). Go
@@ -333,27 +333,34 @@ contention and corruption.
 
 ## Bundled agent tools and login
 
-Every sandbox ships the `cs-claude` and `cs-codex` toolsets, so the coding agents work without
+Every sandbox ships the `cs-claude`, `cs-codex`, and `cs-opencode` toolsets, so the coding agents work without
 re-authenticating per sandbox. Everything non-secret is baked into the image skeleton from
 `image/rootfs/home/` in this repo; everything secret is carried per sandbox through the seed.
 
 **Baked in (non-secret):**
 
-- **Launch wrappers** in `~/.local/bin`. `cs-claude` runs `claude` under `CLAUDE_CONFIG_DIR=~/.cs-claude`
+- **Launch wrappers** in `~/.local/bin` (the OpenCode adapter's internals — driver architecture,
+  verified upstream behaviors, version-bump procedure — have their own reference,
+  [opencode.md](opencode.md)). `cs-claude` runs `claude` under `CLAUDE_CONFIG_DIR=~/.cs-claude`
   in `--permission-mode auto`; `cs-codex` runs `codex` under `CODEX_HOME=~/.cs-codex` with
-  `approval_policy=on-request` + `sandbox_mode=workspace-write`. Each uses a dedicated profile, so the
-  sandbox's config never touches a personal `~/.claude`/`~/.codex`, and each pre-trusts the launch
-  directory so the agent never stops at a "do you trust this folder?" gate.
-- **Remote agent tools**, also in `~/.local/bin`: `cs-claude-remote` and `cs-codex-remote`, each with
-  `-status`/`-output`/`-sessions`/`-forget` and a `-turn` driver. They start or resume an agent
+  `approval_policy=on-request` + `sandbox_mode=workspace-write`; `cs-opencode` runs `opencode` under
+  `OPENCODE_CONFIG_DIR=~/.cs-opencode` with a profile-scoped session db (`OPENCODE_DB`) and inline
+  auth (`OPENCODE_AUTH_CONTENT`), plus a pinned model and blanket-allow permissions in its
+  `opencode.json`. Each uses a dedicated profile, so the sandbox's config never touches a personal
+  `~/.claude`/`~/.codex`/`~/.config/opencode`, and each pre-trusts the launch directory (or, for
+  opencode, has no trust gate) so the agent never stops at a "do you trust this folder?" gate.
+- **Remote agent tools**, also in `~/.local/bin`: `cs-claude-remote`, `cs-codex-remote`, and
+  `cs-opencode-remote`, each with `-status`/`-output`/`-sessions`/`-forget` and a `-turn` driver.
+  They start or resume an agent
   session on another host over SSH, keeping it warm in tmux, so an agent in one sandbox can hand a
   task to an agent in another. The target host resolves per session and defaults to the sandbox
   itself, so reaching anywhere else needs SSH access the sandbox actually has — for a user sandbox,
   typically keys you forwarded with `ssh -A`.
 - **Settings and instruction hubs**: `~/.cs-claude` (a `settings.json`, a `CLAUDE.md` hub, and a
-  `CLAUDE_PERMISSIONS.md` reference) and `~/.cs-codex` (a `config.toml` and an `AGENTS.md` hub). Both
-  hubs describe **both** toolsets and point at the per-tool docs in `~/.local/bin`, so an in-sandbox
-  Claude can drive Codex remote sessions and vice versa.
+  `CLAUDE_PERMISSIONS.md` reference), `~/.cs-codex` (a `config.toml` and an `AGENTS.md` hub), and
+  `~/.cs-opencode` (an `opencode.json` and an `AGENTS.md` hub). Every hub describes **all three**
+  toolsets and points at the per-tool docs in `~/.local/bin`, so an in-sandbox Claude can drive
+  Codex or OpenCode remote sessions and vice versa.
 
 **YOLO mode.** `cs-sandbox create --yolo` writes a `.yolo` marker; the wrappers then skip all
 permission prompts. That is safe because the sandbox is the isolation boundary — it is disposable and
@@ -361,7 +368,7 @@ cannot reach your host.
 
 **Carried per sandbox (secret, never baked).** Inheriting a host login is opt-in — but it is the
 common case, since the alternative is logging in inside every sandbox: `create
---inherit-agent-login claude|codex` snapshots that agent's credential into the seed, and the guest
+--inherit-agent-login claude|codex|opencode` snapshots that agent's credential into the seed, and the guest
 installs it into the home volume (mode 600) on first boot only. A sandbox created without the flag
 has no agent login — log in inside it, or with `cs-sandbox agent-login <agent> <name>`. Provider API
 keys are never carried; pass them with `--env` if a sandbox needs them. The single-seat and macOS

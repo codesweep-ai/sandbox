@@ -194,6 +194,23 @@ else
 fi
 chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CODEX_DIR" 2>/dev/null || true
 
+# --- OpenCode auth (cs-opencode profile: OPENCODE_CONFIG_DIR=~/.cs-opencode) ---
+# Same model as Codex above. opencode.json ships in the home skeleton; auth.json is installed
+# from the seed first boot only. The cs-opencode wrapper folds it into OPENCODE_AUTH_CONTENT
+# (inline env) so the credential never lands in opencode's data dir next to the session db.
+OC_DIR="$CS_SANDBOX_HOME/.cs-opencode"
+mkdir -p "$OC_DIR"; chmod 700 "$OC_DIR" 2>/dev/null || true
+if [ -f "$SEED/opencode/auth.json" ] && [ ! -f "$OC_DIR/auth.json" ]; then
+  install -m 600 "$SEED/opencode/auth.json" "$OC_DIR/auth.json"
+fi
+# YOLO marker for cs-opencode (--yolo): the wrapper then runs opencode with --auto.
+if [ "${CS_SANDBOX_YOLO:-0}" = "1" ]; then
+  : > "$OC_DIR/.yolo"
+else
+  rm -f "$OC_DIR/.yolo" 2>/dev/null || true
+fi
+chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$OC_DIR" 2>/dev/null || true
+
 # --- global git identity: seed ~/.gitconfig user.name/email from the host's global config, but
 # only if unset (so a change made later in the sandbox is never clobbered). Per-repo --repo
 # overrides are applied below. ----

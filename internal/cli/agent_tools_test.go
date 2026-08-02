@@ -1,0 +1,497 @@
+package cli
+
+// Contract tests over the bundled agent tooling in image/rootfs/home — the scripts in
+// .local/bin, and the profile config the OpenCode wrapper binds.
+//
+// Two things are pinned here. First, the `-s` status contract is identical across the
+// claude, codex, and opencode remote families — an orchestrator polls all three the same
+// way, so a drift in any one of them is a bug. Second, the opencode turn driver's
+// completion semantics: opencode is the only agent whose turn can run to completion and
+// still have failed (an attached `run` exits 0 while the provider error is recorded on the
+// session), so the driver's mandatory postcheck has to stay.
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+// The scripts target the Linux guest/host environment (GNU coreutils, /proc). Off Linux
+// they would fail for environmental reasons rather than contract violations, so CI's macOS
+// leg skips them.
+func skipUnlessLinux(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skipf("agent-tool scripts target Linux (GNU coreutils, /proc); skipping on %s", runtime.GOOS)
+	}
+}
+
+const openCodeTestSessionID = "ses_04198268affeeKLgivDfdCnHrm"
+
+func agentTool(name string) string {
+	return filepath.Join("..", "..", "image", "rootfs", "home", ".local", "bin", name)
+}
+
+// agentHome builds a fake $HOME with the per-agent bookkeeping dirs and a stub bin dir
+// (with an ssh that always succeeds, so nothing reaches the network).
+func agentHome(t *testing.T, prefix string) (home, bin string) {
+	t.Helper()
+	home = t.TempDir()
+	bin = filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeStub(t, bin, "ssh", "#!/bin/sh\nexit 0\n")
+	for _, suffix := range []string{"-sessions", "-logs", "-pids", "-locks"} {
+		if err := os.MkdirAll(filepath.Join(home, prefix+suffix), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return home, bin
+}
+
+func writeStub(t *testing.T, bin, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// runScript runs a bundled script with HOME/PATH pointed at the fake home, returning its
+// combined output and exit code.
+func runScript(t *testing.T, home, bin string, extraEnv []string, name string, args ...string) (string, int) {
+	t.Helper()
+	return runScriptStdin(t, home, bin, extraEnv, "", name, args...)
+}
+
+// runScriptStdin is runScript with a prompt piped in — the turn drivers read theirs there.
+func runScriptStdin(t *testing.T, home, bin string, extraEnv []string, stdin, name string, args ...string) (string, int) {
+	t.Helper()
+	cmd := exec.Command(agentTool(name), args...)
+	cmd.Env = append(append(os.Environ(), "HOME="+home, "PATH="+bin+":/usr/bin:/bin"), extraEnv...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return string(out), 0
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("%s: %v: %s", name, err, out)
+	}
+	return string(out), exitErr.ExitCode()
+}
+
+// TestRemoteOutputStatusContract: the `-s` probe of every remote family answers
+// finished=0 / unknown=1 / running=2, decided by the authoritative footer with the PID only
+// as a secondary liveness signal.
+func TestRemoteOutputStatusContract(t *testing.T) {
+	skipUnlessLinux(t)
+	prompt := "--- 2026-01-01 00:00:00 --- prompt: task\n"
+	states := []struct {
+		state, log string
+		livePID    bool
+		wantOut    string
+		wantExit   int
+	}{
+		{"finished", prompt + "done\n--- 2026-01-01 00:01:00 --- finished (exit 0) ---\n", false, "finished", 0},
+		// A nonzero turn still *finished*: the exit code lives in the log, not the probe.
+		{"finished-nonzero", prompt + "--- 2026-01-01 00:01:00 --- finished (exit 5) ---\n", false, "finished", 0},
+		{"running", prompt, true, "running", 2},
+		{"crashed", prompt, false, "unknown", 1},
+	}
+	for _, tool := range []struct{ name, prefix string }{
+		{"cs-claude-remote-output", ".cs-claude-remote"},
+		{"cs-codex-remote-output", ".cs-codex-remote"},
+		{"cs-opencode-remote-output", ".cs-opencode-remote"},
+	} {
+		for _, tc := range states {
+			t.Run(tool.name+"/"+tc.state, func(t *testing.T) {
+				home, bin := agentHome(t, tool.prefix)
+				name := "status-contract"
+				log := filepath.Join(home, tool.prefix+"-logs", name+".log")
+				if err := os.WriteFile(log, []byte(tc.log), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if tc.livePID {
+					proc := exec.Command("sleep", "30")
+					if err := proc.Start(); err != nil {
+						t.Fatal(err)
+					}
+					defer func() { _ = proc.Process.Kill(); _, _ = proc.Process.Wait() }()
+					pidFile := filepath.Join(home, tool.prefix+"-pids", name+".pid")
+					if err := os.WriteFile(pidFile, []byte(strconv.Itoa(proc.Process.Pid)+"\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				out, exit := runScript(t, home, bin, nil, tool.name, name, "-s")
+				got := strings.TrimSpace(strings.SplitN(out, "\n", 2)[0])
+				if got != tc.wantOut || exit != tc.wantExit {
+					t.Fatalf("-s = %q exit %d; want %q exit %d", got, exit, tc.wantOut, tc.wantExit)
+				}
+			})
+		}
+	}
+}
+
+// TestOpenCodeProfileConfigFailsClosed: the shipped profile must pin a model AND disable
+// upstream's auto-loaded OpenCode Zen gateway. Zen is the only provider that serves an
+// anonymous caller, so it is the only thing an unusable pin can fall back to — and at
+// 1.18.10 the interactive TUI does exactly that, silently selecting `opencode/big-pickle`
+// when the pinned provider has no key. Sending the sandbox's code to a third party nobody
+// chose is the one thing this project promises not to do, so both keys stay.
+func TestOpenCodeProfileConfigFailsClosed(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "image", "rootfs", "home", ".cs-opencode", "opencode.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Model            string   `json:"model"`
+		DisabledProvider []string `json:"disabled_providers"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("shipped opencode.json is not valid JSON: %v", err)
+	}
+	if cfg.Model == "" {
+		t.Error("no model pinned: opencode does not otherwise resolve a deterministic model")
+	}
+	if !slices.Contains(cfg.DisabledProvider, "opencode") {
+		t.Errorf("disabled_providers = %v, must contain \"opencode\" so an unusable pin "+
+			"fails instead of falling back to the free anonymous gateway", cfg.DisabledProvider)
+	}
+
+	// The guard has to hold for BARE `opencode` too. /opt/opencode/bin is on PATH, so
+	// running it instead of the cs-opencode wrapper is an easy slip — and it loads none
+	// of the profile above, which used to leave the anonymous gateway reachable through
+	// the front door. The XDG default config closes that without aliasing the binary.
+	raw, err = os.ReadFile(filepath.Join("..", "..", "image", "rootfs", "home", ".config", "opencode", "opencode.json"))
+	if err != nil {
+		t.Fatalf("no XDG default config: bare `opencode` would reach the gateway: %v", err)
+	}
+	var xdg struct {
+		DisabledProvider []string `json:"disabled_providers"`
+	}
+	if err := json.Unmarshal(raw, &xdg); err != nil {
+		t.Fatalf("shipped ~/.config/opencode/opencode.json is not valid JSON: %v", err)
+	}
+	if !slices.Contains(xdg.DisabledProvider, "opencode") {
+		t.Errorf("XDG disabled_providers = %v, must contain \"opencode\"", xdg.DisabledProvider)
+	}
+}
+
+// TestOpenCodeWrapperProfile: the cs-opencode wrapper is what binds the isolated profile.
+// A seeded credential must reach opencode as inline OPENCODE_AUTH_CONTENT rather than being
+// left for opencode to read out of its data dir beside the session db.
+func TestOpenCodeWrapperProfile(t *testing.T) {
+	skipUnlessLinux(t)
+	home := t.TempDir()
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The stub reports back the argv and the profile env it was launched with.
+	writeStub(t, bin, "opencode", "#!/bin/sh\n"+
+		"echo \"argv: $*\"\n"+
+		"echo \"config: $OPENCODE_CONFIG_DIR\"\n"+
+		"echo \"db: $OPENCODE_DB\"\n"+
+		"echo \"auth: $OPENCODE_AUTH_CONTENT\"\n"+
+		"echo \"key: $FIREWORKS_API_KEY\"\n")
+	ocDir := filepath.Join(home, ".cs-opencode")
+	if err := os.MkdirAll(ocDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ocDir, "auth.json"), []byte(`{"tok":"seeded"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ocDir, "env"), []byte("FIREWORKS_API_KEY=from-env-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, exit := runScript(t, home, bin, nil, "cs-opencode")
+	if exit != 0 {
+		t.Fatalf("cs-opencode exit %d: %s", exit, out)
+	}
+	for _, want := range []string{
+		"config: " + ocDir,
+		"db: " + filepath.Join(ocDir, "opencode.db"),
+		`auth: {"tok":"seeded"}`, // the credential is passed inline, not by path
+		"key: from-env-file",     // the profile env file is sourced for provider keys
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("wrapper output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "--auto") {
+		t.Errorf("non-yolo launch must not pass --auto:\n%s", out)
+	}
+
+	// YOLO adds --auto to the TUI and to `run`, but never to a subcommand that would
+	// reject the flag.
+	if err := os.WriteFile(filepath.Join(ocDir, ".yolo"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantArgv string
+	}{
+		{"tui", nil, "argv: --auto"},
+		{"run", []string{"run", "do it"}, "argv: run --auto do it"},
+		{"serve", []string{"serve", "--port", "1234"}, "argv: serve --port 1234"},
+	} {
+		t.Run("yolo/"+tc.name, func(t *testing.T) {
+			out, exit := runScript(t, home, bin, nil, "cs-opencode", tc.args...)
+			if exit != 0 {
+				t.Fatalf("cs-opencode %v exit %d: %s", tc.args, exit, out)
+			}
+			if !strings.Contains(out, tc.wantArgv) {
+				t.Errorf("want %q:\n%s", tc.wantArgv, out)
+			}
+		})
+	}
+}
+
+// installOpenCodeTurnStubs fakes the driver's dependencies: a tmux whose session is always
+// alive, a curl answering the health/status/session endpoints (the message payload comes
+// from $STUB_DIR/message.json), and a cs-opencode whose `run` exits $STUB_RUN_EXIT.
+func installOpenCodeTurnStubs(t *testing.T, bin string) {
+	t.Helper()
+	writeStub(t, bin, "opencode", "#!/bin/sh\nexit 0\n")
+	writeStub(t, bin, "tmux", "#!/bin/sh\nexit 0\n")
+	writeStub(t, bin, "cs-opencode", "#!/bin/sh\necho \"stub-response\"\nexit \"${STUB_RUN_EXIT:-0}\"\n")
+	// The first /message call is the driver's pre-submit snapshot (pre.json); the one
+	// after the turn is the history it reads back (message.json). Serving them separately
+	// is what lets a test model a history that CHANGED SHAPE during the turn.
+	writeStub(t, bin, "curl", `#!/bin/sh
+for last; do :; done
+case "$last" in
+  */global/health) exit 0 ;;
+  */session/status) echo '{}'; exit 0 ;;
+  */session/*/message)
+    if [ ! -f "$STUB_DIR/.msg_called" ]; then touch "$STUB_DIR/.msg_called"; cat "$STUB_DIR/pre.json"; else cat "$STUB_DIR/message.json"; fi
+    exit 0 ;;
+  */session/*) printf '{"id":"%s"}\n' "`+openCodeTestSessionID+`"; exit 0 ;;
+esac
+exit 0
+`)
+}
+
+func TestOpenCodeTurnCompletionSemantics(t *testing.T) {
+	skipUnlessLinux(t)
+	okMessage := `[{"info":{"role":"user","time":{"created":1}}},` +
+		`{"info":{"role":"assistant","time":{"created":2,"completed":3}},"parts":[{"type":"text","text":"stub-response"}]}]`
+	providerError := `[{"info":{"role":"assistant","time":{"created":2},` +
+		`"error":{"name":"APIError","data":{"message":"unauthorized","statusCode":401}}},"parts":[]}]`
+	incomplete := `[{"info":{"role":"assistant","time":{"created":2}},"parts":[]}]`
+
+	for _, tc := range []struct {
+		name, message, runExit string
+		wantExit               int
+		wantInOut              string
+	}{
+		// The happy path emits the turn's text plus the session-id sentinel.
+		{"success", okMessage, "0", 0, "__CS_OPENCODE_SESSION_ID__ " + openCodeTestSessionID},
+		// run exit 0 + a provider error recorded on the session = failed turn. This is the
+		// trap the postcheck exists for: attached clients do not propagate provider errors.
+		{"provider-error-despite-exit-0", providerError, "0", 5, "postcheck"},
+		{"incomplete-despite-exit-0", incomplete, "0", 5, "postcheck"},
+		// A nonzero run exit is a failed turn regardless of session state.
+		{"run-exit-nonzero", okMessage, "1", 5, "turn failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-opencode-remote")
+			installOpenCodeTurnStubs(t, bin)
+			stubDir := t.TempDir()
+			writeSnapshots(t, stubDir, "[]", tc.message)
+			out, exit := runScriptStdin(t, home, bin,
+				[]string{"STUB_DIR=" + stubDir, "STUB_RUN_EXIT=" + tc.runExit},
+				"do the thing\n",
+				"cs-opencode-turn", "--tmux", "stubtoken", "--uuid", openCodeTestSessionID)
+			if exit != tc.wantExit {
+				t.Fatalf("exit = %d; want %d: %s", exit, tc.wantExit, out)
+			}
+			if !strings.Contains(out, tc.wantInOut) {
+				t.Fatalf("output missing %q: %s", tc.wantInOut, out)
+			}
+			// Turn output is read back from the session API, never from the attached
+			// client's stdout (which stays empty when a TUI hosts the server).
+			if tc.wantExit == 0 && !strings.Contains(out, "stub-response") {
+				t.Fatalf("success output missing the session's assistant text: %s", out)
+			}
+		})
+	}
+}
+
+// TestOpenCodeRemoteSessionsUsesSupportedSurface: `-v` reads last-activity from
+// `opencode session list --format json`, never from opencode's internal SQLite schema. A raw
+// `SELECT ... FROM session` works today but is not a surface upstream owes us — a table rename
+// would blank the column silently. `session list` is scoped to its working directory, so the
+// query has to run in the workdir recorded for the session.
+func TestOpenCodeRemoteSessionsUsesSupportedSurface(t *testing.T) {
+	skipUnlessLinux(t)
+	home, bin := agentHome(t, ".cs-opencode-remote")
+	name, sid := "listing", openCodeTestSessionID
+	mapDir := filepath.Join(home, ".cs-opencode-remote-sessions")
+	for file, content := range map[string]string{
+		name:              sid + "\n",
+		name + ".host":    "somehost\n",
+		name + ".workdir": "/home/dev/api\n",
+	} {
+		if err := os.WriteFile(filepath.Join(mapDir, file), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Record what the tool asks the remote to run, and answer as opencode would.
+	sshLog := filepath.Join(home, "ssh.log")
+	writeStub(t, bin, "ssh", "#!/bin/sh\n"+
+		"printf '%s\\n' \"$*\" >> "+sshLog+"\n"+
+		`printf '[{"id":"`+sid+`","title":"t","updated":1785605904757,"created":1,"projectId":"global","directory":"/home/dev/api"}]\n'`+"\n")
+
+	out, exit := runScript(t, home, bin, nil, "cs-opencode-remote-sessions", "-v")
+	if exit != 0 {
+		t.Fatalf("-v exit %d: %s", exit, out)
+	}
+	asked, err := os.ReadFile(sshLog)
+	if err != nil {
+		t.Fatalf("the tool never queried the remote: %v", err)
+	}
+	if !strings.Contains(string(asked), "session list --format json") {
+		t.Errorf("remote command should use the supported CLI surface, got: %s", asked)
+	}
+	if strings.Contains(string(asked), "SELECT") || strings.Contains(string(asked), "opencode db") {
+		t.Errorf("remote command reaches into the internal SQLite schema: %s", asked)
+	}
+	if !strings.Contains(string(asked), "/home/dev/api") {
+		t.Errorf("query must run in the session's recorded workdir (it is directory-scoped): %s", asked)
+	}
+	// 1785605904757 ms -> 2026-08-01 in whatever zone the test host runs in; assert the
+	// date rendered rather than the "(not found on remote)" fallback.
+	if strings.Contains(out, "not found on remote") || !strings.Contains(out, "2026-") {
+		t.Errorf("last-activity not resolved from the listing:\n%s", out)
+	}
+}
+
+// writeSnapshots lays down the history the stubbed API serves before the turn (pre) and
+// after it (post).
+func writeSnapshots(t *testing.T, stubDir, pre, post string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(stubDir, "pre.json"), []byte(pre), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stubDir, "message.json"), []byte(post), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOpenCodeTurnAnchorsOnMessageIdentity: a turn is delimited by the ID of the last
+// message that preceded it, never by a message COUNT. opencode's history is not
+// append-only — compaction rewrites it and inserts `summary` messages — so a positional
+// cursor returns the wrong slice as soon as the shape changes under it.
+func TestOpenCodeTurnAnchorsOnMessageIdentity(t *testing.T) {
+	skipUnlessLinux(t)
+	msg := func(id, role, text string, created, completed int64, extra string) string {
+		t := fmt.Sprintf(`"created":%d`, created)
+		if completed > 0 {
+			t += fmt.Sprintf(`,"completed":%d`, completed)
+		}
+		return fmt.Sprintf(`{"info":{"id":%q,"role":%q,%s"time":{%s}},"parts":[{"type":"text","text":%q}]}`,
+			id, role, extra, t, text)
+	}
+	// Year 2100, so it always sorts after the turn's start timestamp.
+	const future = int64(4102444800000)
+
+	for _, tc := range []struct {
+		name, pre, post string
+		wantExit        int
+		wantIn          string
+		wantNotIn       []string
+	}{
+		{
+			// Compaction replaced the head of the history while the turn ran. The list is
+			// the same LENGTH as before, so a positional cursor yields nothing at all.
+			name: "history rewritten mid-turn",
+			pre: "[" + msg("msg_a", "user", "ask", 1, 0, "") + "," +
+				msg("msg_b", "assistant", "OLD REPLY", 2, 3, "") + "," +
+				msg("msg_c", "user", "ask again", 4, 0, "") + "]",
+			post: "[" + msg("msg_sum", "assistant", "SUMMARY", 5, 5, `"summary":true,`) + "," +
+				msg("msg_c", "user", "ask again", 4, 0, "") + "," +
+				msg("msg_d", "assistant", "NEW REPLY", 6, 7, "") + "]",
+			wantExit: 0, wantIn: "NEW REPLY", wantNotIn: []string{"OLD REPLY", "SUMMARY"},
+		},
+		{
+			// The turn added nothing. Checking the session's last assistant message would
+			// pass on the PREVIOUS turn's reply and report a silent empty success.
+			name:     "turn produced nothing",
+			pre:      "[" + msg("msg_a", "assistant", "PREVIOUS TURN", 1, 2, "") + "]",
+			post:     "[" + msg("msg_a", "assistant", "PREVIOUS TURN", 1, 2, "") + "]",
+			wantExit: 5, wantIn: "no-assistant-message-this-turn", wantNotIn: []string{"PREVIOUS TURN"},
+		},
+		{
+			// Compaction removed the anchor itself: creation time still bounds the turn.
+			name: "anchor compacted away",
+			pre:  "[" + msg("msg_gone", "user", "ask", 1, 0, "") + "]",
+			post: "[" + msg("msg_sum", "assistant", "SUMMARY", 1, 1, `"summary":true,`) + "," +
+				msg("msg_new", "assistant", "FALLBACK REPLY", future, future+1, "") + "]",
+			wantExit: 0, wantIn: "FALLBACK REPLY", wantNotIn: []string{"SUMMARY"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-opencode-remote")
+			installOpenCodeTurnStubs(t, bin)
+			stubDir := t.TempDir()
+			writeSnapshots(t, stubDir, tc.pre, tc.post)
+			out, exit := runScriptStdin(t, home, bin,
+				[]string{"STUB_DIR=" + stubDir, "STUB_RUN_EXIT=0"}, "do the thing\n",
+				"cs-opencode-turn", "--tmux", "stubtoken", "--uuid", openCodeTestSessionID)
+			if exit != tc.wantExit {
+				t.Fatalf("exit = %d; want %d: %s", exit, tc.wantExit, out)
+			}
+			if !strings.Contains(out, tc.wantIn) {
+				t.Fatalf("output missing %q: %s", tc.wantIn, out)
+			}
+			for _, no := range tc.wantNotIn {
+				if strings.Contains(out, no) {
+					t.Fatalf("output leaked %q from outside this turn: %s", no, out)
+				}
+			}
+		})
+	}
+}
+
+// TestOpenCodeTurnGivesUpOnAWedgedRun: an attached `run` that never returns must not
+// pin the turn open. It happens for real — e.g. a run whose model cannot be resolved
+// blocks with the session never going busy — so both the stall watchdog and the overall
+// timeout have to bail out with exit 2 rather than hanging.
+func TestOpenCodeTurnGivesUpOnAWedgedRun(t *testing.T) {
+	skipUnlessLinux(t)
+	for _, tc := range []struct{ name, env, wantErr string }{
+		{"stall watchdog", "CS_OPENCODE_STALL_SECS=1", "turn stalled"},
+		{"overall timeout", "CS_OPENCODE_TIMEOUT=1", "did not complete within"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-opencode-remote")
+			installOpenCodeTurnStubs(t, bin)
+			// A run that never returns, on a session the server reports as idle.
+			writeStub(t, bin, "cs-opencode", "#!/bin/sh\nsleep 120\n")
+			stubDir := t.TempDir()
+			writeSnapshots(t, stubDir, "[]", "[]")
+			env := []string{"STUB_DIR=" + stubDir, "CS_OPENCODE_TIMEOUT=60", "CS_OPENCODE_STALL_SECS=0", tc.env}
+			out, exit := runScriptStdin(t, home, bin, env, "do the thing\n",
+				"cs-opencode-turn", "--tmux", "stubtoken", "--uuid", openCodeTestSessionID)
+			if exit != 2 {
+				t.Fatalf("exit = %d; want 2: %s", exit, out)
+			}
+			if !strings.Contains(out, tc.wantErr) {
+				t.Fatalf("output missing %q: %s", tc.wantErr, out)
+			}
+		})
+	}
+}

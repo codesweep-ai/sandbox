@@ -130,18 +130,19 @@ cs-sandbox build --engine firecracker  # force the Firecracker set (implies the 
 
 The image bundles a broad toolchain (podman/skopeo/buildah, tmux, chromium, java/maven, go), CLI
 helpers (ripgrep, fd, fzf, bat, git-delta, jq/yq, gh, uv), Neovim, pyenv/Python + nvm/Node, and the
-Claude Code & Codex agents with their launch wrappers and remote tools — see
+Claude Code, Codex & OpenCode agents with their launch wrappers and remote tools — see
 [what's in a sandbox](README.md#whats-in-a-sandbox), and the
 [`image/Containerfile`](image/Containerfile) for the full package list.
 
 ## 4. Host agent tools and login (recommended)
 
-**A sandbox does not get your Claude or Codex login by default.** Logging in once here, on the host,
+**A sandbox does not get your agent login by default.** Logging in once here, on the host,
 is what lets any sandbox inherit that login at create time with `cs-sandbox create <name>
---inherit-agent-login claude` (or `codex`, or both) — usually the convenient choice, since it saves
+--inherit-agent-login claude` (or `codex`/`opencode`) — usually the convenient choice, since it saves
 logging in inside every sandbox you create.
 
-Every sandbox already carries the agent tools (`cs-claude` / `cs-codex` and the `cs-*-remote` family)
+Every sandbox already carries the agent tools (`cs-claude` / `cs-codex` / `cs-opencode` and the
+`cs-*-remote` family)
 at `~/.local/bin` — nothing to install inside them. This step puts the same tools on your **host**
 PATH (the same `~/.local/bin`), so you can log in with them and drive agents from the host:
 
@@ -149,17 +150,19 @@ PATH (the same `~/.local/bin`), so you can log in with them and drive agents fro
 cs-sandbox install-agent-tools    # -> ~/.local/bin  (pass a directory to install elsewhere)
 ```
 
-`cs-claude` / `cs-codex` invoke the `claude` / `codex` CLIs, so those must be installed on the host
-too; `install-agent-tools` tells you if either is missing. Then log in once with each — the
-credential a sandbox inherits is snapshotted into it on first boot, **never baked into the image**:
+`cs-claude` / `cs-codex` / `cs-opencode` invoke the `claude` / `codex` / `opencode` CLIs, so those
+must be installed on the host too; `install-agent-tools` tells you which are missing. Then log in
+once with each you use — the credential a sandbox inherits is snapshotted into it on first boot,
+**never baked into the image**:
 
 ```bash
 cs-claude          # launch Claude Code - log in with /login, then exit
 cs-codex           # launch Codex - choose "Sign in with ChatGPT", then exit
+cs-opencode providers login   # OpenCode - pick a provider (it is usually driven by an API key)
 ```
 
 You can skip this step: create sandboxes without the flag and log in inside each one with
-`cs-sandbox agent-login claude <name>` (or `agent-login codex <name>`). Do the same when you want a
+`cs-sandbox agent-login claude <name>` (or `agent-login codex|opencode <name>`). Do the same when you want a
 sandbox on its **own account** rather than sharing yours. See
 [`docs/agent-login.md`](docs/agent-login.md).
 

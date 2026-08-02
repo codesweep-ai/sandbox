@@ -9,12 +9,13 @@
 ![Platforms](https://img.shields.io/badge/platform-Linux%20%C2%B7%20macOS-lightgrey)
 
 `cs-sandbox` is a self-contained CLI that creates and manages these sandboxes. Each one is a rootless
-Linux environment built from a single image, with a modern toolchain and the **Claude Code** &
-**Codex** agents preinstalled. Spin up many named sandboxes, reach each by name over SSH, and share
+Linux environment built from a single image, with a modern toolchain and the **Claude Code**,
+**Codex** & **OpenCode** agents preinstalled. Spin up many named sandboxes, reach each by name over
+SSH, and share
 **only** the repos or directories you choose. Nothing on your host is shared unless you ask — not
 your files, not your SSH keys.
 
-By default your Claude and Codex logins aren't shared either — but a sandbox can easily inherit them
+By default your agent logins aren't shared either — but a sandbox can easily inherit them
 when you want it to, with `--inherit-agent-login`. That's usually the convenient choice: it saves you
 logging in inside the sandbox. Some of the walkthroughs below show it. The loop is
 **create → work → fetch → destroy**.
@@ -38,8 +39,8 @@ logging in inside the sandbox. Some of the walkthroughs below show it. The loop 
 
 ## Quickstart
 
-One-time host setup (the binary, Podman, `cs-sandbox build`, and a Claude or Codex login if you want
-sandboxes to inherit it) is in **[INSTALL.md](INSTALL.md)** — then the whole loop is:
+One-time host setup (the binary, Podman, `cs-sandbox build`, and a Claude, Codex, or OpenCode login
+if you want sandboxes to inherit it) is in **[INSTALL.md](INSTALL.md)** — then the whole loop is:
 
 ```bash
 # Create a sandbox named "feature": share the ~/projects/api repo into it, and
@@ -94,12 +95,13 @@ Every sandbox boots from the same image, so there is nothing to install inside o
 - **A broad dev toolchain** — git, Podman, Node, Python, Go, Java, Neovim, tmux, and the usual CLI
   helpers (ripgrep, fd, fzf, bat, jq/yq, gh, uv). Full list in
   [`image/Containerfile`](image/Containerfile).
-- **The Claude Code and Codex agents**, with **`cs-claude` / `cs-codex`** — small wrappers that
-  launch each agent on a ready-to-use, sandbox-local configuration. Each agent gets its own profile
-  directory (never your personal `~/.claude` / `~/.codex`), sane permission defaults, and the working
-  directory pre-trusted, so it starts working instead of asking setup questions. Run `cs-claude`
+- **The Claude Code, Codex, and OpenCode agents**, with **`cs-claude` / `cs-codex` /
+  `cs-opencode`** — small wrappers that launch each agent on a ready-to-use, sandbox-local
+  configuration. Each agent gets its own profile directory (never your personal `~/.claude` /
+  `~/.codex` / `~/.config/opencode`), sane permission defaults, and the working directory
+  pre-trusted, so it starts working instead of asking setup questions. Run `cs-claude`
   rather than `claude` and it's configured.
-- **Remote agent tools** — `cs-claude-remote` and `cs-codex-remote` (each with `-status`,
+- **Remote agent tools** — `cs-claude-remote`, `cs-codex-remote`, and `cs-opencode-remote` (each with `-status`,
   `-output`, `-sessions`, `-forget` companions). These tools start or resume an agent session on
   *another* sandbox over SSH, keep it warm, and hand back its output — so an agent working in one
   sandbox can give a task to an agent in another
@@ -111,12 +113,12 @@ is how you log in once on the host so sandboxes can inherit that login.
 ## Before you start
 
 The walkthroughs assume the one-time host setup in **[INSTALL.md](INSTALL.md)** — install the
-`cs-sandbox` binary and its prerequisites, run `cs-sandbox build`, and log in once to Claude Code and
-Codex on the host. It's a handful of commands, and `cs-sandbox doctor` checks every prerequisite and
+`cs-sandbox` binary and its prerequisites, run `cs-sandbox build`, and log in once to Claude Code,
+Codex, or OpenCode on the host. It's a handful of commands, and `cs-sandbox doctor` checks every prerequisite and
 prints the fix for anything missing.
 
-**About the agent login.** A sandbox does *not* get your Claude or Codex login by default. Some of the
-walkthroughs below pass `--inherit-agent-login claude` (or `codex`, or both), which copies that host
+**About the agent login.** A sandbox does *not* get your agent login by default. Some of the
+walkthroughs below pass `--inherit-agent-login claude` (or `codex`/`opencode`), which copies that host
 login into the sandbox as it is created — the convenient choice we normally make, since it saves
 logging in inside every sandbox. When you'd rather keep a sandbox on its own account, leave the flag
 off and log in inside it with `cs-sandbox agent-login claude <name>`. See
@@ -280,7 +282,8 @@ ssh driver
 
 > Each sandbox above inherited the host login it needs (`--inherit-agent-login`), so Codex on
 > `worker` is already logged in.
-> `cs-claude-remote` is the mirror of `cs-codex-remote`; either agent can drive either, on any host.
+> `cs-claude-remote`, `cs-codex-remote`, and `cs-opencode-remote` mirror each other; any agent can
+> drive any of the three, on any host.
 
 ## Choosing an engine: Podman vs Firecracker
 
@@ -343,7 +346,7 @@ independent of sandbox type. Lend deliberately — two conditions to keep in min
   autonomous work.
 - **Nothing shared by default.** Host data enters a sandbox only through `--repo` (a git checkout)
   or `--snapshot` (a frozen read-only copy). Results come back out with `cs-sandbox fetch`.
-- **Your Claude and Codex logins are not shared either**, unless you name one: `create
+- **Your agent logins are not shared either**, unless you name one: `create
   --inherit-agent-login claude` copies that login in, and `create` prints what the sandbox ended up
   with. Without it the sandbox has no agent login — log in inside it, on its own account if you
   prefer. Provider API keys are never copied at all; pass one with `--env` when a sandbox needs it.
@@ -371,6 +374,8 @@ independent of sandbox type. Lend deliberately — two conditions to keep in min
 - [`docs/firecracker.md`](docs/firecracker.md): the Firecracker microVM engine.
 - [`docs/repo-sharing.md`](docs/repo-sharing.md): the `--repo` checkout / fetch / push model.
 - [`docs/agent-login.md`](docs/agent-login.md): how a sandbox gets a logged-in agent, and what is never copied.
+- [`docs/opencode.md`](docs/opencode.md): the OpenCode adapter — profile isolation, the turn
+  driver, and the version-bump procedure.
 
 `cs-sandbox help` is the full command reference.
 

@@ -130,13 +130,21 @@ func TestInstallAgentToolsCopies(t *testing.T) {
 		t.Fatalf("install-agent-tools: %v", err)
 	}
 
-	// A launch wrapper is present and executable.
-	if m := mode(t, filepath.Join(dest, "cs-claude")); m&0o111 == 0 {
-		t.Errorf("cs-claude mode = %o, want executable", m)
+	// Every agent's launch wrapper and remote family is present and executable.
+	for _, tool := range []string{
+		"cs-claude", "cs-claude-remote", "cs-claude-turn",
+		"cs-codex", "cs-codex-remote", "cs-codex-turn",
+		"cs-opencode", "cs-opencode-remote", "cs-opencode-turn",
+	} {
+		if m := mode(t, filepath.Join(dest, tool)); m&0o111 == 0 {
+			t.Errorf("%s mode = %o, want executable", tool, m)
+		}
 	}
-	// A reference doc is present and NOT executable (0644).
-	if m := mode(t, filepath.Join(dest, "CS_CLAUDE_REMOTE.md")); m.Perm() != 0o644 {
-		t.Errorf("CS_CLAUDE_REMOTE.md mode = %o, want 644", m.Perm())
+	// Each family's reference docs are present and NOT executable (0644).
+	for _, doc := range []string{"CS_CLAUDE_REMOTE.md", "CS_CODEX_REMOTE.md", "CS_OPENCODE_REMOTE.md"} {
+		if m := mode(t, filepath.Join(dest, doc)); m.Perm() != 0o644 {
+			t.Errorf("%s mode = %o, want 644", doc, m.Perm())
+		}
 	}
 	// The guest-only helper is skipped.
 	if _, err := os.Stat(filepath.Join(dest, "user-podman")); !os.IsNotExist(err) {

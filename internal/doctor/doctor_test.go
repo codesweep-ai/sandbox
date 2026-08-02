@@ -148,6 +148,54 @@ func TestDiagnoseFirecrackerVersionReporting(t *testing.T) {
 	}
 }
 
+// The agent-tooling group covers all three agents: every wrapper and every CLI has
+// to be present before it reports OK, and a missing one is named in the advice.
+func TestDiagnoseAgentTooling(t *testing.T) {
+	base := []string{"podman", "ssh", "ssh-keygen", "git"}
+	wrappers := []string{"cs-claude", "cs-codex", "cs-opencode"}
+	clis := []string{"claude", "codex", "opencode"}
+	diagnose := func(t *testing.T, present ...string) string {
+		t.Helper()
+		stubLookPath(t, append(append([]string{}, base...), present...)...)
+		return reportText(Diagnose(context.Background(), "podman", Deps{Runner: run.NewFake(), User: "jsdelfino"}))
+	}
+
+	all := diagnose(t, append(append([]string{}, wrappers...), clis...)...)
+	if !strings.Contains(all, "agent tools on PATH (cs-claude, cs-codex, cs-opencode)") {
+		t.Errorf("all wrappers present should report them all:\n%s", all)
+	}
+	if !strings.Contains(all, "agent CLIs present (claude, codex, opencode)") {
+		t.Errorf("all CLIs present should report them all:\n%s", all)
+	}
+
+	// Dropping any single wrapper or CLI has to show up — otherwise a half-installed
+	// toolset reads as healthy.
+	for _, missing := range wrappers {
+		var have []string
+		for _, w := range wrappers {
+			if w != missing {
+				have = append(have, w)
+			}
+		}
+		out := diagnose(t, append(have, clis...)...)
+		if !strings.Contains(out, "agent tools not on PATH") {
+			t.Errorf("missing %s should report the tools as not installed:\n%s", missing, out)
+		}
+	}
+	for _, missing := range clis {
+		var have []string
+		for _, c := range clis {
+			if c != missing {
+				have = append(have, c)
+			}
+		}
+		out := diagnose(t, append(have, wrappers...)...)
+		if !strings.Contains(out, "agent CLI(s) not found: "+missing) {
+			t.Errorf("missing %s should be named in the advice:\n%s", missing, out)
+		}
+	}
+}
+
 // fcCheckStatus returns the status of the "firecracker binary" check line.
 func fcCheckStatus(t *testing.T, r *Report) Status {
 	t.Helper()

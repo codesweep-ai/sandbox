@@ -10,7 +10,7 @@ import (
 // agentProfile describes one coding agent's host profile and the credential that
 // can be inherited from it.
 type agentProfile struct {
-	name     string // "claude" | "codex": the seed subdir and ~/.cs-<name> profile dir
+	name     string // "claude" | "codex" | "opencode": the seed subdir and ~/.cs-<name> profile dir
 	credFile string // subscription credential filename inside the profile dir
 	loginCmd string // in-sandbox command to log in (used in advisories)
 }
@@ -18,6 +18,11 @@ type agentProfile struct {
 var agentProfiles = []agentProfile{
 	{"claude", ".credentials.json", "cs-claude"},
 	{"codex", "auth.json", "cs-codex login"},
+	// opencode keeps its own auth.json in the profile dir the cs-opencode wrapper
+	// points at, so it inherits exactly like codex. A provider API key in
+	// ~/.cs-opencode/env is the other (and more common) opencode path; env files
+	// are never carried, same as for the other two agents.
+	{"opencode", "auth.json", "cs-opencode providers login"},
 }
 
 // AgentNames returns the agents whose login can be inherited, in a stable order.

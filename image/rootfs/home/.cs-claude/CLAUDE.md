@@ -2,12 +2,13 @@
 
 You're running as Claude Code inside an isolated cs-sandbox dev instance (container or microVM).
 
-## Remote delegation — two toolsets
+## Remote delegation — three toolsets
 
 You can delegate a task to an agent session on **another host** over SSH: to a remote **Claude**
-(`cs-claude-remote`) or a remote **Codex** (`cs-codex-remote`). Both keep the agent warm in a
-tmux session and read each turn's output from the agent's session JSONL. A session name is
-**mandatory** on every call; default to foreground unless the user asks for `-b` (background).
+(`cs-claude-remote`), a remote **Codex** (`cs-codex-remote`), or a remote **OpenCode**
+(`cs-opencode-remote`). Each keeps the agent warm in a tmux session and reads each turn's output
+from the agent's own session store. A session name is **mandatory** on every call; default to
+foreground unless the user asks for `-b` (background).
 
 ### Remote Claude — `cs-claude-remote`
 
@@ -35,12 +36,27 @@ cs-codex-remote --kill <name> | --attach <name>
 cs-codex-remote-forget <name> | --all
 ```
 
+### Remote OpenCode — `cs-opencode-remote`
+
+```bash
+cs-opencode-remote --new --name <name> [-H <host>] [-d <dir>] "task"
+cs-opencode-remote --resume <name> "task"
+cs-opencode-remote --resume <name> -b "task"
+cs-opencode-remote-output <name> [-s]
+cs-opencode-remote-status <name> [-t]
+cs-opencode-remote-sessions [-v|-q]
+cs-opencode-remote --kill <name> | --attach <name>
+cs-opencode-remote-forget <name> | --all
+```
+
 ### Full references — in `~/.local/bin`, alongside the scripts (read on demand)
 
 - Claude: `CS_CLAUDE_REMOTE.md` + `CS_CLAUDE_REMOTE_{STATUS,OUTPUT,SESSIONS,FORGET}.md`
 - Codex: `CS_CODEX_REMOTE.md` + `CS_CODEX_REMOTE_{STATUS,OUTPUT,SESSIONS,FORGET}.md`
+- OpenCode: `CS_OPENCODE_REMOTE.md` + `CS_OPENCODE_REMOTE_{STATUS,OUTPUT,SESSIONS,FORGET}.md`
 
 Read the matching reference for details (host resolution, background polling, exit codes, intent
 tables) — e.g. before driving a Codex session, read `~/.local/bin/CS_CODEX_REMOTE.md`. Pick the toolset
-the user names ("claude remote …" → `cs-claude-remote`; "codex remote …" → `cs-codex-remote`);
-if unspecified, default to your own kind (`cs-claude-remote`).
+the user names ("claude remote …" → `cs-claude-remote`; "codex remote …" → `cs-codex-remote`;
+"opencode remote …" → `cs-opencode-remote`); if unspecified, default to your own kind
+(`cs-claude-remote`).

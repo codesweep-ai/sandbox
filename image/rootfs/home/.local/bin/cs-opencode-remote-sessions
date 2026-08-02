@@ -1,0 +1,144 @@
+#!/bin/bash
+# List available remote opencode sessions.
+# Reads the local session map directory and shows session names, opencode session ids, and working
+# directories. The `*` marker flags the last session any caller used locally (reference only).
+#
+# Usage:
+#   cs-opencode-remote-sessions           # list all sessions
+#   cs-opencode-remote-sessions -v        # verbose: check remote for last activity
+#   cs-opencode-remote-sessions -q        # quiet: names only
+
+set -euo pipefail
+
+SESSION_FILE="$HOME/.cs-opencode-remote-session"
+SESSION_MAP_DIR="$HOME/.cs-opencode-remote-sessions"
+
+HOST_FLAG=""
+resolve_remote_host() {
+    local name="${1:-}" h
+    if [[ -n "$HOST_FLAG" ]]; then printf '%s\n' "$HOST_FLAG"; return; fi
+    if [[ -n "$name" && -f "$SESSION_MAP_DIR/${name}.host" ]]; then
+        h="$(cat "$SESSION_MAP_DIR/${name}.host" 2>/dev/null)"
+        [[ -n "$h" ]] && { printf '%s\n' "$h"; return; }
+    fi
+    if [[ -n "${CS_OPENCODE_REMOTE_HOST:-}" ]]; then printf '%s\n' "$CS_OPENCODE_REMOTE_HOST"; return; fi
+    hostname -s
+}
+
+VERBOSE=false; QUIET=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -v|--verbose) VERBOSE=true; shift ;;
+        -q|--quiet) QUIET=true; shift ;;
+        -H|--host) HOST_FLAG="$2"; shift 2 ;;
+        -h|--help)
+            echo "Usage: cs-opencode-remote-sessions [-v] [-q]"
+            echo "  -v, --verbose      Check each session's remote host for last activity"
+            echo "  -q, --quiet        Print session names only (one per line)"
+            echo "  -H, --host <host>  Override the SSH host queried in verbose mode"
+            exit 0 ;;
+        *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+CURRENT=""; [[ -f "$SESSION_FILE" ]] && CURRENT="$(cat "$SESSION_FILE")"
+[[ -d "$SESSION_MAP_DIR" ]] || { echo "No sessions found ($SESSION_MAP_DIR does not exist)" >&2; exit 1; }
+
+# Session names = map files with no metadata suffix.
+SESSIONS=()
+for f in "$SESSION_MAP_DIR"/*; do
+    [[ -f "$f" ]] || continue
+    name="$(basename "$f")"
+    case "$name" in *.workdir|*.host|*.token) continue ;; esac
+    SESSIONS+=("$name")
+done
+[[ ${#SESSIONS[@]} -eq 0 ]] && { echo "No sessions found in $SESSION_MAP_DIR" >&2; exit 1; }
+IFS=$'\n' SESSIONS=($(sort <<<"${SESSIONS[*]}")); unset IFS
+
+IS_TTY=false; [[ -t 1 ]] && IS_TTY=true
+dim()   { $IS_TTY && printf '\033[2m%s\033[0m' "$1" || printf '%s' "$1"; }
+green() { $IS_TTY && printf '\033[32m%s\033[0m' "$1" || printf '%s' "$1"; }
+
+# Verbose: query each session's remote host for its last-updated time, via
+# `cs-opencode session list --format json` — a supported CLI surface, not opencode's internal
+# SQLite schema (which an earlier version queried with raw SQL: one upstream table rename and the
+# column would have gone quietly blank).
+#
+# That command is scoped to the working directory it runs in, so the query is grouped by
+# (host, workdir) rather than by host alone: the workdir we recorded for a session is the one the
+# driver created it in. Sessions with no recorded workdir are queried from the login directory,
+# which is where a turn without -d would have created them.
+declare -A REMOTE_TIMESTAMPS
+if $VERBOSE; then
+    declare -A HOST_DIR_IDS
+    for name in "${SESSIONS[@]}"; do
+        sid="$(cat "$SESSION_MAP_DIR/$name" 2>/dev/null || true)"
+        [[ -n "$sid" ]] || continue
+        h="$(resolve_remote_host "$name")"
+        d="$(cat "$SESSION_MAP_DIR/${name}.workdir" 2>/dev/null || true)"
+        HOST_DIR_IDS["$h|$d"]="${HOST_DIR_IDS[$h|$d]:-} $sid"
+    done
+    for key in "${!HOST_DIR_IDS[@]}"; do
+        h="${key%%|*}"; d="${key#*|}"
+        # `cd` only when a workdir is known; an unreachable one must not silently list the
+        # login directory's sessions instead.
+        remote_cmd="cs-opencode session list --format json"
+        [[ -n "$d" ]] && remote_cmd="cd $(printf '%q' "$d") && $remote_cmd"
+        while IFS=$'\t' read -r sid epoch_ms; do
+            [[ -n "$sid" && -n "$epoch_ms" ]] || continue
+            for want in ${HOST_DIR_IDS[$key]}; do
+                if [[ "$sid" == "$want" ]]; then
+                    epoch=$(( epoch_ms / 1000 ))
+                    (( epoch > 0 )) && REMOTE_TIMESTAMPS["$want"]="$(date -d "@$epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$epoch")"
+                    break
+                fi
+            done
+        done < <(ssh "$h" "$remote_cmd" 2>/dev/null \
+            | python3 -c '
+import json, sys
+try:
+    for s in json.load(sys.stdin):
+        print("%s\t%s" % (s.get("id", ""), s.get("updated", 0)))
+except Exception:
+    pass
+' 2>/dev/null || true)
+    done
+fi
+
+ROWS=()
+for name in "${SESSIONS[@]}"; do
+    if $QUIET; then echo "$name"; continue; fi
+    uuid="$(cat "$SESSION_MAP_DIR/$name" 2>/dev/null || true)"
+    workdir="$(cat "$SESSION_MAP_DIR/${name}.workdir" 2>/dev/null || true)"
+    marker=" "; [[ "$name" == "$CURRENT" ]] && marker="*"
+    last=""
+    if $VERBOSE && [[ -n "$uuid" ]]; then
+        if [[ -n "${REMOTE_TIMESTAMPS[$uuid]+_}" ]]; then last="${REMOTE_TIMESTAMPS[$uuid]}"; else last="(not found on remote)"; fi
+    fi
+    [[ -z "$uuid" ]] && uuid="(pending first turn)"
+    ROWS+=("$marker|$name|$uuid|$workdir|$last")
+done
+$QUIET && exit 0
+
+W_NAME=4; W_DIR=3; W_LAST=4
+for row in "${ROWS[@]}"; do
+    IFS='|' read -r _ rname _ rdir rlast <<<"$row"
+    (( ${#rname} > W_NAME )) && W_NAME=${#rname}
+    (( ${#rdir} > W_DIR )) && W_DIR=${#rdir}
+    $VERBOSE && (( ${#rlast} > W_LAST )) && W_LAST=${#rlast}
+done
+
+if $VERBOSE; then hdr=$(printf "  %-${W_NAME}s  %-36s  %-${W_DIR}s  %-${W_LAST}s" "NAME" "OPENCODE SESSION ID" "DIR" "LAST")
+else hdr=$(printf "  %-${W_NAME}s  %-36s  %-${W_DIR}s" "NAME" "OPENCODE SESSION ID" "DIR"); fi
+dim "$hdr"; echo; sep="${hdr//?/-}"; dim "$sep"; echo
+
+for row in "${ROWS[@]}"; do
+    IFS='|' read -r marker rname ruuid rdir rlast <<<"$row"
+    if $VERBOSE; then line=$(printf "%-${W_NAME}s  %-36s  %-${W_DIR}s  %-${W_LAST}s" "$rname" "$ruuid" "$rdir" "$rlast")
+    else line=$(printf "%-${W_NAME}s  %-36s  %-${W_DIR}s" "$rname" "$ruuid" "$rdir"); fi
+    if [[ "$marker" == "*" ]]; then printf '* '; green "$line"; else printf '  '; printf '%s' "$line"; fi
+    echo
+done
+echo
+dim "* = last session used locally (reference only — tools always require the session name)"; echo
+echo "${#ROWS[@]} session(s) total"

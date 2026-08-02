@@ -15,8 +15,15 @@ func TestImageDirFromEmbed(t *testing.T) {
 	}
 	defer cleanup()
 
-	// Containerfile + the build context + the guest tree are all present.
-	for _, f := range []string{"Containerfile", "rootfs/entrypoint", "guest/init", "rootfs/home/.bashrc"} {
+	// Containerfile + the build context + the guest tree are all present. Each agent's
+	// dot-prefixed profile skeleton is listed too: `//go:embed all:image` is what pulls
+	// those in, and dropping the `all:` would silently ship an image without them.
+	for _, f := range []string{
+		"Containerfile", "rootfs/entrypoint", "guest/init", "rootfs/home/.bashrc",
+		"rootfs/home/.cs-claude/CLAUDE.md",
+		"rootfs/home/.cs-codex/config.toml",
+		"rootfs/home/.cs-opencode/opencode.json",
+	} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("expected extracted %s: %v", f, err)
 		}
@@ -28,8 +35,10 @@ func TestImageDirFromEmbed(t *testing.T) {
 	if m := mode(t, dir, "guest/init"); m != 0o755 {
 		t.Errorf("guest/init mode = %o, want 755", m)
 	}
-	if m := mode(t, dir, "rootfs/home/.local/bin/cs-claude"); m != 0o755 {
-		t.Errorf("home/.local/bin/cs-claude mode = %o, want 755", m)
+	for _, w := range []string{"cs-claude", "cs-codex", "cs-opencode"} {
+		if m := mode(t, dir, "rootfs/home/.local/bin/"+w); m != 0o755 {
+			t.Errorf("home/.local/bin/%s mode = %o, want 755", w, m)
+		}
 	}
 	if m := mode(t, dir, "rootfs/home/.bashrc"); m != 0o644 {
 		t.Errorf(".bashrc mode = %o, want 644", m)
@@ -71,8 +80,10 @@ func TestHostHelpersEmbed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fs.Stat(f, "cs-claude"); err != nil {
-		t.Errorf("expected cs-claude in host helpers: %v", err)
+	for _, w := range []string{"cs-claude", "cs-codex", "cs-opencode"} {
+		if _, err := fs.Stat(f, w); err != nil {
+			t.Errorf("expected %s in host helpers: %v", w, err)
+		}
 	}
 }
 

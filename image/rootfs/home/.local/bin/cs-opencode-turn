@@ -1,0 +1,305 @@
+#!/bin/bash
+# Remote-side driver for OpenCode remote delegation (server model — the opencode counterpart of
+# cs-codex-turn). Runs ON the remote machine. Drives one conversational turn against an
+# INTERACTIVE opencode TUI kept warm in a long-running tmux session, over the HTTP API the TUI
+# hosts when launched with --port — never by scraping the tmux pane (opencode's TUI strings are
+# localized and unstable; the API is deterministic).
+#
+# One turn =
+#   1. ensure the warm TUI exists: the opencode session id is created/known BEFORE the TUI
+#      launches (a session minted via a transient `cs-opencode serve` + POST /session when new),
+#      and the TUI is always launched `cs-opencode --port <p> -s <id>` so a human attaching sees
+#      the driven session render live;
+#   2. readiness = GET /global/health on the TUI's port (no pane scraping);
+#   3. drive the turn with a blocking `cs-opencode run --attach http://127.0.0.1:<p> -s <id>
+#      --auto "<prompt>"`, watching GET /session/status for stalls (absent key = idle);
+#   4. on exit 0, UNCONDITIONALLY postcheck THIS TURN's last assistant message via
+#      GET /session/<id>/message: an `error` or a missing `time.completed` means the turn failed
+#      even though the attached client exited 0 (provider-side API errors are recorded on the
+#      session but not propagated to the attached client's exit code — verified at 1.18.10).
+#
+# The turn is delimited by the ID of the last message that existed before it, never by a message
+# COUNT: compaction rewrites the history and inserts summary messages, so positions are not stable
+# and a positional cursor would silently return the wrong slice. `id` and `time.created` are both
+# required fields on every message, giving a primary and a fallback anchor.
+#
+# The port is derived deterministically from the tmux token. The session id is emitted as a
+# trailing sentinel the local cs-opencode-remote maps to the session name (and strips):
+#   __CS_OPENCODE_SESSION_ID__ <ses_id>
+#
+# Usage: echo "prompt" | cs-opencode-turn --tmux <token> [--uuid <ses_id>] [--workdir <dir>] \
+#            [--format text|json] [--timeout <secs>] [--name <label>]
+# Exit codes: 0 ok, 2 turn timed out/stalled, 3 launch/setup failure, 5 turn failed (client error
+# or a provider error recorded on the session), 1 usage. 5 rather than 4 because cs-opencode-remote
+# already spends 4 on "session busy" (its per-session turn lock), as the claude/codex tools do.
+
+set -uo pipefail
+
+TOKEN=""; SES_ID=""; WORKDIR=""; FORMAT="text"; TIMEOUT="${CS_OPENCODE_TIMEOUT:-1800}"; LABEL=""
+# Stall watchdog: bail early if the server reports the session idle for this long while the
+# attached run client still has not returned. 0 disables. Env-overridable.
+STALL_SECS="${CS_OPENCODE_STALL_SECS:-180}"
+err() { echo "cs-opencode-turn: $*" >&2; }
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --tmux)    TOKEN="$2"; shift 2 ;;
+        --uuid)    SES_ID="$2"; shift 2 ;;
+        --workdir) WORKDIR="$2"; shift 2 ;;
+        --format)  FORMAT="$2"; shift 2 ;;
+        --timeout) TIMEOUT="$2"; shift 2 ;;
+        --name)    LABEL="$2"; shift 2 ;;
+        -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
+        *) err "unknown argument: $1"; exit 1 ;;
+    esac
+done
+
+[[ -n "$TOKEN" ]] || { err "--tmux <token> is required"; exit 1; }
+[[ "$TOKEN" =~ ^[A-Za-z0-9_-]+$ ]] || { err "--tmux token '$TOKEN' has invalid characters"; exit 1; }
+if [[ -n "$SES_ID" ]] && ! [[ "$SES_ID" =~ ^ses_[A-Za-z0-9]{20,40}$ ]]; then
+    err "--uuid '$SES_ID' is not a valid opencode session id"; exit 1
+fi
+# cs-opencode (not bare opencode) is what this driver runs: it is the wrapper that binds the
+# isolated ~/.cs-opencode profile, so a turn driven without it would use the wrong config/db.
+for bin in opencode cs-opencode tmux curl python3; do
+    command -v "$bin" >/dev/null 2>&1 || { err "$bin not found on remote PATH"; exit 3; }
+done
+
+TMUX_SESSION="cs-opencode-$TOKEN"
+# Deterministic per-token port in 21000-25095: both the TUI and later resumes of the same token
+# derive the same value, so nothing needs to be persisted.
+PORT=$(( 21000 + 16#$(printf '%s' "$TOKEN" | md5sum | cut -c1-3) ))
+BASE="http://127.0.0.1:$PORT"
+
+PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-turn.XXXXXX")"
+OUT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-out.XXXXXX")"
+ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-err.XXXXXX")"
+trap 'rm -f "$PROMPT_FILE" "$OUT_FILE" "$ERR_FILE"' EXIT
+cat > "$PROMPT_FILE"
+[[ -s "$PROMPT_FILE" ]] || { err "empty prompt on stdin"; exit 1; }
+
+# --- helpers --------------------------------------------------------------
+
+session_alive() { tmux has-session -t "$TMUX_SESSION" 2>/dev/null; }
+healthy() { curl -fsS -m 2 "$BASE/global/health" >/dev/null 2>&1; }
+
+wait_healthy() {
+    local deadline=$(( SECONDS + ${1:-60} ))
+    while (( SECONDS < deadline )); do healthy && return 0; sleep 0.5; done
+    return 1
+}
+
+# The server deletes a session's /session/status entry when it goes idle: present key = busy.
+session_busy() {
+    curl -fsS -m 5 "$BASE/session/status" 2>/dev/null \
+        | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if sys.argv[1] in d else 1)' "$SES_ID" 2>/dev/null
+}
+
+# Guard against a foreign server squatting the derived port (hash collision with another token's
+# TUI): our session id must be resolvable on this server.
+session_known() { curl -fsS -m 5 "$BASE/session/$SES_ID" >/dev/null 2>&1; }
+
+# Mint a new opencode session bound to the working directory, using a transient headless server
+# on the same derived port (freed again before the TUI launches with -s <id>).
+mint_session() {
+    local serve_pid dir="${WORKDIR:-$PWD}"
+    # The session is bound to the server's cwd, so never fall through to an arbitrary one.
+    ( cd "$dir" 2>/dev/null || cd "$HOME" || exit 3; exec cs-opencode serve --port "$PORT" ) >/dev/null 2>&1 &
+    serve_pid=$!
+    if ! wait_healthy 90; then
+        kill "$serve_pid" 2>/dev/null
+        err "transient opencode server never became healthy on port $PORT"; return 3
+    fi
+    SES_ID="$(curl -fsS -m 10 -X POST "$BASE/session" -H 'content-type: application/json' -d '{}' 2>/dev/null \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null)"
+    kill "$serve_pid" 2>/dev/null; wait "$serve_pid" 2>/dev/null
+    # Wait for the port to actually free before the TUI binds it.
+    for _ in $(seq 1 40); do healthy || break; sleep 0.25; done
+    [[ "$SES_ID" =~ ^ses_[A-Za-z0-9]{20,40}$ ]] || { err "could not create an opencode session (got '$SES_ID')"; return 3; }
+    return 0
+}
+
+# Ensure the warm TUI is up, healthy, and rendering OUR session. The session id always exists
+# before the TUI launches; a TUI launched bare would sit on the home screen and never show
+# externally driven turns.
+ensure_session() {
+    if session_alive; then
+        if ! wait_healthy 30; then
+            err "tmux session '$TMUX_SESSION' is alive but its server is not healthy on port $PORT"
+            err "  attach to inspect: tmux attach -t $TMUX_SESSION"
+            return 3
+        fi
+        if [[ -n "$SES_ID" ]]; then
+            session_known || { err "server on port $PORT does not know session $SES_ID (port collision or wrong profile)"; return 3; }
+            return 0
+        fi
+        # Warm TUI but no recorded session id: the first turn never completed. Start over so the
+        # TUI is bound to the id we are about to drive.
+        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+    fi
+    if [[ -z "$SES_ID" ]]; then
+        mint_session || return $?
+    fi
+    local newargs=(new-session -d -s "$TMUX_SESSION" -x 220 -y 50)
+    [[ -n "$WORKDIR" ]] && newargs+=(-c "$WORKDIR")
+    newargs+=("cs-opencode --port $PORT -s $SES_ID")
+    tmux "${newargs[@]}" || { err "failed to start tmux session"; return 3; }
+    if ! wait_healthy 90; then
+        session_alive || { err "opencode TUI exited during startup (port $PORT in use, or launch failure)"; return 3; }
+        err "opencode TUI never became healthy on port $PORT"; return 3
+    fi
+    session_known || { err "TUI server does not know session $SES_ID"; return 3; }
+    return 0
+}
+
+# --- run one turn ---------------------------------------------------------
+
+ensure_session || exit $?
+
+# Anchor this turn in the session's history before submitting: the turn's output is read back
+# from the session API afterwards (an attached run client renders into the TUI, not onto its own
+# stdout). The anchor is the id of the last existing message, NOT a message COUNT — the history is
+# not append-only, because compaction rewrites it and inserts summary messages (`summary: true` on
+# AssistantMessage). A positional cursor silently returns the wrong slice the moment that happens.
+# `id` is a required field on every message, so the anchor is always available.
+#
+# TURN_START_MS is the secondary anchor for the case where compaction removed the anchor message
+# itself while we were running: `time.created` is a required epoch-ms field, so "messages created
+# since the turn began" still delimits the turn.
+ANCHOR_ID="$(curl -fsS -m 10 "$BASE/session/$SES_ID/message" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    msgs = json.load(sys.stdin)
+    info = msgs[-1].get("info") or {} if isinstance(msgs, list) and msgs else {}
+    print(info.get("id") or "")
+except Exception:
+    print("")
+' 2>/dev/null)"
+TURN_START_MS="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+
+RUN_ARGS=(run --attach "$BASE" -s "$SES_ID" --auto)
+
+cs-opencode "${RUN_ARGS[@]}" "$(cat "$PROMPT_FILE")" > "$OUT_FILE" 2> "$ERR_FILE" &
+RUN_PID=$!
+
+deadline=$(( SECONDS + TIMEOUT ))
+idle_since=""
+while kill -0 "$RUN_PID" 2>/dev/null; do
+    if (( SECONDS >= deadline )); then
+        kill "$RUN_PID" 2>/dev/null; wait "$RUN_PID" 2>/dev/null
+        err "turn did not complete within ${TIMEOUT}s"; exit 2
+    fi
+    if ! session_alive; then
+        kill "$RUN_PID" 2>/dev/null; wait "$RUN_PID" 2>/dev/null
+        err "tmux session died mid-turn"; exit 3
+    fi
+    if (( STALL_SECS > 0 )); then
+        if session_busy; then
+            idle_since=""
+        else
+            [[ -z "$idle_since" ]] && idle_since=$SECONDS
+            if (( SECONDS - idle_since >= STALL_SECS )); then
+                kill "$RUN_PID" 2>/dev/null; wait "$RUN_PID" 2>/dev/null
+                err "turn stalled: session idle for $(( SECONDS - idle_since ))s but the attached run never returned"
+                err "  attach to inspect: tmux attach -t $TMUX_SESSION"
+                exit 2
+            fi
+        fi
+    fi
+    sleep 2
+done
+wait "$RUN_PID"; RC=$?
+
+if (( RC != 0 )); then
+    err "turn failed (opencode run exit $RC)"
+    sed 's/^/  /' "$ERR_FILE" >&2
+    exit 5
+fi
+
+# Postcheck + output extraction, from ONE snapshot of the session history.
+#
+# The postcheck is REQUIRED even on exit 0: provider-side API errors surface only on the session's
+# assistant message (error set / time.completed absent), never on the attached client. It is scoped
+# to THIS turn's messages — checking the session's last assistant message instead would pass on the
+# PREVIOUS turn's reply whenever this turn produced nothing, reporting a silent empty success.
+#
+# Both the check and the output come from the same fetch, so they cannot disagree about what the
+# turn produced (two fetches could straddle a concurrent write).
+TURN_JSON="$(curl -fsS -m 10 "$BASE/session/$SES_ID/message" 2>/dev/null)"
+RESULT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-result.XXXXXX")"
+CHECK_ERR="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-check.XXXXXX")"
+trap 'rm -f "$PROMPT_FILE" "$OUT_FILE" "$ERR_FILE" "$RESULT_FILE" "$CHECK_ERR"' EXIT
+printf '%s' "$TURN_JSON" | python3 -c '
+import json, sys
+
+anchor, start_ms, fmt = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+
+def fail(reason):
+    sys.stderr.write(reason + "\n")
+    sys.exit(1)
+
+try:
+    msgs = json.load(sys.stdin)
+except Exception:
+    fail("unreadable")
+if not isinstance(msgs, list):
+    fail("unreadable")
+
+def info_of(m):
+    i = m.get("info") if isinstance(m, dict) else None
+    return i if isinstance(i, dict) else {}
+
+# Delimit this turn: everything after the anchor message. If the anchor is gone (compaction
+# rewrote the history mid-turn) fall back to creation time, which bounds the turn just as well.
+new, idx = [], -1
+if anchor:
+    for n, m in enumerate(msgs):
+        if info_of(m).get("id") == anchor:
+            idx = n
+            break
+if idx >= 0:
+    new = msgs[idx + 1:]
+elif anchor:
+    new = [m for m in msgs if (info_of(m).get("time") or {}).get("created", 0) >= start_ms]
+else:
+    new = msgs  # empty session before the turn: everything is this turn
+
+last = None
+for m in new:
+    if info_of(m).get("role") == "assistant":
+        last = info_of(m)
+if last is None:
+    fail("no-assistant-message-this-turn")
+if last.get("error"):
+    e = last["error"]
+    name = e.get("name", "error") if isinstance(e, dict) else "error"
+    data = e.get("data", {}) if isinstance(e, dict) else {}
+    msg = data.get("message", "") if isinstance(data, dict) else ""
+    fail(f"error:{name}:{msg[:200]}")
+if not (last.get("time") or {}).get("completed"):
+    fail("incomplete")
+
+if fmt == "json":
+    json.dump(new, sys.stdout, indent=None)
+    sys.stdout.write("\n")
+    sys.exit(0)
+chunks = []
+for m in new:
+    if info_of(m).get("role") != "assistant":
+        continue
+    for p in m.get("parts") or []:
+        if isinstance(p, dict) and p.get("type") == "text":
+            t = (p.get("text") or "").rstrip()
+            if t:
+                chunks.append(t)
+print("\n\n".join(chunks))
+' "$ANCHOR_ID" "$TURN_START_MS" "$FORMAT" > "$RESULT_FILE" 2> "$CHECK_ERR"
+CHECK_RC=$?
+if (( CHECK_RC != 0 )); then
+    err "turn failed despite run exit 0 — session postcheck: $(tr -d '\n' < "$CHECK_ERR" | head -c 300)"
+    exit 5
+fi
+
+cat "$RESULT_FILE"
+printf '\n__CS_OPENCODE_SESSION_ID__ %s\n' "$SES_ID"
+exit 0

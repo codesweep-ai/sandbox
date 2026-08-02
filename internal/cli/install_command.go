@@ -11,12 +11,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newInstallAgentToolsCmd copies the bundled agent tools (the cs-claude/cs-codex
-// launch wrappers + the remote-delegation families + docs) onto the host PATH.
+// newInstallAgentToolsCmd copies the bundled agent tools (the
+// cs-claude/cs-codex/cs-opencode launch wrappers + the remote-delegation
+// families + docs) onto the host PATH.
 func newInstallAgentToolsCmd(app *App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "install-agent-tools [dir]",
-		Short: "Install the agent tools (cs-claude/cs-codex + remote families) on your PATH (default: ~/.local/bin)",
+		Short: "Install the agent tools (cs-claude/cs-codex/cs-opencode + remote families) on your PATH (default: ~/.local/bin)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dest := filepath.Join(app.Host.Home, ".local", "bin")
@@ -60,16 +61,16 @@ func newInstallAgentToolsCmd(app *App) *cobra.Command {
 				fmt.Fprintf(out, "    echo 'export PATH=\"%s:$PATH\"' >> ~/.bashrc && source ~/.bashrc\n", dest)
 			}
 			var miss []string
-			for _, b := range []string{"claude", "codex"} {
+			for _, b := range []string{"claude", "codex", "opencode"} {
 				if !hasBinary(b) {
 					miss = append(miss, b)
 				}
 			}
 			if len(miss) > 0 {
-				fmt.Fprintf(out, "note: %s not on PATH — cs-claude/cs-codex need the agent CLI(s) on the host,\n", strings.Join(miss, " "))
+				fmt.Fprintf(out, "note: %s not on PATH — cs-claude/cs-codex/cs-opencode need the agent CLI(s) on the host,\n", strings.Join(miss, " "))
 				fmt.Fprintln(out, "  or sign in inside an instance: cs-sandbox agent-login claude <name>")
 			} else {
-				fmt.Fprintln(out, "next: sign in once on the host — 'cs-claude' (/login) and 'cs-codex login' — so new instances inherit your auth")
+				fmt.Fprintln(out, "next: sign in once on the host — 'cs-claude' (/login), 'cs-codex login', 'cs-opencode providers login' — so new instances inherit your auth")
 			}
 			return nil
 		},
