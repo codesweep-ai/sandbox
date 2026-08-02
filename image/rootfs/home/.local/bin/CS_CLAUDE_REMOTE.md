@@ -146,6 +146,11 @@ A turn surfaces the remote driver's exit status:
 | "kill the remote claude session" / "tear down the warm session" / "free the remote process" | `cs-claude-remote --kill <name>` (history kept; next turn resumes) |
 | "attach to the remote claude session" / "let me watch it" / "open the remote tmux" | `cs-claude-remote --attach <name>` (Ctrl-b d to detach) |
 
+`--kill` also stops an in-flight background (`-b`) turn on this side: it verifies the recorded
+PID really is that session's runner before signalling (so a stale PID file cannot take out an
+unrelated process), tears down the runner and its SSH child along with the remote tmux, and
+records exit 130 in the log — which `-output -s` then reports as `failed`.
+
 Any mention of "remote claude" as a prefix or target means delegate to the remote machine.
 Always pass the session name explicitly — the tools will refuse bare calls. Track the session name you are using from the moment you start or resume a session and pin it on every call.
 Default to **foreground mode** for delegation. The user can background the running command themselves using Ctrl+B if needed.

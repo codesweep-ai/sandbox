@@ -7,7 +7,7 @@
 #   cs-codex-remote-output <name> -f         # follow (tail -f) the log
 #   cs-codex-remote-output <name> -n 50      # show last 50 lines
 #   cs-codex-remote-output <name> --full     # show the entire log
-#   cs-codex-remote-output <name> -s         # status only: "running"/"finished" (exit 0=finished, 2=running)
+#   cs-codex-remote-output <name> -s         # status: finished/running/failed/unknown (exit 0/2/3/1)
 
 set -euo pipefail
 
@@ -28,7 +28,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -n NUM     Show last NUM lines (default: 30)"
             echo "  -f         Follow the log in real time (tail -f)"
             echo "  --full     Show the entire log file"
-            echo "  -s         Status only: 'running'/'finished'/'unknown'. Exit 0=finished, 2=running, 1=unknown."
+            echo "  -s         Status only: finished/running/failed/unknown. Exit 0/2/3/1."
             exit 0 ;;
         *) SESSION="$1"; shift ;;
     esac
@@ -65,12 +65,20 @@ if [[ -f "$PID_FILE" ]]; then
     if kill -0 "$PID" 2>/dev/null; then PID_ALIVE=true; else rm -f "$PID_FILE"; fi
 fi
 
-RUNNING=false; CRASHED=false
+RUNNING=false; CRASHED=false; FAILED=false; LAST_EXIT=""
 if $LOG_FINISHED; then RUNNING=false; elif $PID_ALIVE; then RUNNING=true; else CRASHED=true; fi
+# A finished turn is not necessarily a successful one: the footer carries the turn's exit
+# code, so a driver polling this can tell "done" from "done badly" without parsing the log.
+# 130 is the code --kill records for a cancelled turn.
+if $LOG_FINISHED && [[ -n "$last_finish_ln" ]]; then
+    LAST_EXIT="$(sed -n "${last_finish_ln}p" "$LOG_FILE" | sed -E 's/.*finished \(exit ([0-9]+)\).*/\1/')"
+    [[ "$LAST_EXIT" == "0" ]] || FAILED=true
+fi
 
 if $STATUS_ONLY; then
     if $RUNNING; then echo "running"; exit 2
     elif $CRASHED; then echo "unknown"; echo "Session '$SESSION' has no footer and no live process — likely crashed." >&2; exit 1
+    elif $FAILED; then echo "failed"; exit 3
     else echo "finished"; exit 0; fi
 fi
 
@@ -78,6 +86,7 @@ IS_TTY=false; [[ -t 1 ]] && IS_TTY=true
 dim() { $IS_TTY && printf '\033[2m%s\033[0m\n' "$1" || echo "$1"; }
 if $RUNNING; then dim "Session '$SESSION' is still running${PID:+ (PID $PID)}"
 elif $CRASHED; then dim "Session '$SESSION' appears to have crashed (no footer, no live process)"
+elif $FAILED; then dim "Session '$SESSION' failed (exit $LAST_EXIT)"
 else dim "Session '$SESSION' has finished"; fi
 echo
 

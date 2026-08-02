@@ -53,6 +53,11 @@ cs-codex-remote --kill <name>      # tear down the warm tmux process; history ke
 cs-codex-remote --attach <name>    # attach your terminal to watch/intervene (Ctrl-b d to detach)
 ```
 
+`--kill` also stops an in-flight background (`-b`) turn on this side: it verifies the recorded
+PID really is that session's runner before signalling (so a stale PID file cannot take out an
+unrelated process), tears down the runner and its SSH child along with the remote tmux, and
+records exit 130 in the log — which `-output -s` then reports as `failed`.
+
 If the tmux session has died, the next turn relaunches it with `codex resume <id>`, so the
 conversation continues from the rollout history.
 

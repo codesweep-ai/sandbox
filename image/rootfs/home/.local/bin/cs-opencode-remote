@@ -103,6 +103,37 @@ done
 # Read the tmux token for a session (the stable handle for its warm tmux session).
 token_of() { cat "$SESSION_MAP_DIR/${1}.token" 2>/dev/null; }
 
+# Stop the host-side background runner for a named turn. Killing only the remote tmux
+# session would leave this side's runner and its PID marker alive, so `-output -s` would
+# report "running" forever.
+stop_background() {
+    local name="$1" pid_file="$PID_DIR/${1}.pid" runner_file="$PID_DIR/${1}.runner"
+    local log_file="$LOG_DIR/${1}.log" pid="" last_prompt="" last_finish=""
+    if [[ -f "$pid_file" ]]; then
+        pid="$(cat "$pid_file" 2>/dev/null || true)"
+        # Verify the PID still belongs to OUR runner before signalling anything: a stale
+        # pid file plus OS pid reuse must not kill an unrelated process (or, via pkill -P,
+        # its children). The runner's cmdline is the per-session runner script path.
+        if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null \
+           && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$runner_file"; then
+            pkill -TERM -P "$pid" 2>/dev/null || true   # the ssh child
+            kill -TERM "$pid" 2>/dev/null || true
+            for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    fi
+    rm -f "$pid_file" "$runner_file"
+    # An interrupted turn still needs the authoritative footer, or `-s` would call it a
+    # crash. 130 = terminated by SIGINT-equivalent, which `-s` reports as "failed".
+    if [[ -f "$log_file" ]]; then
+        last_prompt="$(grep -n -- '--- .* --- prompt:' "$log_file" 2>/dev/null | tail -1 | cut -d: -f1 || true)"
+        last_finish="$(grep -n -- '--- .* --- finished (exit' "$log_file" 2>/dev/null | tail -1 | cut -d: -f1 || true)"
+        if [[ -n "$last_prompt" ]] && { [[ -z "$last_finish" ]] || [[ "$last_finish" -lt "$last_prompt" ]]; }; then
+            printf '\n--- %s --- finished (exit 130) ---\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> "$log_file"
+        fi
+    fi
+}
+
 # --- lifecycle actions (kill/attach): perform and exit ----------------------
 if [[ -n "$ACTION" ]]; then
     TOKEN="$(token_of "$ACTION_NAME")"
@@ -111,6 +142,7 @@ if [[ -n "$ACTION" ]]; then
     REMOTE_HOST="$(resolve_remote_host "$ACTION_NAME")"
     case "$ACTION" in
         kill)
+            stop_background "$ACTION_NAME"
             if ssh "$REMOTE_HOST" "tmux kill-session -t '$TMUX_SESSION' 2>/dev/null"; then
                 echo "Killed remote tmux session for '$ACTION_NAME' (history kept; next turn resumes)."
             else
@@ -234,20 +266,36 @@ ssh_turn() {
 if $BACKGROUND; then
     LOG_FILE="$LOG_DIR/${SESSION_NAME}.log"
     PID_FILE="$PID_DIR/${SESSION_NAME}.pid"
-    # The "finished (exit N)" footer is the authoritative completion signal read by
-    # `-output -s`, so it must be written even when the turn fails — capture the status
-    # via `if` (set -e safe) rather than a bare command whose failure would abort the
-    # subshell early.
+    RUNNER_FILE="$PID_DIR/${SESSION_NAME}.runner"
     rotate_log "$LOG_FILE"
-    (
-        echo "--- $(date '+%Y-%m-%d %H:%M:%S') --- prompt: $PROMPT" >> "$LOG_FILE"
-        if ssh_turn >> "$LOG_FILE" 2>&1; then EXIT_CODE=0; else EXIT_CODE=$?; fi
-        echo "" >> "$LOG_FILE"
-        echo "--- $(date '+%Y-%m-%d %H:%M:%S') --- finished (exit $EXIT_CODE) ---" >> "$LOG_FILE"
-        rm -f "$PID_FILE"
-    ) &
-    BG_PID=$!
-    echo "$BG_PID" > "$PID_FILE"
+    # The turn runs from a per-session runner script rather than a subshell of this
+    # process, for two reasons. It is launched with setsid, so it lands in a NEW session
+    # and survives callers that kill their tool call's process group on return (agent
+    # CLIs do exactly that) — a plain `&` child would die with them. And the runner file
+    # path appears in the runner's /proc cmdline, which is what --kill checks before it
+    # signals anything, so a stale pid file can never take out a bystander.
+    #
+    # The "finished (exit N)" footer is the authoritative completion signal read by
+    # `-output -s`, so it is written even when the turn fails.
+    CMD=("$0" --resume "$SESSION_NAME" -H "$REMOTE_HOST")
+    [[ -n "$WORKDIR" ]] && CMD+=(-d "$WORKDIR")
+    $JSON && CMD+=(-j)
+    CMD+=("$PROMPT")
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'trap "" HUP'
+        printf 'echo $$ > %q\n' "$PID_FILE"
+        printf 'if '; printf '%q ' "${CMD[@]}"; printf ' >> %q 2>&1; then rc=0; else rc=$?; fi\n' "$LOG_FILE"
+        printf 'printf "\\n--- %%s --- finished (exit %%s) ---\\n" "$(date "+%%Y-%%m-%%d %%H:%%M:%%S")" "$rc" >> %q\n' "$LOG_FILE"
+        printf 'rm -f %q %q\n' "$PID_FILE" "$RUNNER_FILE"
+    } > "$RUNNER_FILE"
+    chmod 700 "$RUNNER_FILE"
+    echo "--- $(date '+%Y-%m-%d %H:%M:%S') --- prompt: $PROMPT" >> "$LOG_FILE"
+    setsid nohup "$RUNNER_FILE" </dev/null >/dev/null 2>&1 &
+    # The runner records its own pid; wait for that rather than trusting $!, which is the
+    # setsid wrapper and not the process --kill must verify.
+    for _ in $(seq 1 40); do [[ -s "$PID_FILE" ]] && break; sleep 0.05; done
+    BG_PID="$(cat "$PID_FILE" 2>/dev/null || echo unknown)"
     echo "Session:  $SESSION_NAME"
     echo "Running:  background (PID $BG_PID)"
     echo "Log:      $LOG_FILE"

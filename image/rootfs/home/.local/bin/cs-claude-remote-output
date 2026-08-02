@@ -104,12 +104,21 @@ fi
 #   no footer + PID not alive -> worker died without writing a footer: crashed
 RUNNING=false
 CRASHED=false
+FAILED=false
+LAST_EXIT=""
 if $LOG_FINISHED; then
     RUNNING=false
 elif $PID_ALIVE; then
     RUNNING=true
 else
     CRASHED=true
+fi
+# A finished turn is not necessarily a successful one: the footer carries the turn's exit
+# code, so a driver polling this can tell "done" from "done badly" without parsing the log.
+# 130 is the code --kill records for a cancelled turn.
+if $LOG_FINISHED && [[ -n "$last_finish_ln" ]]; then
+    LAST_EXIT="$(sed -n "${last_finish_ln}p" "$LOG_FILE" | sed -E 's/.*finished \(exit ([0-9]+)\).*/\1/')"
+    [[ "$LAST_EXIT" == "0" ]] || FAILED=true
 fi
 
 if $STATUS_ONLY; then
@@ -120,6 +129,9 @@ if $STATUS_ONLY; then
         echo "unknown"
         echo "Session '$SESSION' has no completion footer and no live process — it likely crashed mid-turn." >&2
         exit 1
+    elif $FAILED; then
+        echo "failed"
+        exit 3
     else
         echo "finished"
         exit 0

@@ -13,8 +13,8 @@ cs-claude-remote-output <name> -n 100
 cs-claude-remote-output <name> --full
 cs-claude-remote-output <name> -f
 
-# Status-only probe: prints "running", "finished", or "unknown" and exits.
-# Exit code: 0=finished, 2=running, 1=unknown (crashed mid-turn). Cheap local check.
+# Status-only probe: prints "finished", "running", "failed", or "unknown" and exits.
+# Exit code: 0=finished, 2=running, 3=failed, 1=unknown (crashed mid-turn). Cheap local check.
 cs-claude-remote-output <name> -s
 ```
 
@@ -24,7 +24,7 @@ cs-claude-remote-output <name> -s
 |---|---|
 | "remote claude output?" / "what did remote claude produce?" / "show me the output" | Run `cs-claude-remote-output <name>` for the session you dispatched and summarize. The session name is required. |
 | "show me all the output" / "full output" | Run `cs-claude-remote-output <name> --full` |
-| "is remote claude still running?" / "is it done?" | Run `cs-claude-remote-output <name> -s` — prints `running`, `finished`, or `unknown` (crashed mid-turn) |
+| "is remote claude still running?" / "is it done?" | Run `cs-claude-remote-output <name> -s` — prints `finished`, `running`, `failed`, or `unknown` (crashed mid-turn) |
 
 ## When to use proactively
 
@@ -51,7 +51,8 @@ Anthropic's prompt cache has a 5-minute TTL. Sleeping past 300s means the next w
 2. On wake, run `cs-claude-remote-output <name> -s` (cheap — local-only, no SSH, no log read).
 3. If `finished` (exit 0): run `cs-claude-remote-output <name>` to read the tail, summarize for the user, stop the loop.
 4. If `running` (exit 2): schedule another tick. Shorten the interval if the log tail or `-status` output suggests the task is close to done.
-5. If `unknown` (exit 1): something broke — surface to the user instead of silently retrying.
+5. If `failed` (exit 3): the turn ran and ended badly (a cancelled turn records exit 130) — read the log tail and report, do not retry blindly.
+6. If `unknown` (exit 1): something broke — surface to the user instead of silently retrying.
 
 ### When NOT to poll
 
@@ -69,6 +70,7 @@ footer as the source of truth:
 
 - **`finished`** (exit 0) — a finished footer follows the most recent prompt header. This is read from the log, so it stays correct even if the background PID was recycled by an unrelated process.
 - **`running`** (exit 2) — no footer yet for the latest turn, and the worker process is still alive.
+- **`failed`** (exit 3) — a footer is present but its exit code is nonzero: the turn ran to completion and ended badly. `--kill` records exit 130, so a cancelled turn lands here too.
 - **`unknown`** (exit 1) — no footer and no live process: the worker died mid-turn (crash). Surface this to the user rather than retrying silently.
 
 ## Log rotation

@@ -20,7 +20,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // The scripts target the Linux guest/host environment (GNU coreutils, /proc). Off Linux
@@ -91,8 +93,9 @@ func runScriptStdin(t *testing.T, home, bin string, extraEnv []string, stdin, na
 }
 
 // TestRemoteOutputStatusContract: the `-s` probe of every remote family answers
-// finished=0 / unknown=1 / running=2, decided by the authoritative footer with the PID only
-// as a secondary liveness signal.
+// finished=0 / unknown=1 / running=2 / failed=3, decided by the authoritative footer with
+// the PID only as a secondary liveness signal. An orchestrator polls all three families the
+// same way, so the table is shared: an agent that drifts fails here.
 func TestRemoteOutputStatusContract(t *testing.T) {
 	skipUnlessLinux(t)
 	prompt := "--- 2026-01-01 00:00:00 --- prompt: task\n"
@@ -103,8 +106,11 @@ func TestRemoteOutputStatusContract(t *testing.T) {
 		wantExit   int
 	}{
 		{"finished", prompt + "done\n--- 2026-01-01 00:01:00 --- finished (exit 0) ---\n", false, "finished", 0},
-		// A nonzero turn still *finished*: the exit code lives in the log, not the probe.
-		{"finished-nonzero", prompt + "--- 2026-01-01 00:01:00 --- finished (exit 5) ---\n", false, "finished", 0},
+		// Ran to completion, but badly — distinct from both "finished" and "crashed", so a
+		// driver can tell success from failure without parsing the log.
+		{"failed", prompt + "--- 2026-01-01 00:01:00 --- finished (exit 5) ---\n", false, "failed", 3},
+		// 130 is what --kill records for a cancelled turn.
+		{"cancelled", prompt + "--- 2026-01-01 00:01:00 --- finished (exit 130) ---\n", false, "failed", 3},
 		{"running", prompt, true, "running", 2},
 		{"crashed", prompt, false, "unknown", 1},
 	}
@@ -491,6 +497,112 @@ func TestOpenCodeTurnGivesUpOnAWedgedRun(t *testing.T) {
 			}
 			if !strings.Contains(out, tc.wantErr) {
 				t.Fatalf("output missing %q: %s", tc.wantErr, out)
+			}
+		})
+	}
+}
+
+// remoteFamilies is the per-agent bookkeeping every remote tool shares. The mapping file a
+// session is keyed by differs: claude names its tmux session by the agent's own uuid, the
+// other two by a locally-generated token.
+var remoteFamilies = []struct{ agent, prefix, mapSuffix, mapValue string }{
+	{"claude", ".cs-claude-remote", "", "00000000-0000-4000-8000-000000000001"},
+	{"codex", ".cs-codex-remote", ".token", "deadbeef"},
+	{"opencode", ".cs-opencode-remote", ".token", "deadbeef"},
+}
+
+// killFixture lays down a session whose background turn is mid-flight: a mapping file, a log
+// with a prompt header and no footer, and a runner script. Returns the runner file path.
+func killFixture(t *testing.T, home, prefix, mapSuffix, mapValue, name string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(home, prefix+"-sessions", name+mapSuffix),
+		[]byte(mapValue+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, prefix+"-logs", name+".log"),
+		[]byte("--- 2026-01-01 00:00:00 --- prompt: wait\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(home, prefix+"-pids", name+".runner")
+}
+
+// TestRemoteKillStopsTheRunner: --kill has to stop this side's background runner, not just
+// the remote tmux session — otherwise the runner and its PID file outlive the cancel and
+// `-s` reports "running" forever. It also has to leave the authoritative footer behind, so a
+// cancelled turn reads as failed rather than as a crash.
+func TestRemoteKillStopsTheRunner(t *testing.T) {
+	skipUnlessLinux(t)
+	for _, fam := range remoteFamilies {
+		t.Run(fam.agent, func(t *testing.T) {
+			home, bin := agentHome(t, fam.prefix)
+			name := "kill-contract"
+			runnerFile := killFixture(t, home, fam.prefix, fam.mapSuffix, fam.mapValue, name)
+			// The runner must look like OUR runner: cancellation checks the PID's cmdline
+			// references this exact file before signalling.
+			if err := os.WriteFile(runnerFile, []byte("#!/bin/bash\nsleep 30\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			runner := exec.Command("bash", runnerFile)
+			if err := runner.Start(); err != nil {
+				t.Fatal(err)
+			}
+			pidFile := filepath.Join(home, fam.prefix+"-pids", name+".pid")
+			if err := os.WriteFile(pidFile, []byte(strconv.Itoa(runner.Process.Pid)+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if out, exit := runScript(t, home, bin, nil, "cs-"+fam.agent+"-remote", "--kill", name); exit != 0 {
+				t.Fatalf("--kill exit %d: %s", exit, out)
+			}
+			done := make(chan error, 1)
+			go func() { done <- runner.Wait() }()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				_ = runner.Process.Kill()
+				t.Fatal("background runner survived --kill")
+			}
+			if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+				t.Errorf("PID file not cleaned: %v", err)
+			}
+			// A cancelled turn must report failed/3, not unknown/1.
+			out, exit := runScript(t, home, bin, nil, "cs-"+fam.agent+"-remote-output", name, "-s")
+			if got := strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]); got != "failed" || exit != 3 {
+				t.Errorf("after --kill, -s = %q exit %d; want failed exit 3", got, exit)
+			}
+		})
+	}
+}
+
+// TestRemoteKillLeavesUnrelatedPIDAlone: a stale PID file whose number has been recycled by
+// an unrelated process must never be signalled. Without the cmdline check, --kill would TERM
+// a bystander and pkill -P its children.
+func TestRemoteKillLeavesUnrelatedPIDAlone(t *testing.T) {
+	skipUnlessLinux(t)
+	for _, fam := range remoteFamilies {
+		t.Run(fam.agent, func(t *testing.T) {
+			home, bin := agentHome(t, fam.prefix)
+			name := "stale-contract"
+			killFixture(t, home, fam.prefix, fam.mapSuffix, fam.mapValue, name)
+			// No runner file is written: this PID is a bystander that merely reuses the number.
+			bystander := exec.Command("sleep", "30")
+			if err := bystander.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = bystander.Process.Kill(); _, _ = bystander.Process.Wait() }()
+			pidFile := filepath.Join(home, fam.prefix+"-pids", name+".pid")
+			if err := os.WriteFile(pidFile, []byte(strconv.Itoa(bystander.Process.Pid)+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if out, exit := runScript(t, home, bin, nil, "cs-"+fam.agent+"-remote", "--kill", name); exit != 0 {
+				t.Fatalf("--kill exit %d: %s", exit, out)
+			}
+			if err := bystander.Process.Signal(syscall.Signal(0)); err != nil {
+				t.Fatalf("unrelated process was signalled despite failing the runner check: %v", err)
+			}
+			if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+				t.Errorf("stale PID file not cleaned: %v", err)
 			}
 		})
 	}

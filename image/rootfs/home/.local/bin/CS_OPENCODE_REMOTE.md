@@ -57,6 +57,11 @@ cs-opencode-remote --kill <name>      # tear down the warm tmux process; history
 cs-opencode-remote --attach <name>    # attach your terminal to watch/intervene (Ctrl-b d to detach)
 ```
 
+`--kill` also stops an in-flight background (`-b`) turn on this side: it verifies the recorded
+PID really is that session's runner before signalling (so a stale PID file cannot take out an
+unrelated process), tears down the runner and its SSH child along with the remote tmux, and
+records exit 130 in the log — which `-output -s` then reports as `failed`.
+
 If the tmux session has died, the next turn relaunches the TUI with `-s <id>`, so the
 conversation continues from the session history in the profile db.
 
@@ -123,6 +128,11 @@ Each has its own reference next to the scripts in `~/.local/bin` — read it for
 `0`–`4` mean the same thing here as in the `cs-claude-remote` / `cs-codex-remote` families; `5`
 is the one opencode adds, because only opencode can run a turn to completion and still have
 failed.
+
+Do not confuse these with the `-s` status codes. These are the codes **this command** exits with
+after driving a turn; `cs-opencode-remote-output <name> -s` has its own, unrelated scale
+(`finished` 0 / `unknown` 1 / `running` 2 / `failed` 3) describing a *background* turn's state.
+A turn that exits `5` here lands in the log footer, which `-s` then reports as `failed`.
 
 ## Interpreting user intent
 
