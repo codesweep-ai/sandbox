@@ -376,12 +376,14 @@ independent of sandbox type. Lend deliberately — two conditions to keep in min
 
 ## Contributing
 
-Bug reports and pull requests are welcome. Run `make check` (formatting, `go vet`, unit tests)
-before opening one. For a security-sensitive issue, please ask for a private contact rather than
-posting details in a public issue.
+Bug reports and pull requests are welcome. **[CONTRIBUTING.md](CONTRIBUTING.md)** has the rules —
+test coverage and commit shape — and applies to coding agents as much as to people. For a
+security-sensitive issue, please ask for a private contact rather than posting details in a public
+issue.
 
-**Testing.** `make test` runs the unit suite; `make test-integration` runs the live tests against a
-real podman/Firecracker host (each skips gracefully when podman or the image is unavailable). See
+**Testing.** `make check` (formatting, `go vet`, unit tests) must pass before you open a PR;
+`make test-integration` runs the live tests against a real podman/Firecracker host (each skips
+gracefully when podman or the image is unavailable). See
 [design.md → Testing](docs/design.md#testing).
 
 ## License
