@@ -61,6 +61,9 @@ Options:
   -H, --host <host>        SSH target host or ssh_config alias for this session
   -j                       Output the turn's raw session JSONL (instead of text)
   -b, --bg                 Run in background: log output locally, return immediately
+  --turn-timeout <secs>    Max seconds the turn driver waits for completion
+                           (default 1800; 0 = no limit — the driver's stall
+                           watchdog remains the hang detector)
   --redeploy               Force re-copy of the remote driver to the host
 
 Lifecycle actions (act immediately, no prompt needed):
@@ -74,6 +77,7 @@ EOF
 
 PROMPT=""; WORKDIR=""; SESSION_NAME=""; CUSTOM_NAME=""
 JSON=false; NEW_SESSION=false; BACKGROUND=false; REDEPLOY=false
+TURN_TIMEOUT=""
 ACTION=""; ACTION_NAME=""
 NAME_RE='^[a-zA-Z0-9][a-zA-Z0-9\ ._-]*$'
 
@@ -92,6 +96,9 @@ while [[ $# -gt 0 ]]; do
             CUSTOM_NAME="$2"; shift 2 ;;
         -j) JSON=true; shift ;;
         -b|--bg) BACKGROUND=true; shift ;;
+        --turn-timeout)
+            [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "Error: --turn-timeout requires a non-negative integer (seconds)" >&2; exit 1; }
+            TURN_TIMEOUT="$2"; shift 2 ;;
         --redeploy) REDEPLOY=true; shift ;;
         --kill)   [[ $# -ge 2 ]] || { echo "Error: --kill requires a name" >&2; exit 1; }; ACTION="kill"; ACTION_NAME="$2"; shift 2 ;;
         --attach) [[ $# -ge 2 ]] || { echo "Error: --attach requires a name" >&2; exit 1; }; ACTION="attach"; ACTION_NAME="$2"; shift 2 ;;
@@ -212,6 +219,7 @@ DRIVER_FMT="text"; $JSON && DRIVER_FMT="json"
 REMOTE_CMD="$REMOTE_DRIVER --tmux $TOKEN --format $DRIVER_FMT --name \"$SESSION_NAME\""
 [[ -n "$UUID" ]] && REMOTE_CMD="$REMOTE_CMD --uuid $UUID"
 [[ -n "$WORKDIR" ]] && REMOTE_CMD="$REMOTE_CMD --workdir \"$WORKDIR\""
+[[ -n "$TURN_TIMEOUT" ]] && REMOTE_CMD="$REMOTE_CMD --timeout $TURN_TIMEOUT"
 
 LOCK_FILE="$LOCK_DIR/${SESSION_NAME}.lock"
 UUID_CAPTURE="$(mktemp "${TMPDIR:-/tmp}/cs-codex-cap.XXXXXX")"
