@@ -137,7 +137,7 @@ detect_state() {
     local p; p="$(pane)"
     [[ -z "$p" ]] && { echo "unknown"; return; }
     case "$p" in
-        *"Paste code here"*|*"platform.claude.com/oauth"*)            echo "oauth"; return ;;
+        *"Paste code here"*|*"platform.claude.com/oauth"*|*"Login expired"*|*"Please run /login"*) echo "oauth"; return ;;
         *"Choose the text style"*|*"Select login method"*)           echo "onboarding"; return ;;
         *"trust this folder"*|*"Do you trust the files in this folder"*) echo "trust_folder"; return ;;
         *"Enter to select"*"Esc to cancel"*)                         echo "picker"; return ;;
@@ -145,7 +145,7 @@ detect_state() {
         *"Do you want to"*)                                          echo "tool_approval"; return ;;
     esac
     # No blocking overlay and not actively working: ready once the status line is up.
-    if grep -qi "auto mode on" <<<"$p"; then
+    if grep -Eqi "auto mode on|bypass permissions on" <<<"$p"; then
         echo "ready"; return
     fi
     echo "unknown"
@@ -287,6 +287,15 @@ done
 if ! $completed; then
     err "turn did not complete within ${TIMEOUT}s"
     exit 2
+fi
+
+# Claude can accept a submitted prompt, append a normal-looking assistant
+# message such as "Login expired · Please run /login", and still emit the turn
+# completion marker. Treat the resulting sign-in screen as authentication
+# failure rather than reporting a successful model turn.
+if [[ "$(detect_state)" == "oauth" ]]; then
+    err "remote Claude login expired during the turn — sign in again before retrying"
+    exit 3
 fi
 
 # Emit this turn's new content from the JSONL (lines appended after PRE_LINES).

@@ -607,3 +607,124 @@ func TestRemoteKillLeavesUnrelatedPIDAlone(t *testing.T) {
 		})
 	}
 }
+
+const claudeTestUUID = "00000000-0000-4000-8000-000000000001"
+
+// installClaudeTurnStubs fakes the driver's world: a tmux whose session is always alive and
+// whose pane text comes from $STUB_DIR/pane.txt, and which — on the send-keys that submits
+// the prompt — appends a turn_duration marker to the session JSONL, standing in for Claude
+// completing the turn. $STUB_DIR/pane_after.txt, if present, becomes the pane from then on,
+// which is how a screen that changes DURING the turn is modelled.
+func installClaudeTurnStubs(t *testing.T, bin string) {
+	t.Helper()
+	writeStub(t, bin, "claude", "#!/bin/sh\nexit 0\n")
+	writeStub(t, bin, "cs-claude", "#!/bin/sh\nexit 0\n")
+	writeStub(t, bin, "tmux", `#!/bin/sh
+case "$1" in
+  has-session) exit 0 ;;
+  capture-pane)
+    if [ -f "$STUB_DIR/.submitted" ] && [ -f "$STUB_DIR/pane_after.txt" ]; then
+      cat "$STUB_DIR/pane_after.txt"
+    else
+      cat "$STUB_DIR/pane.txt"
+    fi
+    exit 0 ;;
+  send-keys)
+    # The Enter that submits the prompt: Claude "answers" and ends the turn.
+    if [ ! -f "$STUB_DIR/.submitted" ]; then
+      touch "$STUB_DIR/.submitted"
+      printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"STUB ANSWER"}]}}' >> "$STUB_DIR/session.jsonl"
+      printf '%s\n' '{"type":"system","subtype":"turn_duration"}' >> "$STUB_DIR/session.jsonl"
+    fi
+    exit 0 ;;
+esac
+exit 0
+`)
+}
+
+// TestClaudeTurnDetectsExpiredLogin: Claude can accept a prompt, append a normal-looking
+// assistant message such as "Login expired · Please run /login", AND still emit the turn
+// completion marker. Reporting that as a successful turn hands back an answer the model
+// never produced, so the driver re-checks the screen after completion and fails instead.
+func TestClaudeTurnDetectsExpiredLogin(t *testing.T) {
+	skipUnlessLinux(t)
+	const ready = "some output\n  auto mode on\n"
+	for _, tc := range []struct {
+		name, paneAfter string
+		wantExit        int
+		wantIn          string
+	}{
+		{"healthy turn", "", 0, "STUB ANSWER"},
+		{"login expired mid-turn", "Login expired · Please run /login\n", 3, "login expired during the turn"},
+		{"oauth screen mid-turn", "Paste code here\n", 3, "login expired during the turn"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-claude-remote")
+			installClaudeTurnStubs(t, bin)
+			stubDir := t.TempDir()
+			projects := filepath.Join(home, "projects")
+			if err := os.MkdirAll(projects, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			// The driver finds the session by <uuid>.jsonl; the stub appends to the same file.
+			jsonl := filepath.Join(projects, claudeTestUUID+".jsonl")
+			if err := os.WriteFile(jsonl, []byte(""), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(jsonl, filepath.Join(stubDir, "session.jsonl")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(stubDir, "pane.txt"), []byte(ready), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.paneAfter != "" {
+				if err := os.WriteFile(filepath.Join(stubDir, "pane_after.txt"), []byte(tc.paneAfter), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, exit := runScriptStdin(t, home, bin,
+				[]string{"STUB_DIR=" + stubDir, "CS_CLAUDE_STALL_SECS=0"}, "do the thing\n",
+				"cs-claude-turn", "--uuid", claudeTestUUID, "--projects", projects, "--timeout", "30")
+			if exit != tc.wantExit {
+				t.Fatalf("exit = %d; want %d: %s", exit, tc.wantExit, out)
+			}
+			if !strings.Contains(out, tc.wantIn) {
+				t.Fatalf("output missing %q: %s", tc.wantIn, out)
+			}
+		})
+	}
+}
+
+// TestClaudeTurnReadyStates: the ready check has to recognise the status line current Claude
+// Code actually prints. A --yolo sandbox runs with permissions bypassed and shows "bypass
+// permissions on", not "auto mode on"; missing it strands every turn at the ready timeout.
+func TestClaudeTurnReadyStates(t *testing.T) {
+	skipUnlessLinux(t)
+	for _, pane := range []string{"  auto mode on\n", "  bypass permissions on\n"} {
+		t.Run(strings.TrimSpace(pane), func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-claude-remote")
+			installClaudeTurnStubs(t, bin)
+			stubDir := t.TempDir()
+			projects := filepath.Join(home, "projects")
+			if err := os.MkdirAll(projects, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			jsonl := filepath.Join(projects, claudeTestUUID+".jsonl")
+			if err := os.WriteFile(jsonl, []byte(""), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(jsonl, filepath.Join(stubDir, "session.jsonl")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(stubDir, "pane.txt"), []byte(pane), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out, exit := runScriptStdin(t, home, bin,
+				[]string{"STUB_DIR=" + stubDir, "CS_CLAUDE_STALL_SECS=0"}, "do the thing\n",
+				"cs-claude-turn", "--uuid", claudeTestUUID, "--projects", projects, "--timeout", "30")
+			if exit != 0 || !strings.Contains(out, "STUB ANSWER") {
+				t.Fatalf("pane %q not treated as ready: exit %d: %s", pane, exit, out)
+			}
+		})
+	}
+}
