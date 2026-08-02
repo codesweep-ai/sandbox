@@ -97,3 +97,9 @@ for d in /opt/claude/bin /opt/codex/bin /opt/opencode/bin; do
 done
 unset d
 
+# Headless browser: the image ships Chromium and the Containerfile sets ENV CHROME_BIN,
+# but container ENV doesn't reach SSH shells (same reason as the PATH block above), so
+# export it here for tools that resolve the browser via CHROME_BIN (e.g. Playwright's
+# executablePath).
+[[ -x /usr/bin/chromium-browser ]] && export CHROME_BIN=/usr/bin/chromium-browser
+
