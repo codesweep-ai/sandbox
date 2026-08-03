@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/codesweep-ai/sandbox/internal/run"
+	"github.com/codesweep-ai/sandbox/internal/seed"
 )
 
 // Cache holds the paths of the shared firecracker artifact cache.
@@ -199,8 +200,12 @@ func (c Cache) BuildSeedExt4(ctx context.Context, r run.Runner, in SeedInput, se
 		}
 	}
 
-	// Optional Claude/Codex credential trees.
-	for _, sub := range []string{"claude", "codex"} {
+	// Optional per-agent credential trees. Driven by seed.AgentNames() rather
+	// than a list repeated here: a hardcoded {"claude", "codex"} silently dropped
+	// opencode's tree, so --inherit-agent-login opencode reported success and
+	// produced a microVM with no login. The podman path was unaffected, which is
+	// what kept it hidden.
+	for _, sub := range seed.AgentNames() {
 		src := filepath.Join(in.SeedDir, sub)
 		if fi, err := os.Stat(src); err == nil && fi.IsDir() {
 			if _, err := r.Run(ctx, run.Opts{}, "cp", "-a", src, filepath.Join(sd, sub)); err != nil {
