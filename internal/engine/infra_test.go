@@ -148,6 +148,25 @@ func TestHealDefaultFabricOnlyWhenSafe(t *testing.T) {
 		if !f.Contains("network rm") || !f.Contains("isolate=true") {
 			t.Errorf("healing must recreate the network isolated: %v", f.Rendered())
 		}
+		// The fabric must be stopped BEFORE the network goes. Its dnsmasq holds an
+		// address on netavark's bridge, and an address left behind keeps the bridge
+		// alive past the removal, carrying the old gateway — which then collides
+		// with whichever network podman next assigns that subnet, silently killing
+		// outbound traffic for its members.
+		var teardown, netrm int
+		for i, c := range f.Rendered() {
+			if strings.Contains(c, "ip addr del") {
+				teardown = i + 1
+			}
+			if strings.Contains(c, "network rm") {
+				netrm = i + 1
+			}
+		}
+		if teardown == 0 {
+			t.Errorf("healing must release the fabric address, else the bridge outlives the network: %v", f.Rendered())
+		} else if netrm != 0 && teardown > netrm {
+			t.Errorf("the fabric must be torn down before the network is removed: %v", f.Rendered())
+		}
 	})
 
 	t.Run("refuses while sandboxes are attached", func(t *testing.T) {

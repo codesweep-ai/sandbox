@@ -9,6 +9,7 @@ import (
 
 	"github.com/codesweep-ai/sandbox/internal/fcnet"
 	"github.com/codesweep-ai/sandbox/internal/lock"
+	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/seed"
 	"github.com/codesweep-ai/sandbox/internal/state"
@@ -162,6 +163,17 @@ func (d Deps) healDefaultFabric(ctx context.Context, verr error) error {
 			d.Network, len(others), strings.Join(others, ", "))
 	}
 	d.note("upgrading the default network to an isolated one (it predates group isolation)")
+	// Tear the fabric down FIRST. Its dnsmasq holds an address on netavark's own
+	// bridge, and an address left there keeps the bridge alive past the network's
+	// removal — carrying the old gateway with it. The recreated network gets a
+	// fresh subnet, podman later hands the freed one to some other network on a
+	// different bridge, and two bridges then answer for the same subnet: that
+	// network's members lose outbound traffic for reasons nothing in podman
+	// explains. Down is a no-op when there is no fabric to stop.
+	fcnet.Fabric{
+		Runner: d.Runner, Network: d.Network,
+		NetDir: paths.FCNetFor(state.DefaultGroup),
+	}.Down(ctx)
 	_, _ = d.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", keepalive)
 	if _, err := d.Runner.Run(ctx, run.Opts{}, "podman", "network", "rm", "-f", d.Network); err != nil {
 		return fmt.Errorf("could not remove the pre-isolation default network: %w", err)

@@ -192,3 +192,46 @@ func TestFabricSuffixPrecedence(t *testing.T) {
 		t.Errorf("explicit suffix should win over the environment, got %q", got)
 	}
 }
+
+// TestDownReleasesTheBridgeAddress: the fabric's DNS address sits on netavark's
+// OWN bridge, and while any address remains the bridge outlives the network's
+// removal — still carrying that network's gateway. Podman then reuses the freed
+// subnet for a different network on a different bridge, two bridges answer for
+// one subnet, and every member of the new one loses outbound traffic with
+// nothing in podman's view to explain it.
+//
+// The delete used to be conditional on the keepalive still running, which by
+// teardown time it usually is not — so it silently never ran.
+func TestDownReleasesTheBridgeAddress(t *testing.T) {
+	fake := run.NewFake()
+	fake.OnStdout("network inspect cs-sandbox-net --format {{.NetworkInterface}}", "podman1")
+	fake.OnStdout("network inspect cs-sandbox-net --format {{(index .Subnets 0).Gateway}}", "10.89.4.1")
+	// Deliberately NOT running: that is the state teardown actually happens in.
+	fake.OnStdout("inspect cs-sandbox-net-keepalive", "false")
+
+	Fabric{Runner: fake, Network: "cs-sandbox-net"}.Down(context.Background())
+
+	var deleted bool
+	for _, c := range fake.Rendered() {
+		if strings.Contains(c, "ip addr del 10.89.4.53/24 dev podman1") {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Errorf("Down must release the DNS address even with the keepalive gone:\n%s",
+			strings.Join(fake.Rendered(), "\n"))
+	}
+}
+
+// TestDownSkipsTheDeleteWhenTheBridgeIsUnknown: once the network is gone there
+// is nothing to inspect, and a delete built from empty strings would be a
+// malformed command run for no reason.
+func TestDownSkipsTheDeleteWhenTheBridgeIsUnknown(t *testing.T) {
+	fake := run.NewFake() // every inspect returns empty
+	Fabric{Runner: fake, Network: "cs-sandbox-gone"}.Down(context.Background())
+	for _, c := range fake.Rendered() {
+		if strings.Contains(c, "ip addr del") {
+			t.Errorf("no delete should be attempted without a bridge: %q", c)
+		}
+	}
+}

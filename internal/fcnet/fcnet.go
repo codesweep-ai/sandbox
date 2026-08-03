@@ -383,13 +383,26 @@ func (f Fabric) sweepNames(ctx context.Context) {
 
 // Down tears down the fabric (kills dnsmasq, drops the DNS address, removes the
 // keepalive).
+//
+// Dropping the address is not optional cleanup. It sits on netavark's OWN
+// bridge, and while any address remains the bridge survives the network's
+// removal — carrying that network's gateway with it. Podman then hands the
+// freed subnet to the next network, on a different bridge, and two bridges
+// answer for one subnet: every member of the new network loses outbound
+// traffic, with nothing in podman's view to explain it.
+//
+// So the delete is attempted whenever the bridge is still resolvable, rather
+// than only while the keepalive happens to be running — by teardown time it
+// often is not, and the earlier guard turned that into a silent leak. It runs
+// before the keepalive is removed, since the bridge name comes from inspecting
+// the network the keepalive holds up.
 func (f Fabric) Down(ctx context.Context) {
 	if pid := f.dnsPid(); pid > 0 {
 		_ = syscall.Kill(pid, syscall.SIGTERM)
 	}
-	if f.keepaliveRunning(ctx) {
+	if br, dns := f.Bridge(ctx), f.DNSIP(ctx); br != "" && dns != "" && dns != ".53" {
 		_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "unshare", "--rootless-netns",
-			"ip", "addr", "del", f.DNSIP(ctx)+"/24", "dev", f.Bridge(ctx))
+			"ip", "addr", "del", dns+"/24", "dev", br)
 	}
 	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", f.Keepalive())
 }
