@@ -125,11 +125,16 @@ func buildRunArgs(p runParams) []string {
 	if p.Group != "" {
 		a = append(a, "-e", "CS_SANDBOX_GROUP="+p.Group)
 	}
+	// Derived from Obj rather than carried separately, so the label can never
+	// disagree with the object name it describes. (podmanSpec.Group is the host's
+	// unix group on macOS — a different thing entirely.)
+	sandboxGroup, _ := splitObj(p.Obj)
 	a = append(a,
 		"--label", "cs-sandbox.managed=1",
 		"--label", "cs-sandbox.type="+p.Type,
 		"--label", fmt.Sprintf("cs-sandbox.ssh_port=%d", p.Port),
 		"--label", "cs-sandbox.name="+p.Name,
+		"--label", "cs-sandbox.group="+sandboxGroup,
 		"-v", p.HomeVol+":"+p.Home,
 		"-v", p.ContVol+":/var/lib/containers",
 		"-v", p.SeedDir+":/run/cs-sandbox-seed:ro",

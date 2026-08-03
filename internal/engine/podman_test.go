@@ -100,6 +100,33 @@ func TestBuildRunArgsYoloSoloLabels(t *testing.T) {
 	}
 }
 
+// TestBuildRunArgsGroupLabel: the group label lets `podman ps --filter
+// label=cs-sandbox.group=X` and `podman inspect` answer which group a live
+// container belongs to, instead of that being recoverable only by parsing the
+// object name. It is derived FROM the object name, so the two cannot disagree —
+// and it must not be confused with runParams.Group, which is the host's unix
+// group on macOS.
+func TestBuildRunArgsGroupLabel(t *testing.T) {
+	for _, tc := range []struct{ obj, want string }{
+		{"feature.default", "default"},
+		{"api.cache-redis", "cache-redis"},
+	} {
+		p := baseParams()
+		p.Obj = tc.obj
+		got := strings.Join(buildRunArgs(p), " ")
+		if !strings.Contains(got, "--label cs-sandbox.group="+tc.want) {
+			t.Errorf("obj %q: missing --label cs-sandbox.group=%s", tc.obj, tc.want)
+		}
+	}
+	// The macOS unix group must never be mistaken for the sandbox group.
+	p := baseParams()
+	p.Obj, p.Group = "api.cache-redis", "staff"
+	got := strings.Join(buildRunArgs(p), " ")
+	if strings.Contains(got, "--label cs-sandbox.group=staff") {
+		t.Error("the host unix group leaked into the sandbox group label")
+	}
+}
+
 func TestBuildRunArgsEnvStoresMounts(t *testing.T) {
 	p := baseParams()
 	p.EnvFile = "/inst/box/seed/inject-env"
