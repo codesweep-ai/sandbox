@@ -23,6 +23,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/codesweep-ai/sandbox/internal/covemit"
 )
 
 // The scripts target the Linux guest/host environment (GNU coreutils, /proc). Off Linux
@@ -114,10 +116,10 @@ func TestRemoteOutputStatusContract(t *testing.T) {
 		{"running", prompt, true, "running", 2},
 		{"crashed", prompt, false, "unknown", 1},
 	}
-	for _, tool := range []struct{ name, prefix string }{
-		{"cs-claude-remote-output", ".cs-claude-remote"},
-		{"cs-codex-remote-output", ".cs-codex-remote"},
-		{"cs-opencode-remote-output", ".cs-opencode-remote"},
+	for _, tool := range []struct{ name, prefix, agent string }{
+		{"cs-claude-remote-output", ".cs-claude-remote", "claude"},
+		{"cs-codex-remote-output", ".cs-codex-remote", "codex"},
+		{"cs-opencode-remote-output", ".cs-opencode-remote", "opencode"},
 	} {
 		for _, tc := range states {
 			t.Run(tool.name+"/"+tc.state, func(t *testing.T) {
@@ -143,6 +145,7 @@ func TestRemoteOutputStatusContract(t *testing.T) {
 				if got != tc.wantOut || exit != tc.wantExit {
 					t.Fatalf("-s = %q exit %d; want %q exit %d", got, exit, tc.wantOut, tc.wantExit)
 				}
+				covemit.Prove(t, "status-contract", tool.agent, "", "scripts")
 			})
 		}
 	}
@@ -332,6 +335,7 @@ func TestOpenCodeTurnCompletionSemantics(t *testing.T) {
 			if tc.wantExit == 0 && !strings.Contains(out, "stub-response") {
 				t.Fatalf("success output missing the session's assistant text: %s", out)
 			}
+			covemit.Prove(t, "turn-driver-semantics", "opencode", "", "scripts")
 		})
 	}
 }
@@ -570,6 +574,8 @@ func TestRemoteKillStopsTheRunner(t *testing.T) {
 			if got := strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]); got != "failed" || exit != 3 {
 				t.Errorf("after --kill, -s = %q exit %d; want failed exit 3", got, exit)
 			}
+			covemit.Prove(t, "interrupt", fam.agent, "", "scripts")
+			covemit.Prove(t, "status-contract", fam.agent, "", "scripts")
 		})
 	}
 }
@@ -604,6 +610,7 @@ func TestRemoteKillLeavesUnrelatedPIDAlone(t *testing.T) {
 			if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
 				t.Errorf("stale PID file not cleaned: %v", err)
 			}
+			covemit.Prove(t, "interrupt", fam.agent, "", "scripts")
 		})
 	}
 }

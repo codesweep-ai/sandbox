@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/codesweep-ai/sandbox/internal/covemit"
 )
 
 // writeProfile builds a host ~/.cs-<agent> profile with the given files.
@@ -25,6 +27,11 @@ func writeProfile(t *testing.T, home, agent string, files map[string]string) {
 // TestWriteAgentLoginsInheritsRequested: each requested agent's login is snapshotted
 // into the seed at 0600, and reported back to the caller.
 func TestWriteAgentLoginsInheritsRequested(t *testing.T) {
+	defer func() {
+		if !t.Failed() {
+			covemit.Prove(t, "login-seeding", "", "", "unit")
+		}
+	}()
 	home, seedDir := t.TempDir(), t.TempDir()
 	writeProfile(t, home, "claude", map[string]string{".credentials.json": `{"tok":"max"}`})
 	writeProfile(t, home, "codex", map[string]string{"auth.json": `{"tok":"chatgpt"}`})
@@ -54,6 +61,11 @@ func TestWriteAgentLoginsInheritsRequested(t *testing.T) {
 // TestWriteAgentLoginsIsOptIn: nothing is carried by default, and asking for one
 // agent never carries the other.
 func TestWriteAgentLoginsIsOptIn(t *testing.T) {
+	defer func() {
+		if !t.Failed() {
+			covemit.Prove(t, "login-seeding", "", "", "unit")
+		}
+	}()
 	home := t.TempDir()
 	writeProfile(t, home, "claude", map[string]string{".credentials.json": `{"tok":"max"}`})
 	writeProfile(t, home, "codex", map[string]string{"auth.json": `{"tok":"chatgpt"}`})
@@ -90,6 +102,11 @@ func TestWriteAgentLoginsIsOptIn(t *testing.T) {
 // the host. It matters most for opencode, whose profile dir also holds the session
 // db and a provider-key env file right next to the credential.
 func TestWriteAgentLoginsCarriesOnlyTheCredential(t *testing.T) {
+	defer func() {
+		if !t.Failed() {
+			covemit.Prove(t, "login-seeding", "", "", "unit")
+		}
+	}()
 	home, seedDir := t.TempDir(), t.TempDir()
 	writeProfile(t, home, "opencode", map[string]string{
 		"auth.json":     `{"tok":"oc"}`,
@@ -115,6 +132,11 @@ func TestWriteAgentLoginsCarriesOnlyTheCredential(t *testing.T) {
 // is not an error — it advises how to sign in instead, naming that agent's own
 // login command.
 func TestWriteAgentLoginsNoHostLogin(t *testing.T) {
+	defer func() {
+		if !t.Failed() {
+			covemit.Prove(t, "login-seeding", "", "", "unit")
+		}
+	}()
 	for _, tc := range []struct{ agent, wantMissing, wantLoginCmd string }{
 		{"claude", "no host Claude login", "cs-claude"},
 		{"codex", "no host Codex login", "cs-codex login"},
@@ -142,6 +164,11 @@ func TestWriteAgentLoginsNoHostLogin(t *testing.T) {
 // TestWriteAgentLoginsClearsStale: re-creating a sandbox that no longer inherits a
 // login must not leave the previous carry behind in the seed.
 func TestWriteAgentLoginsClearsStale(t *testing.T) {
+	defer func() {
+		if !t.Failed() {
+			covemit.Prove(t, "login-seeding", "", "", "unit")
+		}
+	}()
 	home, seedDir := t.TempDir(), t.TempDir()
 	writeProfile(t, home, "claude", map[string]string{".credentials.json": `{"tok":"max"}`})
 
