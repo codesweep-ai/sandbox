@@ -226,12 +226,15 @@ func TestCLIRmRecreateReusesDataLive(t *testing.T) {
 		t.Fatalf("write marker: %v", err)
 	}
 
-	// rm keeps the data and removes the sandbox from `ls`.
+	// rm keeps the data, and keeps listing it as `removed` — kept data that
+	// vanished from `ls` could sit on disk unnoticed, which is the whole reason
+	// the status exists.
 	if out, err := execRoot(t, "rm", name); err != nil {
 		t.Fatalf("rm: %v (%s)", err, out)
 	}
-	if ls, _ := execRoot(t, "ls"); strings.Contains(ls, name) {
-		t.Errorf("after rm, %s should be gone from ls:\n%s", name, ls)
+	ls, _ := execRoot(t, "ls")
+	if !strings.Contains(ls, name) || !strings.Contains(ls, "removed") {
+		t.Errorf("after rm, %s should still be listed as removed:\n%s", name, ls)
 	}
 
 	// recreate with the same name → reuse the kept home volume.
@@ -453,7 +456,7 @@ func TestCLIUserTypeSeedLive(t *testing.T) {
 
 	uname := boxName(t, "user")
 	createBox(t, r, uname, "--type", "user")
-	userSeed := filepath.Join(instDir, uname, "seed")
+	userSeed := filepath.Join(state.Dir(instDir, state.DefaultGroup, uname), "seed")
 	if !fileExists(filepath.Join(userSeed, "id_cs-sandbox_user")) {
 		t.Errorf("user sandbox missing user tier key in seed")
 	}
@@ -463,7 +466,7 @@ func TestCLIUserTypeSeedLive(t *testing.T) {
 
 	aname := boxName(t, "agent")
 	createBox(t, r, aname, "--type", "agent")
-	if !fileExists(filepath.Join(instDir, aname, "seed", "id_cs-sandbox_agent")) {
+	if !fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, aname), "seed", "id_cs-sandbox_agent")) {
 		t.Errorf("agent sandbox missing agent tier key in seed")
 	}
 }
@@ -852,7 +855,7 @@ func TestCLIFirecrackerCrossEngineLive(t *testing.T) {
 	if !fileExists(filepath.Join(paths.FCCache(), "vmlinux.elf")) {
 		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
 	}
-	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
+	instDir := fcInstancesDir(t, host)
 
 	fbox := boxName(t, "xfc")
 	t.Cleanup(func() { _, _ = execRoot(t, "destroy", fbox, "-f") })
@@ -864,7 +867,7 @@ func TestCLIFirecrackerCrossEngineLive(t *testing.T) {
 	step(t, "microVM %s booted (%s)", fbox, time.Since(start).Round(time.Second))
 	// The per-instance reflink rootfs and the seed.ext4 disk exist on disk.
 	for _, disk := range []string{"rootfs.ext4", "seed.ext4"} {
-		if !fileExists(filepath.Join(instDir, fbox, disk)) {
+		if !fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, fbox), disk)) {
 			t.Errorf("firecracker instance missing %s", disk)
 		}
 	}

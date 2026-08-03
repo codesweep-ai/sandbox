@@ -38,7 +38,14 @@ func fcTestDeps(t *testing.T) Deps {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
+	// Not t.TempDir(): each VM copies the base rootfs (14 GB at the time of
+	// writing) into the instances dir, and tmpfs cannot hold it — the copy fails
+	// with "Disk quota exceeded" before anything under test runs.
+	dir, err := os.MkdirTemp(h.Home, ".cs-sandbox-fctest-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return Deps{
 		Runner:       &run.Exec{},
 		Host:         h,

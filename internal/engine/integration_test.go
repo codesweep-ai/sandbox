@@ -110,14 +110,14 @@ func TestPodmanCreateLive(t *testing.T) {
 	}
 
 	// Container is running.
-	running := run.Output(ctx, d.Runner, "podman", "inspect", name, "--format", "{{.State.Running}}")
+	running := run.Output(ctx, d.Runner, "podman", "inspect", obj(d.group(), name), "--format", "{{.State.Running}}")
 	if running != "true" {
 		t.Fatalf("container not running (State.Running=%q)", running)
 	}
 
 	// It reached readiness; the dev user was created by the entrypoint.
 	waitFile(t, d, name, "/run/cs-sandbox-ready", 90*time.Second)
-	if _, err := d.Runner.Run(ctx, run.Opts{}, "podman", "exec", name, "id", "-u", d.Host.User); err != nil {
+	if _, err := d.Runner.Run(ctx, run.Opts{}, "podman", "exec", obj(d.group(), name), "id", "-u", d.Host.User); err != nil {
 		t.Errorf("dev user %q not created inside the sandbox: %v", d.Host.User, err)
 	}
 
@@ -130,7 +130,7 @@ func TestPodmanCreateLive(t *testing.T) {
 	}
 
 	// The trust seed is present with the expected trust material.
-	seedDir := filepath.Join(d.InstDir, name, "seed")
+	seedDir := filepath.Join(d.InstanceDir(name), "seed")
 	assertFile(t, filepath.Join(seedDir, "authorized_keys"))
 	assertFile(t, filepath.Join(seedDir, "ssh_config"))
 	assertFile(t, filepath.Join(seedDir, "id_cs-sandbox_agent")) // agent holds G
@@ -157,7 +157,7 @@ func TestPodmanSoloWithholdsKeyLive(t *testing.T) {
 	if _, err := p.Create(ctx, CreateSpec{Name: name, Type: "agent", Solo: true}); err != nil {
 		t.Fatalf("Create solo: %v", err)
 	}
-	seedDir := filepath.Join(d.InstDir, name, "seed")
+	seedDir := filepath.Join(d.InstanceDir(name), "seed")
 	// A --solo agent gets NO tier private key (no outbound auth).
 	if _, err := os.Stat(filepath.Join(seedDir, "id_cs-sandbox_agent")); !os.IsNotExist(err) {
 		t.Errorf("SECURITY: solo agent must not hold the agent tier key")
@@ -189,7 +189,7 @@ func waitFile(t *testing.T, d Deps, name, path string, budget time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
-		if _, err := d.Runner.Run(context.Background(), run.Opts{}, "podman", "exec", name, "test", "-f", path); err == nil {
+		if _, err := d.Runner.Run(context.Background(), run.Opts{}, "podman", "exec", obj(d.group(), name), "test", "-f", path); err == nil {
 			return
 		}
 		time.Sleep(time.Second)
