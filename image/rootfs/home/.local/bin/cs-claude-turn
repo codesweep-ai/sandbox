@@ -30,7 +30,9 @@ set -uo pipefail
 UUID=""
 WORKDIR=""
 FORMAT="text"
-TIMEOUT=600          # max seconds to wait for a turn to complete
+# Max seconds to wait for a turn to complete. 0 = wait indefinitely (the stall
+# watchdog below remains the hang detector). Env-overridable, like the siblings.
+TIMEOUT="${CS_CLAUDE_TIMEOUT:-600}"
 # Stall watchdog: bail early if the JSONL stops growing AND the TUI is no longer
 # working before a turn_duration marker appears. 0 disables. Env-overridable.
 STALL_SECS="${CS_CLAUDE_STALL_SECS:-180}"
@@ -61,6 +63,11 @@ fi
 if ! [[ "$UUID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
     err "--uuid '$UUID' is not a valid UUID"; exit 1
 fi
+# TIMEOUT reaches here from --timeout or the env default, and 0 legitimately means
+# "wait indefinitely". Bash arithmetic reads a non-numeric value as 0, so without
+# this check a typo would not fail — it would silently remove the budget and wait
+# forever, which is the failure this driver's watchdogs exist to make impossible.
+[[ "$TIMEOUT" =~ ^[0-9]+$ ]] || { err "--timeout '$TIMEOUT' must be a non-negative integer (0 = no limit)"; exit 1; }
 
 TMUX_SESSION="cs-claude-$UUID"
 
@@ -249,12 +256,13 @@ if [[ -z "$JSONL" ]]; then
     err "could not locate JSONL for $UUID under $PROJECTS after submitting"; exit 3
 fi
 
-# Wait for a new turn_duration marker to appear (turn complete).
+# Wait for a new turn_duration marker to appear (turn complete). TIMEOUT=0 waits
+# indefinitely; the stall watchdog remains the liveness check either way.
 deadline=$(( SECONDS + TIMEOUT ))
 completed=false
 last_lines="$PRE_LINES"
 last_change=$SECONDS
-while (( SECONDS < deadline )); do
+while (( TIMEOUT == 0 || SECONDS < deadline )); do
     if ! session_alive; then
         err "tmux session died mid-turn"; exit 3
     fi

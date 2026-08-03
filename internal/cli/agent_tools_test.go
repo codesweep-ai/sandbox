@@ -800,3 +800,40 @@ exit 0
 		t.Errorf("turn reported a previous session's content as its own: %s", out)
 	}
 }
+
+// TestTurnDriversRejectANonNumericTimeout: 0 legitimately means "wait
+// indefinitely", and bash arithmetic reads a non-numeric value as 0 — so
+// without an explicit check, `--timeout abc` would not fail, it would silently
+// drop the budget and wait forever. That is the exact failure these drivers'
+// watchdogs exist to prevent, so a bad value has to be rejected up front, and
+// a legitimate 0 has to survive.
+func TestTurnDriversRejectANonNumericTimeout(t *testing.T) {
+	skipUnlessLinux(t)
+	const badTimeout = "must be a non-negative integer"
+	for _, tc := range []struct {
+		tool string
+		args []string
+	}{
+		{"cs-claude-turn", []string{"--uuid", claudeTestUUID}},
+		{"cs-codex-turn", []string{"--tmux", "stubtoken"}},
+		{"cs-opencode-turn", []string{"--tmux", "stubtoken"}},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-claude-remote")
+			args := append(append([]string{}, tc.args...), "--timeout", "abc")
+			out, exit := runScriptStdin(t, home, bin, nil, "prompt", tc.tool, args...)
+			if exit == 0 || !strings.Contains(out, badTimeout) {
+				t.Errorf("a non-numeric timeout must be rejected up front; exit %d: %s", exit, out)
+			}
+
+			// 0 is the documented "no limit" value and must get past validation.
+			// It will fail later for want of a real agent, which is fine — the
+			// point is that it is not turned away as a malformed timeout.
+			args = append(append([]string{}, tc.args...), "--timeout", "0")
+			out, _ = runScriptStdin(t, home, bin, nil, "prompt", tc.tool, args...)
+			if strings.Contains(out, badTimeout) {
+				t.Errorf("--timeout 0 means no limit and must be accepted: %s", out)
+			}
+		})
+	}
+}

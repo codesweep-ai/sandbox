@@ -75,6 +75,9 @@ Options:
                            Stored per session, so companions reuse it.
   -j                       Output full JSON (includes session_id, cost, etc.)
   -b, --bg                 Run in background: log output locally, return immediately
+  --turn-timeout <secs>    Max seconds the turn driver waits for completion
+                           (default 600; 0 = no limit — the driver's stall
+                           watchdog remains the hang detector)
   --redeploy               Force re-copy of the remote driver to the host
 
 Lifecycle actions (act immediately, no prompt needed):
@@ -95,6 +98,7 @@ JSON=false
 NEW_SESSION=false
 BACKGROUND=false
 REDEPLOY=false
+TURN_TIMEOUT=""
 ACTION=""        # "kill" | "attach" — performed immediately, no prompt needed
 ACTION_NAME=""
 
@@ -129,6 +133,12 @@ while [[ $# -gt 0 ]]; do
             CUSTOM_NAME="$2"; shift 2 ;;
         -j) JSON=true; shift ;;
         -b|--bg) BACKGROUND=true; shift ;;
+        --turn-timeout)
+            if [[ $# -lt 2 || ! "$2" =~ ^[0-9]+$ ]]; then
+                echo "Error: --turn-timeout requires a non-negative integer (seconds)" >&2
+                exit 1
+            fi
+            TURN_TIMEOUT="$2"; shift 2 ;;
         --redeploy) REDEPLOY=true; shift ;;
         --kill)
             if [[ $# -lt 2 ]]; then echo "Error: --kill requires a session name" >&2; exit 1; fi
@@ -306,6 +316,9 @@ DRIVER_FMT="text"; $JSON && DRIVER_FMT="json"
 REMOTE_CMD="$REMOTE_DRIVER --uuid $SESSION_UUID --name \"$SESSION_NAME\" --format $DRIVER_FMT"
 if [[ -n "$WORKDIR" ]]; then
     REMOTE_CMD="$REMOTE_CMD --workdir \"$WORKDIR\""
+fi
+if [[ -n "$TURN_TIMEOUT" ]]; then
+    REMOTE_CMD="$REMOTE_CMD --timeout $TURN_TIMEOUT"
 fi
 
 # Per-session lock: serializes turns to the same interactive session so two callers

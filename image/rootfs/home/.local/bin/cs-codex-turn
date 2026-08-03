@@ -50,6 +50,11 @@ done
 if [[ -n "$UUID" ]] && ! [[ "$UUID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
     err "--uuid '$UUID' is not a valid uuid"; exit 1
 fi
+# TIMEOUT reaches here from --timeout or the env default, and 0 legitimately means
+# "wait indefinitely". Bash arithmetic reads a non-numeric value as 0, so without
+# this check a typo would not fail — it would silently remove the budget and wait
+# forever, which is the failure this driver's watchdogs exist to make impossible.
+[[ "$TIMEOUT" =~ ^[0-9]+$ ]] || { err "--timeout '$TIMEOUT' must be a non-negative integer (0 = no limit)"; exit 1; }
 command -v codex >/dev/null 2>&1 || { err "codex not found on remote PATH"; exit 3; }
 command -v tmux  >/dev/null 2>&1 || { err "tmux not found on remote PATH"; exit 3; }
 
@@ -221,10 +226,11 @@ if [[ -z "$JSONL" ]]; then
 fi
 [[ -n "$JSONL" ]] || { err "could not locate the codex rollout JSONL after submitting"; exit 3; }
 
-# Wait for a new task_complete (turn done), with a stall watchdog.
+# Wait for a new task_complete (turn done), with a stall watchdog. TIMEOUT=0
+# waits indefinitely; the stall watchdog remains the liveness check either way.
 deadline=$(( SECONDS + TIMEOUT ))
 completed=false; last_lines="$PRE_LINES"; last_change=$SECONDS
-while (( SECONDS < deadline )); do
+while (( TIMEOUT == 0 || SECONDS < deadline )); do
     session_alive || { err "tmux session died mid-turn"; exit 3; }
     if (( $(task_count "$JSONL") > PRE_TASKS )); then completed=true; break; fi
     if (( STALL_SECS > 0 )); then

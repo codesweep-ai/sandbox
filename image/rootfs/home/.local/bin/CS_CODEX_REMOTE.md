@@ -124,6 +124,11 @@ Each has its own reference next to the scripts in `~/.local/bin` — read it for
 
 - `CS_CODEX_REMOTE_HOST` — default SSH target host.
 - `CS_CODEX_TIMEOUT` (default 1800s) — max wait for a turn to complete (driver-side).
+- `CS_CODEX_TIMEOUT` (default `1800`, `0` waits indefinitely) — how long a turn may take before it is
+  abandoned (exit 2). `0` removes the wall-clock limit and leaves the stall watchdog below as the
+  only liveness check, which is the right shape for a genuinely long turn — but setting BOTH to `0`
+  leaves nothing to end a wedged turn. Per-call, use `--turn-timeout <secs>`, which does not depend
+  on the environment surviving the hop to the remote host.
 - `CS_CODEX_STALL_SECS` (default 180, 0 disables) — bail early if the JSONL stops growing and the
   TUI is no longer working before a `task_complete`.
 - `CS_CODEX_LOCK_WAIT` (default 900s) — how long a turn waits for the per-session lock.

@@ -115,6 +115,11 @@ What this means in practice:
 
 These tune the remote-delegation path; all are optional with sensible defaults:
 
+- `CS_CLAUDE_TIMEOUT` (default `600`, `0` waits indefinitely) — how long a turn may take before it is
+  abandoned (exit 2). `0` removes the wall-clock limit and leaves the stall watchdog below as the
+  only liveness check, which is the right shape for a genuinely long turn — but setting BOTH to `0`
+  leaves nothing to end a wedged turn. Per-call, use `--turn-timeout <secs>`, which does not depend
+  on the environment surviving the hop to the remote host.
 - `CS_CLAUDE_STALL_SECS` (default `180`, `0` disables) — the stall watchdog. A healthy in-progress turn keeps appending to the JSONL; if it stops growing **and** the remote TUI is no longer working before a `turn_duration` marker appears, the turn is declared stalled and returns early (exit 2) with a diagnostic instead of blocking for the full `--timeout`. Raise it for very tool-heavy turns that legitimately go quiet for long stretches.
 - `CS_CLAUDE_LOCK_WAIT` (default `900`s) — how long a turn waits to acquire the per-session lock before giving up. Turns are serialized per session so two callers cannot interleave keystrokes; if a previous turn was hard-killed and left a stale lock, the next call fails fast (exit 4) and prints the lock file to remove, rather than hanging forever.
 - `CS_CLAUDE_MAX_LOG_BYTES` (default `1048576` = 1 MiB, `0` disables) — background (`-b`) logs roll over to `<log>.1` once they exceed this size, so a long-lived session's log can't grow unbounded. See `CS_CLAUDE_REMOTE_OUTPUT.md`.

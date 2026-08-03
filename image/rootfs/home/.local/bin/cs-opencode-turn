@@ -59,6 +59,11 @@ done
 if [[ -n "$SES_ID" ]] && ! [[ "$SES_ID" =~ ^ses_[A-Za-z0-9]{20,40}$ ]]; then
     err "--uuid '$SES_ID' is not a valid opencode session id"; exit 1
 fi
+# TIMEOUT reaches here from --timeout or the env default, and 0 legitimately means
+# "wait indefinitely". Bash arithmetic reads a non-numeric value as 0, so without
+# this check a typo would not fail — it would silently remove the budget and wait
+# forever, which is the failure this driver's watchdogs exist to make impossible.
+[[ "$TIMEOUT" =~ ^[0-9]+$ ]] || { err "--timeout '$TIMEOUT' must be a non-negative integer (0 = no limit)"; exit 1; }
 # cs-opencode (not bare opencode) is what this driver runs: it is the wrapper that binds the
 # isolated ~/.cs-opencode profile, so a turn driven without it would use the wrong config/db.
 for bin in opencode cs-opencode tmux curl python3; do
@@ -182,10 +187,11 @@ RUN_ARGS=(run --attach "$BASE" -s "$SES_ID" --auto)
 cs-opencode "${RUN_ARGS[@]}" "$(cat "$PROMPT_FILE")" > "$OUT_FILE" 2> "$ERR_FILE" &
 RUN_PID=$!
 
+# TIMEOUT=0 waits indefinitely; the idle stall watchdog remains the liveness check.
 deadline=$(( SECONDS + TIMEOUT ))
 idle_since=""
 while kill -0 "$RUN_PID" 2>/dev/null; do
-    if (( SECONDS >= deadline )); then
+    if (( TIMEOUT > 0 && SECONDS >= deadline )); then
         kill "$RUN_PID" 2>/dev/null; wait "$RUN_PID" 2>/dev/null
         err "turn did not complete within ${TIMEOUT}s"; exit 2
     fi

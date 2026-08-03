@@ -112,6 +112,11 @@ Each has its own reference next to the scripts in `~/.local/bin` — read it for
 
 - `CS_OPENCODE_REMOTE_HOST` — default SSH target host.
 - `CS_OPENCODE_TIMEOUT` (default 1800s) — max wait for a turn to complete (driver-side).
+- `CS_OPENCODE_TIMEOUT` (default `1800`, `0` waits indefinitely) — how long a turn may take before it is
+  abandoned (exit 2). `0` removes the wall-clock limit and leaves the stall watchdog below as the
+  only liveness check, which is the right shape for a genuinely long turn — but setting BOTH to `0`
+  leaves nothing to end a wedged turn. Per-call, use `--turn-timeout <secs>`, which does not depend
+  on the environment surviving the hop to the remote host.
 - `CS_OPENCODE_STALL_SECS` (default 180, 0 disables) — bail early if the server reports the
   session idle this long while the attached run has not returned.
 - `CS_OPENCODE_LOCK_WAIT` (default 900s) — how long a turn waits for the per-session lock.
