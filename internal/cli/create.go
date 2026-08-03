@@ -33,6 +33,7 @@ func autoEngine(isMacOS bool) string {
 }
 
 type createFlags struct {
+	group             string
 	typ               string
 	engine            string
 	yolo              bool
@@ -58,6 +59,8 @@ func newCreateCmd(app *App) *cobra.Command {
 		},
 	}
 	fl := cmd.Flags()
+	fl.StringVar(&f.group, "group", envOr("CS_SANDBOX_GROUP", state.DefaultGroup),
+		"group whose isolated network, SSH keys and gateway this sandbox joins")
 	fl.StringVar(&f.typ, "type", "agent", "sandbox type: agent | user")
 	fl.StringVar(&f.engine, "engine", envOr("CS_SANDBOX_ENGINE", ""), "engine: podman | firecracker (default: firecracker on Linux/KVM, else podman)")
 	fl.BoolVar(&f.yolo, "yolo", false, "skip all agent permission prompts")
@@ -99,8 +102,11 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	if f.solo && f.typ != "agent" {
 		return fmt.Errorf("--solo is only valid for agent sandboxes")
 	}
-	if _, err := state.Load(app.InstDir, name); err == nil {
-		return fmt.Errorf("sandbox %q already exists", name)
+	if err := state.ValidGroup(f.group); err != nil {
+		return err
+	}
+	if app.exists(f.group, name) {
+		return fmt.Errorf("sandbox %q already exists in group %q", name, f.group)
 	}
 
 	// Resolve directory-sharing specs against the host.
@@ -136,7 +142,14 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		fmt.Fprintln(os.Stderr, "cs-sandbox: "+w)
 	}
 
-	d := app.engineDeps()
+	// The group's artifacts (network, keys, gateway) and its record must exist
+	// before Deps is built: the engines take a COPY of Deps, so a field set
+	// afterwards — the allocated tap prefix — would never reach them.
+	app.progress("preparing the group's isolated network and trust keys…")
+	if _, err := app.ensureGroup(ctx, f.group); err != nil {
+		return err
+	}
+	d := app.engineDepsFor(f.group)
 	if f.engine == "" {
 		f.engine = autoEngine(app.Host.IsMacOS) // firecracker on Linux/KVM, else podman
 	}
@@ -162,7 +175,6 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		return err
 	}
 
-	app.progress("preparing the shared network and trust keys…")
 	if err := d.EnsureNetwork(ctx); err != nil {
 		return err
 	}
@@ -171,7 +183,7 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	}
 
 	cs := engine.CreateSpec{
-		Name: name, Type: f.typ, Yolo: f.yolo, Solo: f.solo, Privileged: f.privileged,
+		Name: name, Group: f.group, Type: f.typ, Yolo: f.yolo, Solo: f.solo, Privileged: f.privileged,
 		CPUs: f.cpus, MemMiB: f.mem, Snapshots: snaps, RepoClones: repos,
 		ImageStores: f.imageStores, InjectedEnv: injected, InheritAgentLogin: f.inheritAgentLogin,
 	}
@@ -191,7 +203,7 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "created %s (type=%s, engine=%s, ssh port=%d)\n", name, f.typ, f.engine, inst.Port)
-	fmt.Fprintf(out, "  shell: ssh %s\n", name)
+	fmt.Fprintf(out, "  shell: ssh %s\n", name+"."+f.group)
 	if len(inst.AgentLogins) > 0 {
 		fmt.Fprintf(out, "  agent login: %s (inherited from your host)\n", strings.Join(inst.AgentLogins, " + "))
 	} else {

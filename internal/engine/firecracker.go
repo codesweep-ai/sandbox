@@ -49,10 +49,11 @@ func (fe *Firecracker) Verify(ctx context.Context) error {
 // fabric builds the fcnet.Fabric from Deps.
 func (fe *Firecracker) fabric() fcnet.Fabric {
 	return fcnet.Fabric{
-		Runner:  fe.d.Runner,
-		Network: fe.d.Network,
-		Image:   fe.d.Image,
-		NetDir:  paths.FCNet(),
+		Runner:    fe.d.Runner,
+		Network:   fe.d.Network,
+		Image:     fe.d.Image,
+		NetDir:    paths.FCNetFor(fe.d.group()),
+		TapPrefix: fe.d.TapPrefix,
 	}
 }
 
@@ -138,7 +139,7 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	}
 
 	inst = &state.Instance{
-		Name: s.Name, Type: s.Type, Engine: state.Firecracker,
+		Name: s.Name, Group: fe.d.group(), Type: s.Type, Engine: state.Firecracker,
 		FCIP: ip, Port: port, CPUs: s.CPUs, MemMiB: s.MemMiB,
 		Yolo: s.Yolo, Solo: s.Solo, Shared: s.ImageStores, Created: nowUTC(),
 	}
@@ -228,7 +229,7 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	cfg := fcconfig.Build(fcconfig.Spec{
 		KernelPath: fe.cache().Kernel(), InitrdPath: fe.cache().Initrd(),
 		RootfsPath: rootfs, SeedPath: seedImg,
-		TapName: fcnet.TapName(ip), MAC: fcnet.GuestMAC(ip), VsockPath: vsock,
+		TapName: fe.fabric().TapName(ip), MAC: fcnet.GuestMAC(ip), VsockPath: vsock,
 		VCPUs: s.CPUs, MemMiB: s.MemMiB,
 		RepoDisks: repoDisks, SnapshotDisks: snapDisks, StoreDisks: storeDisks,
 	})
@@ -254,7 +255,7 @@ func (fe *Firecracker) launch(ctx context.Context, name string, inst *state.Inst
 	d := fe.d
 	idir := d.InstanceDir(name)
 	fab := fe.fabric()
-	tap := fcnet.TapName(inst.FCIP)
+	tap := fe.fabric().TapName(inst.FCIP)
 	removeVsock(idir)
 	if err := fab.Up(ctx); err != nil {
 		return err
@@ -311,7 +312,7 @@ func (fe *Firecracker) waitReady(ctx context.Context, name string) error {
 
 // Start re-launches a stopped microVM (launch re-asserts its dnsmasq name).
 func (fe *Firecracker) Start(ctx context.Context, name string) error {
-	in, err := state.Load(fe.d.InstDir, name)
+	in, err := state.Load(fe.d.InstDir, fe.d.group(), name)
 	if err != nil {
 		return err
 	}
@@ -337,8 +338,8 @@ func (fe *Firecracker) Remove(ctx context.Context, name string, purge bool) erro
 	fab := fe.fabric()
 	fe.shutdown(ctx, name)
 	fab.FwdDown(idir)
-	if in, err := state.Load(fe.d.InstDir, name); err == nil && in.FCIP != "" {
-		fab.TapDel(ctx, fcnet.TapName(in.FCIP))
+	if in, err := state.Load(fe.d.InstDir, fe.d.group(), name); err == nil && in.FCIP != "" {
+		fab.TapDel(ctx, fab.TapName(in.FCIP))
 	}
 	fab.Unregister(name)
 	if purge {
@@ -368,7 +369,7 @@ func (fe *Firecracker) shutdown(ctx context.Context, name string) {
 		return
 	}
 	// Best-effort graceful reboot over the published port.
-	if in, err := state.Load(fe.d.InstDir, name); err == nil && in.Port > 0 {
+	if in, err := state.Load(fe.d.InstDir, fe.d.group(), name); err == nil && in.Port > 0 {
 		reboot := append(fe.sshArgs(name, in.Port), "sync; sudo sh -c \"sync; reboot -f\"")
 		cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		_, _ = fe.d.Runner.Run(cctx, run.Opts{}, reboot...)
@@ -395,7 +396,7 @@ func (fe *Firecracker) anyVMRunning(ctx context.Context) bool {
 
 // Exec runs a command (or login shell) inside the microVM over ssh.
 func (fe *Firecracker) Exec(ctx context.Context, name string, io ExecIO) error {
-	in, err := state.Load(fe.d.InstDir, name)
+	in, err := state.Load(fe.d.InstDir, fe.d.group(), name)
 	if err != nil {
 		return err
 	}
@@ -414,7 +415,7 @@ func (fe *Firecracker) Exec(ctx context.Context, name string, io ExecIO) error {
 
 // Port returns the instance's published SSH port.
 func (fe *Firecracker) Port(ctx context.Context, name string) (int, error) {
-	in, err := state.Load(fe.d.InstDir, name)
+	in, err := state.Load(fe.d.InstDir, fe.d.group(), name)
 	if err != nil {
 		return 0, err
 	}

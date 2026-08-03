@@ -259,7 +259,7 @@ func TestCLIAgentLoginInheritedLive(t *testing.T) {
 	if !strings.Contains(out, "agent login: claude") {
 		t.Errorf("create should report the inherited login, got:\n%s", out)
 	}
-	if !fileExists(filepath.Join(instDir, name, "seed", "claude", ".credentials.json")) {
+	if !fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "claude", ".credentials.json")) {
 		t.Error("create did not snapshot the host Claude login into the seed")
 	}
 	got := strings.TrimSpace(inBox(ctx, r, host, name,
@@ -268,7 +268,7 @@ func TestCLIAgentLoginInheritedLive(t *testing.T) {
 		t.Errorf("sandbox ~/.cs-claude/.credentials.json missing or wrong mode: %q (want 600)", got)
 	}
 	// The instance record remembers the choice, so it stays inspectable.
-	in, err := state.Load(instDir, name)
+	in, err := state.Load(instDir, state.DefaultGroup, name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,14 +299,14 @@ func TestCLIOpenCodeLoginInheritedLive(t *testing.T) {
 	if !strings.Contains(out, "agent login: opencode") {
 		t.Errorf("create should report the inherited login, got:\n%s", out)
 	}
-	if !fileExists(filepath.Join(instDir, name, "seed", "opencode", "auth.json")) {
+	if !fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "opencode", "auth.json")) {
 		t.Error("create did not snapshot the host OpenCode login into the seed")
 	}
 	if got := strings.TrimSpace(inBox(ctx, r, host, name,
 		"stat -c %a ~/.cs-opencode/auth.json 2>/dev/null")); got != "600" {
 		t.Errorf("sandbox ~/.cs-opencode/auth.json missing or wrong mode: %q (want 600)", got)
 	}
-	in, err := state.Load(instDir, name)
+	in, err := state.Load(instDir, state.DefaultGroup, name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +338,7 @@ func TestCLIAgentLoginOptInLive(t *testing.T) {
 	if !strings.Contains(out, "agent login: none") || !strings.Contains(out, "--inherit-agent-login") {
 		t.Errorf("create should say no login was inherited and how to get one, got:\n%s", out)
 	}
-	if fileExists(filepath.Join(instDir, plain, "seed", "claude", ".credentials.json")) {
+	if fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, plain), "seed", "claude", ".credentials.json")) {
 		t.Error("a plain create must not carry the host login")
 	}
 	// Without a login Claude must reach its own sign-in flow, so the onboarding
@@ -356,7 +356,7 @@ func TestCLIAgentLoginOptInLive(t *testing.T) {
 	one := boxName(t, "onelogin")
 	createBox(t, r, one, "--inherit-agent-login", "claude")
 	for _, other := range []string{"codex", "opencode"} {
-		if fileExists(filepath.Join(instDir, one, "seed", other, "auth.json")) {
+		if fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, one), "seed", other, "auth.json")) {
 			t.Errorf("%s login carried when only claude was requested", other)
 		}
 	}
@@ -372,10 +372,10 @@ func TestCLIProviderKeysNotCarriedLive(t *testing.T) {
 	name := boxName(t, "nokeys")
 	createBox(t, r, name, "--inherit-agent-login", "claude")
 
-	if _, err := os.Stat(filepath.Join(instDir, name, "seed", "claude", "env")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "claude", "env")); !os.IsNotExist(err) {
 		t.Errorf("a provider key in the environment must not be carried into the seed (err=%v)", err)
 	}
-	if _, err := os.Stat(filepath.Join(instDir, name, "seed", "claude", "creds")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "claude", "creds")); !os.IsNotExist(err) {
 		t.Errorf("no creds/ dir should be carried (err=%v)", err)
 	}
 }
@@ -452,7 +452,7 @@ func TestCLIEnvInjectionLive(t *testing.T) {
 	name := boxName(t, "env")
 	createBox(t, r, name, "-e", "CS_TEST_TOKEN=sekret123")
 
-	p := filepath.Join(instDir, name, "seed", "inject-env")
+	p := filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "inject-env")
 	data, err := os.ReadFile(p)
 	if err != nil {
 		t.Fatalf("read inject-env: %v", err)
@@ -506,7 +506,7 @@ func sshCapture(t *testing.T, host hostenv.Host, name, sh string) string {
 func assertHostByName(t *testing.T, host hostenv.Host, name string, inGuest func(sh string) string) {
 	t.Helper()
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
-	data, err := os.ReadFile(filepath.Join(instDir, name, "seed", "host_hosts"))
+	data, err := os.ReadFile(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "host_hosts"))
 	if err != nil {
 		t.Fatalf("read host_hosts seed: %v", err)
 	}
@@ -849,5 +849,107 @@ func TestCLIFirecrackerCrossEngineLive(t *testing.T) {
 	got := strings.TrimSpace(inBox(ctx, r, host, pbox, "getent hosts "+fbox+" | awk '{print $1}'"))
 	if got == "" {
 		t.Errorf("podman box could not resolve firecracker box %s by name (cross-engine fabric)", fbox)
+	}
+}
+
+// TestCLIGroupIsolationLive is the test the isolation boundary never had: it
+// asserts DENIAL, live, on both planes.
+//
+// The network plane rests on one Podman option (isolate=true) whose enforcement
+// belongs to netavark, so it can regress on an upgrade with nothing in the code
+// changing. The credential plane is why per-group keys exist: if the network
+// ever stops isolating, a shared key would turn a reachability bug into an
+// immediate breach.
+func TestCLIGroupIsolationLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	ga, gb := boxName(t, "ga"), boxName(t, "gb")
+	t.Cleanup(func() {
+		for _, g := range []string{ga, gb} {
+			_, _ = execRoot(t, "group", "rm", g, "-f")
+		}
+	})
+	// The same sandbox NAME in both groups — impossible before groups existed,
+	// and the case a fleet harness actually wants.
+	const member = "worker"
+	for _, g := range []string{ga, gb} {
+		if out, err := execRoot(t, "create", member, "--group", g, "--engine", "podman"); err != nil {
+			t.Fatalf("create %s.%s: %v (%s)", member, g, err, out)
+		}
+	}
+
+	ipOf := func(g string) string {
+		return strings.TrimSpace(run.Output(ctx, r, "podman", "inspect", member+"."+g,
+			"--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"))
+	}
+	ipA, ipB := ipOf(ga), ipOf(gb)
+	if ipA == "" || ipB == "" || ipA == ipB {
+		t.Fatalf("expected two distinct member addresses, got %q and %q", ipA, ipB)
+	}
+
+	// Raw IP across groups must be refused: separate bridges alone would NOT do
+	// this, which is the whole reason the networks are created isolated.
+	inA := func(sh string) string {
+		return strings.TrimSpace(run.Output(ctx, r, "podman", "exec", member+"."+ga, "bash", "-lc", sh))
+	}
+	if got := inA("timeout 5 bash -c '</dev/tcp/" + ipB + "/22' 2>/dev/null && echo REACHABLE || echo BLOCKED"); got != "BLOCKED" {
+		t.Errorf("cross-group raw IP %s -> %s = %q, want BLOCKED", ga, gb, got)
+	}
+	// Isolation must not cost outbound internet (which --internal would).
+	if got := inA("timeout 10 curl -sfI https://api.github.com >/dev/null && echo OK || echo BROKEN"); got != "OK" {
+		t.Errorf("group member lost outbound internet: %q", got)
+	}
+
+	// The credential plane: group A's key must be refused by a group B sandbox.
+	portB, err := execRoot(t, "port", member+"."+gb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ssh := func(keyGroup string) (string, error) {
+		key := filepath.Join(os.Getenv("CS_SANDBOX_TIER_DIR"), "groups", keyGroup, "id_cs-sandbox_user")
+		return run.Output(ctx, r, "ssh", "-i", key, "-p", strings.TrimSpace(portB),
+			"-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null", "-o", "BatchMode=yes",
+			"-o", "ConnectTimeout=10", host.User+"@127.0.0.1", "echo AUTHOK"), nil
+	}
+	if out, _ := ssh(ga); strings.Contains(out, "AUTHOK") {
+		t.Errorf("group %s's key authenticated to a %s sandbox — the credential boundary is gone", ga, gb)
+	}
+	if out, _ := ssh(gb); !strings.Contains(out, "AUTHOK") {
+		t.Errorf("a group's own key must work against its own sandbox, got %q", out)
+	}
+}
+
+// TestCLIGroupSameNameLive: identity is (group, name) end to end — records,
+// podman objects and the generated ssh aliases all keep the two apart.
+func TestCLIGroupSameNameLive(t *testing.T) {
+	r, _ := liveSetup(t)
+	ctx := context.Background()
+	ga, gb := boxName(t, "sa"), boxName(t, "sb")
+	t.Cleanup(func() {
+		for _, g := range []string{ga, gb} {
+			_, _ = execRoot(t, "group", "rm", g, "-f")
+		}
+	})
+	for _, g := range []string{ga, gb} {
+		if out, err := execRoot(t, "create", "dup", "--group", g, "--engine", "podman"); err != nil {
+			t.Fatalf("create dup.%s: %v (%s)", g, err, out)
+		}
+	}
+	// Both exist as distinct podman objects.
+	for _, g := range []string{ga, gb} {
+		if _, err := r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "container", "exists", "dup."+g); err != nil {
+			t.Errorf("container dup.%s missing", g)
+		}
+	}
+	// A bare reference is ambiguous and must be refused rather than guessed.
+	if _, err := execRoot(t, "port", "dup"); err == nil {
+		t.Error("a bare ambiguous name must not resolve")
+	}
+	// Qualified references work.
+	for _, g := range []string{ga, gb} {
+		if _, err := execRoot(t, "port", "dup."+g); err != nil {
+			t.Errorf("port dup.%s: %v", g, err)
+		}
 	}
 }

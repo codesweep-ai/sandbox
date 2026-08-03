@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/codesweep-ai/sandbox/internal/hostcfg"
+	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/repo"
 	"github.com/codesweep-ai/sandbox/internal/state"
 	"github.com/spf13/cobra"
@@ -17,15 +18,16 @@ func (a *App) syncSSHConfig() error {
 	if err != nil {
 		return err
 	}
-	return hostcfg.SyncSSHConfig(a.Host, a.TierDir, a.InstDir, insts)
+	groups, _ := state.ListGroups(a.InstDir)
+	return hostcfg.SyncSSHConfig(a.Host, a.TierDir, a.InstDir, insts, groups)
 }
 
 func (a *App) transport(name string) (repo.Transport, *state.Instance, error) {
-	in, err := state.Load(a.InstDir, name)
+	in, err := a.resolve(name)
 	if err != nil {
-		return repo.Transport{}, nil, fmt.Errorf("no such sandbox %q", name)
+		return repo.Transport{}, nil, err
 	}
-	return repo.Transport{Host: a.Host, TierDir: a.TierDir, Name: name, Port: in.Port}, in, nil
+	return repo.Transport{Host: a.Host, TierDir: paths.GroupKeys(in.Group), Name: name, Port: in.Port}, in, nil
 }
 
 func newFetchCmd(app *App) *cobra.Command {

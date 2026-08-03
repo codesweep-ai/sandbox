@@ -26,6 +26,30 @@ type Host struct {
 	Home    string   // $HOME
 	Names   []string // hostname, hostname -s (deduped) — mapped to the host IP in the guest
 	IsMacOS bool
+	// IsWSL marks a WSL (Windows Subsystem for Linux) instance. WSL2 runs a real
+	// kernel, so Go reports "linux" and everything namespace-related works —
+	// nothing else here needs to distinguish it. host-route is the exception: it
+	// requires systemd-resolved, which WSL leaves off unless systemd is enabled
+	// in /etc/wsl.conf, so naming the environment turns a puzzling failure into
+	// a pointed one.
+	IsWSL bool
+}
+
+// wslVersionFile is where the kernel identifies itself; a package var so tests
+// can point it elsewhere.
+var wslVersionFile = "/proc/version"
+
+// detectWSL reports whether this Linux is running under WSL. Microsoft's kernel
+// build says so in /proc/version, on both WSL1 and WSL2.
+func detectWSL() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	data, err := os.ReadFile(wslVersionFile)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(data)), "microsoft")
 }
 
 // Detect reads the real host environment.
@@ -52,6 +76,7 @@ func Detect() (Host, error) {
 		Home:    home,
 		Names:   hostNames(),
 		IsMacOS: runtime.GOOS == "darwin",
+		IsWSL:   detectWSL(),
 	}, nil
 }
 

@@ -29,7 +29,9 @@ func (p *Podman) Name() state.Engine { return state.Podman }
 // runParams are the fully-resolved inputs to the podman run argv. Kept separate
 // from Create so buildRunArgs is a pure, golden-testable function.
 type runParams struct {
-	Name       string // container + hostname (bare instance name)
+	Name       string // guest hostname and in-network DNS alias (bare)
+	Obj        string // host-global podman object name (<name>.<group>)
+	Network    string // the group's isolated network
 	Type       string
 	Port       int
 	SSHBind    string
@@ -59,6 +61,20 @@ type runParams struct {
 	Mounts    []string // extra -v specs (snapshots, repos)
 }
 
+// obj is the host-global name of a sandbox's podman objects (container and
+// volumes). See state.ObjectName: every layer that addresses a sandbox from
+// outside spells it the same way.
+func obj(group, name string) string { return state.ObjectName(group, name) }
+
+// splitObj is the inverse of obj: a qualified object name back to (group, name).
+// An unqualified string is treated as a default-group member.
+func splitObj(ref string) (group, name string) {
+	if i := strings.LastIndex(ref, "."); i > 0 && i < len(ref)-1 {
+		return ref[i+1:], ref[:i]
+	}
+	return state.DefaultGroup, ref
+}
+
 // macOSGroup returns the host's primary group name on macOS only, so the guest
 // can name the gid the way the host does. Linux keeps whatever name the image
 // (or podman's keep-id entry) already has for that gid.
@@ -74,8 +90,8 @@ func macOSGroup(h hostenv.Host) string {
 func buildRunArgs(p runParams) []string {
 	a := []string{
 		"podman", "run", "-d",
-		"--name", p.Name, "--hostname", p.Name,
-		"--network", "cs-sandbox-net",
+		"--name", p.Obj, "--hostname", p.Name,
+		"--network", p.Network, "--network-alias", p.Name,
 		"-p", fmt.Sprintf("%s:%d:%d", p.SSHBind, p.Port, p.IntPort),
 		"--dns", p.DNSPrimary, "--dns", p.DNSGateway,
 		"--init",
@@ -186,16 +202,17 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 	}
 
 	params := runParams{
-		Name: s.Name, Type: s.Type, Port: 0, SSHBind: d.SSHBind, IntPort: 22,
+		Name: s.Name, Obj: obj(p.d.group(), s.Name), Network: d.Network,
+		Type: s.Type, Port: 0, SSHBind: d.SSHBind, IntPort: 22,
 		DNSPrimary: dnsPrimary, DNSGateway: gw, Privileged: s.Privileged,
 		Yolo: s.Yolo, Solo: s.Solo, User: d.Host.User, UID: d.Host.UID, GID: d.Host.GID,
 		Group: macOSGroup(d.Host), Home: fmt.Sprintf("/home/%s", d.Host.User), TZ: d.TZ,
-		HomeVol: "cs-sandbox-home-" + s.Name, ContVol: "cs-sandbox-containers-" + s.Name,
+		HomeVol: "cs-sandbox-home-" + obj(p.d.group(), s.Name), ContVol: "cs-sandbox-containers-" + obj(p.d.group(), s.Name),
 		SeedDir: seedDir, Image: d.Image,
 		EnvFile: envFilePath(seedDir, s.InjectedEnv), Stores: storePaths, StoreVols: storeVols, Mounts: mounts,
 	}
 	inst = &state.Instance{
-		Name: s.Name, Type: s.Type, Engine: state.Podman, Yolo: s.Yolo, Solo: s.Solo,
+		Name: s.Name, Group: p.d.group(), Type: s.Type, Engine: state.Podman, Yolo: s.Yolo, Solo: s.Solo,
 		Shared: s.ImageStores, AgentLogins: agentLogins, Created: nowUTC(),
 	}
 	// Serialize the race-sensitive prefix — port allocation through the claim —
@@ -278,22 +295,22 @@ func (p *Podman) Start(ctx context.Context, name string) error {
 	if err := p.d.EnsureNetwork(ctx); err != nil {
 		return err
 	}
-	if _, err := p.d.Runner.Run(ctx, run.Opts{}, "podman", "start", name); err != nil {
+	if _, err := p.d.Runner.Run(ctx, run.Opts{}, "podman", "start", obj(p.d.group(), name)); err != nil {
 		return err
 	}
 	return p.d.waitReady(ctx, name)
 }
 
 func (p *Podman) Stop(ctx context.Context, name string) error {
-	_, err := p.d.Runner.Run(ctx, run.Opts{}, "podman", "stop", name)
+	_, err := p.d.Runner.Run(ctx, run.Opts{}, "podman", "stop", obj(p.d.group(), name))
 	return err
 }
 
 func (p *Podman) Remove(ctx context.Context, name string, purge bool) error {
-	_, _ = p.d.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", name)
+	_, _ = p.d.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", obj(p.d.group(), name))
 	if purge {
 		// destroy: also drop the data volumes (home + nested-containers store).
-		for _, v := range []string{"cs-sandbox-home-" + name, "cs-sandbox-containers-" + name} {
+		for _, v := range []string{"cs-sandbox-home-" + obj(p.d.group(), name), "cs-sandbox-containers-" + obj(p.d.group(), name)} {
 			_, _ = p.d.Runner.Run(ctx, run.Opts{}, "podman", "volume", "rm", "-f", v)
 		}
 	}
@@ -326,7 +343,7 @@ func (p *Podman) Exec(ctx context.Context, name string, io ExecIO) error {
 }
 
 func (p *Podman) Port(ctx context.Context, name string) (int, error) {
-	in, err := state.Load(p.d.InstDir, name)
+	in, err := state.Load(p.d.InstDir, p.d.group(), name)
 	if err != nil {
 		return 0, err
 	}
@@ -359,7 +376,7 @@ func (d Deps) waitReady(ctx context.Context, name string) error {
 	budget := time.Duration(d.StartTimeout) * time.Second
 	deadline := time.Now().Add(budget)
 	for {
-		if _, err := d.Runner.Run(ctx, run.Opts{}, "podman", "exec", name, "test", "-f", "/run/cs-sandbox-ready"); err == nil {
+		if _, err := d.Runner.Run(ctx, run.Opts{}, "podman", "exec", obj(d.group(), name), "test", "-f", "/run/cs-sandbox-ready"); err == nil {
 			return nil
 		}
 		if err := ctx.Err(); err != nil {

@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/codesweep-ai/sandbox/internal/forward"
+	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -20,9 +21,9 @@ func newForwardCmd(app *App) *cobra.Command {
 		Args:              cobra.MinimumNArgs(1),
 		ValidArgsFunction: app.completeSandbox,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			in, err := state.Load(app.InstDir, args[0])
+			in, err := app.resolve(args[0])
 			if err != nil {
-				return fmt.Errorf("no such sandbox %q", args[0])
+				return err
 			}
 			if bind != "127.0.0.1" && bind != "localhost" {
 				fmt.Fprintf(cmd.ErrOrStderr(), "cs-sandbox: warning: --bind %s exposes the forward beyond host loopback\n", bind)
@@ -31,7 +32,7 @@ func newForwardCmd(app *App) *cobra.Command {
 				return fmt.Errorf("--socks port must be between 1 and 65535")
 			}
 			if socks > 0 {
-				r, err := forward.Start(app.Host, app.TierDir, app.InstDir, args[0], in.Port, "D", socks, "socks", bind)
+				r, err := forward.Start(app.Host, paths.GroupKeys(in.Group), app.InstDir, args[0], in.Port, "D", socks, "socks", bind)
 				if err != nil {
 					return err
 				}
@@ -46,7 +47,7 @@ func newForwardCmd(app *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				r, err := forward.Start(app.Host, app.TierDir, app.InstDir, args[0], in.Port, "L", hp, fmt.Sprintf("localhost:%d", vp), bind)
+				r, err := forward.Start(app.Host, paths.GroupKeys(in.Group), app.InstDir, args[0], in.Port, "L", hp, fmt.Sprintf("localhost:%d", vp), bind)
 				if err != nil {
 					return err
 				}

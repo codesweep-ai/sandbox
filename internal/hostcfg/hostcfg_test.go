@@ -45,7 +45,7 @@ func TestSyncSSHConfig(t *testing.T) {
 		{Name: "b", Port: 2301},
 		{Name: "skip", Port: 0}, // no port -> skipped
 	}
-	if err := SyncSSHConfig(h, "/tier", instDir, insts); err != nil {
+	if err := SyncSSHConfig(h, "/tier", instDir, insts, nil); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(h.SSHConfigFile(instDir))
@@ -54,9 +54,12 @@ func TestSyncSSHConfig(t *testing.T) {
 	}
 	cfg := string(data)
 	for _, want := range []string{
-		"Host a\n", "Port 2200", "HostKeyAlias a",
-		"Host b\n", "Port 2301",
-		"IdentityFile /tier/id_cs-sandbox_user",
+		// Every sandbox gets its qualified alias; the bare one rides along
+		// because these are default-group members.
+		"Host a.default a\n", "Port 2200", "HostKeyAlias a.default",
+		"Host b.default b\n", "Port 2301",
+		// Trust material is per group, so the identity path names the group.
+		"IdentityFile /tier/groups/default/id_cs-sandbox_user",
 	} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("config missing %q:\n%s", want, cfg)
@@ -73,7 +76,7 @@ func TestSyncSSHConfig(t *testing.T) {
 	}
 
 	// Idempotent: a second sync doesn't duplicate the Include.
-	if err := SyncSSHConfig(h, "/tier", instDir, insts); err != nil {
+	if err := SyncSSHConfig(h, "/tier", instDir, insts, nil); err != nil {
 		t.Fatal(err)
 	}
 	main2, _ := os.ReadFile(filepath.Join(home, ".ssh", "config"))
@@ -94,7 +97,7 @@ func TestSyncSSHConfigQuotesSpacedPaths(t *testing.T) {
 	h := hostenv.Host{User: "dev", Home: home}
 	instDir := filepath.Join(t.TempDir(), "instances")
 	tierDir := filepath.Join(home, "cs-sandbox", "keys")
-	if err := SyncSSHConfig(h, tierDir, instDir, []*state.Instance{{Name: "a", Port: 2200}}); err != nil {
+	if err := SyncSSHConfig(h, tierDir, instDir, []*state.Instance{{Name: "a", Port: 2200}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(h.SSHConfigFile(instDir))
@@ -103,7 +106,7 @@ func TestSyncSSHConfigQuotesSpacedPaths(t *testing.T) {
 	}
 	cfg := string(data)
 	for _, want := range []string{
-		`IdentityFile "` + filepath.Join(tierDir, "id_cs-sandbox_user") + `"`,
+		`IdentityFile "` + filepath.Join(GroupKeysDir(tierDir, state.DefaultGroup), "id_cs-sandbox_user") + `"`,
 		`UserKnownHostsFile "` + KnownHostsFile(h) + `"`,
 	} {
 		if !strings.Contains(cfg, want) {
@@ -134,7 +137,7 @@ func TestSyncSSHConfigPreservesSymlinkedMainConfig(t *testing.T) {
 
 	h := hostenv.Host{User: "dev", Home: home}
 	instDir := filepath.Join(t.TempDir(), "instances")
-	if err := SyncSSHConfig(h, "/tier", instDir, []*state.Instance{{Name: "a", Port: 2200}}); err != nil {
+	if err := SyncSSHConfig(h, "/tier", instDir, []*state.Instance{{Name: "a", Port: 2200}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	fi, err := os.Lstat(link)
@@ -181,13 +184,13 @@ func TestSyncSSHConfigIsolatesInstancesRoots(t *testing.T) {
 	h := hostenv.Host{User: "dev", Home: home}
 
 	rootA := filepath.Join(t.TempDir(), "rootA")
-	if err := SyncSSHConfig(h, "/tier", rootA, []*state.Instance{{Name: "alpha", Port: 2200}}); err != nil {
+	if err := SyncSSHConfig(h, "/tier", rootA, []*state.Instance{{Name: "alpha", Port: 2200}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	fragA := h.SSHConfigFile(rootA)
 
 	rootB := filepath.Join(t.TempDir(), "rootB")
-	if err := SyncSSHConfig(h, "/tier", rootB, []*state.Instance{{Name: "beta", Port: 2201}}); err != nil {
+	if err := SyncSSHConfig(h, "/tier", rootB, []*state.Instance{{Name: "beta", Port: 2201}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	fragB := h.SSHConfigFile(rootB)
@@ -226,13 +229,13 @@ func TestSyncSSHConfigRemovesEmptyFragment(t *testing.T) {
 	}
 	h := hostenv.Host{User: "dev", Home: home}
 	instDir := filepath.Join(t.TempDir(), "instances")
-	if err := SyncSSHConfig(h, "/tier", instDir, []*state.Instance{{Name: "a", Port: 2200}}); err != nil {
+	if err := SyncSSHConfig(h, "/tier", instDir, []*state.Instance{{Name: "a", Port: 2200}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(h.SSHConfigFile(instDir)); err != nil {
 		t.Fatalf("fragment should exist while a sandbox does: %v", err)
 	}
-	if err := SyncSSHConfig(h, "/tier", instDir, nil); err != nil {
+	if err := SyncSSHConfig(h, "/tier", instDir, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(h.SSHConfigFile(instDir)); !os.IsNotExist(err) {
@@ -254,7 +257,7 @@ func TestEnsureIncludeUpdatesInPlace(t *testing.T) {
 	}
 	h := hostenv.Host{User: "dev", Home: home}
 	if err := SyncSSHConfig(h, "/tier", filepath.Join(t.TempDir(), "instances"),
-		[]*state.Instance{{Name: "a", Port: 2200}}); err != nil {
+		[]*state.Instance{{Name: "a", Port: 2200}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(cfg)
@@ -266,5 +269,68 @@ func TestEnsureIncludeUpdatesInPlace(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "Host work") {
 		t.Errorf("user's own config lost:\n%s", got)
+	}
+}
+
+// TestSyncSSHConfigGroups covers what the group model changed in the generated
+// config: identity is (group, name), so the qualified alias is always present,
+// the bare one belongs to the default group alone, each sandbox points at its
+// OWN group's key, and each group gets a gateway block.
+func TestSyncSSHConfigGroups(t *testing.T) {
+	home := t.TempDir()
+	h := hostenv.Host{Home: home, User: "dev"}
+	instDir := filepath.Join(t.TempDir(), "instances")
+	insts := []*state.Instance{
+		{Name: "worker", Group: "cache-redis", Port: 2200},
+		{Name: "worker", Group: "cache-memory", Port: 2201}, // same name, other group
+		{Name: "only", Group: "cache-redis", Port: 2202},    // unique, but still not default
+		{Name: "plain", Group: "default", Port: 2203},       // default group: bare alias
+	}
+	groups := []*state.Group{{Name: "cache-redis", GWPort: 2400}, {Name: "cache-memory"}}
+	if err := SyncSSHConfig(h, "/tier", instDir, insts, groups); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(h.SSHConfigFile(instDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := string(data)
+
+	for _, want := range []string{
+		"Host worker.cache-redis\n", // qualified only: not the default group
+		"Host worker.cache-memory\n",
+		"Host only.cache-redis\n",    // unique host-wide, but still qualified only
+		"Host plain.default plain\n", // default group: the bare alias rides along
+		// Each sandbox authenticates with its own group's key.
+		"IdentityFile /tier/groups/cache-redis/id_cs-sandbox_user",
+		"IdentityFile /tier/groups/cache-memory/id_cs-sandbox_user",
+		// A group with a gateway gets an alias for it.
+		"Host cache-redis-gw\n",
+		"Port 2400",
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("config missing %q:\n%s", want, cfg)
+		}
+	}
+	// No bare alias for a non-default group, whether or not the name collides:
+	// ssh takes the first match for a keyword, and a bare name that depended on
+	// what else existed on the host is exactly the brittleness this removes.
+	for _, bad := range []string{"Host worker\n", "Host worker ", "Host only\n", " only\n"} {
+		if strings.Contains(cfg, bad) {
+			t.Errorf("bare alias %q must not be emitted for a non-default group:\n%s", bad, cfg)
+		}
+	}
+	// A group without a gateway port gets no gateway block.
+	if strings.Contains(cfg, "cache-memory-gw") {
+		t.Errorf("group without a gateway port should have no gateway alias:\n%s", cfg)
+	}
+	// The gateway authorizes only its group's key; offering the host's other
+	// identities first would exhaust sshd's MaxAuthTries before it was tried.
+	gw := cfg[strings.Index(cfg, "Host cache-redis-gw"):]
+	if end := strings.Index(gw[1:], "\nHost "); end >= 0 {
+		gw = gw[:end]
+	}
+	if strings.Count(gw, "IdentityFile") != 1 {
+		t.Errorf("gateway block should offer exactly one identity:\n%s", gw)
 	}
 }

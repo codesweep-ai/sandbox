@@ -173,7 +173,7 @@ func TestFirecrackerCreateLive(t *testing.T) {
 		t.Errorf("tap %s still present after destroy", tap)
 	}
 	// State is gone.
-	if _, err := state.Load(d.InstDir, name); err == nil {
+	if _, err := state.Load(d.InstDir, d.group(), name); err == nil {
 		t.Errorf("state still present after destroy")
 	}
 }

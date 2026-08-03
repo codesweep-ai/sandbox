@@ -74,15 +74,18 @@ const (
 // Statuses reports each instance's lifecycle state. Container states come from a
 // single `podman ps -a`; a microVM's comes from its pid file — so listing costs at
 // most one subprocess regardless of how many sandboxes exist.
+// Statuses is keyed by the QUALIFIED reference (<name>.<group>), because a bare
+// name is not unique: the same sandbox name may exist in several groups, and a
+// map keyed by it would report one group's state for another's.
 func (d Deps) Statuses(ctx context.Context, insts []*state.Instance) map[string]string {
 	out := make(map[string]string, len(insts))
 	anyPodman := false
 	for _, in := range insts {
 		if in.Engine == state.Firecracker {
-			if fcRunning(d.InstanceDir(in.Name)) {
-				out[in.Name] = StatusRunning
+			if fcRunning(state.Dir(d.InstDir, InstGroup(in), in.Name)) {
+				out[Qualify(in)] = StatusRunning
 			} else {
-				out[in.Name] = StatusStopped
+				out[Qualify(in)] = StatusStopped
 			}
 			continue
 		}
@@ -105,12 +108,25 @@ func (d Deps) Statuses(ctx context.Context, insts []*state.Instance) map[string]
 		}
 		switch {
 		case err != nil:
-			out[in.Name] = StatusUnknown // podman unreachable: say so rather than guess
-		case seen[in.Name] == "running":
-			out[in.Name] = StatusRunning
+			out[Qualify(in)] = StatusUnknown // podman unreachable: say so rather than guess
+		case seen[Qualify(in)] == "running":
+			out[Qualify(in)] = StatusRunning
 		default:
-			out[in.Name] = StatusStopped
+			out[Qualify(in)] = StatusStopped
 		}
 	}
 	return out
 }
+
+// InstGroup is an instance's group, defaulting so zero-valued records in tests
+// behave like default-group members.
+func InstGroup(in *state.Instance) string {
+	if in.Group == "" {
+		return state.DefaultGroup
+	}
+	return in.Group
+}
+
+// Qualify is an instance's host-global identity: <name>.<group>. It is both the
+// podman object name and the key every name-indexed map uses.
+func Qualify(in *state.Instance) string { return obj(InstGroup(in), in.Name) }

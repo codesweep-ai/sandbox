@@ -12,7 +12,7 @@ import (
 
 func baseParams() runParams {
 	return runParams{
-		Name: "feature", Type: "agent", Port: 2201, SSHBind: "127.0.0.1", IntPort: 22,
+		Name: "feature", Obj: "feature.default", Network: "cs-sandbox-net", Type: "agent", Port: 2201, SSHBind: "127.0.0.1", IntPort: 22,
 		DNSPrimary: "10.89.0.53", DNSGateway: "10.89.0.1",
 		User: "dev", UID: 1000, GID: 1000, Home: "/home/dev", TZ: "America/Los_Angeles",
 		HomeVol: "cs-sandbox-home-feature", ContVol: "cs-sandbox-containers-feature",
@@ -24,8 +24,8 @@ func TestBuildRunArgsScaledDownCaps(t *testing.T) {
 	got := strings.Join(buildRunArgs(baseParams()), " ")
 	for _, want := range []string{
 		"podman run -d",
-		"--name feature --hostname feature",
-		"--network cs-sandbox-net",
+		"--name feature.default --hostname feature",
+		"--network cs-sandbox-net --network-alias feature",
 		"-p 127.0.0.1:2201:22",
 		"--dns 10.89.0.53 --dns 10.89.0.1",
 		"--cap-add=SYS_ADMIN", "--cap-add=NET_ADMIN", "--cap-add=MKNOD", "--cap-add=SYS_PTRACE",

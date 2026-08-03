@@ -27,6 +27,8 @@ Three companion documents cover the engine- and feature-specific parts:
     SSH credentials of any kind, and it can `ssh` into other agent sandboxes but never a user sandbox.
 - **Reach any sandbox by name**, never by port number - from the host (`ssh <name>`) and
   between sandboxes, across both engines.
+- **Groups**, an opt-in boundary: `--group` gives a set of sandboxes its own network, SSH keys and
+  gateway. Without it everything joins one group (`default`) and behaves as a single fabric.
 - **True nested Podman** inside every sandbox.
 - **One generic image** with no developer identity baked in; the matching user is created at
   first boot, so one build serves every developer and machine.
@@ -193,16 +195,33 @@ This is the mitigation for the "any agent can SSH into any other agent" property
 [Limitations](#limitations): put a sandbox you don't fully trust on `--solo` and it can't SSH into
 your other sandboxes (you keep full reach into it).
 
+## Groups
+
+Groups are **opt-in**: without `--group` every sandbox joins one called `default`, and the rest of
+this document describes exactly that case. Reach for a group when unrelated fleets share a host and
+must not see each other.
+
+A **group** owns an isolated network, its own SSH trust material and a gateway. Identity is
+`(group, name)`, so the same name may exist in several groups and the canonical reference is
+`<name>.<group>`; a bare name always means the default group, never whichever group happens to hold
+it. Members of a group reach each other by name; members of different groups neither resolve nor
+connect, and hold no credential the other would accept. `default` is an ordinary group, not a
+special case in the implementation. Full model in [groups.md](groups.md).
+
 ## Networking and name resolution
 
-Sandboxes run on a rootless bridge network (`cs-sandbox-net`), created on demand - **not**
-host networking. A bridge keeps each sandbox's network stack isolated, gives DNS for free
-(so name-based reach is automatic), forwards cleanly on macOS, and keeps sandbox services off
-the host's loopback by default.
+Sandboxes run on a rootless bridge network, created on demand - **not** host networking. A bridge
+keeps each sandbox's network stack isolated, gives DNS for free (so name-based reach is automatic),
+forwards cleanly on macOS, and keeps sandbox services off the host's loopback by default.
+
+Each group owns one such network (`cs-sandbox-net` for `default`, `cs-sandbox-<group>` otherwise),
+created `--opt isolate=true` so traffic cannot cross between them. Without `--group` every sandbox
+lands on the default network, and the rest of this section describes that single fabric.
 
 **Reach by name, between sandboxes.** Podman's aardvark-dns resolves container names on the
 network, and the microVM engine adds a small forwarding dnsmasq for VM names - so any sandbox
-reaches any other as `ssh <name>` (internal port 22), container↔VM included.
+reaches any other **in its group** as `ssh <name>` (internal port 22), container↔VM included.
+Names are bare inside a group, so a group's members are unaffected by what other groups call theirs.
 
 **Reach by name, from the host.** Every sandbox's sshd listens on **22** internally; the host
 publishes it on `127.0.0.1:<PORT>`, where `<PORT>` is the first free port in **2200-2399**:
@@ -391,7 +410,7 @@ caveats are in [`agent-login.md`](agent-login.md).
   `--userns=host` turns the same passwordless sudo into genuine host-root.
 - SSH ports bind `127.0.0.1` only; sandboxes are not exposed on the LAN by default.
 - **No host private keys inside any sandbox.** Nothing at rest to leak from a sandbox's disk/volume;
-  sandboxes reach each other with generated tier keys. If a sandbox needs your own keys (e.g. to
+  sandboxes reach each other with generated per-group tier keys. If a sandbox needs your own keys (e.g. to
   `ssh` on to another machine), you *lend* a specific set with `ssh -A` - the keys stay on the host,
   present only for the life of that session, never copied in. The agent credential snapshot lives
   only in the per-sandbox seed and the home volume - never in the image or git.
@@ -414,14 +433,16 @@ Two tiers, split by whether they touch a real engine:
 - **Integration tests** (`make test-integration`, behind a `//go:build integration` tag) — live tests
   on a Linux/KVM host with podman. They create namespaced sandboxes in temp state dirs, tear them
   down, and **skip gracefully** when podman or the image is unavailable. The suite runs with `-p 1`,
-  because packages share one network fabric and host SSH port pool.
+  because packages share one rootless network namespace and host SSH port pool.
 
 ## Limitations
 
-- **No per-agent isolation _by default_.** All agent sandboxes share one agent-tier SSH key (the `G`
-  key from the [trust model](#sandbox-types-and-the-ssh-trust-model) above), so any agent sandbox can
-  SSH into any other. Agents are walled off from you and from user sandboxes, but not from each other,
-  unless you create one with [`--solo`](#solo-sandboxes---solo), which denies it any outbound SSH
-  (it can't SSH into peers or the host, though they can still SSH into it; network reach is unchanged).
+- **No per-agent isolation _by default_.** Agent sandboxes in a group share that group's agent-tier
+  SSH key (the `G` key from the [trust model](#sandbox-types-and-the-ssh-trust-model) above), so any
+  agent sandbox can SSH into any other **in the same group**. Agents are walled off from you and from
+  user sandboxes, but not from each other. Two ways to narrow it: [`--solo`](#solo-sandboxes---solo)
+  denies one sandbox any outbound SSH (it can't reach peers or the host, though they can still reach
+  it; network reach is unchanged), and [`--group`](groups.md) separates whole fleets, which also
+  removes network reach and shares no key across the boundary.
 - **Not bit-for-bit reproducible.** The image runs a package update at build time, so rebuilds can
   pick up newer upstream packages.

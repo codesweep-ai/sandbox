@@ -1,7 +1,7 @@
 # sandbox
 
-> **Disposable, isolated Linux dev sandboxes (rootless Podman containers or Firecracker microVMs on
-> one shared network) for running AI coding agents.**
+> **Disposable, isolated Linux dev sandboxes (rootless Podman containers or Firecracker microVMs)
+> for running AI coding agents.**
 
 [![CI](https://github.com/codesweep-ai/sandbox/actions/workflows/ci.yml/badge.svg)](https://github.com/codesweep-ai/sandbox/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -58,10 +58,10 @@ containers inside a sandbox, port forwarding, agents driving agents).
 ## How it fits together
 
 You drive everything from your host with the `cs-sandbox` CLI. Each sandbox runs on one of two
-engines (a Podman container or a Firecracker microVM) but they all join a single shared network, so
-every sandbox is reachable by name. You share data into a sandbox explicitly, as a git repo
+engines (a Podman container or a Firecracker microVM) but they share a rootless network, so every
+sandbox is reachable by name. You share data into a sandbox explicitly, as a git repo
 or a frozen snapshot, and pull commits back out. The diagram below traces that: the
-host on top, the shared network holding the sandboxes, and how data moves in and out.
+host on top, the network holding the sandboxes, and how data moves in and out.
 
 ```
    your host:  cs-sandbox CLI  +  cs-claude / cs-codex   (logged in once)
@@ -84,9 +84,14 @@ host on top, the shared network holding the sandboxes, and how data moves in and
 ```
 
 Every sandbox runs from one generic image (no identity baked in; your user is created at first
-boot). A shared rootless network joins them all, so any sandbox reaches any other **by name**, across
+boot). A shared rootless network joins them, so any sandbox reaches any other **by name**, across
 engines. The host reaches a sandbox by name over SSH, and a port inside a sandbox via `forward` or the
 optional `host-route`.
+
+That network belongs to a **group**, and without `--group` every sandbox joins one called `default` —
+which is why they all see each other above. If you ever need two efforts on one host that must *not*
+interfere, [walkthrough 8](#8-run-two-isolated-experiments-with---group) shows how.
+Until then you can ignore groups entirely.
 
 ## What's in a sandbox
 
@@ -126,8 +131,8 @@ off and log in inside it with `cs-sandbox agent-login claude <name>`. See
 
 ## Walkthroughs
 
-Each block is runnable end to end (5 and 6 continue from 4). Skim the comments to get the gist; run
-them when you want to play.
+Each block is runnable end to end (5 and 6 continue from 4; 8 stands alone). Skim the comments to
+get the gist; run them when you want to play.
 
 ### 1. Share two repos, let an agent edit one, pull the changes out
 
@@ -285,10 +290,56 @@ ssh driver
 > `cs-claude-remote`, `cs-codex-remote`, and `cs-opencode-remote` mirror each other; any agent can
 > drive any of the three, on any host.
 
+### 8. Run two isolated experiments with `--group`
+
+Everything above lived in one group called `default`, and you never had to think about it. Reach for
+`--group` when two efforts share your host and must **not** interfere — say two experiments
+comparing approaches, each needing the same set of sandboxes to be a fair comparison.
+
+```bash
+# Two experiments comparing caching strategies. Each --group gets its own network,
+# SSH keys and gateway, created on demand — and each holds the SAME two names, so
+# the fixture is identical and only the approach differs.
+cs-sandbox create api   --group cache-redis  --repo ~/projects/api --inherit-agent-login claude
+cs-sandbox create bench --group cache-redis  --repo ~/projects/bench
+cs-sandbox create api   --group cache-memory --repo ~/projects/api --inherit-agent-login claude
+cs-sandbox create bench --group cache-memory --repo ~/projects/bench
+
+# Identity is (group, name), so a sandbox is named <name>.<group>.
+cs-sandbox ls
+cs-sandbox exec api.cache-redis  pwd
+cs-sandbox exec api.cache-memory pwd     # same name, a different sandbox
+
+# A bare name always means the default group — never "whichever group has it",
+# so a reference can't change meaning as groups come and go.
+cs-sandbox exec api pwd                  # error, and it names both candidates
+
+# Inside a group, members reach each other by bare name as they always have —
+# and bench always reaches its OWN experiment's api. That's the whole point:
+# neither run can contaminate the other's numbers.
+ssh bench.cache-redis
+[bench]$ ssh api hostname                # prints "api" — cache-redis's, not the other one
+[bench]$ ssh api.cache-memory            # ssh: Could not resolve hostname
+[bench]$ exit
+
+# Each group publishes one port fronting its gateway, which is also its ssh jump
+# host: through it the host reaches members by name, on any port they bind.
+ssh cache-redis-gw                       # a shell inside that experiment
+ssh -L 8080:api:8000 cache-redis-gw      # forward that experiment's api, once it serves
+
+# -f destroys the group's sandboxes along with it.
+cs-sandbox group rm cache-redis -f
+cs-sandbox group rm cache-memory -f
+```
+
+> Groups are an isolation boundary, not just a namespace: members of different groups get no DNS for
+> one another, no route between their networks, and no SSH key the other side would accept. Full
+> model in [`docs/groups.md`](docs/groups.md).
+
 ## Choosing an engine: Podman vs Firecracker
 
 Both engines work the same way for almost everything: same image, trust model, sharing flags, and
-shared network. They differ mostly in isolation versus weight. Pick with `--engine podman|firecracker`.
+networking. They differ mostly in isolation versus weight. Pick with `--engine podman|firecracker`.
 
 | | **Podman container** | **Firecracker microVM** |
 |---|---|---|
@@ -326,6 +377,11 @@ there.
 So you and your user sandboxes reach everything, but a coding agent can never `ssh` into a user
 sandbox.
 
+This matrix describes reach **within a group**. Two sandboxes in different groups cannot connect at
+all — no DNS for one another, no route, and no key the other would accept — so the table has nothing
+to say across that boundary. Without `--group` every sandbox is in one group, and the matrix is the
+whole story.
+
 ### Lending a sandbox specific SSH keys with `ssh -A`
 
 Sometimes a sandbox needs to reach another machine over SSH — run a tool on a remote test box, copy
@@ -351,7 +407,7 @@ independent of sandbox type. Lend deliberately — two conditions to keep in min
   with. Without it the sandbox has no agent login — log in inside it, on its own account if you
   prefer. Provider API keys are never copied at all; pass one with `--env` when a sandbox needs it.
 - **No host SSH keys in any sandbox.** Neither type receives a copy of your host keys; sandboxes
-  reach each other with generated per-tier keys. If a sandbox ever needs your own keys, you can lend
+  reach each other with generated per-group tier keys. If a sandbox ever needs your own keys, you can lend
   a specific set for a session ([`ssh -A`](#lending-a-sandbox-specific-ssh-keys-with-ssh--a)) — they
   stay on the host.
 - **Agent/user SSH isolation.** Per-type [SSH trust](#ssh-trust) (the "two layers, user above agent"
@@ -359,8 +415,13 @@ independent of sandbox type. Lend deliberately — two conditions to keep in min
   other agent sandboxes — never a user sandbox — so an agent can't pivot through SSH into your
   workspace.
 - **`--yolo`** (agent sandboxes) drops the agents' approval prompts, safe because the sandbox itself
-  is the isolation boundary. **`--solo`** additionally denies the agent any *outbound* SSH into the
-  fabric, while keeping it reachable for you to drive.
+  is the isolation boundary. **`--solo`** additionally denies the agent any *outbound* SSH into its
+  group, while keeping it reachable for you to drive.
+- **Groups are an optional second boundary.** `--group <name>` puts a set of sandboxes on their own
+  network with their own SSH keys, so they can neither resolve, reach, nor authenticate to sandboxes
+  in another group — the agent/user matrix above applies inside a group, not across groups. Use it
+  when unrelated efforts share a host; ignore it and everything lives in one group
+  ([`docs/groups.md`](docs/groups.md)).
 - It is not a hardened multi-tenant boundary; isolation is whatever the chosen engine provides.
 
 ## Docs
@@ -376,6 +437,8 @@ independent of sandbox type. Lend deliberately — two conditions to keep in min
 - [`docs/agent-login.md`](docs/agent-login.md): how a sandbox gets a logged-in agent, and what is never copied.
 - [`docs/opencode.md`](docs/opencode.md): the OpenCode adapter — profile isolation, the turn
   driver, and the version-bump procedure.
+- [`docs/groups.md`](docs/groups.md): groups — isolated networks, per-group SSH keys, gateways,
+  and how the host reaches a group.
 
 `cs-sandbox help` is the full command reference.
 

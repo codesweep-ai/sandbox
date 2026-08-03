@@ -3,6 +3,7 @@ package hostenv
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -101,5 +102,44 @@ func TestSSHPaths(t *testing.T) {
 	h := Host{Home: "/home/u"}
 	if h.SSHConfigFile(paths.Instances()) != "/home/u/.ssh/config.d/cs-sandbox" {
 		t.Errorf("SSHConfigFile = %s", h.SSHConfigFile(paths.Instances()))
+	}
+}
+
+// TestDetectWSL: WSL2 runs a real kernel, so Go reports "linux" and nothing
+// else in cs-sandbox distinguishes it. host-route is the exception — it needs
+// systemd-resolved, which WSL leaves off by default — so detection exists to
+// turn that into a pointed message rather than a puzzling failure.
+func TestDetectWSL(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("WSL detection only applies on linux")
+	}
+	for _, tc := range []struct {
+		name, version string
+		want          bool
+	}{
+		{"wsl2", "Linux version 5.15.153.1-microsoft-standard-WSL2 (root@build)", true},
+		{"wsl1", "Linux version 4.4.0-19041-Microsoft (Microsoft@Microsoft.com)", true},
+		{"fedora", "Linux version 6.19.14-300.fc44.x86_64 (mockbuild@fedora)", false},
+		{"empty", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "version")
+			if err := os.WriteFile(p, []byte(tc.version), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			old := wslVersionFile
+			wslVersionFile = p
+			defer func() { wslVersionFile = old }()
+			if got := detectWSL(); got != tc.want {
+				t.Errorf("detectWSL(%q) = %v, want %v", tc.version, got, tc.want)
+			}
+		})
+	}
+	// A missing /proc/version is not WSL, and must not panic.
+	old := wslVersionFile
+	wslVersionFile = filepath.Join(t.TempDir(), "absent")
+	defer func() { wslVersionFile = old }()
+	if detectWSL() {
+		t.Error("a missing /proc/version must not report WSL")
 	}
 }

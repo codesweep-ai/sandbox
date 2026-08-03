@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -50,8 +51,35 @@ func (a *App) stderr() io.Writer {
 	return os.Stderr
 }
 
-// engineDeps builds the shared engine dependencies from the resolved App.
-func (a *App) engineDeps() engine.Deps {
+// engineDeps builds the shared engine dependencies for the default group.
+// Operations that act on a specific sandbox or group use engineDepsFor, so the
+// network, keys and instance directory all follow that group.
+func (a *App) engineDeps() engine.Deps { return a.engineDepsFor(state.DefaultGroup) }
+
+// engineDepsFor builds engine dependencies scoped to one group. A group's
+// network is derived from its name rather than configured, so the two can never
+// drift apart.
+func (a *App) engineDepsFor(group string) engine.Deps {
+	if group == "" {
+		group = state.DefaultGroup
+	}
+	d := a.engineDepsBase()
+	d.Group = group
+	d.Network = state.NetworkName(group)
+	// The group's allocated tap prefix, so two groups' VMs can never collide on
+	// a host-global interface name. Absent record (a group being created right
+	// now) falls back to the historical default.
+	if g, err := state.LoadGroup(a.InstDir, group); err == nil {
+		d.TapPrefix = g.TapPrefix
+	}
+	// Trust material is per group, so every consumer that reads TierDir (the
+	// seed writer, the engines, the generated ssh config) follows the group
+	// without knowing groups exist.
+	d.TierDir = paths.GroupKeys(group)
+	return d
+}
+
+func (a *App) engineDepsBase() engine.Deps {
 	return engine.Deps{
 		Runner:       a.Runner,
 		Host:         a.Host,
@@ -142,7 +170,7 @@ func newRootCmd(app *App) *cobra.Command {
 			app.FCCache = paths.FCCache()
 			app.AssetDir = paths.AssetDir()
 			app.Image = envOr("CS_SANDBOX_IMAGE", "localhost/cs-sandbox:44")
-			app.Network = "cs-sandbox-net"
+			app.Network = state.NetworkName(state.DefaultGroup)
 			app.SSHBind = envOr("CS_SANDBOX_SSH_BIND", "127.0.0.1")
 			app.TZ = envOr("CS_SANDBOX_TZ", "America/Los_Angeles")
 			app.Timeout = 120
@@ -158,6 +186,7 @@ func newRootCmd(app *App) *cobra.Command {
 	root.AddCommand(newCreateCmd(app))
 	root.AddCommand(newFetchCmd(app))
 	root.AddCommand(newPushCmd(app))
+	root.AddCommand(newGroupCmd(app))
 	root.AddCommand(newSyncSSHConfigCmd(app))
 	root.AddCommand(newForwardCmd(app))
 	root.AddCommand(newForwardsCmd(app))
@@ -190,17 +219,71 @@ func newVersionCmd() *cobra.Command {
 }
 
 func newLsCmd(app *App) *cobra.Command {
-	var quiet bool
+	var quiet, asJSON bool
 	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: "List sandboxes",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if quiet && asJSON {
+				return fmt.Errorf("--quiet and --json are mutually exclusive")
+			}
+			if asJSON {
+				return runLsJSON(cmd.Context(), app, cmd.OutOrStdout())
+			}
 			return runLs(cmd.Context(), app, cmd.OutOrStdout(), quiet)
 		},
 	}
-	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "print only sandbox names, one per line (for scripting)")
+	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "print only sandbox refs (<name>.<group>), one per line (for scripting)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print stable machine-readable JSON")
 	return cmd
+}
+
+// lsItem is the stable shape of `ls --json`. Ref is the field a caller should
+// feed back to any command that takes a sandbox: a bare name is not unique
+// across groups, so scripting on Name alone is a bug waiting to happen.
+type lsItem struct {
+	Ref     string       `json:"ref"`
+	Name    string       `json:"name"`
+	Group   string       `json:"group"`
+	Status  string       `json:"status"`
+	Created string       `json:"created,omitempty"`
+	Type    string       `json:"type,omitempty"`
+	Engine  state.Engine `json:"engine"`
+	Network string       `json:"network"`
+	Yolo    bool         `json:"yolo"`
+	Solo    bool         `json:"solo"`
+}
+
+func runLsJSON(ctx context.Context, app *App, out io.Writer) error {
+	insts, err := state.List(app.InstDir)
+	if err != nil {
+		return err
+	}
+	status := app.engineDeps().Statuses(ctx, insts)
+	items := make([]lsItem, 0, len(insts))
+	for _, in := range insts {
+		items = append(items, lsItem{
+			Ref: engine.Qualify(in), Name: in.Name, Group: in.Group,
+			Status: status[engine.Qualify(in)], Created: in.Created, Type: in.Type,
+			Engine: in.Engine, Network: state.NetworkName(in.Group),
+			Yolo: in.Yolo, Solo: in.Solo,
+		})
+	}
+	for _, o := range app.engineDeps().Orphans(ctx) {
+		// An orphan's internal name is already the qualified ref, so split it
+		// back out: `name` must mean the same thing in every row, and the group
+		// is known — leaving it blank would make the row unusable for anything
+		// that filters by group.
+		name, group := SplitRef(o.Name)
+		items = append(items, lsItem{
+			Ref: o.Name, Name: name, Group: group, Status: engine.StatusRemoved,
+			Created: o.SinceRFC3339(), Engine: o.Engine, Network: state.NetworkName(group),
+		})
+	}
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(items)
 }
 
 func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, error) }, quiet bool) error {
@@ -212,12 +295,14 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 	// unnoticed (docker's dangling volumes are the counter-example), and so
 	// `destroy` has something to complete.
 	orphans := app.engineDeps().Orphans(ctx)
-	// Names only: pipeable, so `cs-sandbox ls -q | xargs -n1 cs-sandbox destroy -f`
+	// Refs only: pipeable, so `cs-sandbox ls -q | xargs -n1 cs-sandbox destroy -f`
 	// works — which is also why leftovers belong here, or that idiom would leave
-	// them behind. Skips the status lookup, which needs a subprocess nothing here reads.
+	// them behind. Qualified, because a bare name is not unique across groups and
+	// feeding one back in would hit the ambiguity error (or worse, the wrong
+	// sandbox). Skips the status lookup, which needs a subprocess nothing here reads.
 	if quiet {
 		for _, in := range insts {
-			fmt.Fprintln(out, in.Name)
+			fmt.Fprintln(out, engine.Qualify(in))
 		}
 		for _, o := range orphans {
 			fmt.Fprintln(out, o.Name)
@@ -231,17 +316,20 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 	// No PORT column: you reach a sandbox by name (`ssh <name>`, from the managed
 	// ssh config), so a port here would suggest a way of working the tool doesn't
 	// want. `cs-sandbox port <name>` prints it for the cases that need it.
-	fmt.Fprintln(tw, "NAME\tSTATUS\tAGE\tTYPE\tENGINE\tYOLO\tSOLO")
+	// GROUP leads: the listing is primarily a view of isolation boundaries, and
+	// List already returns members grouped and sorted.
+	fmt.Fprintln(tw, "GROUP\tNAME\tSTATUS\tAGE\tTYPE\tENGINE\tYOLO\tSOLO")
 	for _, in := range insts {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			in.Name, status[in.Name], age(in.Created, time.Now()), in.Type, in.Engine,
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			in.Group, in.Name, status[engine.Qualify(in)], age(in.Created, time.Now()), in.Type, in.Engine,
 			yn(in.Yolo), yn(in.Solo))
 	}
 	// Leftovers last, under the sandboxes that still exist. Only the columns the
 	// data itself answers for are filled in; the rest went with the state record.
 	for _, o := range orphans {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			o.Name, engine.StatusRemoved, age(o.SinceRFC3339(), time.Now()), "-", o.Engine, "-", "-")
+		name, group := SplitRef(o.Name)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			group, name, engine.StatusRemoved, age(o.SinceRFC3339(), time.Now()), "-", o.Engine, "-", "-")
 	}
 	if err := tw.Flush(); err != nil {
 		return err

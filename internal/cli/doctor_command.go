@@ -29,6 +29,7 @@ func newDoctorCmd(app *App) *cobra.Command {
 				return fmt.Errorf("--engine must be podman or firecracker")
 			}
 			fc := fcdisk.Cache{Dir: app.FCCache}
+			hr := app.hostRoute()
 			d := doctor.Deps{
 				Runner:  app.Runner,
 				User:    app.Host.User,
@@ -36,6 +37,10 @@ func newDoctorCmd(app *App) *cobra.Command {
 				Image:   app.Image,
 				Network: app.Network,
 				IsMacOS: app.Host.IsMacOS,
+				IsWSL:   app.Host.IsWSL,
+
+				HostRouteOn:   hr.Active(),
+				HostRouteLegs: hr.HostLegs(),
 
 				FCBinPath:      fc.FirecrackerBin(),
 				FCVersionPin:   envOr("CS_SANDBOX_FC_VERSION", fcdisk.DefaultFCVersion),

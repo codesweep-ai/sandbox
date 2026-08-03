@@ -31,8 +31,16 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
 
-// KeepaliveName is the container that pins podman's rootless netns + bridge.
+// KeepaliveName is the container that pins podman's rootless netns + bridge on
+// the default network. Every network has one, named after it.
 const KeepaliveName = "cs-sandbox-net-keepalive"
+
+// KeepaliveFor is the keepalive/gateway container for a network. One container
+// per network serves both roles: it pins the bridge (netavark tears the bridge
+// down around running containers, so a lone VM would otherwise lose it) and,
+// with a published port, it is the group's ssh jump host. Two roles, but one
+// lifetime — the gateway exists exactly as long as the fabric it fronts.
+func KeepaliveFor(network string) string { return network + "-keepalive" }
 
 // InternalSSHPort is the port the guest sshd listens on.
 const InternalSSHPort = 22
@@ -43,6 +51,22 @@ type Fabric struct {
 	Network string // podman network name (cs-sandbox-net)
 	Image   string // keepalive container image
 	NetDir  string // the fabric working dir (paths.FCNet): dnsmasq hostsdir + log
+	// Suffix is the DNS suffix this fabric is authoritative for. Empty reads
+	// CS_SANDBOX_DNS_SUFFIX, then falls back to cs.sandbox.
+	Suffix string
+	// GWPort publishes this network's keepalive as the group's ssh gateway.
+	// 0 leaves it unpublished (bridge-pinning only).
+	GWPort int
+	GWBind string // host bind address for GWPort (127.0.0.1 default)
+	GWSeed string // seed dir holding the gateway's authorized_keys
+	GWUser string // host user the gateway's sshd should accept
+	GWUID  int
+	GWGID  int
+	GWHome string
+	// TapPrefix names this fabric's VM taps. Interface names are host-global even
+	// though the taps attach to different bridges, so each group is allocated its
+	// own prefix; empty means the historical default fabric.
+	TapPrefix string
 }
 
 // --- read-only queries (through the Runner) ---
@@ -71,8 +95,16 @@ func (f Fabric) Bridge(ctx context.Context) string {
 		"--format", "{{.NetworkInterface}}")
 }
 
+// EnsureGateway brings up this network's keepalive/gateway container. It is the
+// same container in both roles, so a group's ingress lives exactly as long as
+// the fabric it fronts.
+func (f Fabric) EnsureGateway(ctx context.Context) error { return f.keepaliveUp(ctx) }
+
+// Keepalive is this fabric's keepalive/gateway container name.
+func (f Fabric) Keepalive() string { return KeepaliveFor(f.Network) }
+
 func (f Fabric) keepaliveRunning(ctx context.Context) bool {
-	return run.Output(ctx, f.Runner, "podman", "inspect", KeepaliveName,
+	return run.Output(ctx, f.Runner, "podman", "inspect", f.Keepalive(),
 		"--format", "{{.State.Running}}") == "true"
 }
 
@@ -80,26 +112,62 @@ func (f Fabric) keepaliveRunning(ctx context.Context) bool {
 
 func (f Fabric) hostsDir() string { return filepath.Join(f.NetDir, "hosts.d") }
 
+// suffix is the DNS suffix this fabric owns. It is read here rather than
+// threaded through every construction site so a fabric started by any command
+// is authoritative for the same domain host-route publishes into.
+func (f Fabric) suffix() string {
+	if f.Suffix != "" {
+		return f.Suffix
+	}
+	if s := os.Getenv("CS_SANDBOX_DNS_SUFFIX"); s != "" {
+		return s
+	}
+	return "cs.sandbox"
+}
+
 // keepaliveUp ensures the keepalive container is running.
 func (f Fabric) keepaliveUp(ctx context.Context) error {
 	if f.keepaliveRunning(ctx) {
 		return nil
 	}
 	// Try to start an existing (stopped) one.
-	if _, err := f.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "container", "exists", KeepaliveName); err == nil {
-		_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "start", KeepaliveName)
+	if _, err := f.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "container", "exists", f.Keepalive()); err == nil {
+		_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "start", f.Keepalive())
 		if f.keepaliveRunning(ctx) {
 			return nil
 		}
 	}
-	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "run", "-d", "--name", KeepaliveName,
-		"--network", f.Network, "--restart=always",
-		"--label", "cs-sandbox.managed=1", "--label", "cs-sandbox.keepalive=1",
-		f.Image, "sleep", "infinity")
+	argv := []string{"podman", "run", "-d", "--name", f.Keepalive(),
+		"--hostname", "gateway", "--network", f.Network, "--restart=always",
+		"--label", "cs-sandbox.managed=1", "--label", "cs-sandbox.keepalive=1"}
+	if f.GWPort != 0 {
+		// The gateway leg. One published port per group: the host jumps through
+		// it and then reaches every member by its bare name over the group's own
+		// DNS, which is the same path members use to reach each other. The image
+		// entrypoint already starts sshd, so the gateway needs only an identity
+		// and the group's authorized_keys.
+		argv = append(argv,
+			"-p", fmt.Sprintf("%s:%d:22", f.GWBind, f.GWPort),
+			"--label", "cs-sandbox.gateway=1",
+			"--userns=keep-id", "--user", "0:0",
+			// The seed is a host dir owned by the invoking user; without this
+			// SELinux denies the container's read and sshd comes up with no
+			// authorized_keys — the same option the sandbox run path uses.
+			"--security-opt", "label=disable",
+			"-e", "CS_SANDBOX_TYPE=agent",
+			"-e", "CS_SANDBOX_SSH_PORT=22",
+			"-e", "CS_SANDBOX_USER="+f.GWUser,
+			"-e", fmt.Sprintf("CS_SANDBOX_UID=%d", f.GWUID),
+			"-e", fmt.Sprintf("CS_SANDBOX_GID=%d", f.GWGID),
+			"-e", "CS_SANDBOX_HOME="+f.GWHome,
+			"-v", f.GWSeed+":/run/cs-sandbox-seed:ro")
+	}
+	argv = append(argv, f.Image, "sleep", "infinity")
+	_, _ = f.Runner.Run(ctx, run.Opts{}, argv...)
 	if f.keepaliveRunning(ctx) {
 		return nil
 	}
-	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "start", KeepaliveName)
+	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "start", f.Keepalive())
 	if f.keepaliveRunning(ctx) {
 		return nil
 	}
@@ -194,6 +262,29 @@ func (f Fabric) dnsPid() int {
 	return 0
 }
 
+// dnsmasqScript starts the fabric resolver inside the rootless netns.
+//
+// Stay as (userns-)root so dnsmasq can traverse $HOME (mode 750) to re-read
+// --hostsdir; the default drop to "nobody" cannot. An empty --pid-file asks
+// dnsmasq not to write one: the running process is the record (see dnsState).
+// Values arrive as positional args and are never interpolated into the script,
+// so a path with a space or a quote (e.g. under $HOME) cannot split or inject.
+//
+// --local=/$SUFFIX/ makes dnsmasq authoritative for our own suffix, answering
+// from the hostsdir alone. Without it every name it holds no record for — which
+// includes EVERY AAAA lookup, since the hostsdir carries only A records — is
+// forwarded to the bridge's aardvark, which never answers for these names. Each
+// such query then costs a 5s timeout and systemd-resolved retries it across
+// scopes: measured at 3s to resolve a default-group name and over 30s for a
+// group-qualified one, against 10ms once dnsmasq answers authoritatively.
+const dnsmasqScript = `set -eu
+DNS="$1"; BR="$2"; GW="$3"; HOSTSDIR="$4"; SUFFIX="$5"
+ip addr add "$DNS/24" dev "$BR" 2>/dev/null || true
+exec dnsmasq --keep-in-foreground --user=root --group=root --bind-interfaces \
+  --listen-address="$DNS" --no-hosts --no-resolv --server="$GW" \
+  --local="/$SUFFIX/" \
+  --hostsdir="$HOSTSDIR" --pid-file= --conf-file=/dev/null`
+
 // dnsUp starts the forwarding dnsmasq (in the netns) if not already running.
 func (f Fabric) dnsUp(ctx context.Context) error {
 	if err := os.MkdirAll(f.hostsDir(), 0o755); err != nil {
@@ -216,24 +307,13 @@ func (f Fabric) dnsUp(ctx context.Context) error {
 	if br == "" {
 		return fmt.Errorf("fc: cannot read podman network %q bridge interface", f.Network)
 	}
-	// Stay as (userns-)root so dnsmasq can traverse $HOME (mode 750) to re-read
-	// --hostsdir; the default drop to "nobody" cannot. An empty --pid-file asks
-	// dnsmasq not to write one: the running process is the record (see dnsState).
-	// Values are passed as positional args, never interpolated into the script, so
-	// a path with a space or quote (e.g. under $HOME) can't split or inject.
-	const script = `set -eu
-DNS="$1"; BR="$2"; GW="$3"; HOSTSDIR="$4"
-ip addr add "$DNS/24" dev "$BR" 2>/dev/null || true
-exec dnsmasq --keep-in-foreground --user=root --group=root --bind-interfaces \
-  --listen-address="$DNS" --no-hosts --no-resolv --server="$GW" \
-  --hostsdir="$HOSTSDIR" --pid-file= --conf-file=/dev/null`
 	logf, err := os.Create(filepath.Join(f.NetDir, "dnsmasq.log"))
 	if err != nil {
 		return err
 	}
 	defer logf.Close()
-	cmd := exec.Command("podman", "unshare", "--rootless-netns", "bash", "-c", script,
-		"_", dns, br, gw, f.hostsDir())
+	cmd := exec.Command("podman", "unshare", "--rootless-netns", "bash", "-c", dnsmasqScript,
+		"_", dns, br, gw, f.hostsDir(), f.suffix())
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -311,7 +391,7 @@ func (f Fabric) Down(ctx context.Context) {
 		_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "unshare", "--rootless-netns",
 			"ip", "addr", "del", f.DNSIP(ctx)+"/24", "dev", f.Bridge(ctx))
 	}
-	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", KeepaliveName)
+	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", f.Keepalive())
 }
 
 // GC tears down the fabric only if nothing uses it: no VM is running AND no
@@ -325,7 +405,7 @@ func (f Fabric) GC(ctx context.Context, vmRunning func() bool) {
 		"--filter", "label=cs-sandbox.managed=1", "--format", "{{.Names}}")
 	for _, n := range strings.Split(names, "\n") {
 		n = strings.TrimSpace(n)
-		if n != "" && n != KeepaliveName {
+		if n != "" && n != f.Keepalive() {
 			return // a sandbox container remains — keep the fabric
 		}
 	}
@@ -364,6 +444,18 @@ func (f Fabric) Unregister(name string) {
 // tapPrefix names a VM tap: tapPrefix + the address's last octet.
 const tapPrefix = "fdt"
 
+// prefix is this fabric's tap prefix, defaulting to the historical one.
+func (f Fabric) prefix() string {
+	if f.TapPrefix == "" {
+		return tapPrefix
+	}
+	return f.TapPrefix
+}
+
+// TapName derives a VM tap name within this fabric. Two groups whose VMs land
+// on the same last octet must NOT produce the same interface name.
+func (f Fabric) TapName(ip string) string { return f.prefix() + lastOctet(ip) }
+
 // TapName derives the tap name from the IP's last octet, e.g. 10.89.0.200 -> fdt200.
 func TapName(ip string) string { return tapPrefix + lastOctet(ip) }
 
@@ -379,7 +471,7 @@ func (f Fabric) TapOctets(ctx context.Context) map[string]bool {
 		run.Output(ctx, f.Runner, "podman", "unshare", "--rootless-netns", "ip", "-br", "link", "show"), "\n") {
 		name, _, _ := strings.Cut(strings.TrimSpace(line), " ")
 		name, _, _ = strings.Cut(name, "@")
-		if oct, ok := strings.CutPrefix(name, tapPrefix); ok && oct != "" {
+		if oct, ok := strings.CutPrefix(name, f.prefix()); ok && oct != "" {
 			out[oct] = true
 		}
 	}

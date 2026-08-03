@@ -138,3 +138,57 @@ func TestSweepNamesDropsTaplessRecords(t *testing.T) {
 		t.Error("tapless record survived the sweep")
 	}
 }
+
+// TestTapNamesAreGroupScoped: interface names are host-global, so two fabrics
+// whose VMs land on the same last octet must not produce the same tap name.
+// This is why the prefix is allocated per group and recorded, not derived.
+func TestTapNamesAreGroupScoped(t *testing.T) {
+	a := Fabric{TapPrefix: "fd0001"}
+	b := Fabric{TapPrefix: "fd0002"}
+	const ip = "10.89.4.200" // the same last octet in both groups' subnets
+	if a.TapName(ip) == b.TapName(ip) {
+		t.Fatalf("two groups produced the same tap name %q for %s", a.TapName(ip), ip)
+	}
+	// The default fabric keeps the historical name so existing taps still match.
+	if got := (Fabric{}).TapName("10.89.0.200"); got != "fdt200" {
+		t.Errorf("default fabric tap = %q, want fdt200", got)
+	}
+	if got := a.TapName(ip); got != "fd0001200" {
+		t.Errorf("group tap = %q, want fd0001200", got)
+	}
+	if len(a.TapName(ip)) > 15 {
+		t.Errorf("tap name %q exceeds IFNAMSIZ", a.TapName(ip))
+	}
+}
+
+// TestDNSMasqIsAuthoritativeForTheSuffix: the hostsdir carries only A records,
+// so without --local every AAAA lookup is forwarded to the bridge's aardvark,
+// which never answers for these names. Each one then costs a 5s timeout that
+// systemd-resolved retries across scopes — measured at over 30s to resolve a
+// group-qualified name that dnsmasq itself answers in milliseconds.
+func TestDNSMasqIsAuthoritativeForTheSuffix(t *testing.T) {
+	if !strings.Contains(dnsmasqScript, `--local="/$SUFFIX/"`) {
+		t.Errorf("dnsmasq must be authoritative for the suffix:\n%s", dnsmasqScript)
+	}
+	// The suffix arrives as a positional arg, never interpolated into the script.
+	if strings.Contains(dnsmasqScript, "--local=/cs.sandbox/") {
+		t.Error("the suffix must be passed positionally, not baked into the script")
+	}
+}
+
+// TestFabricSuffixPrecedence: a fabric started by any command must be
+// authoritative for the same domain host-route publishes into, so the suffix is
+// resolved here rather than threaded through every construction site.
+func TestFabricSuffixPrecedence(t *testing.T) {
+	t.Setenv("CS_SANDBOX_DNS_SUFFIX", "")
+	if got := (Fabric{}).suffix(); got != "cs.sandbox" {
+		t.Errorf("default suffix = %q", got)
+	}
+	t.Setenv("CS_SANDBOX_DNS_SUFFIX", "box.test")
+	if got := (Fabric{}).suffix(); got != "box.test" {
+		t.Errorf("env suffix = %q", got)
+	}
+	if got := (Fabric{Suffix: "explicit.test"}).suffix(); got != "explicit.test" {
+		t.Errorf("explicit suffix should win over the environment, got %q", got)
+	}
+}

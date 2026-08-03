@@ -65,6 +65,13 @@ func TierKeys() string {
 	return filepath.Join(dataHome(), app, "keys")
 }
 
+// GroupKeys is where one group's SSH trust material lives. Keys are per group
+// so a network-boundary failure cannot become an access failure: a member of
+// one group holds no credential any other group's sandbox will accept.
+func GroupKeys(group string) string {
+	return filepath.Join(TierKeys(), "groups", group)
+}
+
 // FCCache is the firecracker kernel/rootfs/disk cache (regenerable).
 func FCCache() string {
 	if d := os.Getenv("CS_SANDBOX_FC_CACHE"); d != "" {
@@ -90,6 +97,16 @@ func FCNet() string {
 		return d
 	}
 	return filepath.Join(cacheHome(), app, "net")
+}
+
+// FCNetFor is one group's fabric working directory. The default group keeps the
+// historical path so an existing fabric's DNS bookkeeping is undisturbed;
+// every other group gets its own beneath it.
+func FCNetFor(group string) string {
+	if group == "" || group == "default" {
+		return FCNet()
+	}
+	return filepath.Join(FCNet(), group)
 }
 
 // AssetDir is where the build assets (Containerfile + image/ tree) live on disk:

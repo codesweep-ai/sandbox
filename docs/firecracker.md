@@ -198,10 +198,11 @@ skips the keep-id / runtime-user dance - the VM is genuinely root with its own u
 
 Boot to ready is ~1-2 s.
 
-## Networking - one unified fabric
+## Networking - one unified fabric per group
 
-Containers and VMs share **one** rootless L2 fabric - a dedicated Podman network `cs-sandbox-net` -
-so they reach each other directly and by name across engines. Rather than a separate namespace, a VM
+Containers and VMs share **one** rootless L2 fabric per group - a dedicated Podman network
+(`cs-sandbox-net` for the `default` group, `cs-sandbox-<group>` otherwise) - so they reach each other
+directly and by name across engines, within that group. Rather than a separate namespace, a VM
 runs **inside Podman's own rootless network namespace** (entered with `podman unshare
 --rootless-netns`), with a tap on the network's bridge (tap `fdt<lastoctet>`, MAC
 `02:fc:0a:59:00:<lastoctet>`) and a static address from the **high end of the subnet**

@@ -38,6 +38,9 @@ func TestReservedPorts(t *testing.T) {
 // starting the container, so a resume after a host reboot brings it back fully.
 func TestPodmanStartEnsuresNetwork(t *testing.T) {
 	f := run.NewFake() // default: all calls succeed (network already exists)
+	// EnsureNetwork now verifies the network really is ours and isolated, so the
+	// fake has to answer the inspect the way a managed network would.
+	f.On("network inspect", run.Result{Stdout: "true|1\n"}, nil)
 	p := NewPodman(Deps{Runner: f, Network: "cs-sandbox-net"})
 	if err := p.Start(context.Background(), "box1"); err != nil {
 		t.Fatal(err)
@@ -128,29 +131,30 @@ func TestAnyVMRunningSeesForeignTaps(t *testing.T) {
 func TestStatuses(t *testing.T) {
 	dir := t.TempDir()
 	insts := []*state.Instance{
-		{Name: "up", Engine: state.Podman},
-		{Name: "down", Engine: state.Podman},
-		{Name: "gone", Engine: state.Podman}, // not in podman ps at all
-		{Name: "vmup", Engine: state.Firecracker},
-		{Name: "vmdown", Engine: state.Firecracker},
+		{Name: "up", Group: state.DefaultGroup, Engine: state.Podman},
+		{Name: "down", Group: state.DefaultGroup, Engine: state.Podman},
+		{Name: "gone", Group: state.DefaultGroup, Engine: state.Podman}, // not in podman ps at all
+		{Name: "vmup", Group: state.DefaultGroup, Engine: state.Firecracker},
+		{Name: "vmdown", Group: state.DefaultGroup, Engine: state.Firecracker},
 	}
 	// A microVM is "running" when its pid file names a live process.
-	if err := os.MkdirAll(filepath.Join(dir, "vmup"), 0o700); err != nil {
+	if err := os.MkdirAll(state.Dir(dir, state.DefaultGroup, "vmup"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "vmup", "fc.pid"),
+	if err := os.WriteFile(filepath.Join(state.Dir(dir, state.DefaultGroup, "vmup"), "fc.pid"),
 		[]byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	f := run.NewFake()
-	f.On("podman ps", run.Result{Stdout: "up running\ndown exited\n"}, nil)
+	f.On("podman ps", run.Result{Stdout: "up.default running\ndown.default exited\n"}, nil)
 	d := Deps{Runner: f, InstDir: dir}
 
 	got := d.Statuses(context.Background(), insts)
+	// Keys are the qualified reference, not the bare name.
 	want := map[string]string{
-		"up": StatusRunning, "down": StatusStopped, "gone": StatusStopped,
-		"vmup": StatusRunning, "vmdown": StatusStopped,
+		"up.default": StatusRunning, "down.default": StatusStopped, "gone.default": StatusStopped,
+		"vmup.default": StatusRunning, "vmdown.default": StatusStopped,
 	}
 	for name, w := range want {
 		if got[name] != w {
@@ -162,11 +166,11 @@ func TestStatuses(t *testing.T) {
 	f2 := run.NewFake()
 	f2.On("podman ps", run.Result{}, errors.New("podman unavailable"))
 	d2 := Deps{Runner: f2, InstDir: dir}
-	if got := d2.Statuses(context.Background(), insts); got["up"] != StatusUnknown {
-		t.Errorf("status with podman down = %q, want %q", got["up"], StatusUnknown)
+	if got := d2.Statuses(context.Background(), insts); got["up"+".default"] != StatusUnknown {
+		t.Errorf("status with podman down = %q, want %q", got["up"+".default"], StatusUnknown)
 	}
 	// A microVM's state needs no podman, so it is still accurate.
-	if got := d2.Statuses(context.Background(), insts); got["vmup"] != StatusRunning {
-		t.Errorf("microVM status should not depend on podman: %q", got["vmup"])
+	if got := d2.Statuses(context.Background(), insts); got["vmup"+".default"] != StatusRunning {
+		t.Errorf("microVM status should not depend on podman: %q", got["vmup"+".default"])
 	}
 }

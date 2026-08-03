@@ -177,8 +177,8 @@ func TestLsQuietIsPipeable(t *testing.T) {
 	if err := runLs(context.Background(), app, &buf, true); err != nil {
 		t.Fatal(err)
 	}
-	if got := buf.String(); got != "alpha\nbeta\n" { // List sorts by name
-		t.Errorf("ls -q = %q, want bare sorted names", got)
+	if got := buf.String(); got != "alpha.default\nbeta.default\n" { // List sorts by name
+		t.Errorf("ls -q = %q, want sorted qualified refs", got)
 	}
 
 	// The table form keeps the header and columns.
@@ -204,10 +204,10 @@ func TestLsShowsRemovedSandboxData(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A microVM home disk with no state record: what `rm` leaves behind.
-	if err := os.MkdirAll(filepath.Join(dir, "leftover"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(state.Dir(dir, state.DefaultGroup, "leftover")), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "leftover", "rootfs.ext4"), []byte("x"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(state.Dir(dir, state.DefaultGroup, "leftover"), "rootfs.ext4"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -228,7 +228,7 @@ func TestLsShowsRemovedSandboxData(t *testing.T) {
 	if err := runLs(context.Background(), app, &buf, true); err != nil {
 		t.Fatal(err)
 	}
-	if got := buf.String(); got != "alive\nleftover\n" {
+	if got := buf.String(); got != "alive.default\nleftover.default\n" {
 		t.Errorf("ls -q = %q, want the live sandbox and the leftover", got)
 	}
 }
@@ -239,7 +239,7 @@ func TestLsShowsRemovedSandboxData(t *testing.T) {
 func TestDestroyReclaimsRemovedSandboxData(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CS_SANDBOX_INSTANCES_DIR", dir) // the root command resolves state dirs from the env
-	idir := filepath.Join(dir, "leftover")
+	idir := filepath.Join(state.Dir(dir, state.DefaultGroup, "leftover"))
 	if err := os.MkdirAll(idir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -249,14 +249,14 @@ func TestDestroyReclaimsRemovedSandboxData(t *testing.T) {
 	app := &App{InstDir: dir, TierDir: t.TempDir()}
 
 	// Without -f it only says what it would do; the data stays.
-	if _, err := runRoot(t, app, "destroy", "leftover"); err != nil {
+	if _, err := runRoot(t, app, "destroy", "leftover.default"); err != nil {
 		t.Fatalf("destroy without -f: %v", err)
 	}
 	if _, err := os.Stat(idir); err != nil {
 		t.Fatal("destroy without -f must not delete anything")
 	}
 
-	if _, err := runRoot(t, app, "destroy", "leftover", "-f"); err != nil {
+	if _, err := runRoot(t, app, "destroy", "leftover.default", "-f"); err != nil {
 		t.Fatalf("destroy -f: %v", err)
 	}
 	if _, err := os.Stat(idir); !os.IsNotExist(err) {

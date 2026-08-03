@@ -66,7 +66,7 @@ func (a *App) completeSandboxRepoDir(cmd *cobra.Command, args []string, toComple
 	case 0:
 		return a.sandboxMatches(toComplete), cobra.ShellCompDirectiveNoFileComp
 	case 1:
-		in, err := state.Load(a.instDirForComplete(), args[0])
+		in, err := (&App{InstDir: a.instDirForComplete()}).resolve(args[0])
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}

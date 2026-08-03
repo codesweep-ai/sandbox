@@ -1,7 +1,7 @@
 # Managing Dev Sandboxes with cs-sandbox
 
 `cs-sandbox` creates and manages disposable Linux dev sandboxes — rootless **Podman containers** or
-**Firecracker microVMs** — that all join one shared network, so each is reachable by name over SSH.
+**Firecracker microVMs** — that share a rootless network, so each is reachable by name over SSH.
 Nothing on the host is shared unless you ask: code goes in through `--repo` / `--snapshot`, and
 commits come back out with `fetch`. The loop is **create → work → fetch → destroy**.
 
@@ -44,7 +44,27 @@ Data kept by `rm` stays listed by `ls` with STATUS `removed`, so it can't sit on
 `create` with the same name reuses it, `destroy <name> -f` deletes it.
 
 Names must be a single DNS-style label: letters, digits and dashes, starting and ending
-alphanumeric, 63 characters max. Dots are rejected (a dotted name would not resolve as a peer).
+alphanumeric, 63 characters max. A name itself never contains a dot; the dot in a reference
+separates it from the group (`<name>.<group>`, below).
+
+### Groups (optional)
+
+Without `--group` every sandbox joins one called `default`, and everything above is the whole story.
+Use a group when two unrelated fleets share the host and must not see each other — each gets its own
+network, SSH keys and gateway.
+
+```bash
+cs-sandbox create api --group cache-redis  # creates the group if needed
+cs-sandbox ls                              # GROUP column; refs are <name>.<group>
+cs-sandbox exec api.cache-redis ls         # a member of a non-default group
+cs-sandbox exec api ls                     # bare name = the DEFAULT group, always
+cs-sandbox group ls
+cs-sandbox group rm cache-redis -f         # -f destroys its sandboxes too
+```
+
+The same name may exist in several groups, so a bare name means the default group and nothing else —
+it is never resolved to "whichever group happens to have it". Inside a group, members still reach
+each other by bare name (`ssh api`); across groups there is no DNS, no route, and no shared key.
 
 ## Sandbox types — what each can reach
 
@@ -54,7 +74,8 @@ Set with `--type` (independent of engine). Think of it as **two layers, user abo
 - **user** (`--type user`): your own workspace. It can `ssh` into **every** sandbox.
 
 You and your user sandboxes reach everything; an agent can never `ssh` into a user sandbox. No host
-SSH keys are copied into either type.
+SSH keys are copied into either type. This describes reach **within a group** — across groups
+nothing connects at all.
 
 - `--yolo` drops the agents' approval prompts (the sandbox is the boundary).
 - `--solo` additionally denies an agent *any* outbound SSH, while leaving it reachable. Agent only.
@@ -127,6 +148,8 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
 | "free up the disk" / "what's still taking space?" | `cs-sandbox ls` — anything with STATUS `removed` is data only; `destroy <name> -f` reclaims it |
 | "get rid of all of them" | Confirm first, then `cs-sandbox ls -q \| xargs -n1 cs-sandbox destroy -f` |
 | "pause it" / "free the resources" | `cs-sandbox stop <name>` (then `start` later) |
+| "keep these separate from my other sandboxes" / "two experiments at once" / "they must not interfere" | `cs-sandbox create <name> --group <group>` — each group gets its own network, keys and gateway |
+| "it says the name exists in several groups" | Address it in full: `<name>.<group>`. A bare name only ever means the `default` group |
 | "why doesn't this work?" / "check my setup" | `cs-sandbox doctor` (add `--engine podman` to check that engine) |
 | "set it up" / "first run" | `cs-sandbox build`, then `cs-sandbox install-agent-tools` |
 

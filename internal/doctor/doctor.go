@@ -6,6 +6,8 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/codesweep-ai/sandbox/internal/run"
@@ -47,6 +49,12 @@ type Deps struct {
 	Image   string
 	Network string
 	IsMacOS bool
+	IsWSL   bool
+
+	// Host-route state. HostRouteLegs are the host-side veth names, one per
+	// group; empty when the feature has never been enabled.
+	HostRouteOn   bool
+	HostRouteLegs []string
 
 	FCBinPath      string // cached firecracker binary
 	FCVersionPin   string // release the build pins to (CS_SANDBOX_FC_VERSION / the default)
@@ -209,6 +217,12 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		ag.add(HM, "agent CLI(s) not found: "+strings.Join(agentMiss, " ")+" — or sign in inside an instance: cs-sandbox agent-login claude <name>")
 	}
 	r.addGroup(ag)
+
+	// Only worth a section when there is something to say: the feature is in
+	// use, or this is WSL, where its one hard requirement is commonly absent.
+	if !d.IsMacOS && (d.HostRouteOn || d.IsWSL) {
+		r.addGroup(hostRouteGroup(d))
+	}
 	return r
 }
 
@@ -247,6 +261,66 @@ func missingHostPackages(apt bool) []string {
 		}
 	}
 	return out
+}
+
+// hostRouteGroup checks the one piece of host state cs-sandbox relies on that
+// something else can silently change underneath it.
+//
+// The host holds a veth into every group's subnet, so it could route between
+// them; host-route disables forwarding per leg to prevent that. But writing the
+// GLOBAL net.ipv4.ip_forward propagates to every interface, so a `sysctl -w
+// net.ipv4.ip_forward=1` — or a Docker install doing it at package time — turns
+// the legs back into a path between groups. Nothing announces that, which is
+// exactly why it belongs in doctor.
+//
+// Every check here reads /proc, so none of it needs privilege.
+func hostRouteGroup(d Deps) Group {
+	g := Group{Title: "host-route (optional: reach sandboxes by name from the host)"}
+	if d.IsWSL {
+		g.add(HM, "WSL detected — host-route needs systemd-resolved, which WSL leaves off "+
+			"unless systemd=true is set in /etc/wsl.conf")
+	}
+	if !d.HostRouteOn {
+		g.add(HM, "host-route is off (optional) — enable with:  cs-sandbox host-route up")
+		return g
+	}
+	var forwarding []string
+	for _, leg := range d.HostRouteLegs {
+		data, err := os.ReadFile(procPath("sys/net/ipv4/conf/" + leg + "/forwarding"))
+		if err != nil {
+			continue // no such interface: nothing to forward
+		}
+		if strings.TrimSpace(string(data)) == "1" {
+			forwarding = append(forwarding, leg)
+		}
+	}
+	if len(forwarding) > 0 {
+		g.add(NO, "IP forwarding is enabled on "+strings.Join(forwarding, ", ")+
+			" — a sandbox could route through the host into another group; re-assert it:  cs-sandbox host-route refresh")
+	} else {
+		g.add(OK, "forwarding disabled on all "+plural(len(d.HostRouteLegs), "leg")+" — the host is not a router between groups")
+	}
+	// Informational even when the legs are correct: it is the setting whose next
+	// global write would undo them.
+	if data, err := os.ReadFile(procPath("sys/net/ipv4/ip_forward")); err == nil &&
+		strings.TrimSpace(string(data)) == "1" {
+		g.add(HM, "net.ipv4.ip_forward=1 host-wide — writing it again propagates to every interface "+
+			"and re-enables the legs; host-route re-asserts them on up/refresh")
+	}
+	return g
+}
+
+// procPath joins under /proc, overridable in tests.
+func procPath(rel string) string { return filepath.Join(procRoot, rel) }
+
+// procRoot is /proc, a package var so tests can supply a fake.
+var procRoot = "/proc"
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return strconv.Itoa(n) + " " + word + "s"
 }
 
 func (g *Group) add(s Status, msg string) {

@@ -6,18 +6,20 @@ import (
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/forward"
+	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/state"
 	"github.com/spf13/cobra"
+	"path/filepath"
 )
 
 // engineFor returns the adapter matching an instance's recorded engine.
 func (a *App) engineFor(name string) (engine.Engine, *state.Instance, error) {
-	in, err := state.Load(a.InstDir, name)
+	in, err := a.resolve(name)
 	if err != nil {
-		return nil, nil, fmt.Errorf("no such sandbox %q", name)
+		return nil, nil, err
 	}
-	d := a.engineDeps()
+	d := a.engineDepsFor(in.Group)
 	switch in.Engine {
 	case state.Firecracker:
 		return engine.NewFirecracker(d), in, nil
@@ -50,11 +52,15 @@ func simpleInstanceCmd(app *App, use, short string, fn func(context.Context, eng
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: app.completeSandbox,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			e, _, err := app.engineFor(args[0])
+			e, in, err := app.engineFor(args[0])
 			if err != nil {
 				return err
 			}
-			return fn(cmd.Context(), e, args[0])
+			// The engine takes the BARE name — its Deps carries the group and
+			// qualifies podman object names itself. Handing it the user's
+			// qualified ref would address <name>.<group>.<group>, which matches
+			// nothing and fails silently.
+			return fn(cmd.Context(), e, in.Name)
 		},
 	}
 }
@@ -67,7 +73,7 @@ func newDestroyCmd(app *App) *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: app.completeSandbox,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			e, _, err := app.engineFor(args[0])
+			e, in, err := app.engineFor(args[0])
 			if err != nil {
 				// No state record — but `rm` may have kept this name's data,
 				// and destroy is what deletes data.
@@ -78,7 +84,7 @@ func newDestroyCmd(app *App) *cobra.Command {
 				return nil
 			}
 			forward.KillAll(app.InstDir, args[0])
-			if err := e.Remove(cmd.Context(), args[0], true); err != nil {
+			if err := e.Remove(cmd.Context(), in.Name, true); err != nil {
 				return err
 			}
 			app.refreshHostRoute(cmd) // unpublish the destroyed name if host-route is on
@@ -123,12 +129,12 @@ func newRmCmd(app *App) *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: app.completeSandbox,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			e, _, err := app.engineFor(args[0])
+			e, in, err := app.engineFor(args[0])
 			if err != nil {
 				return err
 			}
 			forward.KillAll(app.InstDir, args[0])
-			if err := e.Remove(cmd.Context(), args[0], false); err != nil {
+			if err := e.Remove(cmd.Context(), in.Name, false); err != nil {
 				return err
 			}
 			app.refreshHostRoute(cmd) // unpublish the name if host-route is on
@@ -152,12 +158,12 @@ func newExecCmd(app *App) *cobra.Command {
 		Args:              cobra.MinimumNArgs(1),
 		ValidArgsFunction: app.completeSandbox, // only the first arg (the sandbox); the rest is the command
 		RunE: func(cmd *cobra.Command, args []string) error {
-			e, _, err := app.engineFor(args[0])
+			e, in, err := app.engineFor(args[0])
 			if err != nil {
 				return err
 			}
 			io := engine.ExecIO{Interactive: len(args) == 1, Argv: args[1:]}
-			return e.Exec(cmd.Context(), args[0], io)
+			return e.Exec(cmd.Context(), in.Name, io)
 		},
 	}
 	// Stop flag parsing after the sandbox name so `exec x id -un` passes -un through.
@@ -179,7 +185,7 @@ func newSSHCmd(app *App) *cobra.Command {
 			// Reach the published port with the user-tier key. Key known-hosts by
 			// HostKeyAlias=<name> in a dedicated file so a recycled port never trips
 			// "host key changed" and the user's main known_hosts is untouched.
-			key := app.TierDir + "/id_cs-sandbox_user"
+			key := filepath.Join(paths.GroupKeys(in.Group), "id_cs-sandbox_user")
 			knownHosts := app.Host.SSHDir() + "/known_hosts.cs-sandbox"
 			sshArgs := []string{
 				"-i", key, "-p", fmt.Sprintf("%d", in.Port),
@@ -205,9 +211,9 @@ func newPortCmd(app *App) *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: app.completeSandbox,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			in, err := state.Load(app.InstDir, args[0])
+			in, err := app.resolve(args[0])
 			if err != nil {
-				return fmt.Errorf("no such sandbox %q", args[0])
+				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), in.Port)
 			return nil

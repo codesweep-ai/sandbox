@@ -283,3 +283,83 @@ func TestNormalizeAllPresent(t *testing.T) {
 		t.Errorf("all present -> no missing, got %v", miss)
 	}
 }
+
+// TestHostRouteGroupFlagsForwardingLegs: the host holds a veth into every
+// group's subnet, so a leg with forwarding on is a path between groups. Writing
+// the global net.ipv4.ip_forward propagates to every interface, so this can
+// come back on long after host-route wired it — nothing announces that, which
+// is why doctor looks.
+func TestHostRouteGroupFlagsForwardingLegs(t *testing.T) {
+	root := t.TempDir()
+	procRoot = root
+	t.Cleanup(func() { procRoot = "/proc" })
+	write := func(rel, v string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(v+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("sys/net/ipv4/ip_forward", "1")
+	write("sys/net/ipv4/conf/cs-sandbox/forwarding", "0")
+	write("sys/net/ipv4/conf/hr0001h/forwarding", "1") // the dangerous one
+
+	g := hostRouteGroup(Deps{HostRouteOn: true, HostRouteLegs: []string{"cs-sandbox", "hr0001h"}})
+	var issues int
+	all := ""
+	for _, c := range g.Checks {
+		all += c.Message + "\n"
+		if c.Status == NO {
+			issues++
+		}
+	}
+	if issues != 1 {
+		t.Errorf("a forwarding leg must be one issue, got %d:\n%s", issues, all)
+	}
+	if !strings.Contains(all, "hr0001h") {
+		t.Errorf("the offending leg should be named:\n%s", all)
+	}
+	if strings.Contains(all, "cs-sandbox,") || strings.Contains(all, "on cs-sandbox ") {
+		t.Errorf("a leg with forwarding off must not be reported:\n%s", all)
+	}
+	// The global is context, not an issue in itself.
+	if !strings.Contains(all, "ip_forward=1") {
+		t.Errorf("the global setting explains how this happens:\n%s", all)
+	}
+}
+
+// TestHostRouteGroupCleanWhenLegsAreClosed: no issue when every leg is closed.
+func TestHostRouteGroupCleanWhenLegsAreClosed(t *testing.T) {
+	root := t.TempDir()
+	procRoot = root
+	t.Cleanup(func() { procRoot = "/proc" })
+	p := filepath.Join(root, "sys/net/ipv4/conf/cs-sandbox/forwarding")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := hostRouteGroup(Deps{HostRouteOn: true, HostRouteLegs: []string{"cs-sandbox"}})
+	for _, c := range g.Checks {
+		if c.Status == NO {
+			t.Errorf("unexpected issue: %s", c.Message)
+		}
+	}
+}
+
+// TestHostRouteGroupNamesTheWSLRequirement: WSL2 is a real Linux kernel, so
+// everything else works and host-route fails on its one missing prerequisite.
+// Saying so beats letting the user find it by hitting it.
+func TestHostRouteGroupNamesTheWSLRequirement(t *testing.T) {
+	g := hostRouteGroup(Deps{IsWSL: true})
+	all := ""
+	for _, c := range g.Checks {
+		all += c.Message + "\n"
+	}
+	if !strings.Contains(all, "systemd-resolved") || !strings.Contains(all, "wsl.conf") {
+		t.Errorf("WSL users should be told what host-route needs and where to set it:\n%s", all)
+	}
+}

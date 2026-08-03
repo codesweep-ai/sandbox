@@ -17,6 +17,7 @@ import (
 // CreateSpec is the engine-agnostic description of a sandbox to create.
 type CreateSpec struct {
 	Name              string
+	Group             string // isolation boundary: network, SSH keys and gateway
 	Type              string // user | agent
 	Yolo              bool
 	Solo              bool
@@ -59,16 +60,21 @@ type Engine interface {
 
 // Deps are the shared services every engine adapter needs.
 type Deps struct {
-	Runner   run.Runner
-	Host     hostenv.Host
-	InstDir  string
-	TierDir  string
-	Image    string
-	Network  string
-	SSHBind  string // host bind address for published SSH ports (127.0.0.1 default)
-	TZ       string
-	FCCache  string // firecracker artifact cache dir (XDG cache)
-	AssetDir string // checkout root holding build assets (Containerfile, guest init); "" -> embedded
+	Runner  run.Runner
+	Host    hostenv.Host
+	InstDir string
+	TierDir string
+	Image   string
+	// Group is the isolation boundary this operation acts within: it selects the
+	// instance directory, the Podman network, the SSH keys and the gateway.
+	Group string
+	// TapPrefix is the group's allocated VM tap prefix (host-global namespace).
+	TapPrefix string
+	Network   string
+	SSHBind   string // host bind address for published SSH ports (127.0.0.1 default)
+	TZ        string
+	FCCache   string // firecracker artifact cache dir (XDG cache)
+	AssetDir  string // checkout root holding build assets (Containerfile, guest init); "" -> embedded
 	// StartTimeout is the readiness wait budget in seconds.
 	StartTimeout int
 	// Progress is an optional sink for human-facing progress lines emitted during
@@ -93,5 +99,14 @@ func (d Deps) note(msg string) {
 	}
 }
 
-// InstanceDir returns <InstDir>/<name>.
-func (d Deps) InstanceDir(name string) string { return state.Dir(d.InstDir, name) }
+// group returns the group this operation acts within, defaulting to the
+// default group so zero-valued Deps in tests stay usable.
+func (d Deps) group() string {
+	if d.Group == "" {
+		return state.DefaultGroup
+	}
+	return d.Group
+}
+
+// InstanceDir returns <InstDir>/<group>/<name>.
+func (d Deps) InstanceDir(name string) string { return state.Dir(d.InstDir, d.group(), name) }

@@ -16,7 +16,7 @@ func statOK(p string) bool { _, err := os.Stat(p); return err == nil }
 // and the instance state, but NOT the data volumes — so `create` reuses them.
 func TestPodmanRmKeepsVolumesRemovesState(t *testing.T) {
 	dir := t.TempDir()
-	idir := filepath.Join(dir, "box")
+	idir := state.Dir(dir, state.DefaultGroup, "box")
 	if err := os.MkdirAll(idir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func fcRemoveDeps(t *testing.T, instDir string) *Firecracker {
 // (rootfs.ext4) and drops the ephemeral disks + state, so `create` reuses the home.
 func TestFirecrackerRmKeepsRootfs(t *testing.T) {
 	dir := t.TempDir()
-	idir := filepath.Join(dir, "box")
+	idir := state.Dir(dir, state.DefaultGroup, "box")
 	if err := os.MkdirAll(idir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestFirecrackerRmKeepsRootfs(t *testing.T) {
 // home disk included.
 func TestFirecrackerDestroyRemovesRootfs(t *testing.T) {
 	dir := t.TempDir()
-	idir := filepath.Join(dir, "box")
+	idir := state.Dir(dir, state.DefaultGroup, "box")
 	if err := os.MkdirAll(idir, 0o700); err != nil {
 		t.Fatal(err)
 	}

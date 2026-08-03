@@ -43,7 +43,7 @@ func TestSaveLoad(t *testing.T) {
 	if err := Save(dir, in); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Load(dir, "s1")
+	got, err := Load(dir, DefaultGroup, "s1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestSaveLoadRejectInvalidNames(t *testing.T) {
 	if err := Save(dir, &Instance{Name: "../escape"}); err == nil {
 		t.Error("Save should reject a path-traversing name")
 	}
-	if _, err := Load(dir, "../escape"); err == nil {
+	if _, err := Load(dir, DefaultGroup, "../escape"); err == nil {
 		t.Error("Load should reject a path-traversing name")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "..", "escape")); !os.IsNotExist(err) {
@@ -86,7 +86,7 @@ func TestList(t *testing.T) {
 
 func TestListReportsCorruptState(t *testing.T) {
 	dir := t.TempDir()
-	badDir := filepath.Join(dir, "broken")
+	badDir := Dir(dir, DefaultGroup, "broken")
 	if err := os.MkdirAll(badDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestListReturnsHealthyAlongsideCorrupt(t *testing.T) {
 	if err := Save(dir, &Instance{Name: "healthy", Type: "agent", Engine: Podman, Port: 2203}); err != nil {
 		t.Fatal(err)
 	}
-	badDir := filepath.Join(dir, "broken")
+	badDir := Dir(dir, DefaultGroup, "broken")
 	if err := os.MkdirAll(badDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -152,5 +152,84 @@ func TestListSkipsNonInstanceDirs(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Name != "good" {
 		t.Fatalf("List = %+v, want just the real instance", got)
+	}
+}
+
+// TestGroupQualifiedRecords: identity is (group, name), so the same name can be
+// saved in two groups without either overwriting the other, and List reports
+// both — grouped and sorted.
+func TestGroupQualifiedRecords(t *testing.T) {
+	dir := t.TempDir()
+	for _, g := range []string{"cache-redis", "cache-memory"} { // saved out of order on purpose
+		if err := Save(dir, &Instance{Name: "worker", Group: g, Type: "agent", Engine: Podman}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, g := range []string{"cache-redis", "cache-memory"} {
+		in, err := Load(dir, g, "worker")
+		if err != nil {
+			t.Fatalf("load worker in %s: %v", g, err)
+		}
+		if in.Group != g {
+			t.Errorf("worker in %s loaded with group %q", g, in.Group)
+		}
+	}
+	got, err := List(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("List = %d records, want both groups' worker", len(got))
+	}
+	// Grouped and sorted, so a group's members stay adjacent wherever listed.
+	if got[0].Group != "cache-memory" || got[1].Group != "cache-redis" {
+		t.Errorf("List not sorted by group: %s, %s", got[0].Group, got[1].Group)
+	}
+	// A record found under the wrong group directory is a corrupt record, not a
+	// silently-relocated sandbox.
+	if err := os.MkdirAll(Dir(dir, "cache-none", "worker"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(Dir(dir, "cache-redis", "worker"), "state.json"))
+	if err := os.WriteFile(filepath.Join(Dir(dir, "cache-none", "worker"), "state.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir, "cache-none", "worker"); err == nil {
+		t.Error("a record whose group does not match its location must not load")
+	}
+}
+
+// TestGroupRecords: groups round-trip and list independently of their members.
+func TestGroupRecords(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveGroup(dir, &Group{Name: "cache-redis", Created: "2026-01-01T00:00:00Z", TapPrefix: "fd0001", GWPort: 2400}); err != nil {
+		t.Fatal(err)
+	}
+	g, err := LoadGroup(dir, "cache-redis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.TapPrefix != "fd0001" || g.GWPort != 2400 {
+		t.Errorf("group round-trip lost fields: %+v", g)
+	}
+	if _, err := LoadGroup(dir, "nope"); err == nil {
+		t.Error("loading an absent group should fail")
+	}
+	// A plain instance directory is not a group.
+	if err := Save(dir, &Instance{Name: "solo", Group: "cache-redis", Engine: Podman}); err != nil {
+		t.Fatal(err)
+	}
+	groups, err := ListGroups(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].Name != "cache-redis" {
+		t.Errorf("ListGroups = %+v, want just cache-redis", groups)
+	}
+	if err := ValidGroup("bad name"); err == nil {
+		t.Error("group names must be a single DNS label")
+	}
+	if NetworkName(DefaultGroup) != "cs-sandbox-net" || NetworkName("cache-redis") != "cs-sandbox-cache-redis" {
+		t.Error("network naming changed unexpectedly")
 	}
 }

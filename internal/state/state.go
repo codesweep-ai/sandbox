@@ -32,6 +32,139 @@ func ValidName(name string) error {
 	return nil
 }
 
+// DefaultGroup is the group a sandbox joins when none is named. It is an
+// ordinary group in every respect — its own network, keys and gateway — so
+// there is no unnamed special case anywhere below.
+const DefaultGroup = "default"
+
+// ValidGroup applies the sandbox-name rules to a group name: it becomes a
+// Podman network, a key directory, an ssh alias suffix and a directory under
+// the instances dir, so the same single-DNS-label restriction applies.
+func ValidGroup(name string) error {
+	if len(name) > 63 {
+		return fmt.Errorf("group name %q is too long (max 63 characters)", name)
+	}
+	if !nameRe.MatchString(name) {
+		return fmt.Errorf("invalid group name %q: use letters, digits and dashes only (must start and end alphanumeric)", name)
+	}
+	return nil
+}
+
+// ObjectName is a sandbox's host-global name: its Podman container and volumes,
+// and the canonical reference the CLI accepts. Identity is (group, name) and
+// these namespaces are host-global, so they carry the group — including the
+// default group, which is an ordinary group here as everywhere else. The guest
+// hostname and the in-network DNS alias stay bare, so members of a group keep
+// reaching each other as plain <name>.
+//
+// It lives here because every layer that addresses a sandbox from outside must
+// spell it the same way: an engine asking Podman for a bare name gets "no such
+// object", and a caller that guessed differently gets a silent no-op.
+func ObjectName(group, name string) string {
+	if group == "" {
+		group = DefaultGroup
+	}
+	return name + "." + group
+}
+
+// NetworkName is the Podman network backing a group. The default group keeps
+// the historical fabric name so existing docs, the host route and the fabric
+// helpers keep referring to the same bridge.
+func NetworkName(group string) string {
+	if group == DefaultGroup {
+		return "cs-sandbox-net"
+	}
+	return "cs-sandbox-" + group
+}
+
+// Group is an isolation boundary: one isolated network, one SSH key pair, one
+// gateway. Members of a group reach each other; members of different groups do
+// not, and cannot authenticate to one another even if they could.
+type Group struct {
+	Name    string `json:"name"`
+	Created string `json:"created"` // RFC3339 UTC
+	// TapPrefix is allocated once and recorded, never derived from a hash:
+	// Linux interface names are host-global, so two groups that collided on a
+	// hash would produce an interface-name clash far from its cause.
+	TapPrefix string `json:"tapprefix"`
+	// GWPort is the host port publishing this group's gateway (the keepalive
+	// container, which also serves as the ssh jump host into the group).
+	GWPort int `json:"gwport,omitempty"`
+}
+
+// GroupDir is the on-disk directory holding a group's record and its members.
+func GroupDir(instDir, group string) string { return filepath.Join(instDir, group) }
+
+func groupPath(instDir, group string) string {
+	return filepath.Join(GroupDir(instDir, group), "group.json")
+}
+
+// SaveGroup writes the canonical group.json.
+func SaveGroup(instDir string, g *Group) error {
+	if g == nil {
+		return fmt.Errorf("cannot save nil group")
+	}
+	if err := ValidGroup(g.Name); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(GroupDir(instDir, g.Name), 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(g, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	tmp := groupPath(instDir, g.Name) + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, groupPath(instDir, g.Name))
+}
+
+// LoadGroup reads a group record. Returns os.ErrNotExist if the group is absent.
+func LoadGroup(instDir, group string) (*Group, error) {
+	if err := ValidGroup(group); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(groupPath(instDir, group))
+	if err != nil {
+		return nil, err
+	}
+	var g Group
+	if err := json.Unmarshal(data, &g); err != nil {
+		return nil, fmt.Errorf("group %s: %w", group, err)
+	}
+	if g.Name != group {
+		return nil, fmt.Errorf("group %s: record name is %q", group, g.Name)
+	}
+	return &g, nil
+}
+
+// ListGroups returns every group under instDir, sorted by name.
+func ListGroups(instDir string) ([]*Group, error) {
+	entries, err := os.ReadDir(instDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []*Group
+	for _, e := range entries {
+		if !e.IsDir() || ValidGroup(e.Name()) != nil {
+			continue
+		}
+		g, err := LoadGroup(instDir, e.Name())
+		if err != nil {
+			continue // a directory without a group.json is not a group
+		}
+		out = append(out, g)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
 // Engine identifies the sandbox engine.
 type Engine string
 
@@ -51,7 +184,8 @@ type RepoClone struct {
 // Instance is the canonical typed state of one sandbox.
 type Instance struct {
 	Name    string   `json:"name"`
-	Type    string   `json:"type"` // user | agent
+	Group   string   `json:"group"` // the group whose network, keys and gateway it uses
+	Type    string   `json:"type"`  // user | agent
 	Engine  Engine   `json:"engine"`
 	Port    int      `json:"port"`
 	FCIP    string   `json:"fcip,omitempty"` // firecracker VM address
@@ -68,10 +202,13 @@ type Instance struct {
 	RepoClones  []RepoClone `json:"repoclones,omitempty"`
 }
 
-// Dir returns the on-disk instance directory for name under instDir.
-func Dir(instDir, name string) string { return filepath.Join(instDir, name) }
+// Dir returns the on-disk instance directory. Identity is (group, name), so the
+// same sandbox name may exist in several groups.
+func Dir(instDir, group, name string) string { return filepath.Join(GroupDir(instDir, group), name) }
 
-func statePath(instDir, name string) string { return filepath.Join(Dir(instDir, name), "state.json") }
+func statePath(instDir, group, name string) string {
+	return filepath.Join(Dir(instDir, group, name), "state.json")
+}
 
 // Save writes the canonical state.json.
 func Save(instDir string, in *Instance) error {
@@ -81,7 +218,13 @@ func Save(instDir string, in *Instance) error {
 	if err := ValidName(in.Name); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(Dir(instDir, in.Name), 0o700); err != nil {
+	if in.Group == "" {
+		in.Group = DefaultGroup
+	}
+	if err := ValidGroup(in.Group); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(Dir(instDir, in.Group, in.Name), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(in, "", "  ")
@@ -89,19 +232,22 @@ func Save(instDir string, in *Instance) error {
 		return err
 	}
 	data = append(data, '\n')
-	tmp := statePath(instDir, in.Name) + ".tmp"
+	tmp := statePath(instDir, in.Group, in.Name) + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, statePath(instDir, in.Name))
+	return os.Rename(tmp, statePath(instDir, in.Group, in.Name))
 }
 
 // Load reads an instance's state.json. Returns os.ErrNotExist if it is absent.
-func Load(instDir, name string) (*Instance, error) {
+func Load(instDir, group, name string) (*Instance, error) {
 	if err := ValidName(name); err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(statePath(instDir, name))
+	if err := ValidGroup(group); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(statePath(instDir, group, name))
 	if err != nil {
 		return nil, err
 	}
@@ -114,6 +260,12 @@ func Load(instDir, name string) (*Instance, error) {
 	}
 	if in.Name != name {
 		return nil, fmt.Errorf("state %s: record name is %q", name, in.Name)
+	}
+	if in.Group == "" {
+		in.Group = DefaultGroup
+	}
+	if in.Group != group {
+		return nil, fmt.Errorf("state %s: record group is %q, found under %q", name, in.Group, group)
 	}
 	return &in, nil
 }
@@ -135,22 +287,39 @@ func List(instDir string) ([]*Instance, error) {
 	}
 	var out []*Instance
 	var firstErr error
-	for _, e := range entries {
-		if !e.IsDir() || ValidName(e.Name()) != nil {
+	for _, ge := range entries {
+		if !ge.IsDir() || ValidGroup(ge.Name()) != nil {
 			continue
 		}
-		in, err := Load(instDir, e.Name())
+		group := ge.Name()
+		members, err := os.ReadDir(GroupDir(instDir, group))
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue // retained data from `rm`, not an active instance
-			}
-			if firstErr == nil {
-				firstErr = fmt.Errorf("load instance %s: %w", e.Name(), err)
-			}
 			continue
 		}
-		out = append(out, in)
+		for _, e := range members {
+			if !e.IsDir() || ValidName(e.Name()) != nil {
+				continue
+			}
+			in, err := Load(instDir, group, e.Name())
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue // retained data from `rm`, not an active instance
+				}
+				if firstErr == nil {
+					firstErr = fmt.Errorf("load instance %s.%s: %w", e.Name(), group, err)
+				}
+				continue
+			}
+			out = append(out, in)
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	// Sorted by group then name, so a group's members stay adjacent everywhere
+	// they are listed.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Group != out[j].Group {
+			return out[i].Group < out[j].Group
+		}
+		return out[i].Name < out[j].Name
+	})
 	return out, firstErr
 }

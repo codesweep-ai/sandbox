@@ -46,24 +46,39 @@ func (o Orphan) SinceRFC3339() string {
 // engines: a microVM leaves `instances/<name>/rootfs.ext4` behind, a container
 // leaves the `cs-sandbox-home-<name>` volume. Costs one `podman volume ls`.
 func (d Deps) Orphans(ctx context.Context) []Orphan {
+	// Keyed by the qualified reference, because that is what podman object names
+	// carry: a bare name would mark one group's sandbox as accounting for
+	// another group's leftover data of the same name.
 	live := map[string]bool{}
 	insts, _ := state.List(d.InstDir)
 	for _, in := range insts {
-		live[in.Name] = true
+		live[Qualify(in)] = true
 	}
 
 	found := map[string]Orphan{}
-	// Firecracker: an instance dir pruned down to the home disk.
-	if entries, err := os.ReadDir(d.InstDir); err == nil {
-		for _, e := range entries {
-			if !e.IsDir() || live[e.Name()] {
+	// Firecracker: an instance dir pruned down to the home disk. Instance dirs
+	// live one level below the group, so this walks groups then members.
+	if groups, err := os.ReadDir(d.InstDir); err == nil {
+		for _, ge := range groups {
+			if !ge.IsDir() {
 				continue
 			}
-			fi, err := os.Stat(filepath.Join(d.InstDir, e.Name(), "rootfs.ext4"))
+			gdir := filepath.Join(d.InstDir, ge.Name())
+			entries, err := os.ReadDir(gdir)
 			if err != nil {
 				continue
 			}
-			found[e.Name()] = Orphan{Name: e.Name(), Engine: state.Firecracker, Since: fi.ModTime()}
+			for _, e := range entries {
+				ref := obj(ge.Name(), e.Name())
+				if !e.IsDir() || live[ref] {
+					continue
+				}
+				fi, err := os.Stat(filepath.Join(gdir, e.Name(), "rootfs.ext4"))
+				if err != nil {
+					continue
+				}
+				found[ref] = Orphan{Name: ref, Engine: state.Firecracker, Since: fi.ModTime()}
+			}
 		}
 	}
 	// Podman: the home volume outliving its container.
@@ -107,8 +122,11 @@ func (d Deps) Orphan(ctx context.Context, name string) (Orphan, bool) {
 // PurgeOrphan deletes leftover data — what `destroy` does for a sandbox that
 // still exists, for one that `rm` already removed.
 func (d Deps) PurgeOrphan(ctx context.Context, o Orphan) error {
+	// o.Name is the qualified reference, so the data dir comes from its parts
+	// rather than from whichever group this Deps happens to be scoped to.
+	g, n := splitObj(o.Name)
 	if o.Engine == state.Firecracker {
-		return os.RemoveAll(d.InstanceDir(o.Name))
+		return os.RemoveAll(state.Dir(d.InstDir, g, n))
 	}
 	for _, v := range []string{homeVolumePrefix + o.Name, "cs-sandbox-containers-" + o.Name} {
 		if _, err := d.Runner.Run(ctx, run.Opts{}, "podman", "volume", "rm", "-f", v); err != nil {
@@ -116,5 +134,5 @@ func (d Deps) PurgeOrphan(ctx context.Context, o Orphan) error {
 		}
 	}
 	// A container sandbox can also leave an (empty) instance dir behind.
-	return os.RemoveAll(d.InstanceDir(o.Name))
+	return os.RemoveAll(state.Dir(d.InstDir, g, n))
 }

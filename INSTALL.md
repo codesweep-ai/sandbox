@@ -57,7 +57,7 @@ make install          # installs bin/cs-sandbox into ~/.local/bin, plus CS_SANDB
 
 ### Base packages
 
-Podman builds the image and provides the shared network fabric - both engines need it. The OpenSSH
+Podman builds the image and provides the rootless network fabric - both engines need it. The OpenSSH
 client (`ssh` / `ssh-keygen`) reaches every sandbox by name, and `git` shares your repos into
 sandboxes (`--repo`) - both required too (both ship by default on macOS and most Linux desktops).
 

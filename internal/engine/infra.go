@@ -7,20 +7,51 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/codesweep-ai/sandbox/internal/fcnet"
 	"github.com/codesweep-ai/sandbox/internal/lock"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/seed"
+	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
 // EnsureNetwork creates the shared podman network if absent (tolerates a
 // parallel create that wins the race).
 func (d Deps) EnsureNetwork(ctx context.Context) error {
 	if _, err := d.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "network", "exists", d.Network); err == nil {
-		return nil
+		verr := d.verifyManagedIsolation(ctx)
+		if verr == nil {
+			return nil
+		}
+		return d.healDefaultFabric(ctx, verr)
 	}
-	_, _ = d.Runner.Run(ctx, run.Opts{}, "podman", "network", "create", d.Network)
+	_, _ = d.Runner.Run(ctx, run.Opts{}, networkCreateArgv(d.Network)...)
 	if _, err := d.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "network", "exists", d.Network); err != nil {
 		return fmt.Errorf("could not create podman network %q", d.Network)
+	}
+	return d.verifyManagedIsolation(ctx)
+}
+
+// networkCreateArgv builds the create command for a group's network. Every
+// group network is isolated: netavark otherwise forwards traffic between
+// bridges in the same rootless namespace, so separate bridges and subnets alone
+// are NOT a boundary. isolate=true blocks that forwarding without the loss of
+// outbound internet that --internal would cause.
+func networkCreateArgv(network string) []string {
+	return []string{"podman", "network", "create",
+		"--opt", "isolate=true", "--label", "cs-sandbox.managed=1", network}
+}
+
+// verifyManagedIsolation confirms a network we are about to use really is an
+// isolated network we created. Adopting a pre-existing bridge of unknown
+// provenance would silently void the boundary every group member relies on, so
+// this fails closed rather than trusting the name.
+func (d Deps) verifyManagedIsolation(ctx context.Context) error {
+	got := strings.TrimSpace(run.Output(ctx, d.Runner, "podman", "network", "inspect", d.Network,
+		"--format", `{{ index .Options "isolate" }}|{{ index .Labels "cs-sandbox.managed" }}`))
+	if got != "true|1" {
+		return fmt.Errorf("network %q exists but is not a cs-sandbox managed isolated network "+
+			"(isolate|managed = %q, want \"true|1\"); choose a different group name or remove that network",
+			d.Network, got)
 	}
 	return nil
 }
@@ -100,4 +131,56 @@ func regularFile(path string) (bool, error) {
 		return false, fmt.Errorf("%s is not a regular file", path)
 	}
 	return true, nil
+}
+
+// healDefaultFabric upgrades a pre-isolation default fabric in place. isolate is
+// a creation-time option, so the only way to add it is to recreate the network.
+//
+// Only the default fabric is ever healed. An unlabelled network bearing a
+// group's name may well be the user's own, and silently deleting it would be far
+// worse than refusing — so named groups keep failing closed.
+//
+// Measured, and the reason this is not simply exempted: isolate=true does NOT
+// block a non-isolated peer. A pre-isolation default fabric is therefore
+// reachable from every group, which would make it a bridge between all of them.
+func (d Deps) healDefaultFabric(ctx context.Context, verr error) error {
+	if d.Network != state.NetworkName(state.DefaultGroup) {
+		return verr
+	}
+	keepalive := fcnet.KeepaliveFor(d.Network)
+	var others []string
+	out := run.Output(ctx, d.Runner, "podman", "ps", "-a",
+		"--filter", "network="+d.Network, "--format", "{{.Names}}")
+	for _, n := range strings.Split(strings.TrimSpace(out), "\n") {
+		if n = strings.TrimSpace(n); n != "" && n != keepalive {
+			others = append(others, n)
+		}
+	}
+	if len(others) > 0 {
+		return fmt.Errorf("the default network %q predates group isolation and must be recreated, "+
+			"but %d sandbox(es) are still attached (%s); destroy them first, then retry",
+			d.Network, len(others), strings.Join(others, ", "))
+	}
+	d.note("upgrading the default network to an isolated one (it predates group isolation)")
+	_, _ = d.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", keepalive)
+	if _, err := d.Runner.Run(ctx, run.Opts{}, "podman", "network", "rm", "-f", d.Network); err != nil {
+		return fmt.Errorf("could not remove the pre-isolation default network: %w", err)
+	}
+	_, _ = d.Runner.Run(ctx, run.Opts{}, networkCreateArgv(d.Network)...)
+	return d.verifyManagedIsolation(ctx)
+}
+
+// ReclaimNetwork removes a group's network once nothing references it. A group
+// owns its network, so this is a definite operation rather than the best-effort
+// sweep it would have to be if membership were only inferred from members.
+func (d Deps) ReclaimNetwork(ctx context.Context) {
+	if d.Network == "" || d.Network == state.NetworkName(state.DefaultGroup) {
+		return // the default fabric is shared host-wide and never reclaimed
+	}
+	_, _ = d.Runner.Run(ctx, run.Opts{}, "podman", "network", "rm", "-f", d.Network)
+}
+
+// RemoveGateway tears down a group's keepalive/gateway container.
+func (d Deps) RemoveGateway(ctx context.Context) {
+	_, _ = d.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", fcnet.KeepaliveFor(d.Network))
 }
