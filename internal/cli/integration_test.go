@@ -30,6 +30,7 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/run"
+	"github.com/codesweep-ai/sandbox/internal/seed"
 	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
@@ -131,9 +132,9 @@ func step(t *testing.T, format string, args ...any) {
 func createBox(t *testing.T, r *run.Exec, name string, extra ...string) string {
 	t.Helper()
 	t.Cleanup(func() {
-		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", name)
+		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", objName(name))
 		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "volume", "rm", "-f",
-			"cs-sandbox-home-"+name, "cs-sandbox-containers-"+name)
+			"cs-sandbox-home-"+objName(name), "cs-sandbox-containers-"+objName(name))
 	})
 	step(t, "creating podman sandbox %s…", name)
 	start := time.Now()
@@ -146,10 +147,33 @@ func createBox(t *testing.T, r *run.Exec, name string, extra ...string) string {
 	return out
 }
 
+// fcInstancesDir moves the instances root off tmpfs for microVM tests and
+// returns it. Each VM gets its own copy of the base rootfs — 14 GB at the time
+// of writing — and t.TempDir() is a tmpfs on most hosts, so the copy fails with
+// "Disk quota exceeded" long before anything under test runs. $HOME is disk.
+func fcInstancesDir(t *testing.T, host hostenv.Host) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(host.Home, ".cs-sandbox-fctest-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	inst := filepath.Join(dir, "instances")
+	t.Setenv("CS_SANDBOX_INSTANCES_DIR", inst)
+	return inst
+}
+
+// objName is the podman object for a default-group sandbox these tests create.
+// Podman objects carry the group (<name>.<group>), and a bare name matches
+// nothing — silently, since `rm`/`exec` against a missing object just returns
+// empty. That is how this whole suite came to assert on empty strings instead of
+// failing, and how its cleanup quietly leaked containers and volumes.
+func objName(name string) string { return state.ObjectName(state.DefaultGroup, name) }
+
 // inBox runs a command inside the sandbox as the dev user and returns stdout.
 func inBox(ctx context.Context, r *run.Exec, host hostenv.Host, name, sh string) string {
 	return run.Output(ctx, r, "podman", "exec", "--user", host.User,
-		"--workdir", "/home/"+host.User, name, "bash", "-lc", sh)
+		"--workdir", "/home/"+host.User, objName(name), "bash", "-lc", sh)
 }
 
 func TestCLICreateExecDestroyLive(t *testing.T) {
@@ -158,14 +182,14 @@ func TestCLICreateExecDestroyLive(t *testing.T) {
 	name := boxName(t, "cxd")
 
 	out, err := execRoot(t, "create", name, "--engine", "podman")
-	t.Cleanup(func() { _, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", name) })
+	t.Cleanup(func() { _, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", objName(name)) })
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if !strings.Contains(out, "created "+name) {
 		t.Errorf("create stdout = %q, want it to announce created %s", out, name)
 	}
-	if s := run.Output(ctx, r, "podman", "inspect", name, "--format", "{{.State.Running}}"); s != "true" {
+	if s := run.Output(ctx, r, "podman", "inspect", objName(name), "--format", "{{.State.Running}}"); s != "true" {
 		t.Fatalf("container not running (State.Running=%q)", s)
 	}
 	// The agent tools resolve on PATH at ~/.local/bin (host↔sandbox unification).
@@ -176,7 +200,7 @@ func TestCLICreateExecDestroyLive(t *testing.T) {
 	if _, err = execRoot(t, "destroy", name, "-f"); err != nil {
 		t.Fatalf("destroy: %v", err)
 	}
-	if _, err := r.Run(ctx, run.Opts{}, "podman", "inspect", name); err == nil {
+	if _, err := r.Run(ctx, run.Opts{}, "podman", "inspect", objName(name)); err == nil {
 		t.Errorf("container %s still exists after destroy", name)
 	}
 }
@@ -189,15 +213,15 @@ func TestCLIRmRecreateReusesDataLive(t *testing.T) {
 	name := boxName(t, "reuse")
 	t.Cleanup(func() {
 		_, _ = execRoot(t, "destroy", name, "-f")
-		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", name)
+		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", objName(name))
 		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "volume", "rm", "-f",
-			"cs-sandbox-home-"+name, "cs-sandbox-containers-"+name)
+			"cs-sandbox-home-"+objName(name), "cs-sandbox-containers-"+objName(name))
 	})
 
 	if out, err := execRoot(t, "create", name, "--engine", "podman"); err != nil {
 		t.Fatalf("create: %v (%s)", err, out)
 	}
-	if _, err := r.Run(ctx, run.Opts{}, "podman", "exec", "--user", host.User, name,
+	if _, err := r.Run(ctx, run.Opts{}, "podman", "exec", "--user", host.User, objName(name),
 		"bash", "-lc", "echo REUSE_MARKER > ~/reuse-marker.txt"); err != nil {
 		t.Fatalf("write marker: %v", err)
 	}
@@ -491,7 +515,8 @@ func sshCapture(t *testing.T, host hostenv.Host, name, sh string) string {
 	if err != nil {
 		t.Fatalf("port %s: %v", name, err)
 	}
-	key := filepath.Join(os.Getenv("CS_SANDBOX_TIER_DIR"), "id_cs-sandbox_user")
+	// Trust material is per group; these tests create default-group sandboxes.
+	key := filepath.Join(paths.GroupKeys(state.DefaultGroup), "id_cs-sandbox_user")
 	return run.Output(context.Background(), &run.Exec{}, "ssh",
 		"-i", key, "-p", strings.TrimSpace(portStr),
 		"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
@@ -546,6 +571,7 @@ func TestCLIHostByNameFirecrackerLive(t *testing.T) {
 	if !fileExists(filepath.Join(paths.FCCache(), "vmlinux.elf")) {
 		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
 	}
+	fcInstancesDir(t, host)
 	name := boxName(t, "hostnamefc")
 	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
 	step(t, "booting firecracker microVM %s (takes ~30s)…", name)
@@ -608,7 +634,7 @@ func TestCLIPortForwardLive(t *testing.T) {
 	createBox(t, r, name)
 
 	// Start a trivial HTTP server inside the sandbox on :8099 (detached).
-	if _, err := r.Run(ctx, run.Opts{}, "podman", "exec", "-d", name,
+	if _, err := r.Run(ctx, run.Opts{}, "podman", "exec", "-d", objName(name),
 		"bash", "-lc", "cd /tmp && nohup python3 -m http.server 8099 >/tmp/http.log 2>&1 &"); err != nil {
 		t.Fatalf("start in-sandbox http server: %v", err)
 	}
@@ -648,7 +674,7 @@ func TestCLISocksForwardLive(t *testing.T) {
 	name := boxName(t, "socks")
 	createBox(t, r, name)
 
-	if _, err := r.Run(ctx, run.Opts{}, "podman", "exec", "-d", name,
+	if _, err := r.Run(ctx, run.Opts{}, "podman", "exec", "-d", objName(name),
 		"bash", "-lc", "cd /tmp && nohup python3 -m http.server 8098 >/tmp/http.log 2>&1 &"); err != nil {
 		t.Fatalf("start in-sandbox http server: %v", err)
 	}
@@ -715,7 +741,7 @@ func waitInBox(t *testing.T, r *run.Exec, host hostenv.Host, name, sh string, d 
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		if _, err := r.Run(context.Background(), run.Opts{}, "podman", "exec", "--user", host.User,
-			"--workdir", "/home/"+host.User, name, "bash", "-lc", sh); err == nil {
+			"--workdir", "/home/"+host.User, objName(name), "bash", "-lc", sh); err == nil {
 			return
 		}
 		time.Sleep(time.Second)
@@ -950,6 +976,133 @@ func TestCLIGroupSameNameLive(t *testing.T) {
 	for _, g := range []string{ga, gb} {
 		if _, err := execRoot(t, "port", "dup."+g); err != nil {
 			t.Errorf("port dup.%s: %v", g, err)
+		}
+	}
+}
+
+// hostCredFile is the credential filename each agent keeps in its host profile
+// dir. A new agent needs a line here; the tests below fail loudly rather than
+// quietly skipping an agent they do not recognise — silently covering less than
+// it claims is exactly how the microVM seed lost opencode's credentials.
+var hostCredFile = map[string]string{
+	"claude":   ".credentials.json",
+	"codex":    "auth.json",
+	"opencode": "auth.json",
+}
+
+// synthAgentHome redirects $HOME to a temp home holding a synthetic credential
+// for EVERY agent, and returns it.
+//
+// Reading the developer's real logins made these tests cover whatever happened
+// to be signed in — which on most machines is not opencode, the one agent whose
+// credentials the microVM seed silently dropped. Synthesizing them means every
+// agent is exercised on every host, with no skips to hide behind.
+//
+// XDG_CACHE_HOME stays pinned to the real cache: the firecracker artifacts and
+// the host-global network fabric live there, and a fresh HOME would hide both.
+func synthAgentHome(t *testing.T, host hostenv.Host) string {
+	t.Helper()
+	home, err := os.MkdirTemp(host.Home, ".cs-sandbox-agenthome-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	for _, a := range seed.AgentNames() {
+		cf, ok := hostCredFile[a]
+		if !ok {
+			t.Fatalf("agent %q has no credential filename recorded in hostCredFile", a)
+		}
+		dir := filepath.Join(home, ".cs-"+a)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, cf), []byte(`{"synthetic":"`+a+`"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Podman's rootless store, its config, the firecracker artifacts and the
+	// host-global fabric are all HOME-derived; pin each back to the real one so
+	// only the agent profiles move.
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(host.Home, ".cache"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(host.Home, ".local", "share"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(host.Home, ".config"))
+	t.Setenv("HOME", home)
+	return home
+}
+
+// TestCLIAgentLoginSeedsEveryAgentLive covers the contract shared by all three
+// agents, driven by seed.AgentNames() so a fourth needs no new test: the host
+// credential is snapshotted into the instance seed, and installed at 0600 in the
+// profile dir the wrapper binds. The bespoke tests above additionally cover what
+// is specific to claude and opencode; codex previously had no coverage at all.
+func TestCLIAgentLoginSeedsEveryAgentLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	synthAgentHome(t, host)
+	agents := seed.AgentNames()
+	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
+
+	for _, agent := range agents {
+		t.Run(agent, func(t *testing.T) {
+			name := boxName(t, "seed"+agent)
+			out := createBox(t, r, name, "--inherit-agent-login", agent)
+			if !strings.Contains(out, "agent login: "+agent) {
+				t.Errorf("create should report the inherited login, got:\n%s", out)
+			}
+			cf := hostCredFile[agent]
+			if !fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", agent, cf)) {
+				t.Errorf("%s: host credential was not snapshotted into the seed", agent)
+			}
+			got := strings.TrimSpace(inBox(ctx, r, host, name,
+				"stat -c %a ~/.cs-"+agent+"/"+cf+" 2>/dev/null"))
+			if got != "600" {
+				t.Errorf("%s: ~/.cs-%s/%s inside the sandbox = %q, want mode 600", agent, agent, cf, got)
+			}
+		})
+	}
+}
+
+// TestCLIAgentLoginInheritedFirecrackerLive is the engine half, and the gap that
+// let a real bug ship: every agent-login test ran on podman, whose seed the
+// entrypoint reads straight from disk. A microVM instead gets its credentials
+// packed into seed.ext4, and that packing step iterated a hardcoded
+// {"claude", "codex"} — so `--inherit-agent-login opencode --engine firecracker`
+// reported success and produced a VM with no login, invisibly.
+//
+// One VM carries every available agent: booting one costs ~30s, three would cost
+// three times that for no extra signal.
+func TestCLIAgentLoginInheritedFirecrackerLive(t *testing.T) {
+	_, host := liveSetup(t)
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		t.Skipf("/dev/kvm unavailable: %v", err)
+	}
+	if !fileExists(filepath.Join(paths.FCCache(), "vmlinux.elf")) {
+		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
+	}
+	agents := seed.AgentNames()
+	instDir := fcInstancesDir(t, host)
+	synthAgentHome(t, host)
+	name := boxName(t, "fclogin")
+	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
+
+	step(t, "booting firecracker microVM %s with %s (takes ~30s)…", name, strings.Join(agents, ","))
+	start := time.Now()
+	if out, err := execRoot(t, "create", name, "--engine", "firecracker",
+		"--inherit-agent-login", strings.Join(agents, ",")); err != nil {
+		t.Fatalf("create firecracker: %v (out=%q)", err, out)
+	}
+	step(t, "microVM %s booted (%s)", name, time.Since(start).Round(time.Second))
+
+	for _, agent := range agents {
+		cf := hostCredFile[agent]
+		if !fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", agent, cf)) {
+			t.Errorf("%s: host credential was not snapshotted into the seed", agent)
+		}
+		// The assertion that matters: it survived the trip through seed.ext4 and
+		// was installed by the guest's PID 1.
+		got := strings.TrimSpace(sshCapture(t, host, name, "stat -c %a ~/.cs-"+agent+"/"+cf+" 2>/dev/null"))
+		if got != "600" {
+			t.Errorf("%s: ~/.cs-%s/%s inside the microVM = %q, want mode 600", agent, agent, cf, got)
 		}
 	}
 }
