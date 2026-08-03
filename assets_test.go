@@ -4,8 +4,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
+
+// envName matches a shell/Containerfile variable name.
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // With no assetDir (a downloaded binary), everything resolves from the embed.
 func TestImageDirFromEmbed(t *testing.T) {
@@ -119,4 +124,85 @@ func walkEq(t *testing.T, a, b string) {
 		}
 		return nil
 	})
+}
+
+// TestGuestEnvIsDeclaredInOnePlace guards the mechanism that gives a sandbox its
+// environment, because an OCI ENV reaches neither place the guest runs code:
+// sshd resets the environment for every session, and a microVM never had it —
+// the rootfs is a `podman export`, which carries files but not image config.
+//
+// So rootfs/etc/cs-sandbox/env is the declaration, .bashrc replays it for
+// shells, and the microVM's PID 1 replays it for the process tree. Adding a
+// variable there must be the whole change. Re-declaring them by hand is what let
+// CHROME_BIN and the DISABLE_* pair drift out of sync in the first place.
+func TestGuestEnvIsDeclaredInOnePlace(t *testing.T) {
+	dir, cleanup, err := ImageDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	read := func(rel string) string {
+		b, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		return string(b)
+	}
+
+	const decl = "/etc/cs-sandbox/env"
+	for _, w := range []struct{ file, why string }{
+		{"Containerfile", "the build must install the declaration"},
+		{"rootfs/home/.bashrc", "shells must replay it — sshd resets the environment"},
+		{"guest/init", "a microVM inherits no OCI ENV, so PID 1 must replay it"},
+	} {
+		if !strings.Contains(read(w.file), decl) {
+			t.Errorf("%s does not reference %s — %s", w.file, decl, w.why)
+		}
+	}
+
+	declared := map[string]bool{}
+	for _, line := range strings.Split(read("rootfs/etc/cs-sandbox/env"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if name, _, ok := strings.Cut(line, "="); ok && envName.MatchString(name) {
+			declared[name] = true
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("the declaration parsed as empty — the parser has drifted, not the image")
+	}
+
+	// A Containerfile ENV is legitimate when the BUILD needs it. It is a bug when
+	// it exists for the guest's benefit, because it will not reach one.
+	buildOnly := map[string]string{
+		"PATH":                "composed by .bashrc; the image's copy would fight that",
+		"PYENV_ROOT":          "used by build RUN steps; .bashrc sets it and sources pyenv",
+		"NVM_DIR":             "used by build RUN steps; .bashrc sets it and sources nvm",
+		"JAVA_HOME":           "used by build RUN steps; .bashrc sets it",
+		"CS_SANDBOX_SSH_PORT": "read by the container entrypoint, never needed in a shell",
+	}
+	lines := strings.Split(read("Containerfile"), "\n")
+	for i := 0; i < len(lines); i++ {
+		if !strings.HasPrefix(strings.TrimSpace(lines[i]), "ENV ") {
+			continue
+		}
+		stmt := strings.TrimSpace(lines[i])
+		for strings.HasSuffix(stmt, "\\") && i+1 < len(lines) {
+			i++
+			stmt = strings.TrimSuffix(stmt, "\\") + " " + strings.TrimSpace(lines[i])
+		}
+		for _, tok := range strings.Fields(strings.TrimPrefix(stmt, "ENV ")) {
+			name, _, ok := strings.Cut(tok, "=")
+			if !ok || !envName.MatchString(name) {
+				continue
+			}
+			if _, exempt := buildOnly[name]; exempt || declared[name] {
+				continue
+			}
+			t.Errorf("Containerfile sets ENV %s, which reaches no SSH session and no microVM. "+
+				"Declare it in rootfs/etc/cs-sandbox/env, or record why the build needs it.", name)
+		}
+	}
 }

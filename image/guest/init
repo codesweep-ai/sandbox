@@ -76,6 +76,20 @@ SSH_DIR="$HOME_DIR/.ssh"; mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"; chmod go-w 
 # later spawns — inherits them, matching the Podman container env. (ssh sessions still come from
 # ~/.ssh/environment; sshd resets its own session env regardless.) Values are literal, so build
 # each "NAME=VALUE" as a single word to keep spaces/'=' intact; non-KEY=VALUE lines are skipped.
+# The guest environment declared in /etc/cs-sandbox/env. A microVM inherits no
+# OCI ENV at all — this rootfs is a `podman export`, which carries files but not
+# image config — so PID 1 replays the declaration and the whole process tree
+# matches the container engine. Injection below runs after, so --env wins.
+if [ -f /etc/cs-sandbox/env ]; then
+  while IFS= read -r _e_line || [ -n "$_e_line" ]; do
+    case "$_e_line" in
+      \#*|"") continue ;;
+      *=*) _e_k="${_e_line%%=*}"
+           eval "[ -n \"\${$_e_k+x}\" ]" || export "$_e_k=${_e_line#*=}" ;;
+    esac
+  done < /etc/cs-sandbox/env
+  unset _e_line _e_k
+fi
 if [ -f "$SEED/inject-env" ]; then
   install -m600 "$SEED/inject-env" "$SSH_DIR/environment"
   while IFS= read -r _e_line || [ -n "$_e_line" ]; do

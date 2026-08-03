@@ -11,6 +11,21 @@ if ! [[ "$PATH" =~ "$HOME/.local/bin:$HOME/bin:" ]]; then
 fi
 export PATH
 
+# The guest environment declared in /etc/cs-sandbox/env. sshd resets the
+# environment for every session, so a Containerfile ENV never reaches this shell;
+# replaying the declaration here is what does. Adding a variable there needs no
+# line here. Anything already set wins, so --env injection (applied by sshd from
+# ~/.ssh/environment before this runs) and a user's own export are not clobbered.
+if [[ -r /etc/cs-sandbox/env ]]; then
+    while IFS= read -r _l; do
+        [[ "$_l" == \#* || -z "${_l// }" ]] && continue
+        [[ "$_l" == *=* ]] || continue
+        _k="${_l%%=*}"
+        [[ -z "${!_k+x}" ]] && export "$_k=${_l#*=}"
+    done < /etc/cs-sandbox/env
+    unset _l _k
+fi
+
 # Uncomment the following line if you don't like systemctl's auto-paging feature:
 # export SYSTEMD_PAGER=
 

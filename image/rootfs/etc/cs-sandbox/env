@@ -1,0 +1,25 @@
+# Environment for every sandbox shell and process, in both engines.
+#
+# This file is the declaration. A Containerfile ENV cannot serve the guest: sshd
+# resets the environment for every session, so `ssh <name>` and `ssh <name> cmd`
+# see none of it, and a microVM never had it at all — its rootfs is a
+# `podman export`, which carries files but not image config.
+#
+# So anything a guest needs at RUNTIME belongs here, and nowhere else. Adding a
+# line is the whole change: .bashrc replays this for shells and the microVM's
+# PID 1 replays it for the process tree. Re-declaring variables by hand instead
+# is what let CHROME_BIN and the DISABLE_* pair drift out of sync.
+#
+# Format: KEY=VALUE, one per line, values literal (no expansion). Anything
+# already set wins, so --env injection and a user's own export are never
+# overridden. Blank lines and # comments are ignored.
+
+# Headless browser, for tools that resolve one via CHROME_BIN (e.g. Playwright's
+# executablePath). The image ships Chromium.
+CHROME_BIN=/usr/bin/chromium-browser
+
+# Claude Code is a pinned binary in read-only /opt, which matches none of its
+# known installMethods — so its install-health check nags, and its auto-updater
+# would shadow-install a newer build into ~/.local. Both off.
+DISABLE_INSTALLATION_CHECKS=1
+DISABLE_AUTOUPDATER=1

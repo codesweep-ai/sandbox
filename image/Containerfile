@@ -46,7 +46,8 @@ RUN dnf -y install \
     mesa-libEGL mesa-libGL && \
     dnf clean all
 
-ENV CHROME_BIN=/usr/bin/chromium-browser
+# CHROME_BIN is declared in rootfs/etc/cs-sandbox/env — an image ENV never reaches
+# an SSH session or a microVM. See that file.
 
 # NOTE: `COPY . /sandbox` is intentionally deferred to just before it's first needed
 # (the Neovim plugin pre-build / entrypoint), AFTER the expensive toolchain compiles, so
@@ -282,8 +283,8 @@ RUN base=https://downloads.claude.ai/claude-code-releases \
 # Disable the install checks and the auto-updater (it can't write /opt anyway). This covers
 # the container engine for any direct `claude`; the cs-claude wrapper exports the same
 # for the microVM engine (whose guest init doesn't inherit image ENV) and for either engine.
-ENV DISABLE_INSTALLATION_CHECKS=1 \
-    DISABLE_AUTOUPDATER=1
+# DISABLE_INSTALLATION_CHECKS / DISABLE_AUTOUPDATER are declared in
+# rootfs/etc/cs-sandbox/env (an image ENV reaches neither SSH sessions nor a microVM).
 
 # OpenAI Codex — the release package OpenAI's own installer uses
 # (https://chatgpt.com/codex/install.sh): the static musl build plus the helpers codex ships for
@@ -359,6 +360,10 @@ RUN printf '#!/bin/sh\nexec sudo /usr/bin/podman "$@"\n' > /usr/local/bin/podman
 # Repo context (entrypoint, home skeleton, vendored scripts). Deferred to here — after
 # the toolchain compiles — so edits to these files don't bust the expensive cache above.
 COPY . /sandbox
+
+# The guest environment declaration, at a path both entry paths read. Installed
+# rather than referenced under /sandbox so it looks like the config it is.
+RUN install -Dm0644 /sandbox/etc/cs-sandbox/env /etc/cs-sandbox/env
 
 # Pre-build the ENTIRE Neovim setup, so the first `nvim` in a sandbox is instant and needs
 # no network. Three kinds of artifact, and they can't all live in the same place:
