@@ -251,6 +251,51 @@ func TestGroupLsJSONIsAStableInventory(t *testing.T) {
 	}
 }
 
+// `group ls -q` is the scripting form, and it means the same thing here as it
+// does for sandboxes: the bare references, one per line, with nothing else on
+// the line to strip. Without the local flag, -q would be the root's "silence
+// output" flag, which does not touch stdout — so the table would come out
+// verbatim and a pipeline would be reading column headers.
+func TestGroupLsQuietPrintsNamesOnly(t *testing.T) {
+	dir := t.TempDir()
+	for _, g := range []string{"cache-redis", "web"} {
+		if err := state.SaveGroup(dir, &state.Group{
+			Name: g, Created: "2026-01-01T00:00:00Z", TapPrefix: "fd0001", GWPort: 2401,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := state.Save(dir, &state.Instance{
+		Name: "worker", Group: "cache-redis", Type: "agent", Engine: state.Podman, Port: 2200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{InstDir: dir, Runner: run.NewFake()}
+	cmd := newGroupLsCmd(app)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"-q"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "cache-redis\nweb\n"; got != want {
+		t.Errorf("group ls -q = %q, want %q", got, want)
+	}
+}
+
+// -q and --json ask for two different renderings of the same listing, so asking
+// for both is a mistake worth naming rather than silently resolving one way.
+func TestGroupLsQuietAndJSONAreMutuallyExclusive(t *testing.T) {
+	app := &App{InstDir: t.TempDir(), Runner: run.NewFake()}
+	cmd := newGroupLsCmd(app)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"-q", "--json"})
+	if err := cmd.Execute(); err == nil {
+		t.Error("group ls -q --json was accepted")
+	}
+}
+
 // An empty host still answers, and answers with a JSON array rather than
 // nothing: a consumer probing for a group must be able to tell "no groups" from
 // "this build has no such command".

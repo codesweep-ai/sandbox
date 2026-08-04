@@ -52,8 +52,15 @@ into another command. `--json` is the stable machine-readable inventory:
   "status": "running", "engine": "podman", "network": "cs-sandbox-cache-redis" }
 ```
 
-`group ls --json` is the same thing one level up — the inventory of groups themselves, for a tool
-that creates and reclaims them and needs to check its work without parsing a table:
+`group ls -q` and `group ls --json` are the same two forms one level up. `-q` prints the group
+names alone, one per line, so a group listing pipes as readily as a sandbox one:
+
+```bash
+cs-sandbox group ls -q | xargs -n1 cs-sandbox group rm -f
+```
+
+`--json` is the inventory of groups themselves, for a tool that creates and reclaims them and needs
+to check its work without parsing a table:
 
 ```json
 { "name": "cache-redis", "network": "cs-sandbox-cache-redis",

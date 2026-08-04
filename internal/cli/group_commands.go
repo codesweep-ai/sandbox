@@ -80,15 +80,28 @@ type groupItem struct {
 }
 
 func newGroupLsCmd(app *App) *cobra.Command {
-	var asJSON bool
+	var quiet, asJSON bool
 	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: "List groups",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if quiet && asJSON {
+				return fmt.Errorf("--quiet and --json are mutually exclusive")
+			}
 			groups, err := state.ListGroups(app.InstDir)
 			if err != nil {
 				return err
+			}
+			// Names only: the scripting form `ls -q` gives for sandboxes, one level
+			// up, so `group ls -q | xargs -n1 cs-sandbox group rm -f` works. A group
+			// name is already the whole reference — nothing to qualify it with — and
+			// the member count nothing here prints is skipped along with it.
+			if quiet {
+				for _, g := range groups {
+					fmt.Fprintln(cmd.OutOrStdout(), g.Name)
+				}
+				return nil
 			}
 			insts, _ := state.List(app.InstDir)
 			members := map[string]int{}
@@ -120,6 +133,7 @@ func newGroupLsCmd(app *App) *cobra.Command {
 			return tw.Flush()
 		},
 	}
+	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "print only group names, one per line (for scripting)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print stable machine-readable JSON")
 	return cmd
 }
