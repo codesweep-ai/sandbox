@@ -222,8 +222,11 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	for _, sn := range snaps {
 		fmt.Fprintf(out, "  snapshot: %s -> ~/%s (read-only, frozen at create)\n", sn.HostPath, sn.Name)
 	}
-	for _, rc := range repos {
-		fmt.Fprintf(out, "  repo:     ~/%s on branch cs-sandbox/%s\n", rc.Name, name)
+	for _, rc := range inst.RepoClones {
+		// The recorded branch, not a second derivation of it: this line is how
+		// the operator learns what to fetch, so it has to be the branch that
+		// actually exists rather than one spelled independently.
+		fmt.Fprintf(out, "  repo:     ~/%s on branch %s\n", rc.Dir, rc.Branch)
 	}
 	return nil
 }
