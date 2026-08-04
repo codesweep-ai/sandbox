@@ -50,7 +50,9 @@ Reject a base rootfs that is not a filesystem
 - A blkid probe, so the happy path costs nothing.
 ```
 
-Keep the `Co-Authored-By:` trailer when an agent wrote the change.
+Keep the `Co-Authored-By:` trailer when an agent wrote the change. Drop any trailer linking back to
+the agent's session or transcript — those URLs are private to whoever ran the agent and dead to
+everyone else reading the log.
 
 ## Docs
 
