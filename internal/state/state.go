@@ -36,14 +36,37 @@ func ValidName(name string) error {
 // tunable — it is the size of a struct field in the kernel ABI.
 const sunPathMax = 108
 
-// longestSocketName is the longest basename a per-instance socket can take.
-// The two are fwd.sock (the host→VM ssh forwarder's) and vm.vsock (Firecracker's
-// vsock UDS), both 8 characters. The reserve is for the _<port> suffix
-// Firecracker appends for guest-initiated connections — nothing opens one today
-// (the guest listens, the host dials the base path), which is why the stale-file
-// cleanup only globs vm.vsock*, but a future guest→host channel on any ordinary
-// port stays inside this.
-const longestSocketName = "vm.vsock_65535"
+// The Unix sockets a running sandbox creates in its instance directory. Their
+// names live here, and not at the two places that create them, because
+// ValidInstancePath has to budget for the longest: a name that drifted from that
+// budget would bring back the silent truncation the check exists to prevent.
+const (
+	SockFwd   = "fwd.sock" // the host→VM ssh forwarder's, by internal/fcnet
+	SockVsock = "vm.vsock" // Firecracker's vsock UDS, by internal/engine
+)
+
+var instanceSockets = []string{SockFwd, SockVsock}
+
+// longestSocketName is the longest basename among instanceSockets — 8
+// characters, both of them being that long.
+//
+// No room is reserved for the _<port> suffix Firecracker appends. That path
+// serves a guest-initiated connection, and for one the host has to be listening
+// on <uds>_<port> first; nothing here ever is. The guest only listens (socat
+// VSOCK-LISTEN:22) and the host only dials the base path. Add a guest→host
+// channel and this has to grow with it — until then the reserve would only
+// spend six bytes of a tight budget rejecting names that work.
+var longestSocketName = longestOf(instanceSockets)
+
+func longestOf(names []string) string {
+	longest := ""
+	for _, n := range names {
+		if len(n) > len(longest) {
+			longest = n
+		}
+	}
+	return longest
+}
 
 // ValidInstancePath rejects a (group, name) whose instance directory could not
 // hold a Unix socket. ValidName and ValidGroup each bound one label at 63

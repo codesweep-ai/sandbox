@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
 var errKVM = errors.New("fc: /dev/kvm not available/writable — the firecracker engine needs a Linux host with KVM")
@@ -83,9 +85,11 @@ func killFirecracker(idir string) {
 	_ = os.Remove(pidFile)
 }
 
-// removeVsock removes stale vm.vsock* sockets before (re)boot.
+// removeVsock removes stale vm.vsock* sockets before (re)boot. The glob also
+// sweeps the _<port> form, which nothing opens today but which an older build
+// or a future guest→host channel could leave behind.
 func removeVsock(idir string) {
-	matches, _ := filepath.Glob(filepath.Join(idir, "vm.vsock*"))
+	matches, _ := filepath.Glob(filepath.Join(idir, state.SockVsock+"*"))
 	for _, m := range matches {
 		_ = os.Remove(m)
 	}

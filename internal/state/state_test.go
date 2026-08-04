@@ -194,25 +194,32 @@ func TestValidInstancePathBoundsTheSharedSocketBudget(t *testing.T) {
 	}
 }
 
-// The budget is measured against the longest socket the instance dir must hold,
-// not the shortest. Firecracker appends _<port> to the vsock UDS, so a path that
-// fits fwd.sock can still be too short for vm.vsock_<port>.
-func TestValidInstancePathMeasuresTheLongestSocket(t *testing.T) {
-	// A root sized so that fwd.sock fits exactly and the vsock name does not.
+// The budget is only as good as the name it measures: it has to cover every
+// socket the instance directory holds, or the check under-measures and the
+// silent truncation it exists to prevent comes back.
+func TestSocketBudgetCoversEveryInstanceSocket(t *testing.T) {
+	if len(instanceSockets) == 0 {
+		t.Fatal("no instance sockets declared")
+	}
+	for _, sock := range instanceSockets {
+		if len(sock) > len(longestSocketName) {
+			t.Errorf("socket %q is longer than the budgeted %q", sock, longestSocketName)
+		}
+	}
+	// sun_path counts its terminator, so 107 bytes is the longest path that
+	// fits and 108 is one too many. Walk the root length across that edge.
 	const group, name = "g", "n"
 	for pad := 1; pad < 120; pad++ {
 		root := "/" + strings.Repeat("d", pad)
-		fits := func(base string) bool {
-			return len(filepath.Join(root, group, name, base)) < 108
-		}
-		if fits("fwd.sock") && !fits(longestSocketName) {
-			if err := ValidInstancePath(root, group, name); err == nil {
-				t.Fatalf("root %d: accepted a path that fits fwd.sock but not %s", pad, longestSocketName)
-			}
-			return
+		full := filepath.Join(root, group, name, longestSocketName)
+		err := ValidInstancePath(root, group, name)
+		switch {
+		case len(full) == sunPathMax-1 && err != nil:
+			t.Fatalf("path of %d bytes rejected; %d is the last that fits", len(full), sunPathMax-1)
+		case len(full) == sunPathMax && err == nil:
+			t.Fatalf("path of %d bytes accepted; the limit is %d", len(full), sunPathMax)
 		}
 	}
-	t.Fatal("no root length exercised the gap between the two socket names")
 }
 
 // The host source repository sits outside every group, so the branch a fetch

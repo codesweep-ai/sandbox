@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/run"
+	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
 // KeepaliveName is the container that pins podman's rootless netns + bridge on
@@ -525,7 +526,7 @@ func (f Fabric) TapDel(ctx context.Context, tap string) {
 // $! would be the wrapper, not the process holding the socket.
 func (f Fabric) FwdUp(idir string, hostPort int, vmIP, bind string) error {
 	f.FwdDown(idir)
-	sock := filepath.Join(idir, "fwd.sock")
+	sock := filepath.Join(idir, state.SockFwd)
 	_ = os.Remove(sock)
 	_ = os.Remove(filepath.Join(idir, "fwd-ns.pid"))
 
@@ -588,8 +589,8 @@ func (f Fabric) FwdDown(idir string) {
 		_ = os.Remove(p)
 	}
 	// Belt-and-suspenders: reap any socat still bound to this instance's socket.
-	_, _ = f.Runner.Run(context.Background(), run.Opts{}, "pkill", "-f", filepath.Join(idir, "fwd.sock"))
-	_ = os.Remove(filepath.Join(idir, "fwd.sock"))
+	_, _ = f.Runner.Run(context.Background(), run.Opts{}, "pkill", "-f", filepath.Join(idir, state.SockFwd))
+	_ = os.Remove(filepath.Join(idir, state.SockFwd))
 }
 
 // --- helpers ---

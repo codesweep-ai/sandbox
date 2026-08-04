@@ -224,7 +224,7 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	}
 
 	// --- run.json ---
-	vsock := filepath.Join(idir, "vm.vsock")
+	vsock := filepath.Join(idir, state.SockVsock)
 	removeVsock(idir)
 	cfg := fcconfig.Build(fcconfig.Spec{
 		KernelPath: fe.cache().Kernel(), InitrdPath: fe.cache().Initrd(),
