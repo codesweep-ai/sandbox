@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -19,7 +20,7 @@ import (
 func TestForwardArgs(t *testing.T) {
 	h := hostenv.Host{User: "dev"}
 
-	local := forwardArgs(h, "/tier", "box", 2200, "L", 18099, "localhost:80", "127.0.0.1")
+	local := forwardArgs(h, "/tier", state.DefaultGroup, "box", 2200, "L", 18099, "localhost:80", "127.0.0.1")
 	for _, want := range []string{"-N", "-L", "127.0.0.1:18099:localhost:80", "dev@127.0.0.1"} {
 		if !slices.Contains(local, want) {
 			t.Errorf("local forward args missing %q: %v", want, local)
@@ -29,7 +30,7 @@ func TestForwardArgs(t *testing.T) {
 		t.Errorf("local forward should not use -D: %v", local)
 	}
 
-	socks := forwardArgs(h, "/tier", "box", 2200, "D", 1080, "socks", "127.0.0.1")
+	socks := forwardArgs(h, "/tier", state.DefaultGroup, "box", 2200, "D", 1080, "socks", "127.0.0.1")
 	for _, want := range []string{"-N", "-D", "127.0.0.1:1080", "dev@127.0.0.1"} {
 		if !slices.Contains(socks, want) {
 			t.Errorf("socks args missing %q: %v", want, socks)
@@ -37,6 +38,32 @@ func TestForwardArgs(t *testing.T) {
 	}
 	if slices.Contains(socks, "-L") {
 		t.Errorf("socks forward should not use -L: %v", socks)
+	}
+}
+
+// A forward must key known_hosts by the host-global object name. Two groups
+// running the same fixture otherwise share one entry, and the second forward
+// fails "host key changed" — under BatchMode, with no one to accept the new key.
+func TestForwardArgsKeysHostKeyOnTheObjectName(t *testing.T) {
+	h := hostenv.Host{User: "dev"}
+	seen := map[string]string{}
+	for _, group := range []string{"cache-redis", "cache-memory", state.DefaultGroup} {
+		args := forwardArgs(h, "/tier", group, "api", 2200, "L", 18099, "localhost:80", "127.0.0.1")
+		i := slices.Index(args, "-o")
+		alias := ""
+		for ; i >= 0 && i < len(args)-1; i++ {
+			if args[i] == "-o" && strings.HasPrefix(args[i+1], "HostKeyAlias=") {
+				alias = strings.TrimPrefix(args[i+1], "HostKeyAlias=")
+				break
+			}
+		}
+		if want := state.ObjectName(group, "api"); alias != want {
+			t.Errorf("group %q: HostKeyAlias %q, want %q", group, alias, want)
+		}
+		if other, dup := seen[alias]; dup {
+			t.Errorf("groups %q and %q collide on HostKeyAlias %q", other, group, alias)
+		}
+		seen[alias] = group
 	}
 }
 

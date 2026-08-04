@@ -65,7 +65,7 @@ func Start(h hostenv.Host, tierDir, instDir, group, name string, port int, kind 
 		return nil, fmt.Errorf("host port %d is already in use", hostPort)
 	}
 
-	args := forwardArgs(h, tierDir, name, port, kind, hostPort, target, bind)
+	args := forwardArgs(h, tierDir, group, name, port, kind, hostPort, target, bind)
 
 	logf, err := os.Create(rec + ".log")
 	if err != nil {
@@ -101,8 +101,14 @@ func Start(h hostenv.Host, tierDir, instDir, group, name string, port int, kind 
 // forwardArgs builds the `ssh` argv for a forward: the connection options, then
 // -N (no command) + fail-fast batch flags, then -L host:port:target (local) or
 // -D bind:port (SOCKS), then the login target.
-func forwardArgs(h hostenv.Host, tierDir, name string, port int, kind string, hostPort int, target, bind string) []string {
-	args := hostcfg.SSHOptions(h, tierDir, name, port)
+//
+// It takes (group, name) rather than a bare name so the connection is keyed by
+// the host-global object name, as every other managed connection is. A bare
+// HostKeyAlias is not unique: the same fixture in two groups is what groups are
+// for, and both would claim the one known_hosts entry, so the second forward
+// died on "host key changed" with BatchMode leaving nobody to answer.
+func forwardArgs(h hostenv.Host, tierDir, group, name string, port int, kind string, hostPort int, target, bind string) []string {
+	args := hostcfg.SSHOptions(h, tierDir, state.ObjectName(group, name), port)
 	args = append(args, "-N", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes")
 	if kind == "D" {
 		args = append(args, "-D", fmt.Sprintf("%s:%d", bind, hostPort))
