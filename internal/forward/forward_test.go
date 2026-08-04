@@ -1,13 +1,17 @@
 package forward
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"testing"
 
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
+
+	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
 // TestForwardArgs pins the ssh argv for both a local (-L) forward and a SOCKS
@@ -56,7 +60,7 @@ func TestRecordRoundTrip(t *testing.T) {
 // removes the dead ones, and ignores .log files.
 func TestListGCsDeadRecords(t *testing.T) {
 	instDir := t.TempDir()
-	d := dir(instDir, "box")
+	d := dir(instDir, "grp", "box")
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +85,7 @@ func TestListGCsDeadRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	list, err := List(instDir, "box")
+	list, err := List(instDir, "grp", "box")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +101,7 @@ func TestListGCsDeadRecords(t *testing.T) {
 // counts it.
 func TestRemove(t *testing.T) {
 	instDir := t.TempDir()
-	d := dir(instDir, "box")
+	d := dir(instDir, "grp", "box")
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +115,7 @@ func TestRemove(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, err := Remove(instDir, "box", "all")
+	n, err := Remove(instDir, "grp", "box", "all")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +126,91 @@ func TestRemove(t *testing.T) {
 		t.Error("Remove should have deleted the record file")
 	}
 	// Nothing left to list.
-	if list, _ := List(instDir, "box"); len(list) != 0 {
+	if list, _ := List(instDir, "grp", "box"); len(list) != 0 {
 		t.Errorf("List after Remove = %+v, want empty", list)
+	}
+}
+
+// Records live inside the instance's own directory, not at a path derived from
+// whatever reference the caller typed. Keying on the reference put them beside
+// the group directories at the instances root, where `group rm` could not
+// reclaim them and a destroy spelled differently could not find them.
+func TestRecordsLiveInsideTheInstanceDirectory(t *testing.T) {
+	instDir := t.TempDir()
+	got := dir(instDir, "cache-redis", "api")
+	want := filepath.Join(state.Dir(instDir, "cache-redis", "api"), "forwards")
+	if got != want {
+		t.Fatalf("forwards dir = %q, want %q", got, want)
+	}
+	// Specifically NOT the qualified ref at the instances root.
+	if stray := filepath.Join(instDir, "api.cache-redis", "forwards"); got == stray {
+		t.Fatalf("forwards dir is still keyed on the reference: %q", got)
+	}
+}
+
+// An upgrade must not strand a live ssh process. Forwards recorded by an older
+// build sit at the pre-identity path, invisible to every command; teardown
+// sweeps them so the process is killed and the stray directory reclaimed.
+func TestKillAllSweepsPreIdentityRecords(t *testing.T) {
+	instDir := t.TempDir()
+	legacy := legacyDir(instDir, "api.cache-redis")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	reaped := false
+	t.Cleanup(func() {
+		if !reaped {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+		}
+	})
+	rec := filepath.Join(legacy, "18099")
+	if err := writeRecord(rec, &Record{PID: child.Process.Pid, Kind: "L", HostPort: 18099}); err != nil {
+		t.Fatal(err)
+	}
+
+	KillAll(instDir, "cache-redis", "api")
+
+	if _, err := os.Stat(rec); !os.IsNotExist(err) {
+		t.Error("legacy record survived teardown")
+	}
+	// The stray <instances>/<ref>/ directory goes too — it is the leak the
+	// old keying produced, and nothing else will ever reclaim it.
+	if _, err := os.Stat(filepath.Join(instDir, "api.cache-redis")); !os.IsNotExist(err) {
+		t.Error("stray reference-keyed directory survived teardown")
+	}
+	// And the process it recorded is signalled, not left running. Asserted by
+	// reaping it: alive() is a kill(pid, 0) probe, which still succeeds for an
+	// unreaped zombie, so polling it here could never observe the death.
+	err := child.Wait()
+	reaped = true
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("legacy forward's process exited normally (%v); it should have been signalled", err)
+	}
+	status, ok := exit.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() || status.Signal() != syscall.SIGTERM {
+		t.Errorf("legacy forward's process wait status = %v, want terminated by SIGTERM", exit)
+	}
+}
+
+// A default-group member could be addressed bare, so its legacy records sit
+// under the bare name; both spellings have to be swept.
+func TestKillAllSweepsBareLegacyPathForDefaultGroup(t *testing.T) {
+	instDir := t.TempDir()
+	legacy := legacyDir(instDir, "api")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRecord(filepath.Join(legacy, "18099"), &Record{PID: -1, Kind: "L", HostPort: 18099}); err != nil {
+		t.Fatal(err)
+	}
+	KillAll(instDir, state.DefaultGroup, "api")
+	if _, err := os.Stat(filepath.Join(instDir, "api")); !os.IsNotExist(err) {
+		t.Error("bare legacy directory survived teardown for a default-group member")
 	}
 }

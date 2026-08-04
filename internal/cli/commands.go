@@ -31,11 +31,11 @@ func (a *App) engineFor(name string) (engine.Engine, *state.Instance, error) {
 func newInstanceCmds(app *App) []*cobra.Command {
 	return []*cobra.Command{
 		simpleInstanceCmd(app, "start", "Start a stopped sandbox",
-			func(ctx context.Context, e engine.Engine, name string) error { return e.Start(ctx, name) }),
+			func(ctx context.Context, e engine.Engine, in *state.Instance) error { return e.Start(ctx, in.Name) }),
 		simpleInstanceCmd(app, "stop", "Stop a running sandbox (keep its state)",
-			func(ctx context.Context, e engine.Engine, name string) error {
-				forward.KillAll(app.InstDir, name)
-				return e.Stop(ctx, name)
+			func(ctx context.Context, e engine.Engine, in *state.Instance) error {
+				forward.KillAll(app.InstDir, in.Group, in.Name)
+				return e.Stop(ctx, in.Name)
 			}),
 		newRmCmd(app),
 		newDestroyCmd(app),
@@ -45,7 +45,7 @@ func newInstanceCmds(app *App) []*cobra.Command {
 	}
 }
 
-func simpleInstanceCmd(app *App, use, short string, fn func(context.Context, engine.Engine, string) error) *cobra.Command {
+func simpleInstanceCmd(app *App, use, short string, fn func(context.Context, engine.Engine, *state.Instance) error) *cobra.Command {
 	return &cobra.Command{
 		Use:               use + " <name>",
 		Short:             short,
@@ -59,8 +59,9 @@ func simpleInstanceCmd(app *App, use, short string, fn func(context.Context, eng
 			// The engine takes the BARE name — its Deps carries the group and
 			// qualifies podman object names itself. Handing it the user's
 			// qualified ref would address <name>.<group>.<group>, which matches
-			// nothing and fails silently.
-			return fn(cmd.Context(), e, in.Name)
+			// nothing and fails silently. Callbacks that need the group as well
+			// take it from the instance.
+			return fn(cmd.Context(), e, in)
 		},
 	}
 }
@@ -83,7 +84,7 @@ func newDestroyCmd(app *App) *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "destroying %q and all its data. Re-run with -f to confirm.\n", args[0])
 				return nil
 			}
-			forward.KillAll(app.InstDir, args[0])
+			forward.KillAll(app.InstDir, in.Group, in.Name)
 			if err := e.Remove(cmd.Context(), in.Name, true); err != nil {
 				return err
 			}
@@ -133,7 +134,7 @@ func newRmCmd(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			forward.KillAll(app.InstDir, args[0])
+			forward.KillAll(app.InstDir, in.Group, in.Name)
 			if err := e.Remove(cmd.Context(), in.Name, false); err != nil {
 				return err
 			}

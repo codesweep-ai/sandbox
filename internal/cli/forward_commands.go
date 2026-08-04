@@ -32,7 +32,7 @@ func newForwardCmd(app *App) *cobra.Command {
 				return fmt.Errorf("--socks port must be between 1 and 65535")
 			}
 			if socks > 0 {
-				r, err := forward.Start(app.Host, paths.GroupKeys(in.Group), app.InstDir, args[0], in.Port, "D", socks, "socks", bind)
+				r, err := forward.Start(app.Host, paths.GroupKeys(in.Group), app.InstDir, in.Group, in.Name, in.Port, "D", socks, "socks", bind)
 				if err != nil {
 					return err
 				}
@@ -47,7 +47,7 @@ func newForwardCmd(app *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				r, err := forward.Start(app.Host, paths.GroupKeys(in.Group), app.InstDir, args[0], in.Port, "L", hp, fmt.Sprintf("localhost:%d", vp), bind)
+				r, err := forward.Start(app.Host, paths.GroupKeys(in.Group), app.InstDir, in.Group, in.Name, in.Port, "L", hp, fmt.Sprintf("localhost:%d", vp), bind)
 				if err != nil {
 					return err
 				}
@@ -69,26 +69,30 @@ func newForwardsCmd(app *App) *cobra.Command {
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: app.completeSandboxAlways,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			var names []string
+			// Forwards are listed per instance, not per name: identity is
+			// (group, name), so a bare name would fold two groups' members into
+			// one row and attribute one's forwards to the other.
+			var insts []*state.Instance
 			if len(args) == 1 {
-				names = []string{args[0]}
-			} else {
-				insts, err := state.List(app.InstDir)
+				in, err := app.resolve(args[0])
 				if err != nil {
 					return err
 				}
-				for _, in := range insts {
-					names = append(names, in.Name)
+				insts = []*state.Instance{in}
+			} else {
+				var err error
+				if insts, err = state.List(app.InstDir); err != nil {
+					return err
 				}
 			}
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
 			any := false
 			fmt.Fprintln(tw, "NAME\tHOST\tKIND\tTARGET")
-			for _, name := range names {
-				recs, _ := forward.List(app.InstDir, name)
+			for _, in := range insts {
+				recs, _ := forward.List(app.InstDir, in.Group, in.Name)
 				for _, r := range recs {
 					any = true
-					fmt.Fprintf(tw, "%s\t%s:%d\t%s\t%s\n", name, r.Bind, r.HostPort, r.Kind, r.Target)
+					fmt.Fprintf(tw, "%s\t%s:%d\t%s\t%s\n", Ref(in), r.Bind, r.HostPort, r.Kind, r.Target)
 				}
 			}
 			if !any {
@@ -111,7 +115,11 @@ func newUnforwardCmd(app *App) *cobra.Command {
 			if len(args) == 2 {
 				target = args[1]
 			}
-			n, err := forward.Remove(app.InstDir, args[0], target)
+			in, err := app.resolve(args[0])
+			if err != nil {
+				return err
+			}
+			n, err := forward.Remove(app.InstDir, in.Group, in.Name, target)
 			if err != nil {
 				return err
 			}

@@ -1,7 +1,7 @@
 // Package forward manages host<->sandbox port forwards as tracked, detached
 // `ssh -N -L/-D` processes over the published SSH port (engine-agnostic). Each
-// forward is recorded under instances/<name>/forwards/<hostport> so it can be
-// listed and torn down. The detached ssh children are supervised directly via
+// forward is recorded under instances/<group>/<name>/forwards/<hostport> so it
+// can be listed and torn down. The detached ssh children are supervised directly via
 // os/exec + Setpgid + pid files rather than the capturing Runner, which is for
 // commands that run to completion.
 package forward
@@ -21,6 +21,7 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/hostcfg"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/ports"
+	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
 // Record is one active forward.
@@ -32,12 +33,27 @@ type Record struct {
 	Bind     string
 }
 
-func dir(instDir, name string) string { return filepath.Join(instDir, name, "forwards") }
+// dir is the instance's own forwards directory. It takes (group, name) rather
+// than a user reference on purpose: a reference is whatever the caller typed,
+// and keying on it put records at <instances>/<ref>/forwards — beside the group
+// directories, owned by nothing, so `group rm` could not reclaim them and a
+// destroy spelled differently could not find them.
+func dir(instDir, group, name string) string {
+	return filepath.Join(state.Dir(instDir, group, name), "forwards")
+}
+
+// legacyDir is where records landed before they were keyed on identity. Swept
+// on teardown so forwards started by an older build are still killed, and their
+// stray directory reclaimed, instead of leaking a live ssh process that nothing
+// lists. Remove once no such directory can plausibly remain.
+func legacyDir(instDir, ref string) string {
+	return filepath.Join(instDir, ref, "forwards")
+}
 
 // Start launches a forward. kind "L" needs target "host:port"; kind "D" is a
 // SOCKS proxy.
-func Start(h hostenv.Host, tierDir, instDir, name string, port int, kind string, hostPort int, target, bind string) (*Record, error) {
-	d := dir(instDir, name)
+func Start(h hostenv.Host, tierDir, instDir, group, name string, port int, kind string, hostPort int, target, bind string) (*Record, error) {
+	d := dir(instDir, group, name)
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return nil, err
 	}
@@ -97,8 +113,8 @@ func forwardArgs(h hostenv.Host, tierDir, name string, port int, kind string, ho
 }
 
 // List returns the live forwards for an instance, GC-ing dead ones.
-func List(instDir, name string) ([]Record, error) {
-	d := dir(instDir, name)
+func List(instDir, group, name string) ([]Record, error) {
+	d := dir(instDir, group, name)
 	entries, err := os.ReadDir(d)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -128,12 +144,12 @@ func List(instDir, name string) ([]Record, error) {
 }
 
 // Remove tears down forwards matching target ("all" or a host port).
-func Remove(instDir, name, target string) (int, error) {
-	recs, err := List(instDir, name)
+func Remove(instDir, group, name, target string) (int, error) {
+	recs, err := List(instDir, group, name)
 	if err != nil {
 		return 0, err
 	}
-	d := dir(instDir, name)
+	d := dir(instDir, group, name)
 	n := 0
 	for _, r := range recs {
 		if target != "all" && target != strconv.Itoa(r.HostPort) {
@@ -150,8 +166,34 @@ func Remove(instDir, name, target string) (int, error) {
 }
 
 // KillAll tears down every forward for an instance (used by stop/rm/destroy).
-func KillAll(instDir, name string) {
-	_, _ = Remove(instDir, name, "all")
+// It also sweeps the pre-identity location, so an upgrade does not strand a
+// running ssh process that no command can see any more.
+func KillAll(instDir, group, name string) {
+	_, _ = Remove(instDir, group, name, "all")
+	sweepLegacy(instDir, state.ObjectName(group, name))
+	if group == state.DefaultGroup {
+		sweepLegacy(instDir, name) // a default-group member was addressed bare
+	}
+}
+
+// sweepLegacy kills anything recorded at the old path for ref and reclaims the
+// directory. Records there predate identity-keyed forwards; they are only ever
+// removed, never written.
+func sweepLegacy(instDir, ref string) {
+	d := legacyDir(instDir, ref)
+	entries, err := os.ReadDir(d)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		p := filepath.Join(d, e.Name())
+		if r, err := readRecord(p); err == nil {
+			kill(r.PID)
+		}
+		_ = os.Remove(p)
+	}
+	_ = os.Remove(d)
+	_ = os.Remove(filepath.Dir(d)) // the stray <instances>/<ref>/ itself, if now empty
 }
 
 func writeRecord(path string, r *Record) error {
