@@ -207,3 +207,67 @@ func TestCommandsPassBareNamesToEngines(t *testing.T) {
 		t.Error("destroy left the state record behind")
 	}
 }
+
+// `group ls --json` is the machine-readable group inventory. Without it a
+// consumer that manages groups has to parse the human table, or match the prose
+// of an error to find out whether a group exists at all — the exact coupling
+// `ls --json` was added to remove for sandboxes.
+func TestGroupLsJSONIsAStableInventory(t *testing.T) {
+	dir := t.TempDir()
+	if err := state.SaveGroup(dir, &state.Group{
+		Name: "cache-redis", Created: "2026-01-01T00:00:00Z", TapPrefix: "fd0001", GWPort: 2401,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Save(dir, &state.Instance{
+		Name: "worker", Group: "cache-redis", Type: "agent", Engine: state.Podman, Port: 2200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{InstDir: dir, Runner: run.NewFake()}
+	cmd := newGroupLsCmd(app)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var items []groupItem
+	if err := json.Unmarshal(out.Bytes(), &items); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out.String())
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %+v, want exactly the one group", items)
+	}
+	got := items[0]
+	// Network is derived, not stored, so a consumer must not have to derive it
+	// itself — that is how the two drift apart.
+	want := groupItem{
+		Name: "cache-redis", Network: "cs-sandbox-cache-redis",
+		Gateway: 2401, Members: 1, Created: "2026-01-01T00:00:00Z",
+	}
+	if got != want {
+		t.Errorf("group item = %+v, want %+v", got, want)
+	}
+}
+
+// An empty host still answers, and answers with a JSON array rather than
+// nothing: a consumer probing for a group must be able to tell "no groups" from
+// "this build has no such command".
+func TestGroupLsJSONOnAnEmptyHostIsAnEmptyArray(t *testing.T) {
+	app := &App{InstDir: t.TempDir(), Runner: run.NewFake()}
+	cmd := newGroupLsCmd(app)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out.String()) != "[]" {
+		t.Errorf("empty host = %q, want []", out.String())
+	}
+	var items []groupItem
+	if err := json.Unmarshal(out.Bytes(), &items); err != nil || len(items) != 0 {
+		t.Errorf("empty output must decode as an empty slice: %v", err)
+	}
+}

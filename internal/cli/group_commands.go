@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -66,8 +67,21 @@ func newGroupCreateCmd(app *App) *cobra.Command {
 	}
 }
 
+// groupItem is the stable shape of `group ls --json`: the inventory a tool
+// reads. It exists because the alternative is parsing the table below, or —
+// worse — matching the prose of an error to find out whether a group is there
+// at all, which is what `ls --json` was added to stop for sandboxes.
+type groupItem struct {
+	Name    string `json:"name"`
+	Network string `json:"network"`
+	Gateway int    `json:"gateway,omitempty"`
+	Members int    `json:"members"`
+	Created string `json:"created,omitempty"`
+}
+
 func newGroupLsCmd(app *App) *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: "List groups",
 		Args:  cobra.NoArgs,
@@ -80,6 +94,18 @@ func newGroupLsCmd(app *App) *cobra.Command {
 			members := map[string]int{}
 			for _, in := range insts {
 				members[in.Group]++
+			}
+			if asJSON {
+				items := make([]groupItem, 0, len(groups))
+				for _, g := range groups {
+					items = append(items, groupItem{
+						Name: g.Name, Network: state.NetworkName(g.Name),
+						Gateway: g.GWPort, Members: members[g.Name], Created: g.Created,
+					})
+				}
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(items)
 			}
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 			fmt.Fprintln(tw, "GROUP\tMEMBERS\tNETWORK\tGATEWAY\tAGE")
@@ -94,6 +120,8 @@ func newGroupLsCmd(app *App) *cobra.Command {
 			return tw.Flush()
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print stable machine-readable JSON")
+	return cmd
 }
 
 func newGroupRmCmd(app *App) *cobra.Command {
