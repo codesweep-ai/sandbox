@@ -200,11 +200,15 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	if err != nil {
 		return err
 	}
-	// A recreated name gets fresh per-instance host keys; drop any stale entry
-	// (keyed by HostKeyAlias=<name>) so accept-new relearns it instead of failing
-	// with "host key changed" when a name or freed port is reused.
+	// A recreated name gets fresh per-instance host keys. known_hosts is keyed by
+	// the HostKeyAlias the connection used, and that is <name>.<group> through the
+	// generated ssh config but the bare name when a command passes the reference as
+	// typed — so purge both, or accept-new never gets to relearn and ssh fails with
+	// "host key changed" when a name or freed port is reused.
 	kh := filepath.Join(app.Host.SSHDir(), "known_hosts.cs-sandbox")
-	_, _ = app.Runner.Run(ctx, run.Opts{}, "ssh-keygen", "-R", name, "-f", kh)
+	for _, alias := range []string{state.ObjectName(f.group, name), name} {
+		_, _ = app.Runner.Run(ctx, run.Opts{}, "ssh-keygen", "-R", alias, "-f", kh)
+	}
 	if err := app.syncSSHConfig(); err != nil {
 		fmt.Fprintf(os.Stderr, "cs-sandbox: warning: could not update ssh config: %v\n", err)
 	}

@@ -59,13 +59,10 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
-// Ref is a sandbox's canonical, always-unambiguous ssh alias: <name>.<group>.
+// Ref is a sandbox's canonical, always-unambiguous ssh alias: the host-global
+// object name, so the alias create purges cannot drift from the one emitted here.
 func Ref(in *state.Instance) string {
-	g := in.Group
-	if g == "" {
-		g = state.DefaultGroup
-	}
-	return in.Name + "." + g
+	return state.ObjectName(in.Group, in.Name)
 }
 
 // GroupKeysDir maps the base key directory to one group's key directory. It
