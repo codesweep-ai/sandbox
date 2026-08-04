@@ -194,3 +194,66 @@ func TestHealDefaultFabricOnlyWhenSafe(t *testing.T) {
 		}
 	})
 }
+
+// TestEvictSquattingBridge: podman picks a network's interface name by scanning
+// its OWN networks, so a bridge that outlived the network it was built for is
+// invisible to that choice — and netavark adopts an interface it finds rather
+// than re-addressing it. The result is a group whose members hold a gateway that
+// does not exist: no DNS, no outbound, and nothing in any log to say why. So the
+// squatter is evicted, and netavark builds the bridge properly on first attach.
+func TestEvictSquattingBridge(t *testing.T) {
+	const iface, gw = "podman3", "10.89.0.1"
+	for _, tc := range []struct {
+		name      string
+		linkErr   error
+		addrs     string
+		wantEvict bool
+	}{
+		{
+			name:    "no bridge yet — the usual case, netavark will create it",
+			linkErr: errors.New(`Device "podman3" does not exist`),
+		},
+		{
+			name:  "already carrying our gateway (a concurrent create won)",
+			addrs: "5: podman3    inet 10.89.0.1/24 brd 10.89.0.255 scope global podman3\n",
+		},
+		{
+			name:      "squatter from a network that is gone, still on its old subnet",
+			addrs:     "5: podman3    inet 10.89.2.1/24 brd 10.89.2.255 scope global podman3\n",
+			wantEvict: true,
+		},
+		{
+			// Just as broken and harder to spot: the members' gateway is absent
+			// either way.
+			name:      "squatter carrying no address at all",
+			wantEvict: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := run.NewFake()
+			f.OnStdout("{{.NetworkInterface}}", iface+"\n")
+			f.OnStdout("Gateway", gw+"\n")
+			f.On("ip link show dev", run.Result{}, tc.linkErr)
+			f.OnStdout("-4 addr show", tc.addrs)
+			Deps{Runner: f, Network: state.NetworkName("cache-redis")}.evictSquattingBridge(context.Background())
+			if got := f.Contains("ip link del " + iface); got != tc.wantEvict {
+				t.Errorf("evicted = %v, want %v; calls:\n%s", got, tc.wantEvict, strings.Join(f.Rendered(), "\n"))
+			}
+		})
+	}
+}
+
+// TestEnsureNetworkNeverEvictsAnExistingNetwork: eviction is only ever safe on a
+// network we just created, where nothing of ours can be attached yet. A network
+// that was already there may have running sandboxes on its bridge, and deleting
+// it under them would turn a suspicion into an outage.
+func TestEnsureNetworkNeverEvictsAnExistingNetwork(t *testing.T) {
+	f := run.NewFake() // `network exists` succeeds -> the adopt path
+	f.On("network inspect", run.Result{Stdout: "true|1\n"}, nil)
+	if err := (Deps{Runner: f, Network: state.NetworkName("cache-redis")}).EnsureNetwork(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.Contains("unshare") {
+		t.Errorf("an existing network's bridge must be left alone:\n%s", strings.Join(f.Rendered(), "\n"))
+	}
+}

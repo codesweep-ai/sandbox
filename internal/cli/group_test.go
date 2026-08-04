@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/run"
 
 	"github.com/codesweep-ai/sandbox/internal/state"
@@ -314,5 +316,49 @@ func TestGroupLsJSONOnAnEmptyHostIsAnEmptyArray(t *testing.T) {
 	var items []groupItem
 	if err := json.Unmarshal(out.Bytes(), &items); err != nil || len(items) != 0 {
 		t.Errorf("empty output must decode as an empty slice: %v", err)
+	}
+}
+
+// TestGroupRmRetiresItsLeg: a removed group must take its host-route leg with
+// it, and before its gateway goes.
+//
+// netavark tears a network's bridge down when the last container leaves it, and
+// declines while anything else is still attached. A leg that outlives its group
+// therefore pins the bridge, which keeps the address of the subnet it was built
+// for; podman then hands that interface name to the next network it creates and
+// netavark adopts the interface as it finds it. That group's members come up
+// pointing at a gateway which does not exist — no DNS, no outbound, no error.
+func TestGroupRmRetiresItsLeg(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CS_SANDBOX_FC_NET", filepath.Join(t.TempDir(), "net"))
+	t.Setenv("CS_SANDBOX_TIER_DIR", filepath.Join(t.TempDir(), "keys"))
+	if err := state.SaveGroup(dir, &state.Group{
+		Name: "cache-redis", TapPrefix: "fd0007", GWPort: 2400, Created: "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f := run.NewFake()
+	app := &App{InstDir: dir, Runner: f, Host: hostenv.Host{User: "dev", Home: t.TempDir()}}
+	if err := app.removeGroup(context.Background(), "cache-redis", false, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	leg, gateway := -1, -1
+	for i, line := range f.Rendered() {
+		switch {
+		case strings.Contains(line, "ip link del hr0007n"):
+			leg = i
+		case strings.Contains(line, "rm -f cs-sandbox-cache-redis-keepalive"):
+			gateway = i
+		}
+	}
+	if leg < 0 {
+		t.Fatalf("group rm did not retire the group's leg:\n%s", strings.Join(f.Rendered(), "\n"))
+	}
+	if gateway < 0 {
+		t.Fatalf("group rm did not remove the gateway:\n%s", strings.Join(f.Rendered(), "\n"))
+	}
+	if leg > gateway {
+		t.Errorf("the leg must go before the gateway, or the bridge is still pinned when netavark "+
+			"gets its one chance to remove it (leg=%d gateway=%d):\n%s", leg, gateway, strings.Join(f.Rendered(), "\n"))
 	}
 }

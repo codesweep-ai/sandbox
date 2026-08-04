@@ -29,7 +29,51 @@ func (d Deps) EnsureNetwork(ctx context.Context) error {
 	if _, err := d.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "network", "exists", d.Network); err != nil {
 		return fmt.Errorf("could not create podman network %q", d.Network)
 	}
-	return d.verifyManagedIsolation(ctx)
+	if err := d.verifyManagedIsolation(ctx); err != nil {
+		return err
+	}
+	d.evictSquattingBridge(ctx)
+	return nil
+}
+
+// evictSquattingBridge removes a leftover bridge already holding the interface
+// name podman just handed this network.
+//
+// Podman picks podmanN by scanning its own networks, so a bridge that outlived
+// the network it was built for is invisible to that choice. netavark then adopts
+// the interface as it finds it rather than re-addressing it, and every member
+// comes up with a gateway that does not exist — no DNS, no outbound, and not one
+// error to say why. Deleting it lets netavark build the bridge properly on first
+// attach.
+//
+// Only called on a network we just created, so nothing of ours can be on that
+// interface yet and evicting it cannot disturb a running sandbox. Best-effort:
+// if the netns cannot be entered there is nothing to evict either.
+func (d Deps) evictSquattingBridge(ctx context.Context) {
+	iface := strings.TrimSpace(run.Output(ctx, d.Runner, "podman", "network", "inspect", d.Network,
+		"--format", "{{.NetworkInterface}}"))
+	gw := strings.TrimSpace(run.Output(ctx, d.Runner, "podman", "network", "inspect", d.Network,
+		"--format", "{{(index .Subnets 0).Gateway}}"))
+	if iface == "" || gw == "" {
+		return
+	}
+	// The healthy case: netavark has not created the bridge yet, so the name is
+	// free and this costs one lookup.
+	if _, err := d.pnet(ctx, run.Opts{ReadOnly: true}, "ip", "link", "show", "dev", iface); err != nil {
+		return
+	}
+	// It exists. Carrying our gateway means it is ours already (a concurrent
+	// create won the race); anything else is a squatter from a dead network.
+	addrs, _ := d.pnet(ctx, run.Opts{ReadOnly: true}, "ip", "-o", "-4", "addr", "show", "dev", iface)
+	if strings.Contains(addrs.Stdout, " "+gw+"/") {
+		return
+	}
+	_, _ = d.pnet(ctx, run.Opts{}, "ip", "link", "del", iface)
+}
+
+// pnet runs a command inside podman's rootless netns, where the bridges live.
+func (d Deps) pnet(ctx context.Context, opts run.Opts, argv ...string) (run.Result, error) {
+	return d.Runner.Run(ctx, opts, append([]string{"podman", "unshare", "--rootless-netns"}, argv...)...)
 }
 
 // networkCreateArgv builds the create command for a group's network. Every

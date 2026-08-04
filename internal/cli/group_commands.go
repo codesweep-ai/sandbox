@@ -265,7 +265,8 @@ func (a *App) removeGroup(ctx context.Context, group string, force bool, out io.
 	if err := state.ValidGroup(group); err != nil {
 		return err
 	}
-	if _, err := state.LoadGroup(a.InstDir, group); err != nil {
+	grp, err := state.LoadGroup(a.InstDir, group)
+	if err != nil {
 		return fmt.Errorf("no such group %q", group)
 	}
 	insts, _ := state.List(a.InstDir)
@@ -294,7 +295,13 @@ func (a *App) removeGroup(ctx context.Context, group string, force bool, out io.
 	// free to hand to the NEXT group, and that group's fabric would then refuse
 	// to start because a stranger already owns its DNS address.
 	if group != state.DefaultGroup {
-		a.hostRouteLeg(group, "").Fab.Down(ctx)
+		leg := a.hostRouteLeg(group, grp.TapPrefix)
+		// Before the gateway goes: netavark tears the bridge down when the last
+		// container leaves it, and it declines while anything else is still
+		// attached. A leg left on it keeps the bridge — and its old address —
+		// alive for the next network podman gives that interface name to.
+		a.hostRoute().DropLeg(ctx, leg)
+		leg.Fab.Down(ctx)
 		if err := os.RemoveAll(paths.FCNetFor(group)); err != nil {
 			return err
 		}

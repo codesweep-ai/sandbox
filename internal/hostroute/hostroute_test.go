@@ -305,3 +305,38 @@ func TestStatusReportsForwardingAsDegraded(t *testing.T) {
 		t.Errorf("status should name the fix:\n%s", out)
 	}
 }
+
+// TestDropLegRetiresOnlyItsOwn: a rootless `group rm` retires its group's leg by
+// deleting the netns end, which takes the host end with it — wiring one needed
+// root, unwiring one does not. It must stay narrow: the default group's leg is
+// host-wide and outlives every group, and a group with no recorded prefix has no
+// derived name, so guessing one could delete an interface belonging to someone
+// else.
+func TestDropLegRetiresOnlyItsOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name, group, prefix, want string
+	}{
+		{"a group's own leg", "cache-redis", "fd0007", "ip link del hr0007n"},
+		{"the default group's leg is never dropped", state.DefaultGroup, "fd0000", ""},
+		{"a group with no recorded prefix", "cache-redis", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := run.NewFake()
+			h := HostRoute{Runner: f}
+			h.DropLeg(context.Background(), Leg{Group: tc.group, TapPrefix: tc.prefix})
+			if tc.want == "" {
+				if len(f.Calls) != 0 {
+					t.Fatalf("nothing should be deleted, got: %v", f.Rendered())
+				}
+				return
+			}
+			if !f.Contains(tc.want) {
+				t.Fatalf("want %q, got: %v", tc.want, f.Rendered())
+			}
+			// Rootless: the host end is never touched with sudo here.
+			if f.Contains("sudo") {
+				t.Errorf("DropLeg must stay rootless: %v", f.Rendered())
+			}
+		})
+	}
+}

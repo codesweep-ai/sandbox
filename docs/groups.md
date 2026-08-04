@@ -90,7 +90,8 @@ into sits outside every group: `cs-sandbox/<name>.<group>`, against `cs-sandbox/
 default group. See [repo-sharing.md → Branches and groups](repo-sharing.md#branches-and-groups).
 
 `group rm` refuses while members exist; `-f` destroys them first. Removing a group reclaims its
-network, gateway and keys. The default group's network is shared host-wide and is never reclaimed.
+network, gateway, keys and [host-route leg](#host-route-and-groups). The default group's network is
+shared host-wide and is never reclaimed.
 
 ## Two layers of isolation
 
@@ -192,6 +193,15 @@ allocation.
 Wiring a leg needs root, so a group created *after* `host-route up` is not reachable until one more
 `cs-sandbox host-route refresh`. `host-route status` reads the wiring back from the host rather
 than reporting what it intended, and names any group whose leg is missing or stale.
+
+Unwiring one does not need root: deleting either end of a veth destroys the pair, and the namespace
+end belongs to you — so `group rm` retires its own leg without sudo. It has to. netavark removes a
+network's bridge only once nothing is left attached to it, so a leg outliving its group pins the
+bridge, and that bridge keeps the address of the subnet it was built for. Podman names interfaces by
+scanning its own networks, never the namespace, so it hands `podmanN` to the next network it creates
+and netavark adopts the interface as it finds it — leaving that group's members with a gateway that
+does not exist. No DNS, no outbound, and nothing anywhere that says why. `create` therefore also
+evicts a bridge already squatting the name of a network it has just made.
 
 **The host is not a router between groups.** A host holding legs on two group bridges could
 forward between them — netavark's isolation lives inside the rootless namespace, and the host's own

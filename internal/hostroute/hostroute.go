@@ -493,6 +493,26 @@ func (h HostRoute) teardownVeth(ctx context.Context, l Leg) {
 	_, _ = h.pnet(ctx, "ip", "link", "del", l.nsVeth())
 }
 
+// DropLeg retires one group's leg from inside podman's rootless netns, so a
+// rootless `group rm` can take its own leg with it. Wiring a leg needs root,
+// but deleting either end of a veth destroys the pair — and the netns end is
+// ours.
+//
+// Not tidiness: netavark removes a network's bridge only once nothing is left
+// attached, so a leg that outlives its group pins the bridge, and the bridge
+// keeps the address of the subnet it was built for. Podman hands that interface
+// name to the next network it creates, netavark adopts the interface as it
+// finds it, and that group's members come up pointing at a gateway which does
+// not exist: no DNS, no outbound, and no error anywhere to say so.
+func (h HostRoute) DropLeg(ctx context.Context, l Leg) {
+	// The default group's fabric is host-wide and never reclaimed, and a group
+	// with no recorded prefix has no derived name to delete.
+	if l.isDefault() || l.TapPrefix == "" {
+		return
+	}
+	_, _ = h.pnet(ctx, "ip", "link", "del", l.nsVeth())
+}
+
 func (h HostRoute) resolverUp(ctx context.Context, l Leg) error {
 	dev := l.hostVeth()
 	if _, err := h.Runner.Run(ctx, run.Opts{}, "sudo", "resolvectl", "dns", dev, l.Fab.DNSIP(ctx)); err != nil {
