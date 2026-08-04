@@ -362,3 +362,96 @@ func TestGroupRmRetiresItsLeg(t *testing.T) {
 			"gets its one chance to remove it (leg=%d gateway=%d):\n%s", leg, gateway, strings.Join(f.Rendered(), "\n"))
 	}
 }
+
+// `inspect --json` exists so a consumer can read a value this repo spells —
+// above all a clone's branch — instead of reimplementing the rule that spells
+// it. A reimplementation agrees only until the rule changes, and then produces
+// a plausible wrong answer, which is worse than not being able to ask.
+func TestInspectJSONCarriesTheResolvedBranch(t *testing.T) {
+	dir := t.TempDir()
+	if err := state.SaveGroup(dir, &state.Group{Name: "cache-redis", Created: "2026-01-01T00:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	in := &state.Instance{
+		Name: "api", Group: "cache-redis", Type: "agent", Engine: state.Podman,
+		Port: 2203, Created: "2026-01-01T00:00:00Z", Yolo: true,
+		RepoClones: []state.RepoClone{{
+			Source: "/src/app", Dir: "app",
+			Branch: state.BranchName("cache-redis", "api"),
+		}},
+	}
+	if err := state.Save(dir, in); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{InstDir: dir, Runner: run.NewFake()}
+	cmd := newInspectCmd(app)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"api.cache-redis", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var got inspectItem
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, out.String())
+	}
+	if got.Ref != "api.cache-redis" || got.Group != "cache-redis" || got.Network != "cs-sandbox-cache-redis" {
+		t.Errorf("identity fields wrong: %+v", got)
+	}
+	if len(got.Repos) != 1 {
+		t.Fatalf("repos = %+v, want exactly one", got.Repos)
+	}
+	// The branch as recorded, which is the whole point: a caller reads it
+	// rather than deriving "cs-sandbox/" + something.
+	if want := state.BranchName("cache-redis", "api"); got.Repos[0].Branch != want {
+		t.Errorf("branch = %q, want %q", got.Repos[0].Branch, want)
+	}
+	if got.Repos[0].Dir != "app" || got.Repos[0].Source != "/src/app" {
+		t.Errorf("repo detail wrong: %+v", got.Repos[0])
+	}
+}
+
+// A bare reference means the default group here as everywhere else, and a miss
+// names the qualified references that do exist rather than just failing.
+func TestInspectResolvesLikeEveryOtherCommand(t *testing.T) {
+	dir := t.TempDir()
+	if err := state.SaveGroup(dir, &state.Group{Name: "cache-redis", Created: "2026-01-01T00:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Save(dir, &state.Instance{
+		Name: "api", Group: "cache-redis", Type: "agent", Engine: state.Podman, Port: 2203,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{InstDir: dir, Runner: run.NewFake()}
+	cmd := newInspectCmd(app)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"api"}) // bare: the DEFAULT group, which holds nothing
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("a bare reference must not resolve into a named group")
+	}
+	if !strings.Contains(err.Error(), "api.cache-redis") {
+		t.Errorf("error should name the reference that does exist, got: %v", err)
+	}
+}
+
+// The human form leads with the branch too — it is what someone inspecting a
+// sandbox after an agent worked in it actually wants.
+func TestInspectTableShowsRepoBranch(t *testing.T) {
+	item := inspectItem{
+		Ref: "api.cache-redis", Group: "cache-redis", Status: "running",
+		Engine: state.Podman, Network: "cs-sandbox-cache-redis", Port: 2203,
+		Repos: []inspectRepo{{Dir: "app", Source: "/src/app", Branch: "cs-sandbox/api.cache-redis"}},
+	}
+	var out bytes.Buffer
+	if err := writeInspectTable(&out, item); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"api.cache-redis", "REPO", "~/app", "branch=cs-sandbox/api.cache-redis"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("inspect output missing %q:\n%s", want, out.String())
+		}
+	}
+}

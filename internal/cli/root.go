@@ -187,6 +187,7 @@ func newRootCmd(app *App) *cobra.Command {
 	root.AddCommand(newFetchCmd(app))
 	root.AddCommand(newPushCmd(app))
 	root.AddCommand(newGroupCmd(app))
+	root.AddCommand(newInspectCmd(app))
 	root.AddCommand(newSyncSSHConfigCmd(app))
 	root.AddCommand(newForwardCmd(app))
 	root.AddCommand(newForwardsCmd(app))

@@ -86,6 +86,17 @@ the refspec; git's `updateInstead` default) - a diverged branch is rejected with
 branch from the sandbox's state record (one `repoclone` entry per repo: source, dir, and the
 branch), so a sandbox created before a naming change keeps the branch it was created with.
 
+`cs-sandbox inspect <name>` prints that record, and `--json` makes it machine-readable:
+
+```json
+{ "ref": "api.cache-redis", "group": "cache-redis", "status": "running",
+  "repos": [ { "dir": "app", "source": "/src/app", "branch": "cs-sandbox/api.cache-redis" } ] }
+```
+
+Read the branch from there rather than composing it. The rule below is stable, but a caller that
+reimplements it agrees only until it changes — and then computes a plausible wrong answer, which is
+harder to notice than not being able to ask.
+
 ### Branches and groups
 
 The host source repository is not inside any group — it is the one place two groups meet. So the
