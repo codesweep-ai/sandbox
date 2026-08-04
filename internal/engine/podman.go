@@ -248,7 +248,7 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 	}
 	for _, rc := range s.RepoClones {
 		inst.RepoClones = append(inst.RepoClones, state.RepoClone{
-			Source: rc.HostPath, Dir: rc.Name, Branch: "cs-sandbox/" + s.Name,
+			Source: rc.HostPath, Dir: rc.Name, Branch: state.BranchName(s.Group, s.Name),
 		})
 	}
 
@@ -496,7 +496,7 @@ func (d Deps) materializeShares(ctx context.Context, idir, seedDir string, s Cre
 			id := spec.GitIdentity(ctx, d.Runner, rc.HostPath)
 			// 6 US-separated fields: dir, mountpath, branch, ref, name, email (id is name<US>email).
 			fmt.Fprintf(&b, "%s%s%s%s%s%s%s%s%s\n",
-				rc.Name, spec.US, mountPath, spec.US, "cs-sandbox/"+filepath.Base(idir),
+				rc.Name, spec.US, mountPath, spec.US, state.BranchName(s.Group, s.Name),
 				spec.US, rc.BaseRef, spec.US, id)
 		}
 		if err := os.WriteFile(filepath.Join(seedDir, "repos"), []byte(b.String()), 0o600); err != nil {

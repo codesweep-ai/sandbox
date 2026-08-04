@@ -16,7 +16,9 @@ covers `--repo`; the plain directory mode (`--snapshot`) is in
 bare repo). All are repeatable and land at `~/<name>` (default name = basename of the **resolved**
 path - `--repo .` → the current directory's real name; `:NAME` overrides). For `--repo`, `@REF`
 sets the base commit (default: the source's `HEAD`), and the checkout lives on branch
-**`cs-sandbox/<name>`**. (On macOS the source must be under `$HOME`, as for the other modes.)
+**`cs-sandbox/<name>`** — or **`cs-sandbox/<name>.<group>`** outside the default group, see
+[Branches and groups](#branches-and-groups). (On macOS the source must be under `$HOME`, as for the
+other modes.)
 
 ## How it works (engine-agnostic)
 
@@ -82,7 +84,30 @@ the refspec; git's `updateInstead` default) - a diverged branch is rejected with
 
 `[dir]` selects one repo when a sandbox has several. `fetch`/`push` read the host source repo and
 branch from the sandbox's state record (one `repoclone` entry per repo: source, dir, and the
-`cs-sandbox/<name>` branch).
+branch), so a sandbox created before a naming change keeps the branch it was created with.
+
+### Branches and groups
+
+The host source repository is not inside any group — it is the one place two groups meet. So the
+branch carries the group everywhere except the default one:
+
+| Sandbox | Branch |
+|---|---|
+| `api` (default group) | `cs-sandbox/api` |
+| `api.cache-redis` | `cs-sandbox/api.cache-redis` |
+
+Without this, the case groups exist for — running the same fixture twice, each with its own copy of
+the same sandboxes — breaks on the way home: both copies' `api` target
+`refs/heads/cs-sandbox/api`, and the second `fetch` is rejected as a non-fast-forward.
+
+The group is appended rather than nested (`cs-sandbox/<group>/<name>`) because nesting puts a
+directory where a ref may already be: a default-group `api` owns `refs/heads/cs-sandbox/api`, so a
+*group* named `api` could not create `refs/heads/cs-sandbox/api/<member>` — git rejects it with
+`cannot lock ref`. Appended, the two are siblings. It also means the branch is spelled exactly like
+the sandbox reference you would pass to any other command.
+
+The default group keeps the bare `cs-sandbox/<name>`: it is what every example here shows, what
+existing host repos already contain, and with one group there is nothing to disambiguate.
 
 ## Peer-to-peer - fetch/push between sandboxes
 

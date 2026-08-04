@@ -148,7 +148,7 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	}
 	for _, rc := range s.RepoClones {
 		inst.RepoClones = append(inst.RepoClones, state.RepoClone{
-			Source: rc.HostPath, Dir: rc.Name, Branch: "cs-sandbox/" + s.Name,
+			Source: rc.HostPath, Dir: rc.Name, Branch: state.BranchName(s.Group, s.Name),
 		})
 	}
 	// Claim ip+port by persisting state now, still under the lock.
@@ -483,7 +483,7 @@ func (fe *Firecracker) buildRepoDisks(ctx context.Context, idir string, s Create
 	var disks []string
 	var man strings.Builder
 	for i, rc := range s.RepoClones {
-		branch := "cs-sandbox/" + s.Name
+		branch := state.BranchName(s.Group, s.Name)
 		id := spec.GitIdentity(ctx, fe.d.Runner, rc.HostPath)
 		// 5 US-separated fields: dir, branch, base, name, email (id is name<US>email).
 		fmt.Fprintf(&man, "%s%s%s%s%s%s%s\n", rc.Name, spec.US, branch, spec.US, rc.BaseRef, spec.US, id)

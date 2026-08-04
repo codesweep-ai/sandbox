@@ -52,6 +52,17 @@ into another command. `--json` is the stable machine-readable inventory:
   "status": "running", "engine": "podman", "network": "cs-sandbox-cache-redis" }
 ```
 
+`group ls --json` is the same thing one level up — the inventory of groups themselves, for a tool
+that creates and reclaims them and needs to check its work without parsing a table:
+
+```json
+{ "name": "cache-redis", "network": "cs-sandbox-cache-redis",
+  "gateway": 2401, "members": 2, "created": "2026-01-01T00:00:00Z" }
+```
+
+It answers on an empty host with `[]`, so "no groups" is distinguishable from "this build has no
+such command".
+
 ## What a group owns
 
 | Artifact | Name | Purpose |
@@ -66,6 +77,10 @@ The group record lives at `<instances>/<group>/group.json`, with each member's r
 `<instances>/<group>/<name>/state.json`. Podman object names (container, volumes) carry the group
 as `<name>.<group>` because they are host-global; the guest hostname and the in-network DNS alias
 stay bare, so members keep reaching each other as plain `<name>`.
+
+A `--repo` clone's branch carries the group too, because the host source repo it is fetched back
+into sits outside every group: `cs-sandbox/<name>.<group>`, against `cs-sandbox/<name>` for the
+default group. See [repo-sharing.md → Branches and groups](repo-sharing.md#branches-and-groups).
 
 `group rm` refuses while members exist; `-f` destroys them first. Removing a group reclaims its
 network, gateway and keys. The default group's network is shared host-wide and is never reclaimed.
