@@ -7,3 +7,6 @@
 
 # goreleaser release artifacts
 /dist/
+
+# Local credentials and env config
+/.env
