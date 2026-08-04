@@ -363,3 +363,97 @@ func TestHostRouteGroupNamesTheWSLRequirement(t *testing.T) {
 		t.Errorf("WSL users should be told what host-route needs and where to set it:\n%s", all)
 	}
 }
+
+// twoManagedNetworks scripts a host with a healthy default fabric and one group
+// network, both labelled ours. The group's bridge is the interesting one: each
+// test below decides what address it is carrying.
+func twoManagedNetworks() *run.Fake {
+	f := run.NewFake()
+	f.OnStdout("network ls", "cs-sandbox-net podman1\ncs-sandbox-cache-redis podman3\n")
+	f.OnStdout("network inspect cs-sandbox-net ", "10.89.4.1\n")
+	f.OnStdout("network inspect cs-sandbox-cache-redis ", "10.89.0.1\n")
+	f.OnStdout("addr show dev podman1", "5: podman1    inet 10.89.4.1/24 brd 10.89.4.255 scope global podman1\n")
+	return f
+}
+
+// TestDiagnoseFlagsABridgeWithNoGateway: "the network exists" and "the network
+// works" are different claims, and doctor used to make the first while implying
+// the second. A bridge that outlived its network keeps the old subnet's address
+// and podman hands its name to the next network created, leaving those members
+// with a gateway that is not there — no DNS, no outbound, and nothing in any log.
+// Reporting "All good" through that is the one answer that costs a user real time.
+func TestDiagnoseFlagsABridgeWithNoGateway(t *testing.T) {
+	stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
+	f := twoManagedNetworks()
+	// The squatter: still addressed for the subnet it was originally built for.
+	f.OnStdout("addr show dev podman3", "9: podman3    inet 10.89.2.1/24 brd 10.89.2.255 scope global podman3\n")
+	rep := Diagnose(context.Background(), "podman", Deps{Runner: f, User: "u", Network: "cs-sandbox-net"})
+	all := reportText(rep)
+	if !strings.Contains(all, "cs-sandbox-cache-redis (bridge podman3, expected 10.89.0.1)") {
+		t.Errorf("doctor should name the network, its bridge and the address it lacks:\n%s", all)
+	}
+	if strings.Contains(all, "cs-sandbox-net (bridge podman1") {
+		t.Errorf("the healthy bridge must not be reported as broken:\n%s", all)
+	}
+	if !strings.Contains(all, "ip link del") {
+		t.Errorf("doctor should name the remedy, not just the symptom:\n%s", all)
+	}
+	if rep.Issues == 0 {
+		t.Errorf("a network that reaches nothing is an issue, not a note:\n%s", all)
+	}
+}
+
+// A bridge with no IPv4 at all is the same failure wearing different clothes:
+// the members' gateway is absent either way.
+func TestDiagnoseFlagsABridgeWithNoAddressAtAll(t *testing.T) {
+	stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
+	f := twoManagedNetworks()
+	f.OnStdout("addr show dev podman3", "")
+	rep := Diagnose(context.Background(), "podman", Deps{Runner: f, User: "u", Network: "cs-sandbox-net"})
+	if all := reportText(rep); !strings.Contains(all, "cs-sandbox-cache-redis (bridge podman3") {
+		t.Errorf("an unaddressed bridge should be reported:\n%s", all)
+	}
+}
+
+func TestDiagnoseAcceptsHealthyBridges(t *testing.T) {
+	stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
+	f := twoManagedNetworks()
+	f.OnStdout("addr show dev podman3", "9: podman3    inet 10.89.0.1/24 brd 10.89.0.255 scope global podman3\n")
+	rep := Diagnose(context.Background(), "podman", Deps{Runner: f, User: "u", Network: "cs-sandbox-net"})
+	all := reportText(rep)
+	if !strings.Contains(all, "network bridges carry their gateway (2 networks)") {
+		t.Errorf("healthy bridges should be reported, so the check is visible:\n%s", all)
+	}
+	if strings.Contains(all, "no gateway on the bridge") {
+		t.Errorf("nothing should be flagged:\n%s", all)
+	}
+}
+
+// netavark builds the bridge on first attach, so a network nobody has joined has
+// none. That is the normal state of a fresh group and must stay silent — a check
+// that cried wolf here would be turned off before it ever caught anything.
+func TestDiagnoseIgnoresANetworkWithNoBridgeYet(t *testing.T) {
+	stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
+	f := run.NewFake()
+	f.OnStdout("network ls", "cs-sandbox-cache-redis podman3\n")
+	f.OnStdout("network inspect cs-sandbox-cache-redis ", "10.89.0.1\n")
+	f.On("ip link show dev podman3", run.Result{}, errors.New(`Device "podman3" does not exist`))
+	rep := Diagnose(context.Background(), "podman", Deps{Runner: f, User: "u", Network: "cs-sandbox-net"})
+	all := reportText(rep)
+	for _, unwanted := range []string{"no gateway on the bridge", "carry their gateway"} {
+		if strings.Contains(all, unwanted) {
+			t.Errorf("a network with no bridge yet should say nothing, got %q:\n%s", unwanted, all)
+		}
+	}
+}
+
+// On macOS the bridges live inside the podman machine, so the host has no
+// rootless netns to enter and the probe must not run at all.
+func TestDiagnoseSkipsTheBridgeProbeOnMacOS(t *testing.T) {
+	stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
+	f := runningMachine()
+	Diagnose(context.Background(), "podman", Deps{Runner: f, User: "u", Network: "cs-sandbox-net", IsMacOS: true})
+	if f.Contains("rootless-netns") {
+		t.Errorf("macOS must not probe a rootless netns it does not have:\n%s", strings.Join(f.Rendered(), "\n"))
+	}
+}

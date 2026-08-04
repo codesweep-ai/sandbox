@@ -201,7 +201,10 @@ bridge, and that bridge keeps the address of the subnet it was built for. Podman
 scanning its own networks, never the namespace, so it hands `podmanN` to the next network it creates
 and netavark adopts the interface as it finds it — leaving that group's members with a gateway that
 does not exist. No DNS, no outbound, and nothing anywhere that says why. `create` therefore also
-evicts a bridge already squatting the name of a network it has just made.
+evicts a bridge already squatting the name of a network it has just made — but never one belonging to
+a network that already exists, where sandboxes may be attached to it. For those, `cs-sandbox doctor`
+reports any network whose bridge is not carrying its gateway, rather than calling a host that reaches
+nothing healthy.
 
 **The host is not a router between groups.** A host holding legs on two group bridges could
 forward between them — netavark's isolation lives inside the rootless namespace, and the host's own

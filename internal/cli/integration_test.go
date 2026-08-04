@@ -281,9 +281,7 @@ func TestCLIAgentToolSetLive(t *testing.T) {
 func TestCLIAgentLoginInheritedLive(t *testing.T) {
 	r, host := liveSetup(t)
 	ctx := context.Background()
-	if !fileExists(filepath.Join(host.Home, ".cs-claude", ".credentials.json")) {
-		t.Skip("host has no ~/.cs-claude/.credentials.json to inherit")
-	}
+	synthAgentHome(t, host)
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
 	name := boxName(t, "login")
 	out := createBox(t, r, name, "--inherit-agent-login", "claude")
@@ -322,9 +320,7 @@ func TestCLIAgentLoginInheritedLive(t *testing.T) {
 func TestCLIOpenCodeLoginInheritedLive(t *testing.T) {
 	r, host := liveSetup(t)
 	ctx := context.Background()
-	if !fileExists(filepath.Join(host.Home, ".cs-opencode", "auth.json")) {
-		t.Skip("host has no ~/.cs-opencode/auth.json to inherit")
-	}
+	synthAgentHome(t, host)
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
 	name := boxName(t, "oclogin")
 	out := createBox(t, r, name, "--inherit-agent-login", "opencode")
@@ -361,9 +357,7 @@ func TestCLIOpenCodeLoginInheritedLive(t *testing.T) {
 func TestCLIAgentLoginOptInLive(t *testing.T) {
 	r, host := liveSetup(t)
 	ctx := context.Background()
-	if !fileExists(filepath.Join(host.Home, ".cs-claude", ".credentials.json")) {
-		t.Skip("host has no ~/.cs-claude/.credentials.json (nothing that could leak in)")
-	}
+	synthAgentHome(t, host)
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
 
 	plain := boxName(t, "nologin")

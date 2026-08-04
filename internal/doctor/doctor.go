@@ -161,6 +161,18 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 	} else {
 		cg.add(HM, "network "+d.Network+" not up yet — created automatically on first 'cs-sandbox create'")
 	}
+	// A network can be present and still carry nothing. Rootless netns only: on
+	// macOS the bridges live inside the podman machine, where none of this applies.
+	if machineUp && !d.IsMacOS {
+		switch checked, bad := managedBridges(ctx, d.Runner); {
+		case len(bad) > 0:
+			cg.add(NO, "no gateway on the bridge of "+strings.Join(bad, "; ")+
+				" — sandboxes there resolve nothing and reach nothing. Stop them, then delete the bridge "+
+				"so it is rebuilt on the next start:  podman unshare --rootless-netns ip link del <bridge>")
+		case checked > 0:
+			cg.add(OK, "network bridges carry their gateway ("+plural(checked, "network")+")")
+		}
+	}
 	r.addGroup(cg)
 
 	if engine == "firecracker" && d.IsMacOS {
@@ -308,6 +320,47 @@ func hostRouteGroup(d Deps) Group {
 			"and re-enables the legs; host-route re-asserts them on up/refresh")
 	}
 	return g
+}
+
+// managedBridges inspects every cs-sandbox network whose bridge is live and
+// returns how many were checked plus a description of each one that is not
+// carrying the gateway address its members are handed.
+//
+// "The network exists" is not the same as "the network works", and this is the
+// gap between them. A bridge that outlived the network it was built for keeps
+// its old address, and podman — which names interfaces by scanning its own
+// networks, never the namespace — hands that name to the next network created.
+// netavark adopts the interface as it finds it, so the members get a gateway
+// that is not there: no DNS, no outbound, and no error from any layer. `create`
+// evicts such a squatter on a network it is making, but never on one that
+// already exists, where sandboxes may be attached — so for those, saying so is
+// the whole remedy doctor can offer, and saying "all good" is the worst one.
+func managedBridges(ctx context.Context, r run.Runner) (checked int, bad []string) {
+	out := run.Output(ctx, r, "podman", "network", "ls",
+		"--filter", "label=cs-sandbox.managed=1", "--format", "{{.Name}} {{.NetworkInterface}}")
+	for _, line := range strings.Split(out, "\n") {
+		name, iface, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok || name == "" || iface == "" {
+			continue
+		}
+		gw := run.Output(ctx, r, "podman", "network", "inspect", name, "--format", "{{(index .Subnets 0).Gateway}}")
+		if gw == "" {
+			continue
+		}
+		// netavark builds the bridge on first attach, so a network nothing has
+		// joined yet has none. Absent is normal here; wrong is not.
+		if _, err := r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "unshare", "--rootless-netns",
+			"ip", "link", "show", "dev", iface); err != nil {
+			continue
+		}
+		checked++
+		addrs := run.Output(ctx, r, "podman", "unshare", "--rootless-netns",
+			"ip", "-o", "-4", "addr", "show", "dev", iface)
+		if !strings.Contains(addrs, " "+gw+"/") {
+			bad = append(bad, name+" (bridge "+iface+", expected "+gw+")")
+		}
+	}
+	return checked, bad
 }
 
 // procPath joins under /proc, overridable in tests.
