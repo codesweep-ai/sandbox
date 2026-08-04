@@ -105,6 +105,18 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	if err := state.ValidGroup(f.group); err != nil {
 		return err
 	}
+	if f.engine == "" {
+		f.engine = autoEngine(app.Host.IsMacOS) // firecracker on Linux/KVM, else podman
+	}
+	// Firecracker keeps its sockets in the instance directory, and both names
+	// are legal on their own by here — only together can they overrun the
+	// 108-byte path budget. Checked before anything is provisioned; podman
+	// sandboxes have no such path and are unconstrained.
+	if f.engine == "firecracker" {
+		if err := state.ValidInstancePath(app.InstDir, f.group, name); err != nil {
+			return err
+		}
+	}
 	if app.exists(f.group, name) {
 		return fmt.Errorf("sandbox %q already exists in group %q", name, f.group)
 	}
@@ -150,9 +162,6 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		return err
 	}
 	d := app.engineDepsFor(f.group)
-	if f.engine == "" {
-		f.engine = autoEngine(app.Host.IsMacOS) // firecracker on Linux/KVM, else podman
-	}
 	var eng engine.Engine
 	switch f.engine {
 	case "podman":

@@ -158,6 +158,102 @@ func TestListSkipsNonInstanceDirs(t *testing.T) {
 // TestGroupQualifiedRecords: identity is (group, name), so the same name can be
 // saved in two groups without either overwriting the other, and List reports
 // both — grouped and sorted.
+// Two names that each pass their own validator can still compose into a socket
+// path over the AF_UNIX limit, because <instances>/<group>/<name>/ spends one
+// shared budget. Left unchecked the overflow is silent: socat truncates, binds
+// the shortened name and exits 0, and the operator gets a readiness timeout
+// pointing at a serial.log that was never written.
+func TestValidInstancePathBoundsTheSharedSocketBudget(t *testing.T) {
+	// Room to spare: an ordinary layout is accepted.
+	if err := ValidInstancePath("/home/dev/.local/share/cs-sandbox/instances", "cache-redis", "api"); err != nil {
+		t.Errorf("ordinary names rejected: %v", err)
+	}
+	// Each label is individually legal at 63 characters, and both are refused
+	// together — which is the whole point of the check.
+	long := strings.Repeat("a", 63)
+	if err := ValidName(long); err != nil {
+		t.Fatalf("precondition: %q must be a legal name: %v", long, err)
+	}
+	if err := ValidGroup(long); err != nil {
+		t.Fatalf("precondition: %q must be a legal group: %v", long, err)
+	}
+	err := ValidInstancePath("/home/dev/.local/share/cs-sandbox/instances", long, long)
+	if err == nil {
+		t.Fatal("two 63-character labels must not compose into a legal socket path")
+	}
+	// The message has to carry the numbers: the operator cannot act on "too
+	// long" without knowing by how much.
+	for _, want := range []string{"AF_UNIX limit", "108", "shorten"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q: %v", want, err)
+		}
+	}
+	// An empty group means the default group, exactly as everywhere else.
+	if err := ValidInstancePath("/i", "", "api"); err != nil {
+		t.Errorf("empty group should mean %q: %v", DefaultGroup, err)
+	}
+}
+
+// The budget is measured against the longest socket the instance dir must hold,
+// not the shortest. Firecracker appends _<port> to the vsock UDS, so a path that
+// fits fwd.sock can still be too short for vm.vsock_<port>.
+func TestValidInstancePathMeasuresTheLongestSocket(t *testing.T) {
+	// A root sized so that fwd.sock fits exactly and the vsock name does not.
+	const group, name = "g", "n"
+	for pad := 1; pad < 120; pad++ {
+		root := "/" + strings.Repeat("d", pad)
+		fits := func(base string) bool {
+			return len(filepath.Join(root, group, name, base)) < 108
+		}
+		if fits("fwd.sock") && !fits(longestSocketName) {
+			if err := ValidInstancePath(root, group, name); err == nil {
+				t.Fatalf("root %d: accepted a path that fits fwd.sock but not %s", pad, longestSocketName)
+			}
+			return
+		}
+	}
+	t.Fatal("no root length exercised the gap between the two socket names")
+}
+
+// The host source repository sits outside every group, so the branch a fetch
+// lands on has to carry the group — otherwise two groups running the same
+// fixture both target refs/heads/cs-sandbox/<name> and the second fetch is
+// rejected as a non-fast-forward.
+func TestBranchNameCarriesTheGroup(t *testing.T) {
+	// The default group keeps the bare form: it is what every doc example shows
+	// and what existing host repos already have.
+	if got := BranchName(DefaultGroup, "api"); got != "cs-sandbox/api" {
+		t.Errorf("default group branch = %q, want cs-sandbox/api", got)
+	}
+	if got := BranchName("", "api"); got != "cs-sandbox/api" {
+		t.Errorf("empty group must mean the default group, got %q", got)
+	}
+	// A named group qualifies, so two groups' same-named members differ.
+	a, b := BranchName("cache-redis", "api"), BranchName("cache-memcached", "api")
+	if a == b {
+		t.Fatalf("two groups' branches collide: %q", a)
+	}
+	if a != "cs-sandbox/api.cache-redis" {
+		t.Errorf("grouped branch = %q, want cs-sandbox/api.cache-redis", a)
+	}
+}
+
+// The group is APPENDED, not nested. Nested (cs-sandbox/<group>/<name>) puts a
+// directory where a ref may already exist: a default-group sandbox `api` owns
+// refs/heads/cs-sandbox/api, and git then refuses refs/heads/cs-sandbox/api/x
+// with "cannot lock ref". Appended, the two are siblings.
+func TestBranchNameCannotConflictWithADefaultGroupBranch(t *testing.T) {
+	bare := BranchName(DefaultGroup, "api") // a sandbox named api
+	grouped := BranchName("api", "worker")  // a GROUP named api
+	if strings.HasPrefix(grouped, bare+"/") {
+		t.Fatalf("%q nests under %q; git cannot hold both", grouped, bare)
+	}
+	// Same shape the CLI uses for a reference, so the branch names its sandbox.
+	if grouped != "cs-sandbox/"+ObjectName("api", "worker") {
+		t.Errorf("branch %q should carry the canonical reference spelling", grouped)
+	}
+}
+
 func TestGroupQualifiedRecords(t *testing.T) {
 	dir := t.TempDir()
 	for _, g := range []string{"cache-redis", "cache-memory"} { // saved out of order on purpose

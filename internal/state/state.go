@@ -32,6 +32,49 @@ func ValidName(name string) error {
 	return nil
 }
 
+// sunPathMax is the AF_UNIX sun_path limit, terminator included. Not a Linux
+// tunable — it is the size of a struct field in the kernel ABI.
+const sunPathMax = 108
+
+// longestSocketName is the longest basename a per-instance socket can take.
+// The two are fwd.sock (the host→VM ssh forwarder's) and vm.vsock (Firecracker's
+// vsock UDS), both 8 characters. The reserve is for the _<port> suffix
+// Firecracker appends for guest-initiated connections — nothing opens one today
+// (the guest listens, the host dials the base path), which is why the stale-file
+// cleanup only globs vm.vsock*, but a future guest→host channel on any ordinary
+// port stays inside this.
+const longestSocketName = "vm.vsock_65535"
+
+// ValidInstancePath rejects a (group, name) whose instance directory could not
+// hold a Unix socket. ValidName and ValidGroup each bound one label at 63
+// characters and cannot see the other, but both spend the SAME 108-byte budget:
+// sockets live at <instances>/<group>/<name>/, so two individually legal names
+// compose into an illegal path.
+//
+// This has to fail before anything is provisioned, because the failure it
+// replaces is invisible. socat truncates an over-long UNIX-LISTEN path, binds a
+// socket under the shortened name and exits 0; the forwarder then waits for a
+// socket at the full path that will never appear, and the operator sees a
+// readiness timeout naming a serial.log that was never written — several
+// minutes and one indirection away from the cause.
+//
+// Only Firecracker puts sockets in the instance directory, so only Firecracker
+// is constrained; a podman sandbox has no such path and its caller must not
+// apply this.
+func ValidInstancePath(instDir, group, name string) error {
+	if group == "" {
+		group = DefaultGroup
+	}
+	path := filepath.Join(Dir(instDir, group, name), longestSocketName)
+	if len(path) < sunPathMax {
+		return nil
+	}
+	over := len(path) - sunPathMax + 1
+	return fmt.Errorf("sandbox %q in group %q needs a %d-byte socket path, %d over the %d-byte AF_UNIX limit (%s);\n"+
+		"  shorten the name or the group by %d characters, or set CS_SANDBOX_HOME to a shorter directory",
+		name, group, len(path), over, sunPathMax, path, over)
+}
+
 // DefaultGroup is the group a sandbox joins when none is named. It is an
 // ordinary group in every respect — its own network, keys and gateway — so
 // there is no unnamed special case anywhere below.
@@ -65,6 +108,29 @@ func ObjectName(group, name string) string {
 		group = DefaultGroup
 	}
 	return name + "." + group
+}
+
+// BranchName is the branch a --repo clone commits to, and the ref `fetch`
+// writes into the HOST source repository. That repository sits outside every
+// group, so unlike the guest-side name this one has to carry the group: two
+// groups running the same fixture — the case groups exist for — would otherwise
+// both target refs/heads/cs-sandbox/<name>, and the second fetch would be
+// rejected as a non-fast-forward.
+//
+// The group is appended as <name>.<group>, the same spelling the CLI accepts,
+// rather than nested as <group>/<name>. Nesting would put a directory where a
+// ref may already be: a default-group sandbox `api` owns refs/heads/cs-sandbox/api,
+// so a group named `api` could not then create refs/heads/cs-sandbox/api/<member>
+// ("cannot lock ref"). Appended, the two are siblings and coexist.
+//
+// The default group keeps the bare form. It is what every example in README.md
+// and docs/repo-sharing.md shows, it is what a host repo's existing branches are
+// already called, and with one group there is nothing to disambiguate.
+func BranchName(group, name string) string {
+	if group == "" || group == DefaultGroup {
+		return "cs-sandbox/" + name
+	}
+	return "cs-sandbox/" + ObjectName(group, name)
 }
 
 // NetworkName is the Podman network backing a group. The default group keeps
