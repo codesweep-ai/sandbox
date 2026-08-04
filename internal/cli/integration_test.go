@@ -151,9 +151,15 @@ func createBox(t *testing.T, r *run.Exec, name string, extra ...string) string {
 // returns it. Each VM gets its own copy of the base rootfs — 14 GB at the time
 // of writing — and t.TempDir() is a tmpfs on most hosts, so the copy fails with
 // "Disk quota exceeded" long before anything under test runs. $HOME is disk.
+//
+// The prefix is kept short deliberately. A microVM's sockets live at
+// <instances>/<group>/<name>/, inside one 108-byte AF_UNIX budget, and
+// MkdirTemp's random suffix is 9 or 10 digits depending on the draw — long
+// enough that the old ".cs-sandbox-fctest-" prefix put fwd.sock at 107 bytes on
+// one run and 108 on the next, so the test passed or failed by luck.
 func fcInstancesDir(t *testing.T, host hostenv.Host) string {
 	t.Helper()
-	dir, err := os.MkdirTemp(host.Home, ".cs-sandbox-fctest-")
+	dir, err := os.MkdirTemp(host.Home, ".cs-fct-")
 	if err != nil {
 		t.Fatal(err)
 	}

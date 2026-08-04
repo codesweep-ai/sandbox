@@ -41,7 +41,9 @@ func fcTestDeps(t *testing.T) Deps {
 	// Not t.TempDir(): each VM copies the base rootfs (14 GB at the time of
 	// writing) into the instances dir, and tmpfs cannot hold it — the copy fails
 	// with "Disk quota exceeded" before anything under test runs.
-	dir, err := os.MkdirTemp(h.Home, ".cs-sandbox-fctest-")
+	// Short prefix on purpose: the instance dir shares one 108-byte AF_UNIX
+	// budget with the sockets inside it, and MkdirTemp's suffix width varies.
+	dir, err := os.MkdirTemp(h.Home, ".cs-fct-")
 	if err != nil {
 		t.Fatal(err)
 	}
