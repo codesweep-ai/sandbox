@@ -30,29 +30,40 @@ behavior genuinely cannot be observed in a test — say so in the PR.
 
 ## Commits
 
-One commit per idea, and each one has to be explainable in this shape:
+One commit per idea. If it will not fit this shape, it is doing more than one thing: split it.
 
-- **Subject**: one line, under 60 characters, imperative mood.
-- **Body**: at most three bullets, one line each and also under 60 characters. Write the *why* —
-  the background that lets a reader place the change — plus anything non-obvious about how it was
-  done. Not a list of the changes; the diff already says that.
+**Subject** — always. Under 60 characters, imperative, no trailing period, completing *"If applied,
+this commit will …"*. Say what the change does.
 
-Sixty characters is tight on purpose: it forces one idea per bullet. When the *why* will not fit,
-it belongs in a comment beside the code or in `docs/`, where whoever needs it is actually looking
-— not in a longer bullet.
+**Body** — only when the subject leaves a real question. Bullets, one line each, under 60
+characters, describing the design: the shape the change takes, or the constraint that ruled out the
+obvious alternative. Not the diff, and not how you arrived at it. As many bullets as there are
+points and no more — most commits need none, one is common, three is the rare maximum. Reaching for
+a third to fill the shape is how messages turn into noise.
 
-If a commit can't be described that way, it is doing more than one thing: split it.
+Leave out why the work was scheduled, how it was tested, and what prompted it: rationale belongs in
+a comment or `docs/`, evidence in the PR.
+
+```
+Fix the typo in the firecracker boot arg name
+```
 
 ```
 Reject a base rootfs that is not a filesystem
 
-- A truncated download broke boot much later.
 - A blkid probe, so the happy path costs nothing.
 ```
 
-Keep the `Co-Authored-By:` trailer when an agent wrote the change. Drop any trailer linking back to
-the agent's session or transcript — those URLs are private to whoever ran the agent and dead to
-everyone else reading the log.
+```
+Key forward records on the sandbox, not the reference
+
+- Identity is (group, name); a reference is user input.
+- Records outside the group survived `group rm`.
+- Teardown sweeps the old path so nothing is stranded.
+```
+
+Keep the `Co-Authored-By:` trailer when an agent wrote the change. Drop any trailer linking to the
+agent's session or transcript — private to whoever ran it, dead to everyone else.
 
 ## Docs
 
