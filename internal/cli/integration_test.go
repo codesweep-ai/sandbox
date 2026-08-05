@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codesweep-ai/sandbox/internal/fcnet"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/run"
@@ -1107,5 +1108,56 @@ func TestCLIAgentLoginInheritedFirecrackerLive(t *testing.T) {
 		if got != "600" {
 			t.Errorf("%s: ~/.cs-%s/%s inside the microVM = %q, want mode 600", agent, agent, cf, got)
 		}
+	}
+}
+
+// TestGatewayResolvesAMicroVMMemberLive: the gateway's whole purpose is reaching
+// members BY NAME through one published port. A group has two resolvers —
+// aardvark, which containers get by default and which knows container names, and
+// the fabric's dnsmasq, which serves microVM names — and a gateway given the
+// wrong one is reachable-but-nameless: `curl <ip>` works while `getent hosts
+// <member>` does not. That failure is invisible on a podman-only group, whose
+// members ARE containers, which is why it survived until a firecracker campaign
+// tried to use it.
+//
+// Asserted from inside the gateway, because that is where the operator's
+// `ssh -L 8080:<member>:<port> <group>-gw` resolves the name.
+func TestGatewayResolvesAMicroVMMemberLive(t *testing.T) {
+	r, host := liveSetup(t)
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		t.Skipf("/dev/kvm unavailable: %v", err)
+	}
+	if !fileExists(filepath.Join(paths.FCCache(), "vmlinux.elf")) {
+		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
+	}
+	fcInstancesDir(t, host)
+	// Short names deliberately: group and member share one 108-byte socket-path
+	// budget, and two full boxName()s overrun it — as ValidInstancePath will
+	// tell you, which is the check existing to stop that reaching a microVM.
+	group := "gwdns-" + runID
+	name := boxName(t, "m")
+	ctx := context.Background()
+	t.Cleanup(func() { _, _ = execRoot(t, "group", "rm", group, "-f") })
+
+	step(t, "booting a microVM in group %s (takes ~30s)…", group)
+	if out, err := execRoot(t, "create", name, "--group", group, "--engine", "firecracker"); err != nil {
+		t.Fatalf("create: %v (out=%q)", err, out)
+	}
+
+	// The name the operator would use: the member's bare in-group name.
+	gw := fcnet.KeepaliveFor(state.NetworkName(group))
+	out, err := r.Run(ctx, run.Opts{ReadOnly: true},
+		"podman", "exec", gw, "getent", "hosts", name)
+	if err != nil || !strings.Contains(out.Stdout, name) {
+		t.Fatalf("the gateway cannot resolve member %q — it was given the wrong resolver\n"+
+			"  getent: %v %q", name, err, out.Stdout)
+	}
+	// And the address it answers with is the member's, not something stale.
+	in, err := state.Load(paths.Instances(), group, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.FCIP != "" && !strings.Contains(out.Stdout, in.FCIP) {
+		t.Errorf("gateway resolved %s to %q, want the member's address %s", name, out.Stdout, in.FCIP)
 	}
 }

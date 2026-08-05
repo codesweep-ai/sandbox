@@ -158,6 +158,15 @@ other — so one published port reaches every member and any port on them. Note 
 member's *alias* will not work: that alias maps to the member's published loopback port, which
 means nothing inside the group. Address members by their bare in-group name through the gateway.
 
+That works because the gateway is started with `--dns <prefix>.53`, the fabric's own resolver. A
+group has two: netavark's aardvark, which every container gets by default and which knows container
+names, and the fabric dnsmasq, which serves microVM names from its hostsdir and forwards everything
+else to aardvark. Only the second knows both. A gateway left on the default resolved container
+members and not microVM ones — reachable by address, nameless — and a podman-only group could not
+show the difference, since its members *are* containers. A gateway created before this was wired in
+is replaced on the next `group create`/`create --group`, because a gateway that cannot name its
+members fails silently.
+
 The gateway authorizes only its group's key, and its ssh config block deliberately offers only
 that key: presenting the host's own identities first would exhaust sshd's `MaxAuthTries` before
 the right key was ever tried.

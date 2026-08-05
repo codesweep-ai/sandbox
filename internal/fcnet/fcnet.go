@@ -104,6 +104,26 @@ func (f Fabric) EnsureGateway(ctx context.Context) error { return f.keepaliveUp(
 // Keepalive is this fabric's keepalive/gateway container name.
 func (f Fabric) Keepalive() string { return KeepaliveFor(f.Network) }
 
+// gatewayResolvesVMs reports whether the running gateway was given the fabric
+// resolver. Read back from the container rather than assumed from how we would
+// create one today: the point is to catch a gateway created by an older build,
+// which is exactly the case where our assumptions do not apply.
+//
+// A keepalive with no published port is not a gateway — nobody jumps through it
+// — so it is left alone rather than churned.
+func (f Fabric) gatewayResolvesVMs(ctx context.Context) bool {
+	if f.GWPort == 0 {
+		return true
+	}
+	want := f.DNSIP(ctx)
+	if !strings.HasSuffix(want, ".53") {
+		return true // cannot determine the fabric address; do not churn on a guess
+	}
+	got := run.Output(ctx, f.Runner, "podman", "inspect", f.Keepalive(),
+		"--format", "{{range .HostConfig.Dns}}{{.}} {{end}}")
+	return strings.Contains(got, want)
+}
+
 func (f Fabric) keepaliveRunning(ctx context.Context) bool {
 	return run.Output(ctx, f.Runner, "podman", "inspect", f.Keepalive(),
 		"--format", "{{.State.Running}}") == "true"
@@ -129,13 +149,21 @@ func (f Fabric) suffix() string {
 // keepaliveUp ensures the keepalive container is running.
 func (f Fabric) keepaliveUp(ctx context.Context) error {
 	if f.keepaliveRunning(ctx) {
-		return nil
-	}
-	// Try to start an existing (stopped) one.
-	if _, err := f.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "container", "exists", f.Keepalive()); err == nil {
+		if f.gatewayResolvesVMs(ctx) {
+			return nil
+		}
+		// A gateway from before the fabric resolver was wired in. Left alone it
+		// keeps running and keeps failing to resolve members, which is the
+		// quiet version of this bug: reachable by address, nameless. Replace it.
+		_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", f.Keepalive())
+	} else if _, err := f.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "container", "exists", f.Keepalive()); err == nil {
+		// Try to start an existing (stopped) one.
 		_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "start", f.Keepalive())
 		if f.keepaliveRunning(ctx) {
-			return nil
+			if f.gatewayResolvesVMs(ctx) {
+				return nil
+			}
+			_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", f.Keepalive())
 		}
 	}
 	argv := []string{"podman", "run", "-d", "--name", f.Keepalive(),
@@ -147,7 +175,16 @@ func (f Fabric) keepaliveUp(ctx context.Context) error {
 		// DNS, which is the same path members use to reach each other. The image
 		// entrypoint already starts sshd, so the gateway needs only an identity
 		// and the group's authorized_keys.
+		//
+		// --dns is what makes that true. A group has two resolvers: aardvark,
+		// which containers get by default and which knows container names, and
+		// the fabric's dnsmasq, which serves microVM names from the hostsdir and
+		// forwards everything else to aardvark. Without this the gateway
+		// inherited aardvark and could reach a microVM member by address but
+		// never by name — the promise above, unkept for the firecracker engine,
+		// while a podman-only group worked and hid it.
 		argv = append(argv,
+			"--dns", f.DNSIP(ctx),
 			"-p", fmt.Sprintf("%s:%d:22", f.GWBind, f.GWPort),
 			"--label", "cs-sandbox.gateway=1",
 			"--userns=keep-id", "--user", "0:0",

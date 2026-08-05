@@ -235,3 +235,89 @@ func TestDownSkipsTheDeleteWhenTheBridgeIsUnknown(t *testing.T) {
 		}
 	}
 }
+
+// A group has two resolvers: aardvark, which containers get by default and which
+// knows container names, and the fabric's dnsmasq, which serves microVM names
+// from the hostsdir and forwards the rest to aardvark. The gateway exists so the
+// host can reach members BY NAME, so it must be given the second one — without
+// it a microVM member is reachable by address and nameless, which is the promise
+// docs/groups.md makes going unkept on the firecracker engine.
+func TestGatewayIsGivenTheFabricResolver(t *testing.T) {
+	f := run.NewFake()
+	f.OnStdout("network inspect", "10.89.0.1\n")            // Gateway() -> prefix 10.89.0
+	f.OnStdout("inspect cs-sandbox-g-keepalive", "false\n") // not running
+	fab := Fabric{Runner: f, Network: "cs-sandbox-g", Image: "img", GWPort: 2401,
+		GWBind: "127.0.0.1", GWSeed: "/seed", GWUser: "dev", GWHome: "/home/dev"}
+	_ = fab.keepaliveUp(context.Background())
+
+	var create string
+	for _, line := range f.Rendered() {
+		if strings.Contains(line, "podman run -d --name cs-sandbox-g-keepalive") {
+			create = line
+		}
+	}
+	if create == "" {
+		t.Fatalf("no gateway was created:\n%s", strings.Join(f.Rendered(), "\n"))
+	}
+	if !strings.Contains(create, "--dns 10.89.0.53") {
+		t.Errorf("gateway must resolve through the fabric dnsmasq (<prefix>.53):\n%s", create)
+	}
+}
+
+// A keepalive with no published port is not a gateway — nobody jumps through it
+// — so it must not be churned for lacking a resolver it has no use for.
+func TestBridgePinningKeepaliveIsNotChurned(t *testing.T) {
+	f := run.NewFake()
+	f.OnStdout("network inspect", "10.89.0.1\n")
+	f.OnStdout("inspect", "true\n")                                   // already running
+	fab := Fabric{Runner: f, Network: "cs-sandbox-net", Image: "img"} // GWPort 0
+	if err := fab.keepaliveUp(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range f.Rendered() {
+		if strings.Contains(line, "podman rm -f") {
+			t.Errorf("a bridge-pinning keepalive was recreated for no reason:\n%s", line)
+		}
+	}
+}
+
+// A gateway created before the resolver was wired in keeps running and keeps
+// failing to resolve members — the quiet version of the bug. Detect it from what
+// the container actually has, not from how we would create one today, and
+// replace it.
+func TestStaleGatewayWithoutTheResolverIsReplaced(t *testing.T) {
+	f := run.NewFake()
+	f.OnStdout("network inspect", "10.89.0.1\n")
+	f.OnStdout("--format {{.State.Running}}", "true\n")
+	f.OnStdout("{{range .HostConfig.Dns}}", "\n") // no --dns: the old shape
+	fab := Fabric{Runner: f, Network: "cs-sandbox-g", Image: "img", GWPort: 2401,
+		GWBind: "127.0.0.1", GWSeed: "/seed", GWUser: "dev", GWHome: "/home/dev"}
+	_ = fab.keepaliveUp(context.Background())
+
+	rendered := strings.Join(f.Rendered(), "\n")
+	if !strings.Contains(rendered, "podman rm -f cs-sandbox-g-keepalive") {
+		t.Errorf("a resolver-less gateway must be replaced, not left running:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "--dns 10.89.0.53") {
+		t.Errorf("its replacement must have the fabric resolver:\n%s", rendered)
+	}
+}
+
+// And one that already has it is left alone: recreating a healthy gateway would
+// drop every ssh session jumping through it.
+func TestHealthyGatewayIsLeftAlone(t *testing.T) {
+	f := run.NewFake()
+	f.OnStdout("network inspect", "10.89.0.1\n")
+	f.OnStdout("--format {{.State.Running}}", "true\n")
+	f.OnStdout("{{range .HostConfig.Dns}}", "10.89.0.53 \n")
+	fab := Fabric{Runner: f, Network: "cs-sandbox-g", Image: "img", GWPort: 2401,
+		GWBind: "127.0.0.1", GWSeed: "/seed", GWUser: "dev", GWHome: "/home/dev"}
+	if err := fab.keepaliveUp(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range f.Rendered() {
+		if strings.Contains(line, "podman rm -f") || strings.Contains(line, "podman run -d") {
+			t.Errorf("a healthy gateway must not be recreated:\n%s", line)
+		}
+	}
+}
