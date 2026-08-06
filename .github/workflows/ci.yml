@@ -6,7 +6,8 @@
 # exec, destroy, ls, two sandboxes resolving each other by name, a port forward
 # end to end. That is affordable because the image those tests run against is a
 # slimmed derivation of the real Containerfile — 693 MB instead of 9.3 GB — built
-# once here and shared to every job that needs it.
+# once here, alongside the Firecracker artifacts derived from it, and shared to
+# every job that needs them.
 #
 # Which hosts can do what was measured, not assumed:
 #
@@ -22,6 +23,10 @@
 #                    exposed inside it. The live members of the profile skip
 #                    themselves and the engine-free ones still run, which is why
 #                    the same `make test-smoke` is correct on every host.
+#
+# Firecracker, the other engine, is covered by one job on Linux: it boots a real
+# microVM against artifacts built from the same slimmed image. macOS has no KVM,
+# and WSL2's /dev/kvm is nested virt inside an Azure VM, so neither is asked to.
 #
 # The full live suite (`-tags integration`) still needs a real Linux/KVM host
 # with the real image: run it with `make test-integration`.
@@ -173,36 +178,78 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: make test-smoke
 
-  # Built once, shared to all three engine jobs. Rebuilt only when image/ or the
-  # generator changes; otherwise restored from cache in seconds.
-  build-image:
-    name: build-image (ubuntu-latest)
+  # Both build products, from ONE image build. The microVM's rootfs is derived
+  # from the image, and `cs-sandbox build --engine firecracker` builds the image
+  # on its way to the artifacts — so producing them together is not just cheaper
+  # than two jobs, it is the only way the rootfs is guaranteed to come from the
+  # same bytes the podman jobs test. The Containerfile opens with `dnf update -y`,
+  # so two builds minutes apart can genuinely differ.
+  #
+  # One cache key covers both, deliberately: a change under internal/fcdisk (the
+  # firecracker release and guest-kernel pins live there) rebuilds the image too,
+  # which costs ~70s on a rare path and keeps the pair honest.
+  build-artifacts:
+    name: build-artifacts (ubuntu-latest)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
+    env:
+      CS_SANDBOX_IMAGE: localhost/cs-sandbox:ci
+      CS_SANDBOX_FC_CACHE: ${{ github.workspace }}/bin/fc-cache
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
 
-      - name: cache the built image
+      - name: cache them
         id: cache
         uses: actions/cache@v4
         with:
-          path: bin/cs-sandbox-ci.tar
-          key: cs-sandbox-ci-image-${{ hashFiles('image/**') }}
+          path: |
+            bin/cs-sandbox-ci.tar
+            bin/fc-artifacts.tar.gz
+          key: cs-sandbox-artifacts-${{ hashFiles('image/**', 'internal/fcdisk/**') }}
 
-      - name: build it
+      # The artifact build preflights exactly as a create does — /dev/kvm plus
+      # dnsmasq, socat, fakeroot, mke2fs, pasta, newuidmap, python3, ip, ssh,
+      # curl, git — so this job needs a KVM-capable host even though it boots
+      # nothing. Skipped entirely on a cache hit.
+      - name: firecracker host prerequisites
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          make build-ci-image
-          mkdir -p bin
-          podman save --format oci-archive -o bin/cs-sandbox-ci.tar localhost/cs-sandbox:ci
-          ls -lh bin/cs-sandbox-ci.tar
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            fakeroot e2fsprogs dnsmasq-base passt socat uidmap iproute2 curl
+          sudo chmod 0666 /dev/kvm
+          test -w /dev/kvm
 
-      - name: share it
+      - name: build them
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          # One command, both products: the image, then the artifacts from it.
+          make build-ci-fc
+          podman save --format oci-archive -o bin/cs-sandbox-ci.tar "$CS_SANDBOX_IMAGE"
+          # --sparse: base-rootfs.ext4 is ~4 GB of mostly holes, and reading them
+          # is the slow part of packing an otherwise ~456 MB archive.
+          tar --sparse -C bin/fc-cache -czf bin/fc-artifacts.tar.gz .
+          ls -lh bin/cs-sandbox-ci.tar bin/fc-artifacts.tar.gz
+
+      - name: share the image
         uses: actions/upload-artifact@v7
         with:
           name: cs-sandbox-ci-image
           path: bin/cs-sandbox-ci.tar
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: share the firecracker artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: cs-sandbox-fc-artifacts
+          path: bin/fc-artifacts.tar.gz
           if-no-files-found: error
           retention-days: 1
 
@@ -213,7 +260,7 @@ jobs:
     # matrix's WSL leg is the slowest of the three — it builds its environment
     # from a bare distro rather than a curated runner image — so on a build-image
     # cache hit it is what these wait on.
-    needs: [build-test, build-image]
+    needs: [build-test, build-artifacts]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -238,6 +285,64 @@ jobs:
 
       - name: smoke
         run: make test-smoke
+  # Firecracker boots a real microVM — its own kernel, its own rootfs, sshd
+  # reached over a vsock bridge — so none of the podman jobs says anything about
+  # it. Linux only: macOS has no KVM at all, and WSL2's /dev/kvm is nested virt
+  # inside an Azure VM, which is not something to assume.
+  smoke-firecracker:
+    name: smoke firecracker (ubuntu-latest)
+    needs: [build-test, build-artifacts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CS_SANDBOX_IMAGE: localhost/cs-sandbox:ci
+      CS_SANDBOX_FC_CACHE: ${{ github.workspace }}/bin/fc-cache
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
+
+      # /dev/kvm is present on these runners but root:kvm, and the runner user is
+      # not in that group — so it reads as absent and every microVM test skips
+      # itself, which would look exactly like passing.
+      - name: firecracker host prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            fakeroot e2fsprogs dnsmasq-base passt socat uidmap iproute2 curl
+          ls -l /dev/kvm
+          sudo chmod 0666 /dev/kvm
+          test -w /dev/kvm || { echo "/dev/kvm still not writable" >&2; exit 1; }
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: cs-sandbox-ci-image
+          path: bin
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: cs-sandbox-fc-artifacts
+          path: bin
+
+      # `create` verifies the image exists before it will boot anything, so the
+      # microVM path needs it present even though it boots from the rootfs.
+      - name: load the image and the artifacts
+        run: |
+          set -euo pipefail
+          podman load -i bin/cs-sandbox-ci.tar
+          podman image exists "$CS_SANDBOX_IMAGE"
+          mkdir -p bin/fc-cache
+          tar -C bin/fc-cache -xzf bin/fc-artifacts.tar.gz
+          ls -1 bin/fc-cache
+
+      # One test to start: the cheapest proof that a microVM boots, gets its
+      # disks, answers ssh as the dev user over the vsock bridge, and registers
+      # with the fabric's DNS. Widen once its cost here is known.
+      - name: smoke (firecracker)
+        run: make test-smoke SMOKE_TESTS=TestFirecrackerCreateLive
   # Windows is supported through WSL2 — the CLI is a Linux binary inside the
   # distro, so everything happens in wsl-bash.
   #
@@ -251,7 +356,7 @@ jobs:
   # testing a configuration nobody runs, and chasing its failures.
   smoke-wsl:
     name: smoke (windows-2025 / WSL2)
-    needs: [build-test, build-image]
+    needs: [build-test, build-artifacts]
     runs-on: windows-2025
     timeout-minutes: 35
     steps:
@@ -407,7 +512,7 @@ jobs:
   # ~/Library/Application Support as a state root, and podman-machine.
   smoke-macos-intel:
     name: smoke (macos-15-intel)
-    needs: [build-test, build-image]
+    needs: [build-test, build-artifacts]
     runs-on: macos-15-intel
     timeout-minutes: 35
     env:

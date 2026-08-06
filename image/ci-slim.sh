@@ -59,7 +59,17 @@ test -f "$src" || { echo "ci-slim: no Containerfile at $src" >&2; exit 1; }
 # A live test that needs more than this list belongs in `make test-integration`
 # against the real image, or the package belongs here. Adding one is cheap
 # relative to the toolchain layers, which are what the size is really about.
-BASE_PACKAGES='openssh-server openssh-clients sudo shadow-utils git jq python3 procps-ng hostname iproute iputils findutils tar podman fuse-overlayfs slirp4netns passt containers-common'
+#   curl     the Firecracker guest-kernel build runs inside this image and
+#            fetches upstream's extract-vmlinux with it.
+#   socat    a microVM's PID 1 is `exec socat VSOCK-LISTEN:22 ... TCP4:...:22`,
+#            the bridge the host reaches sshd through. Without it PID 1 exits
+#            127 and the guest kernel panics with "Attempted to kill init!" —
+#            AFTER fc-init has already echoed FC-VM-READY, so the VM reports
+#            ready, dies, and the failure surfaces as ssh never answering.
+#
+# Neither is needed by the podman image, so both gaps only appear once CI grows
+# a Firecracker job. Every other command image/guest/init runs is present.
+BASE_PACKAGES='openssh-server openssh-clients sudo shadow-utils git jq curl socat python3 procps-ng hostname iproute iputils findutils tar podman fuse-overlayfs slirp4netns passt containers-common'
 
 out=$(awk -v base="$BASE_PACKAGES" '
 BEGIN {
