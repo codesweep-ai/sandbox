@@ -12,7 +12,7 @@ VERSION    := $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 LDFLAGS    := -s -w -X github.com/codesweep-ai/sandbox/internal/cli.Version=$(VERSION)
 GO_FILES   := $(shell git ls-files '*.go')
 
-.PHONY: build build-go build-ci-image install uninstall test test-smoke test-integration vet fmt fmt-check check lint snapshot release release-check clean
+.PHONY: build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-smoke test-integration vet fmt fmt-check check lint snapshot release release-check clean
 
 ## build: host binary at bin/cs-sandbox via goreleaser (single target)
 build:
@@ -40,6 +40,30 @@ build-ci-image:
 	@mkdir -p $(dir $(BIN))
 	./image/ci-slim.sh > bin/Containerfile.ci
 	podman build -q -t $(CI_IMAGE) -f bin/Containerfile.ci image/rootfs
+
+## build-ci-assets: an asset tree identical to image/ except that its
+## Containerfile is the slimmed one. Pointing CS_SANDBOX_ASSETS_DIR at it lets
+## the SHIPPED `cs-sandbox build` produce the CI image and, below, the microVM
+## artifacts — so CI exercises the real command rather than a bespoke path that
+## could drift from it.
+CI_ASSETS := bin/ci-assets
+build-ci-assets:
+	rm -rf $(CI_ASSETS)
+	@mkdir -p $(CI_ASSETS)
+	cp -r image $(CI_ASSETS)/
+	./image/ci-slim.sh > $(CI_ASSETS)/image/Containerfile
+
+## build-ci-fc: the Firecracker artifacts the microVM smoke test needs — the
+## pinned firecracker binary, a guest kernel extracted from Fedora's kernel-core,
+## and a base rootfs built from the CI image. Measured at ~1m35s cold and ~1 GB
+## on disk (459 MB packed), which is what makes caching them in CI worthwhile.
+## Needs /dev/kvm writable and the FC host packages (see `cs-sandbox doctor
+## --engine firecracker`). Set CS_SANDBOX_FC_CACHE to keep them out of the
+## developer's real cache:
+##   CS_SANDBOX_FC_CACHE=/tmp/fc make build-ci-fc
+build-ci-fc: build-go build-ci-assets
+	CS_SANDBOX_ASSETS_DIR=$(CI_ASSETS) CS_SANDBOX_IMAGE=$(CI_IMAGE) \
+	  ./$(BIN) build --engine firecracker
 
 ## install: copy bin/cs-sandbox into $(PREFIX)/bin (default ~/.local/bin), plus
 ## CS_SANDBOX.md beside it — the companion doc that teaches coding agents how to

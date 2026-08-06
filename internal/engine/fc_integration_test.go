@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration || smoke
 
 // Firecracker live integration test. Boots a real microVM on the shared podman
 // fabric and proves the end-to-end trust path: create -> boot -> ssh in with the
@@ -84,7 +84,15 @@ func repoRoot(t *testing.T) string {
 func findFCCache(t *testing.T) string {
 	t.Helper()
 	if d := os.Getenv("CS_SANDBOX_FC_CACHE"); d != "" {
-		return d
+		// Guarded like the fallback below, and not returned on trust: a cache
+		// pointed at explicitly but not yet built used to sail past here and die
+		// deep in Create with `cp: cannot stat .../base-rootfs.ext4`, which reads
+		// as a broken engine rather than an unbuilt one. CI sets this variable on
+		// every run, so the unbuilt case is its normal cold start.
+		if hasArtifacts(d) {
+			return d
+		}
+		t.Skipf("CS_SANDBOX_FC_CACHE=%s holds no built artifacts (run: cs-sandbox build --engine firecracker)", d)
 	}
 	if cand := paths.FCCache(); hasArtifacts(cand) {
 		return cand
@@ -151,8 +159,12 @@ func TestFirecrackerCreateLive(t *testing.T) {
 		t.Errorf("guest hostname = %q, want %q", host, name)
 	}
 
-	// The dnsmasq hostsdir carries the VM name -> IP mapping.
-	reg := filepath.Join(d.FCCache, "net", "hosts.d", name)
+	// The dnsmasq hostsdir carries the VM name -> IP mapping. Asked of paths,
+	// not derived from FCCache: the fabric dir is deliberately host-global (one
+	// rootless fabric per host) and so does NOT follow CS_SANDBOX_FC_CACHE. The
+	// two coincide only while the cache sits at its default, which is why
+	// pointing the cache elsewhere — as CI does — used to fail here.
+	reg := filepath.Join(paths.FCNet(), "hosts.d", name)
 	if _, err := os.Stat(reg); err != nil {
 		t.Errorf("dnsmasq registration %s missing: %v", reg, err)
 	}
