@@ -1,37 +1,135 @@
-# Build + unit tests on every push/PR, on Linux and macOS, and attach the built
-# binary to the run so a PR can be downloaded and tried locally. The integration
-# tests (`-tags integration`) are NOT run here: they need a Linux/KVM host with
-# podman and a built sandbox image (Firecracker also needs /dev/kvm), which
-# GitHub-hosted runners don't provide — run them on a capable host with
-# `make test-integration`.
+# Build, unit tests, and the smoke profile — on every host cs-sandbox is driven
+# from. All of it blocks.
+#
+# The smoke profile (`make test-smoke`) is a named subset of the live tests, not
+# a separate suite. Where an engine is present it boots REAL sandboxes: create,
+# exec, destroy, ls, two sandboxes resolving each other by name, a port forward
+# end to end. That is affordable because the image those tests run against is a
+# slimmed derivation of the real Containerfile — 693 MB instead of 9.3 GB — built
+# once here and shared to every job that needs it.
+#
+# Which hosts can do what was measured, not assumed:
+#
+#   ubuntu-latest    podman 4.9.3 rootless. Live tests run.
+#   windows/WSL2     podman inside the distro. Live tests run.
+#   macos-15-intel   podman 5.8.5 + applehv (kern.hv_support=1). Live tests run.
+#                    Homebrew has no x86_64 bottle, so podman comes from the
+#                    vendor pkg; v5.8.5 is the newest release still shipping an
+#                    Intel macOS build (6.0 dropped them).
+#   macos-latest     NOTHING can run containers here, ever: it is an
+#                    "Apple M1 (Virtual)" reporting kern.hv_support=0 — a VM on
+#                    silicon with no nested-virt capability, so no hypervisor is
+#                    exposed inside it. The live members of the profile skip
+#                    themselves and the engine-free ones still run, which is why
+#                    the same `make test-smoke` is correct on every host.
+#
+# The full live suite (`-tags integration`) still needs a real Linux/KVM host
+# with the real image: run it with `make test-integration`.
 name: ci
 
 on:
   push:
-    branches: [main, go-port] # drop go-port once it is merged into main
+    # A push event runs the workflow file from the pushed ref, so a branch can
+    # opt itself in here without any change on main.
+    branches:
+      - main
+      - go-port # drop once it is merged into main
   pull_request:
+  # Note this one does NOT work until it reaches main: a dispatch is an API call
+  # against a workflow registered from the DEFAULT branch, so GitHub rejects it
+  # ("Workflow does not have 'workflow_dispatch' trigger") however this branch
+  # spells it. It is here for after the merge.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # One matrix for every host that ships this binary, WSL included. It takes two
+  # accommodations: setup-go installs on the Windows side and is invisible inside
+  # the distro, so WSL builds its own toolchain; and each step runs under
+  # matrix.shell, which is plain bash everywhere except WSL, where it is
+  # wsl-bash. Everything between those two points is the same commands on all
+  # three, which is the reason to keep them in one job rather than three.
   build-test:
+    name: build-test (${{ matrix.label }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            label: ubuntu-latest
+            shell: bash
+          - os: macos-latest
+            label: macos-latest
+            shell: bash
+          - os: windows-2025
+            label: windows-2025 / WSL2
+            shell: wsl-bash {0}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    # The shell has to be set HERE and not per step: `steps.*.shell` accepts no
+    # context at all ("no context is available here"), so `${{ matrix.shell }}`
+    # on a step makes the whole file invalid — GitHub then reports a run with
+    # zero jobs, which looks alarmingly like nothing ran. defaults.run.shell is
+    # evaluated after the matrix expands, so the expression is allowed here.
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
+        if: runner.os != 'Windows'
         with:
           go-version: stable
           check-latest: true
 
+      - uses: Vampire/setup-wsl@v7
+        if: runner.os == 'Windows'
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+
+      # The distro is bare, so this is what actions/setup-go does for the others:
+      # a Go toolchain (Ubuntu 24.04 ships 1.22 and go.mod needs 1.25) plus gcc,
+      # without which `go test -race` cannot build — and running -race on two of
+      # three hosts but not the third is exactly the asymmetry this matrix exists
+      # to remove. The symlink puts go on PATH for every later step, so none of
+      # them has to know which host it is on.
+      - name: toolchain
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          # libc6-dev, not just gcc: --no-install-recommends leaves gcc without
+          # the C standard library headers, and a BROKEN compiler is worse than
+          # none. With no gcc at all Go sets CGO_ENABLED=0 and everything builds;
+          # with gcc present it enables cgo, then dies on `fatal error:
+          # stdlib.h: No such file or directory` — in `go vet`, not just -race.
+          apt-get install -y -qq --no-install-recommends \
+            ca-certificates curl git make gcc libc6-dev
+          ver="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1)"
+          curl -fsSL "https://go.dev/dl/${ver}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+          ln -sf /usr/local/go/bin/go /usr/bin/go
+          go version
+
       - name: gofmt
         if: matrix.os == 'ubuntu-latest' # formatting is platform-independent; check once
         run: make fmt-check
+
+      # An invalid workflow file fails the run with ZERO jobs and no annotation
+      # in the API — the least legible failure GitHub produces. Catch it here.
+      - name: actionlint
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          # Pinned to the version this repo is validated against locally, so a
+          # clean `actionlint` on a laptop means a clean one here. Extra runner
+          # labels it does not know about live in .github/actionlint.yaml.
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint" -color
 
       - name: verify modules
         run: go mod verify
@@ -39,21 +137,28 @@ jobs:
       - name: vet
         run: go vet ./...
 
-      # The live tests can't run here (no podman/KVM), but they must still
-      # compile, so a refactor can't silently break them.
+      # The live tests can't all run here, but they must still compile, so a
+      # refactor can't silently break them. Both tags, because the smoke profile
+      # selects across files tagged `integration || smoke`.
       - name: vet (integration build tag)
         run: go vet -tags integration ./...
+
+      - name: vet (smoke build tag)
+        run: go vet -tags smoke ./...
 
       - name: build
         run: go build ./... # compile-check every package
 
       # Produce the actual host binary (static, version-stamped) and attach it, so a
       # PR build can be downloaded from the run's Artifacts and run locally. Built
-      # before the tests so it's available even if a test later fails.
+      # before the tests so it's available even if a test later fails. Not on WSL:
+      # it would be a second copy of the Linux binary, filed under "Windows".
       - name: build binary
+        if: runner.os != 'Windows'
         run: make build-go
 
       - name: upload binary
+        if: runner.os != 'Windows'
         uses: actions/upload-artifact@v7
         with:
           name: cs-sandbox-${{ runner.os }}-${{ runner.arch }}
@@ -63,3 +168,308 @@ jobs:
 
       - name: test
         run: go test -race ./...
+
+      # arm64 macOS only: the engine-free members, on the architecture users
+      # actually run and a newer macOS than the Intel job's. Seconds.
+      - name: smoke (engine-free)
+        if: matrix.os == 'macos-latest'
+        run: make test-smoke
+
+  # Built once, shared to all three engine jobs. Rebuilt only when image/ or the
+  # generator changes; otherwise restored from cache in seconds.
+  build-image:
+    name: build-image (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: cache the built image
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: bin/cs-sandbox-ci.tar
+          key: cs-sandbox-ci-image-${{ hashFiles('image/**') }}
+
+      - name: build it
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          make build-ci-image
+          mkdir -p bin
+          podman save --format oci-archive -o bin/cs-sandbox-ci.tar localhost/cs-sandbox:ci
+          ls -lh bin/cs-sandbox-ci.tar
+
+      - name: share it
+        uses: actions/upload-artifact@v7
+        with:
+          name: cs-sandbox-ci-image
+          path: bin/cs-sandbox-ci.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  smoke-linux:
+    name: smoke (ubuntu-latest)
+    # Both, so the fast checks gate the slow ones: no point booting sandboxes on
+    # three hosts for a branch that does not vet or whose unit tests fail. The
+    # matrix's WSL leg is the slowest of the three — it builds its environment
+    # from a bare distro rather than a curated runner image — so on a build-image
+    # cache hit it is what these wait on.
+    needs: [build-test, build-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CS_SANDBOX_IMAGE: localhost/cs-sandbox:ci
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: cs-sandbox-ci-image
+          path: bin
+
+      - name: load the image
+        run: |
+          set -euo pipefail
+          podman load -i bin/cs-sandbox-ci.tar
+          podman image exists "$CS_SANDBOX_IMAGE"
+
+      - name: smoke
+        run: make test-smoke
+  # Windows is supported through WSL2 — the CLI is a Linux binary inside the
+  # distro, so everything happens in wsl-bash.
+  #
+  # Everything below the setup runs as an UNPRIVILEGED user, not as root. That is
+  # how a sandbox is actually created on WSL2 (a developer's own account, rootless
+  # podman, a real home) and it is not a detail: as root, podman is rootful, and
+  # crun then genuinely tries to set RLIMIT_NOFILE to infinity for the
+  # `--ulimit nofile=-1:-1` every sandbox is created with — which the kernel
+  # refuses inside the container's user namespace. Rootless podman clamps instead,
+  # which is why Linux and macOS never saw it. Testing as root would have meant
+  # testing a configuration nobody runs, and chasing its failures.
+  smoke-wsl:
+    name: smoke (windows-2025 / WSL2)
+    needs: [build-test, build-image]
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: cs-sandbox-ci-image
+          path: bin
+
+      - uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+
+      - name: distro packages
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          # catatonit: `podman run --init` needs it and it is only a Recommends.
+          # uidmap: newuidmap/newgidmap, without which rootless podman cannot map
+          #   a range at all.
+          # netavark + aardvark-dns: the network backend and the resolver that
+          #   makes two sandboxes find each other by name.
+          # passt/slirp4netns/fuse-overlayfs: rootless networking and storage.
+          # iptables is the one nothing declares: netavark's firewall driver
+          # execs it to apply the container's rules, but netavark Depends only on
+          # libc, and podman merely *Suggests* iptables — so no apt setting
+          # installs it, --no-install-recommends or not. Without it netavark logs
+          # "Using iptables firewall driver" and dies as
+          #   netavark (exit code 1): No such file or directory (os error 2)
+          # naming neither iptables nor the driver. `podman network create` is
+          # unaffected (it only writes config), so networks look healthy right up
+          # until a container is attached to one.
+          apt-get install -y -qq --no-install-recommends \
+            ca-certificates curl git make openssh-client \
+            podman catatonit uidmap netavark aardvark-dns iptables \
+            passt slirp4netns fuse-overlayfs
+          podman --version
+          for b in catatonit newuidmap iptables; do
+            command -v "$b" >/dev/null || { echo "missing: $b" >&2; exit 1; }
+          done
+          # netavark and aardvark-dns are podman HELPERS: they install under
+          # /usr/lib/podman (or /usr/libexec/podman), never onto $PATH, so
+          # `command -v` reports them missing for a package that installed
+          # perfectly. Look where they actually live.
+          for h in netavark aardvark-dns; do
+            test -x "/usr/lib/podman/$h" || test -x "/usr/libexec/podman/$h" \
+              || command -v "$h" >/dev/null \
+              || { echo "missing helper: $h" >&2; exit 1; }
+          done
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor, which
+      # rootless podman needs. Best-effort: WSL often has no AppArmor at all, in
+      # which case this knob does not exist and nothing is lost.
+      # WSL2 does not mount / shared, and rootless podman warns about it:
+      #   "/" is not a shared mount, this could cause issues or missing mounts
+      #   with rootless containers
+      # It propagates the container's network mounts back out of the namespace it
+      # sets them up in, which a private / can prevent. Heeding the warning.
+      #
+      # Honest note: this was added believing it explained the netavark failure
+      # below, and it did not — that was a missing iptables. Nothing here has
+      # since proved this step is REQUIRED on WSL2, only that podman asks for it.
+      # Drop it if you want to find out; it is cheap to keep.
+      - name: make / a shared mount
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          findmnt -no PROPAGATION / || true
+          mount --make-rshared /
+          echo "propagation now: $(findmnt -no PROPAGATION /)"
+
+      - name: allow unprivileged user namespaces
+        shell: wsl-bash {0}
+        run: |
+          set -eu
+          sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null \
+            || echo "no apparmor userns restriction here — nothing to relax"
+
+      # Ubuntu 24.04 ships Go 1.22 and go.mod needs 1.25, so take the same
+      # "latest stable" the other jobs get from actions/setup-go.
+      - name: install Go
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          ver="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1)"
+          curl -fsSL "https://go.dev/dl/${ver}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+          /usr/local/go/bin/go version
+
+      - name: create the developer user
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          useradd -m -s /bin/bash dev
+          # useradd ALREADY allocates the subordinate uid/gid ranges rootless
+          # podman maps container uids through (login.defs SUB_UID_COUNT), and
+          # picks a free one. Writing a range by hand — as this used to — gave dev
+          # a second range, and one already assigned to another user, so podman
+          # built a map with two claims on the same host uids and newuidmap
+          # refused it: `write to uid_map failed: Invalid argument`. Assert that
+          # the ranges exist rather than assigning them.
+          grep -q '^dev:' /etc/subuid && grep -q '^dev:' /etc/subgid \
+            || { echo 'useradd allocated no subordinate ranges for dev' >&2; exit 1; }
+          cat /etc/subuid /etc/subgid
+          # No systemd in the distro, so nothing creates the runtime dir logind
+          # would; rootless podman falls back to a /tmp path and warns. Make it.
+          install -d -o dev -g dev -m 0700 "/run/user/$(id -u dev)"
+          # The checkout is on /mnt/c (DrvFs): root-owned, without real Unix
+          # modes, and slow to build from. Copy it onto the distro's own ext4,
+          # owned by dev — which is also where t.TempDir() already lands, so the
+          # tests' mode assertions mean what they say.
+          cp -r "$PWD" /home/dev/src
+          cp bin/cs-sandbox-ci.tar /home/dev/cs-sandbox-ci.tar
+          chown -R dev:dev /home/dev
+
+      # One script rather than a chain of `su -c` one-liners: every invocation
+      # has to re-establish PATH, XDG_RUNTIME_DIR and the image name anyway.
+      # `su -` (a login shell) rather than plain `su`, so HOME is dev's and not
+      # root's — `cd "$HOME/src"` below depends on it.
+      - name: write the runner script
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          cat > /home/dev/run.sh <<'SH'
+          set -eu
+          export PATH=/usr/local/go/bin:$PATH
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export CS_SANDBOX_IMAGE=localhost/cs-sandbox:ci
+          cd "$HOME/src"
+          exec "$@"
+          SH
+          chmod 0755 /home/dev/run.sh
+          chown dev:dev /home/dev/run.sh
+
+      - name: load the image (rootless, as dev)
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          su - dev -c '/home/dev/run.sh podman load -i /home/dev/cs-sandbox-ci.tar'
+          su - dev -c '/home/dev/run.sh podman image exists localhost/cs-sandbox:ci'
+          su - dev -c '/home/dev/run.sh podman info --format "{{.Host.Security.Rootless}} rootless"'
+
+      - name: smoke
+        shell: wsl-bash {0}
+        run: su - dev -c '/home/dev/run.sh make test-smoke'
+
+
+  # Intel macOS, because arm64 macOS cannot run a container engine at all. This
+  # is the only job that exercises the macOS host paths against a real engine:
+  # ~/Library/Application Support as a state root, and podman-machine.
+  smoke-macos-intel:
+    name: smoke (macos-15-intel)
+    needs: [build-test, build-image]
+    runs-on: macos-15-intel
+    timeout-minutes: 35
+    env:
+      CS_SANDBOX_IMAGE: localhost/cs-sandbox:ci
+      PODMAN_VERSION: v5.8.5
+      # From https://github.com/containers/podman/releases/download/v5.8.5/shasums
+      PODMAN_PKG_SHA256: 2677be9fa3bf75f7dbd4dfe5f5039cf105806f102af15ee6c6d174c70dcda3b8
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: cs-sandbox-ci-image
+          path: bin
+
+      # The vendor's own macOS path. Homebrew has no x86_64 bottle for podman on
+      # macOS 15 (it calls the configuration Tier 3 and offers only
+      # --build-from-source), and this pkg additionally ships vfkit and gvproxy,
+      # which `podman machine` needs and a podman-remote zip would not give us.
+      - name: install podman ${{ env.PODMAN_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/podman.pkg \
+            "https://github.com/containers/podman/releases/download/${PODMAN_VERSION}/podman-installer-macos-amd64.pkg"
+          echo "${PODMAN_PKG_SHA256}  /tmp/podman.pkg" | shasum -a 256 -c -
+          sudo installer -pkg /tmp/podman.pkg -target /
+          echo /opt/podman/bin >> "$GITHUB_PATH"
+
+      # init and start are separated so the start can be retried. `podman machine
+      # start` returns a bare "Error: EOF" transiently here — the ssh/gvproxy
+      # handshake into the VM losing its connection — and with every job blocking
+      # a merge, one flaky VM boot must not be a red PR. `podman info` below is
+      # the real assertion: if all three attempts failed, it fails the step.
+      - name: start the podman machine
+        run: |
+          set -euo pipefail
+          podman machine init --cpus 2 --memory 4096 --disk-size 20
+          for attempt in 1 2 3; do
+            if podman machine start; then break; fi
+            echo "machine start attempt $attempt failed; retrying"
+            podman machine stop >/dev/null 2>&1 || true
+            sleep 15
+          done
+          podman info --format '{{.Version.Version}} | {{.Host.Arch}} | {{.Host.OS}}'
+
+      - name: load the image
+        run: |
+          set -euo pipefail
+          podman load -i bin/cs-sandbox-ci.tar
+          podman image exists "$CS_SANDBOX_IMAGE"
+
+      - name: smoke
+        run: make test-smoke
+
+      - name: tear the machine down
+        if: always()
+        run: |
+          podman machine stop || true
+          podman machine rm -f || true

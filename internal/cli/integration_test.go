@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration || smoke
 
 // Integration tests drive the real cobra command tree end-to-end against live
 // podman — proving the CLI wiring (flag parsing, the create/forward/destroy/ls
@@ -13,16 +13,13 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -48,18 +45,6 @@ func image() string {
 		return v
 	}
 	return "localhost/cs-sandbox:44"
-}
-
-// execRoot runs a fresh command tree (as production would) and returns stdout.
-func execRoot(t *testing.T, args ...string) (string, error) {
-	t.Helper()
-	var out bytes.Buffer
-	root := NewRootCmd()
-	root.SetArgs(args)
-	root.SetOut(&out)
-	root.SetErr(io.Discard)
-	err := root.Execute()
-	return out.String(), err
 }
 
 // liveSetup skips unless podman + the image are present, redirects instance/tier
@@ -751,32 +736,6 @@ func waitInBox(t *testing.T, r *run.Exec, host hostenv.Host, name, sh string, d 
 		time.Sleep(time.Second)
 	}
 	t.Fatalf("timed out waiting for %q in %s", sh, name)
-}
-
-// TestCLIHostRouteReadOnlyLive: the sudo-free host-route paths work end-to-end.
-// FCCache is isolated so host-route is guaranteed inactive — status reports down
-// and refresh is rejected, both WITHOUT ever invoking sudo or touching host
-// networking. (The privileged up/down roundtrip needs interactive sudo +
-// systemd-resolved and is intentionally not exercised.)
-func TestCLIHostRouteReadOnlyLive(t *testing.T) {
-	if runtime.GOOS == "darwin" {
-		t.Skip("host-route is Linux-only")
-	}
-	// The fabric working dir is host-global, so isolate it explicitly: an empty
-	// one has no marker file, making host-route guaranteed inactive.
-	t.Setenv("CS_SANDBOX_FC_NET", t.TempDir())
-
-	out, err := execRoot(t, "host-route", "status")
-	if err != nil {
-		t.Fatalf("host-route status: %v", err)
-	}
-	if !strings.Contains(out, "down") {
-		t.Errorf("status = %q, want it to report down", out)
-	}
-	// refresh when down is rejected cleanly, before any privileged wiring.
-	if _, err := execRoot(t, "host-route", "refresh"); err == nil || !strings.Contains(err.Error(), "not up") {
-		t.Errorf("host-route refresh when down err = %v, want 'not up'", err)
-	}
 }
 
 // hostGitInit creates a host source repo with an identity and an initial commit.

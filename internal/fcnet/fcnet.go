@@ -201,13 +201,22 @@ func (f Fabric) keepaliveUp(ctx context.Context) error {
 			"-v", f.GWSeed+":/run/cs-sandbox-seed:ro")
 	}
 	argv = append(argv, f.Image, "sleep", "infinity")
-	_, _ = f.Runner.Run(ctx, run.Opts{}, argv...)
+	res, err := f.Runner.Run(ctx, run.Opts{}, argv...)
 	if f.keepaliveRunning(ctx) {
 		return nil
 	}
 	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "start", f.Keepalive())
 	if f.keepaliveRunning(ctx) {
 		return nil
+	}
+	// Carry podman's own words. Every sandbox creation goes through this
+	// container, so this error is one an ordinary `create` can end at — and on
+	// its own it names the container while saying nothing whatsoever about why
+	// it would not start, which is the entire question.
+	if detail := strings.TrimSpace(res.Stderr); detail != "" {
+		return fmt.Errorf("fc: could not start the network keepalive container: %s", detail)
+	} else if err != nil {
+		return fmt.Errorf("fc: could not start the network keepalive container: %w", err)
 	}
 	return fmt.Errorf("fc: could not start the network keepalive container")
 }

@@ -12,7 +12,7 @@ VERSION    := $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 LDFLAGS    := -s -w -X github.com/codesweep-ai/sandbox/internal/cli.Version=$(VERSION)
 GO_FILES   := $(shell git ls-files '*.go')
 
-.PHONY: build build-go install uninstall test test-integration vet fmt fmt-check check lint snapshot release release-check clean
+.PHONY: build build-go build-ci-image install uninstall test test-smoke test-integration vet fmt fmt-check check lint snapshot release release-check clean
 
 ## build: host binary at bin/cs-sandbox via goreleaser (single target)
 build:
@@ -28,6 +28,18 @@ build:
 build-go:
 	@mkdir -p $(dir $(BIN))
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN) $(PKG)
+
+## build-ci-image: the slimmed sandbox image the smoke profile's live tests run
+## against in CI — 693 MB and ~70 seconds, against 9.3 GB and tens of minutes for
+## the real one, which is what makes booting real sandboxes in CI affordable.
+## Derived from the real Containerfile, never a second copy of it: see
+## image/ci-slim.sh. Use it locally the same way CI does:
+##   make build-ci-image && CS_SANDBOX_IMAGE=localhost/cs-sandbox:ci make test-smoke
+CI_IMAGE ?= localhost/cs-sandbox:ci
+build-ci-image:
+	@mkdir -p $(dir $(BIN))
+	./image/ci-slim.sh > bin/Containerfile.ci
+	podman build -q -t $(CI_IMAGE) -f bin/Containerfile.ci image/rootfs
 
 ## install: copy bin/cs-sandbox into $(PREFIX)/bin (default ~/.local/bin), plus
 ## CS_SANDBOX.md beside it — the companion doc that teaches coding agents how to
@@ -51,12 +63,54 @@ uninstall:
 test:
 	go test ./...
 
+## test-smoke: the smoke profile — the subset of the live tests below that CI
+## runs, on Linux, macOS and Windows/WSL2. Same command on every host: where an
+## engine and a sandbox image are present the *Live members boot real sandboxes,
+## and where they are not (macOS on Apple Silicon, which has no hypervisor to
+## run a podman machine in) those skip themselves and the engine-free members
+## still run. -run is the selector, and is also what keeps this from dragging in
+## each package's unit tests, which the `test` target above already ran.
+##
+## Two kinds of member, both spelled out here rather than inferred:
+##   TestSmoke*  purpose-built for this profile — the host-side behaviour that
+##               differs per OS and that the unit tier cannot reach (the real
+##               state root, an ssh config the host's own ssh must parse).
+##   *Live       existing live tests, run verbatim. Keep this list short: it is
+##               a smoke test, not the suite. `make test-integration` is that.
+SMOKE_TESTS ?= Smoke \
+               TestPodmanCreateLive \
+               TestCLICreateExecDestroyLive \
+               TestCLIAgentToolSetLive \
+               TestCLIListShowsInstanceLive \
+               TestCLINetworkReachabilityLive \
+               TestCLIPortForwardLive
+
+# Joined into one -run alternation. A backslash continuation in make becomes a
+# space, so the list is written space-separated and the spaces are substituted
+# out here — leaving them in would give `-run 'Smoke |Test…'`, whose every
+# alternative has a trailing space and so matches nothing at all.
+comma_empty :=
+space := $(comma_empty) $(comma_empty)
+SMOKE_RUN := $(subst $(space),|,$(strip $(SMOKE_TESTS)))
+
+## -p 1 for the same reason test-integration uses it: the *Live members share
+## one network fabric and one host SSH port pool, so packages running in
+## parallel collide on both ("address already in use", then IPAM exhaustion).
+## -v likewise: these boot real sandboxes and a package otherwise prints nothing
+## for minutes, and it is the only way a CI log shows WHICH members ran — the
+## live ones skip themselves on a host with no engine, and a run that skipped
+## everything looks exactly like a run that passed.
+test-smoke:
+	go test -tags smoke -count=1 -p 1 -v -timeout 900s -run '$(SMOKE_RUN)' ./...
+
 ## test-integration: live tests (real podman/firecracker on a Linux/KVM host);
 ## each skips gracefully when podman or the sandbox image is unavailable.
 ## -p 1 serializes packages: they share one network fabric + host SSH port pool
 ## (each uses its own temp state dir), so parallel packages would collide.
 ## -v streams each test's start/result as it happens: these tests boot real
 ## containers and microVMs, so without it a package prints nothing for minutes.
+## The smoke suite is tagged for this run too, so a full local pass covers it
+## first — its failures are cheap and point at the host, not the engine.
 test-integration:
 	go test -tags integration -p 1 -v -timeout 900s ./...
 

@@ -1,0 +1,15 @@
+# actionlint validates `runs-on:` against a list of GitHub-hosted runner labels
+# baked into the binary, so a label newer than the actionlint release reads as
+# unknown even though it is perfectly valid. macos-15-intel is one of those: it
+# is a standard runner (x86_64, 4 CPU / 14 GB, on all plans until August 2027),
+# and the only macOS runner that can run a container engine at all — GitHub's
+# arm64 macOS runners are M1 VMs reporting kern.hv_support=0.
+#
+# The version CI pins (v1.7.12) already knows the label, so this file changes
+# nothing there. It is here for contributors running an older actionlint: v1.7.7
+# rejects the workflow outright, which is how this was found. The key is
+# `self-hosted-runner` because that is where actionlint reads extra labels from;
+# this runner is GitHub-hosted, not self-hosted.
+self-hosted-runner:
+  labels:
+    - macos-15-intel

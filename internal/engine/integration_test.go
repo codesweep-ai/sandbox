@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration || smoke
 
 // Integration tests exercise the real podman/firecracker engines on a capable
 // Linux/KVM host. Run with:
@@ -10,11 +10,8 @@ package engine
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,19 +20,6 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
-
-// runID is a per-process random suffix so a namespaced sandbox name can't collide
-// with a leftover from a crashed prior run that happened to reuse this PID.
-var runID = func() string {
-	b := make([]byte, 4)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}()
-
-// uniqName builds a unique, namespaced sandbox name for an integration test.
-func uniqName(prefix string) string {
-	return fmt.Sprintf("%s-%d-%s", prefix, os.Getpid(), runID)
-}
 
 func testDeps(t *testing.T) Deps {
 	t.Helper()
@@ -55,25 +39,6 @@ func testDeps(t *testing.T) Deps {
 		SSHBind:      "127.0.0.1",
 		TZ:           "America/Los_Angeles",
 		StartTimeout: 90,
-	}
-}
-
-func requirePodman(t *testing.T, requiredImage string) {
-	t.Helper()
-	if _, err := exec.LookPath("podman"); err != nil {
-		t.Skip("podman not on PATH")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	r := &run.Exec{}
-	if _, err := r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "info"); err != nil {
-		t.Skipf("podman unavailable: %v", err)
-	}
-	if requiredImage == "" {
-		return
-	}
-	if _, err := r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "image", "exists", requiredImage); err != nil {
-		t.Skipf("image %s not built (run: cs-sandbox build): %v", requiredImage, err)
 	}
 }
 

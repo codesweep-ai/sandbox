@@ -1,0 +1,17 @@
+# Everything here is consumed on Linux: the guest rootfs, the agent wrappers,
+# the entrypoint, the Go sources. Nothing is ever run by a Windows program.
+#
+# Without this, a checkout on Windows — which is what the WSL2 CI job does, since
+# actions/checkout runs Windows-side before the distro sees the tree — applies
+# core.autocrlf and rewrites every text file to CRLF. The scripts then carry a
+# shebang of `#!/usr/bin/env bash\r`, and executing one fails with
+#
+#     /usr/bin/env: 'bash\r': No such file or directory
+#
+# which names the interpreter, not the script, and so reads as though the script
+# itself were missing ("fork/exec .../cs-claude-remote-output: no such file or
+# directory"). Declaring the whole tree LF makes the checkout correct wherever it
+# happens, for anyone working from Windows and not only for CI.
+#
+# text=auto still lets git detect and leave binaries alone (docs/demo.gif).
+* text=auto eol=lf

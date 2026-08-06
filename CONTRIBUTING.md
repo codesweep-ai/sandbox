@@ -10,6 +10,7 @@ contact rather than posting details in a public issue.
 
 ```bash
 make check            # gofmt + go vet + unit tests — must pass
+make test-smoke       # the subset of those that CI runs, on every host
 make test-integration # live engine tests; run when you touch create/engine/seed paths
 ```
 
@@ -23,6 +24,9 @@ behavior genuinely cannot be observed in a test — say so in the PR.
   inheritance, seed trust material, instance state, the cobra tree with a fake `Runner`.
 - Use the **integration** tier (`//go:build integration`) only for what needs a real engine, and
   make it skip gracefully when podman or the image is missing.
+- The **smoke profile** is not a third tier: it is the subset of the integration tier that CI runs
+  on every host, listed in the Makefile as `SMOKE_TESTS`. Keep it short, and add to it only for
+  something the tiers above cannot reach.
 - When a feature exists for all three agents (Claude, Codex, OpenCode), test all three — usually
   one table, so a contract that drifts in one of them fails loudly.
 - Test the contract, not the implementation: the exit code, the file mode, the thing another tool
