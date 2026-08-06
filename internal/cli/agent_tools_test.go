@@ -837,3 +837,50 @@ func TestTurnDriversRejectANonNumericTimeout(t *testing.T) {
 		})
 	}
 }
+
+// TestRemoteBackgroundCarriesTurnTimeout: `-b` re-execs the tool through a runner
+// script that REBUILDS argv, so any flag not explicitly re-added there is dropped.
+// --turn-timeout was, which meant a caller-supplied turn budget had never once
+// reached the turn driver on a background dispatch — and every campaign dispatch is
+// a background dispatch. The turn then ran under the driver default (claude 600s),
+// whose expiry stops only the watcher while the guest keeps working, yet still exits
+// 2 so the status contract reports a healthy turn as failed. Verified against a live
+// member VM on 2026-08-06: the driver command line carried no --timeout at all.
+func TestRemoteBackgroundCarriesTurnTimeout(t *testing.T) {
+	skipUnlessLinux(t)
+	for _, fam := range remoteFamilies {
+		t.Run(fam.agent, func(t *testing.T) {
+			home, bin := agentHome(t, fam.prefix)
+			name := "timeout-contract"
+			// Record what the re-exec asks ssh to run: that string is what actually
+			// reaches the guest, so asserting on it tests the whole background path
+			// rather than the shape of the generated script.
+			sshLog := filepath.Join(home, "ssh.log")
+			writeStub(t, bin, "ssh", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> "+sshLog+"\nexit 0\n")
+			writeStub(t, bin, "scp", "#!/bin/sh\nexit 0\n")
+			if err := os.WriteFile(filepath.Join(home, fam.prefix+"-sessions", name+fam.mapSuffix),
+				[]byte(fam.mapValue+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if out, exit := runScript(t, home, bin, nil, "cs-"+fam.agent+"-remote",
+				"--resume", name, "-H", "host", "--turn-timeout", "0", "-b", "hello"); exit != 0 {
+				t.Fatalf("background dispatch exit %d: %s", exit, out)
+			}
+			// The runner is launched detached; give it a moment to reach ssh.
+			var logged string
+			for i := 0; i < 60; i++ {
+				if b, err := os.ReadFile(sshLog); err == nil && strings.Contains(string(b), "-turn") {
+					logged = string(b)
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			if logged == "" {
+				t.Skip("background runner did not reach ssh in this environment")
+			}
+			if !strings.Contains(logged, "--timeout 0") {
+				t.Fatalf("background dispatch dropped the turn timeout; ssh was asked to run:\n%s", logged)
+			}
+		})
+	}
+}

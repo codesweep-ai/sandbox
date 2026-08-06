@@ -374,6 +374,15 @@ if $BACKGROUND; then
     CMD=("$0" --resume "$SESSION_NAME" -H "$REMOTE_HOST")
     [[ -n "$WORKDIR" ]] && CMD+=(-d "$WORKDIR")
     $JSON && CMD+=(-j)
+    # --turn-timeout MUST be carried across the re-exec. The runner rebuilds argv
+    # from scratch, so anything not listed here is silently dropped -- and every
+    # campaign dispatch is a background dispatch, which is why a caller-supplied
+    # turn timeout had never once reached the driver. The turn then ran under the
+    # driver default (claude 600s), whose expiry stops only the WATCHER while the
+    # guest works on; the driver still exits 2 and the footer reports a healthy
+    # turn as failed. Verified dropped on 2026-08-06 by reading the live driver
+    # command line in a member VM.
+    [[ -n "$TURN_TIMEOUT" ]] && CMD+=(--turn-timeout "$TURN_TIMEOUT")
     CMD+=("$PROMPT")
     {
         echo '#!/usr/bin/env bash'
