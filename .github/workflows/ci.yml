@@ -114,11 +114,19 @@ jobs:
 
       - uses: actions/checkout@v7
 
+      # Module caching off for the self-hosted leg only. setup-go restores into
+      # ~/go/pkg/mod, and Go makes everything it puts there read-only. A hosted
+      # runner starts with that directory empty so the restore is unopposed; the
+      # Mac mini already has it populated from an earlier job, so tar hits
+      # hundreds of files it cannot unlink and the restore fails outright.
+      # The cache exists to fake persistence across throwaway VMs — a runner
+      # that genuinely persists already has the thing being faked.
       - uses: actions/setup-go@v7
         if: runner.os != 'Windows'
         with:
           go-version: stable
           check-latest: true
+          cache: ${{ matrix.label != 'macos-arm64 / self-hosted' }}
 
       - uses: Vampire/setup-wsl@v7
         if: runner.os == 'Windows'
@@ -634,10 +642,14 @@ jobs:
       CS_SANDBOX_IMAGE: localhost/cs-sandbox:ci
     steps:
       - uses: actions/checkout@v7
+      # Off for the same reason as the build-test leg above: this runner's
+      # module cache persists between jobs, and Go leaves it read-only, so the
+      # restore fails trying to unpack over it.
       - uses: actions/setup-go@v7
         with:
           go-version: stable
           check-latest: true
+          cache: false
 
       - uses: actions/download-artifact@v7
         with:
