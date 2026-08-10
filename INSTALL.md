@@ -66,6 +66,12 @@ sudo dnf install podman openssh-clients git                          # Fedora
 sudo apt install podman openssh-client git                           # Ubuntu / Debian
 brew install podman                                                  # macOS (ssh + git built in)
 podman machine init --cpus 4 --memory 8192 --disk-size 60 --now      # macOS (--now also starts it)
+
+# Windows (WSL2) — run this INSIDE the distro. The extras are podman's rootless
+# network stack; apt pulls in none of them, and a missing iptables shows up only
+# as an unnamed netavark error once a container starts, never at install time.
+sudo apt install podman openssh-client git \
+  catatonit uidmap netavark aardvark-dns iptables passt slirp4netns fuse-overlayfs
 ```
 
 On macOS everything runs inside that one podman-machine VM — every sandbox, and anything they run
@@ -80,6 +86,32 @@ podman machine stop && podman machine set --cpus 4 --memory 8192 --disk-size 60 
 The machine shares your home directory into the VM, and only that — so a `--repo` or `--snapshot`
 source has to live under `$HOME`. `cs-sandbox create` rejects one that doesn't, rather than handing
 the sandbox a path the VM can't see (macOS temp dirs like `/var/folders/…` are outside the share).
+
+### Windows (WSL2)
+
+Windows is supported **through WSL2**: `cs-sandbox` is a Linux binary that runs inside the distro,
+so install the `linux_amd64` release there — not on Windows. There is no Windows build, and nothing
+runs on the Windows side. CI validates this on Ubuntu 24.04; another distro needs the equivalent
+packages.
+
+Work as a normal user, not root: rootless podman is the supported configuration, and as root crun
+fails on the `nofile` ulimit every sandbox is created with. Enable systemd in `/etc/wsl.conf`, then
+`wsl --shutdown` from Windows to restart the distro:
+
+```ini
+[boot]
+systemd=true
+```
+
+Without it nothing creates `/run/user/$(id -u)`, so podman warns and falls back to `/tmp`, and
+`cs-sandbox host-route` has no systemd-resolved to work with. The two Ubuntu notes in the next
+section — subuid ranges and the AppArmor userns sysctl — are rootless-podman requirements and apply
+here even though Firecracker does not. `cs-sandbox doctor` detects WSL and checks the rest.
+
+Keep repos you share with `--repo` on the distro's own filesystem. `/mnt/c` is DrvFs — root-owned
+and without real Unix modes — so a sandbox gets a tree whose permissions don't mean what they say.
+
+Podman is the engine here; Firecracker is untested on WSL2.
 
 ### Firecracker packages (Linux + KVM, x86_64)
 

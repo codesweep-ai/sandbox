@@ -6,7 +6,7 @@
 [![CI](https://github.com/codesweep-ai/sandbox/actions/workflows/ci.yml/badge.svg)](https://github.com/codesweep-ai/sandbox/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![Engines](https://img.shields.io/badge/engines-podman%20%C2%B7%20firecracker-informational)
-![Platforms](https://img.shields.io/badge/platform-Linux%20%C2%B7%20macOS-lightgrey)
+![Platforms](https://img.shields.io/badge/platform-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows%20%28WSL2%29-lightgrey)
 
 `cs-sandbox` is a self-contained CLI that creates and manages these sandboxes. Each one is a rootless
 Linux environment built from a single image, with a modern toolchain and the **Claude Code**,
