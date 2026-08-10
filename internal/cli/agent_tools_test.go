@@ -867,9 +867,24 @@ func TestRemoteBackgroundCarriesTurnTimeout(t *testing.T) {
 				t.Fatalf("background dispatch exit %d: %s", exit, out)
 			}
 			// The runner is launched detached; give it a moment to reach ssh.
+			//
+			// Wait on --format rather than the driver's name. deploy_driver
+			// probes first with `ssh host test -x $HOME/.local/bin/cs-<a>-turn`,
+			// and that line ENDS in "-turn" — so waiting for "-turn" matched the
+			// PROBE, broke the loop before the dispatch was logged at all, and
+			// failed the assertion below against a log holding only probes. It
+			// passed wherever the dispatch happened to land inside the same 100ms
+			// tick, which is why it only showed on the slowest host.
+			//
+			// --format is the one flag every family sets unconditionally, and no
+			// ssh call before the dispatch carries it. --uuid will not do: codex
+			// and opencode add it only when a UUID is already known, so it would
+			// skip those two into vacuous passes. It is also independent of the
+			// timeout, so a real regression still reaches the assertion below
+			// rather than quietly skipping.
 			var logged string
 			for i := 0; i < 60; i++ {
-				if b, err := os.ReadFile(sshLog); err == nil && strings.Contains(string(b), "-turn") {
+				if b, err := os.ReadFile(sshLog); err == nil && strings.Contains(string(b), "--format") {
 					logged = string(b)
 					break
 				}
