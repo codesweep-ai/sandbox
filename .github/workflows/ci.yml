@@ -17,12 +17,20 @@
 #                    Homebrew has no x86_64 bottle, so podman comes from the
 #                    vendor pkg; v5.8.5 is the newest release still shipping an
 #                    Intel macOS build (6.0 dropped them).
-#   macos-latest     NOTHING can run containers here, ever: it is an
-#                    "Apple M1 (Virtual)" reporting kern.hv_support=0 — a VM on
-#                    silicon with no nested-virt capability, so no hypervisor is
-#                    exposed inside it. The live members of the profile skip
-#                    themselves and the engine-free ones still run, which is why
-#                    the same `make test-smoke` is correct on every host.
+#   macos-arm64      SELF-HOSTED Mac mini (M4, macOS 26, kern.hv_support=1).
+#                    Live tests run. GitHub's own arm64 macOS runners cannot do
+#                    this and never will: they are "Apple M1 (Virtual)" VMs
+#                    reporting kern.hv_support=0 — a VM on silicon with no
+#                    nested-virt capability, so no hypervisor is exposed inside
+#                    it and no podman machine can boot. Self-hosting is the only
+#                    way to test arm64 macOS against a real engine at all.
+#                    Its podman machine is started at system BOOT by a
+#                    LaunchDaemon (nobody logs into that box), so unlike the
+#                    Intel job nothing here installs podman or inits a machine.
+#
+# Every host above now has a real engine, so the profile's live members run
+# everywhere. They still skip themselves where no engine is present, which is
+# what keeps the same `make test-smoke` correct on a developer's laptop.
 #
 # Firecracker, the other engine, is covered by one job on Linux: it boots a real
 # microVM against artifacts built from the same slimmed image. macOS has no KVM,
@@ -36,7 +44,11 @@ on:
   push:
     # A push event runs the workflow file from the pushed ref, so a branch can
     # opt itself in here without any change on main — no entry needed for one.
-    branches: [main]
+    #
+    # ci-macos-arm64 is watched while the self-hosted Mac mini is brought up: it
+    # is the only way to exercise the new arm64 macOS jobs against the real
+    # runner without opening a PR. Drop it when this merges, as go-port was.
+    branches: [main, ci-macos-arm64]
   pull_request:
   # Note this one does NOT work until it reaches main: a dispatch is an API call
   # against a workflow registered from the DEFAULT branch, so GitHub rejects it
@@ -63,8 +75,12 @@ jobs:
           - os: ubuntu-latest
             label: ubuntu-latest
             shell: bash
-          - os: macos-latest
-            label: macos-latest
+          # An array, not a label string: self-hosted runners are selected by
+          # ANDing labels, and these three are the ones the runner registers
+          # automatically. No custom label is needed while this is the only
+          # self-hosted runner on the repo — add one before there is a second.
+          - os: [self-hosted, macOS, ARM64]
+            label: macos-arm64 / self-hosted
             shell: bash
           - os: windows-2025
             label: windows-2025 / WSL2
@@ -80,6 +96,22 @@ jobs:
       run:
         shell: ${{ matrix.shell }}
     steps:
+      # FIRST, before checkout, so a fork's code never reaches the self-hosted
+      # machine's disk. This is an ACCIDENT guard, not a security boundary: a
+      # `pull_request` workflow runs from the PR's merge commit, so a hostile
+      # fork can simply delete this step. What actually protects the Mac mini is
+      # the repository's "require approval for all external contributors"
+      # setting — no fork PR runs anything until a maintainer approves it. This
+      # catches the case where that setting is loosened by mistake.
+      #
+      # It fails rather than skips because a matrix leg cannot skip itself, and
+      # a green check that silently tested nothing is worse than a red one.
+      - name: refuse fork PRs on the self-hosted runner
+        if: matrix.label == 'macos-arm64 / self-hosted' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "fork PR from ${{ github.event.pull_request.head.repo.full_name }} — refusing to run on the self-hosted runner" >&2
+          exit 1
+
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
@@ -172,12 +204,6 @@ jobs:
       - name: test
         run: go test -race ./...
 
-      # arm64 macOS only: the engine-free members, on the architecture users
-      # actually run and a newer macOS than the Intel job's. Seconds.
-      - name: smoke (engine-free)
-        if: matrix.os == 'macos-latest'
-        run: make test-smoke
-
   # Both build products, from ONE image build. The microVM's rootfs is derived
   # from the image, and `cs-sandbox build --engine firecracker` builds the image
   # on its way to the artifacts — so producing them together is not just cheaper
@@ -256,7 +282,7 @@ jobs:
   smoke-linux:
     name: smoke (ubuntu-latest)
     # Both, so the fast checks gate the slow ones: no point booting sandboxes on
-    # three hosts for a branch that does not vet or whose unit tests fail. The
+    # four hosts for a branch that does not vet or whose unit tests fail. The
     # matrix's WSL leg is the slowest of the three — it builds its environment
     # from a bare distro rather than a curated runner image — so on a build-image
     # cache hit it is what these wait on.
@@ -576,3 +602,80 @@ jobs:
         run: |
           podman machine stop || true
           podman machine rm -f || true
+
+  # arm64 macOS against a REAL engine — the coverage no GitHub-hosted runner can
+  # provide (see the host table at the top). This is a self-hosted Mac mini, and
+  # everything below assumes the differences that come with that:
+  #
+  #   * Its podman machine is started at system boot by a LaunchDaemon, so there
+  #     is no install-podman step and no `podman machine init`. The Intel job
+  #     above does both because its runner is a fresh VM every time.
+  #   * The machine is NOT thrown away at the end. A GitHub-hosted runner is
+  #     destroyed after the run; this one persists, so leftovers are inherited by
+  #     the next job and have to be cleaned up explicitly.
+  #
+  # No `concurrency:` group is needed: a self-hosted runner executes one job at a
+  # time, so two runs queue rather than colliding over the fabric and the host
+  # SSH port pool that `-p 1` exists to serialize.
+  smoke-macos-arm64:
+    # The " / self-hosted" suffix follows "windows-2025 / WSL2": it flags a host
+    # that is not what its first half suggests. It earns its keep when a check
+    # goes red — this one means go look at the Mac mini, not at GitHub.
+    name: smoke (macos-arm64 / self-hosted)
+    needs: [build-test, build-artifacts]
+    # Skips cleanly for fork PRs — unlike the build-test leg, which is inside a
+    # matrix and has to fail instead. Same accident-guard caveat applies: the
+    # repository's "require approval for all external contributors" setting is
+    # what actually protects this machine.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 35
+    env:
+      CS_SANDBOX_IMAGE: localhost/cs-sandbox:ci
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: cs-sandbox-ci-image
+          path: bin
+
+      # launchd does not order jobs relative to each other and `podman machine
+      # start` takes 20-30s, so after a reboot the runner can pick up a job
+      # before the VM is ready. Guard on state rather than calling start
+      # blindly: start exits 125 when the machine is already running.
+      - name: ensure the podman machine is up
+        run: |
+          set -euo pipefail
+          if [ "$(podman machine inspect --format '{{.State}}' podman-machine-default)" != "running" ]; then
+            echo "machine was down; starting it"
+            podman machine start
+          fi
+          podman info --format '{{.Version.Version}} | {{.Host.Arch}} | rootless={{.Host.Security.Rootless}}'
+
+      - name: load the image
+        run: |
+          set -euo pipefail
+          podman load -i bin/cs-sandbox-ci.tar
+          podman image exists "$CS_SANDBOX_IMAGE"
+
+      - name: smoke
+        run: make test-smoke
+
+      # The runner is not ephemeral, so this is the equivalent of the Intel job
+      # throwing its whole machine away. Containers and networks only: images are
+      # left alone deliberately, since the next run reloads the CI image anyway
+      # and keeping the layers is free speed. Best-effort — a cleanup failure
+      # must not turn a passing smoke run red.
+      - name: tear down leftovers
+        if: always()
+        run: |
+          set -uo pipefail
+          podman rm -f --all || true
+          podman network prune -f || true
+          echo "--- surviving containers (expect none) ---"
+          podman ps -a || true
