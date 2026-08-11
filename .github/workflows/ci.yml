@@ -44,7 +44,7 @@ on:
   push:
     # A push event runs the workflow file from the pushed ref, so a branch can
     # opt itself in here without any change on main — no entry needed for one.
-    branches: [main]
+    branches: [main, fc-mem-management]
   pull_request:
   # Note this one does NOT work until it reaches main: a dispatch is an API call
   # against a workflow registered from the DEFAULT branch, so GitHub rejects it
