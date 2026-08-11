@@ -59,7 +59,10 @@ func fcArch() (string, error) {
 // Defaulted() fills the pins).
 type BuildConfig struct {
 	Image     string // podman image the kernel/rootfs are built from (required to build)
-	InitPath  string // host path of the guest init (image/guest/init), baked in as /fc-init
+	InitPath string // host path of the guest init (image/guest/init), baked in as /fc-init
+	// InitramfsSrc is the host path of image/guest/initramfs-init.c, compiled
+	// static and packed as initrd.img. Required to build the boot artifacts.
+	InitramfsSrc string
 	Kernel    string // "fedora" (default) or "host"
 	KVerPin   string // pinned fedora kernel-core NVR (CS_SANDBOX_FC_KVER); "" = latest
 	RootfsGB  int    // base rootfs size in GiB (default 14)
@@ -356,47 +359,105 @@ func (c Cache) kernelRebuildReason(bc BuildConfig) string {
 		return "kver stamp missing"
 	case c.readStamp("kver-pin") != bc.KVerPin:
 		return "pinned kernel NVR changed"
+	case c.readStamp("initramfs-src") != initramfsStamp(bc):
+		return "initramfs builder changed"
 	}
 	return ""
 }
 
-// ensureKernel builds/refreshes the guest kernel (vmlinux.elf + initrd.img, plus
-// modules.tar in fedora mode). Only the fedora mode BUILD is supported (the
+// initramfsBuilder is bumped whenever the initramfs *assembly* changes in a way
+// the source hash alone would not capture (module list, packing, compiler
+// flags). Together with the source hash it keys the initrd.img cache.
+const initramfsBuilder = "v1-static-init"
+
+// initramfsStamp identifies the initramfs that bc would produce. An unreadable
+// source stamps as empty, which never matches a built artifact, so the rebuild
+// then fails loudly with the read error rather than silently reusing a stale
+// initrd.
+func initramfsStamp(bc BuildConfig) string {
+	data, err := os.ReadFile(bc.InitramfsSrc)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return initramfsBuilder + "-" + hex.EncodeToString(sum[:])[:12]
+}
+
+// ensureKernel builds/refreshes the boot artifacts (vmlinux.elf + initrd.img,
+// plus modules.tar in fedora mode). Only the fedora mode BUILD is supported (the
 // default); host mode falls back to an actionable error if the artifacts are
-// missing, since it needs host dracut/vmlinuz.
+// missing, since it would need the host's own /boot.
 func (c Cache) ensureKernel(ctx context.Context, r run.Runner, bc BuildConfig) error {
 	if bc.Kernel == "host" {
-		// Host-kernel mode build is unsupported (it depends on host dracut). Reuse a
-		// cached artifact set if present; otherwise fall back to the default kernel.
+		// Host-kernel mode is never built here — it would have to lift vmlinuz out
+		// of the host's /boot. Reuse a cached artifact set if present; otherwise
+		// point the caller back at the default kernel.
 		if exists(c.Kernel()) && exists(c.Initrd()) {
 			return nil
 		}
 		return fmt.Errorf("fc: missing host-kernel artifacts and CS_SANDBOX_FC_KERNEL=host build is unsupported; use the default fedora kernel")
 	}
-	// Fedora mode: rebuild when the mode flipped, any artifact is missing, or the
-	// pinned kernel NVR changed.
+	// Fedora mode: rebuild when the mode flipped, any artifact is missing, the
+	// pinned kernel NVR changed, or the initramfs source changed.
 	if c.kernelRebuildReason(bc) == "" {
 		return nil
 	}
 	if bc.Image == "" {
 		return fmt.Errorf("fc: guest kernel artifacts missing/stale and no image available to build them")
 	}
+	if bc.InitramfsSrc == "" {
+		return fmt.Errorf("fc: guest kernel artifacts missing/stale and no initramfs source available to build them")
+	}
 	c.say("building the guest kernel (this can take a few minutes)…")
 	for _, f := range []string{"vmlinux.elf", "initrd.img", "modules.tar", "kver"} {
 		_ = os.Remove(c.stampPath(f))
 	}
-	if err := c.buildFedoraKernel(ctx, r, bc); err != nil {
+	if err := c.buildFedoraBootArtifacts(ctx, r, bc); err != nil {
 		return err
 	}
 	if err := c.writeStamp("kernel-mode", "fedora"); err != nil {
 		return err
 	}
+	if err := c.writeStamp("initramfs-src", initramfsStamp(bc)); err != nil {
+		return err
+	}
 	return c.writeStamp("kver-pin", bc.KVerPin)
 }
 
-// buildFedoraKernel builds a Fedora guest kernel (vmlinux.elf + initrd.img +
-// modules.tar + kver) in a throwaway container from the image.
-func (c Cache) buildFedoraKernel(ctx context.Context, r run.Runner, bc BuildConfig) error {
+// initramfsBuildScript assembles initrd.img: a static init compiled from
+// image/guest/initramfs-init.c plus the one module the boot path needs.
+//
+// An initramfs is unavoidable — Fedora builds CONFIG_VIRTIO_MMIO=m, so no block
+// device exists until it is loaded and the kernel cannot mount root=/dev/vda on
+// its own. It only has to be *small*: the ~38 MB dracut initrd this replaces
+// spent ~2.4 s of every boot probing for storage stacks and networks a microVM
+// cannot have.
+//
+// virtio_blk and ext4 are built into the Fedora kernel, so virtio_mmio is the
+// only module needed here; everything else loads from the real root afterwards.
+// The numeric prefix makes load order explicit to the init.
+const initramfsBuildScript = `IR=/tmp/initramfs
+mkdir -p "$IR/modules" "$IR/newroot" "$IR/proc" "$IR/sys" "$IR/dev"
+printf '%s' "$FC_INITRAMFS_C" > /tmp/initramfs-init.c
+gcc -static -Os -Wall -Wextra -o "$IR/init" /tmp/initramfs-init.c
+strip "$IR/init"
+for m in virtio_mmio; do
+  src=$(find "/lib/modules/$KVER" -name "$m.ko*" | head -1)
+  [ -n "$src" ] || { echo "fc: $m.ko not found in guest kernel $KVER" >&2; exit 1; }
+  case "$src" in
+    *.xz)  xz -dc    "$src" > "$IR/modules/10-$m.ko" ;;
+    *.zst) zstd -dc  "$src" > "$IR/modules/10-$m.ko" ;;
+    *.gz)  gzip -dc  "$src" > "$IR/modules/10-$m.ko" ;;
+    *)     cp        "$src"   "$IR/modules/10-$m.ko" ;;
+  esac
+done
+( cd "$IR" && find . -print0 | cpio --null -o -H newc --quiet ) | gzip -9 > /artifacts/initrd.img`
+
+// buildFedoraBootArtifacts builds everything a microVM boots from, short of the
+// rootfs: the Fedora guest kernel (vmlinux.elf), the initramfs that mounts root
+// (initrd.img), and the guest's module tree (modules.tar + kver). All in a
+// throwaway container from the image.
+func (c Cache) buildFedoraBootArtifacts(ctx context.Context, r run.Runner, bc BuildConfig) error {
 	kpkg := "kernel-core"
 	if bc.KVerPin != "" {
 		kpkg = "kernel-core-" + bc.KVerPin
@@ -406,23 +467,26 @@ func (c Cache) buildFedoraKernel(ctx context.Context, r run.Runner, bc BuildConf
 	// The package spec is arch-qualified ("$FC_KPKG.$(uname -m)"): dnf5 resolves a
 	// bare name-version-release inconsistently (an updates-repo NVR fails to match
 	// without the arch), so the .arch NEVRA form is the reliable spec.
+	initramfsC, err := os.ReadFile(bc.InitramfsSrc)
+	if err != nil {
+		return fmt.Errorf("fc: reading initramfs source %s: %w", bc.InitramfsSrc, err)
+	}
 	script := `set -e
 FC_SPEC="$FC_KPKG.$(uname -m)"
-dnf install -y --setopt=install_weak_deps=False "$FC_SPEC" dracut zstd xz gzip binutils file >/dev/null \
+dnf install -y --setopt=install_weak_deps=False "$FC_SPEC" gcc glibc-static cpio zstd xz gzip binutils file >/dev/null \
   || { echo "fc: dnf could not install $FC_SPEC (pinned kernel no longer in the Fedora repos? bump CS_SANDBOX_FC_KVER)" >&2; exit 1; }
 KVER=$(ls -1 /lib/modules | head -1)
 VMZ=/lib/modules/$KVER/vmlinuz; [ -f "$VMZ" ] || VMZ=/boot/vmlinuz-$KVER
 curl -fsSL https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-vmlinux -o /tmp/ev; chmod +x /tmp/ev
 mkdir -p /artifacts
 /tmp/ev "$VMZ" > /artifacts/vmlinux.elf
-dracut --force --no-hostonly --no-hostonly-cmdline \
-  --omit "iscsi nfs nbd multipath lvm mdraid crypt dmraid network network-manager network-legacy ifcfg fcoe" \
-  --add-drivers "virtio virtio_ring virtio_pci virtio_mmio ext4" \
-  --kver "$KVER" /artifacts/initrd.img
+` + initramfsBuildScript + `
 tar -C /lib/modules -cf /artifacts/modules.tar "$KVER"
 echo "$KVER" > /artifacts/kver`
+
 	if _, err := r.Run(ctx, run.Opts{Env: []string{"FC_KPKG=" + kpkg}}, "podman", "run",
 		"--name", "fckbuild", "--user", "0:0", "-e", "FC_KPKG="+kpkg,
+		"-e", "FC_INITRAMFS_C="+string(initramfsC),
 		"--entrypoint", "/bin/bash", bc.Image, "-c", script); err != nil {
 		_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fckbuild")
 		return fmt.Errorf("fc: Fedora kernel build failed: %w", err)

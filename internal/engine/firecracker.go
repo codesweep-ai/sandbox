@@ -74,9 +74,12 @@ func (fe *Firecracker) buildConfig() fcdisk.BuildConfig {
 		// The guest init comes from the checkout when present, else the binary's
 		// embedded copy (materialized into the cache). Its content hash keys the
 		// base-rootfs stamp and is identical either way.
-		InitPath:  assets.GuestInitPath(fe.d.AssetDir, fe.d.FCCache),
-		Kernel:    kernel,
-		FCVersion: os.Getenv("CS_SANDBOX_FC_VERSION"),
+		InitPath: assets.GuestInitPath(fe.d.AssetDir, fe.d.FCCache),
+		// Source for the static initramfs that mounts root and hands over to
+		// InitPath. Same checkout-else-embedded resolution as InitPath.
+		InitramfsSrc: assets.GuestInitramfsSrcPath(fe.d.AssetDir, fe.d.FCCache),
+		Kernel:       kernel,
+		FCVersion:    os.Getenv("CS_SANDBOX_FC_VERSION"),
 	}
 	if v := os.Getenv("CS_SANDBOX_FC_KVER"); v != "" {
 		bc.KVerPin = v
