@@ -408,12 +408,28 @@ func (fe *Firecracker) Exec(ctx context.Context, name string, io ExecIO) error {
 		argv = append(argv, "-t")
 	}
 	if len(io.Argv) > 0 {
-		argv = append(argv, io.Argv...)
+		// Quote each word. ssh joins its command words with spaces and the
+		// remote shell re-parses the result, so an unquoted argv arrives
+		// word-split: `exec box printf '[%s]' "one two"` would print [one][two],
+		// and any argument carrying a space, $, ; or glob would be reinterpreted
+		// by a shell the caller never asked for. Quoting makes `exec` mean the
+		// same on both engines — run this argv, do not interpret it — and
+		// `cs-sandbox ssh` remains the door to a remote shell.
+		for _, a := range io.Argv {
+			argv = append(argv, shellQuote(a))
+		}
 	} else {
 		argv = append(argv, "bash", "-l")
 	}
 	_, err = fe.d.Runner.Run(ctx, run.Opts{Interactive: true}, argv...)
 	return err
+}
+
+// shellQuote renders s so that a POSIX shell parses it back to exactly s.
+// Single quotes suppress every expansion; the only character that cannot appear
+// inside them is a single quote itself, which is closed, escaped and reopened.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // Port returns the instance's published SSH port.
