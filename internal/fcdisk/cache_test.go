@@ -73,7 +73,7 @@ func TestPruneCacheDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pruneCacheDir(dir, 14)
+	pruneCacheDir(dir, 14, nil)
 
 	if !exists(fresh) {
 		t.Errorf("fresh disk was pruned")
@@ -93,9 +93,37 @@ func TestPruneCacheDir(t *testing.T) {
 	if err := os.Chtimes(again, old, old); err != nil {
 		t.Fatal(err)
 	}
-	pruneCacheDir(dir, 0)
+	pruneCacheDir(dir, 0, nil)
 	if !exists(again) {
 		t.Errorf("ttlDays=0 should disable pruning")
+	}
+}
+
+// TestPruneCacheDirKeepsInUse covers the invariant that makes attaching cached
+// disks directly safe: a disk an instance still references survives the TTL.
+// Pruning it would not disturb a running VM (the open fd keeps the inode alive)
+// but would leave the next `start` with no disk to attach.
+func TestPruneCacheDirKeepsInUse(t *testing.T) {
+	dir := t.TempDir()
+	held := filepath.Join(dir, "held-key1.ext4")
+	unheld := filepath.Join(dir, "unheld-key2.ext4")
+	for _, p := range []string{held, unheld} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-30 * 24 * time.Hour)
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pruneCacheDir(dir, 14, map[string]bool{held: true})
+
+	if !exists(held) {
+		t.Errorf("in-use disk was pruned despite being referenced by an instance")
+	}
+	if exists(unheld) {
+		t.Errorf("stale unreferenced disk was not pruned")
 	}
 }
 

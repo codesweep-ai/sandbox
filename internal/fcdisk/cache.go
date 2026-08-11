@@ -96,7 +96,11 @@ func (c Cache) RepoDisk(ctx context.Context, r run.Runner, src, label string) (s
 
 // RepoCacheGC drops cached repo disks (and orphaned build temps) not touched
 // within ttlDays (0 disables).
-func (c Cache) RepoCacheGC(ttlDays int) { pruneCacheDir(c.repoCacheDir(), ttlDays) }
+// RepoCacheGC prunes cached repo disks older than ttlDays. Paths present in
+// inUse are never pruned — see pruneCacheDir.
+func (c Cache) RepoCacheGC(ttlDays int, inUse map[string]bool) {
+	pruneCacheDir(c.repoCacheDir(), ttlDays, inUse)
+}
 
 // StoreDisk returns the path to a cached RO image-store ext4 built from the
 // shared podman volume cs-sandbox-shared-<name>, building it on a miss and
@@ -187,11 +191,15 @@ func storeKey(ctx context.Context, r run.Runner, image, vol string) string {
 
 // StoreCacheGC drops cached store disks (and orphaned build temps) not touched
 // within ttlDays (0 disables).
-func (c Cache) StoreCacheGC(ttlDays int) { pruneCacheDir(c.storeCacheDir(), ttlDays) }
+// StoreCacheGC prunes cached image-store disks older than ttlDays. Paths present
+// in inUse are never pruned — see pruneCacheDir.
+func (c Cache) StoreCacheGC(ttlDays int, inUse map[string]bool) {
+	pruneCacheDir(c.storeCacheDir(), ttlDays, inUse)
+}
 
 // pruneCacheDir deletes *.ext4 older than ttlDays and *.ext4.* build temps older
 // than a day.
-func pruneCacheDir(dir string, ttlDays int) {
+func pruneCacheDir(dir string, ttlDays int, inUse map[string]bool) {
 	if ttlDays <= 0 {
 		return
 	}
@@ -210,6 +218,13 @@ func pruneCacheDir(dir string, ttlDays int) {
 		name := e.Name()
 		switch {
 		case filepath.Ext(name) == ".ext4":
+			// Instances attach these cached disks directly rather than copying
+			// them, so a disk an instance still references must outlive the TTL:
+			// unlinking it would not disturb a *running* VM (the open fd keeps
+			// the inode alive) but would break the next `start`.
+			if inUse[filepath.Join(dir, name)] {
+				continue
+			}
 			if age > ttl {
 				_ = os.Remove(filepath.Join(dir, name))
 			}
