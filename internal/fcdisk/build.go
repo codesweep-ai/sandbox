@@ -58,15 +58,15 @@ func fcArch() (string, error) {
 // resolves them from the environment. A zero BuildConfig is valid (its
 // Defaulted() fills the pins).
 type BuildConfig struct {
-	Image     string // podman image the kernel/rootfs are built from (required to build)
+	Image    string // podman image the kernel/rootfs are built from (required to build)
 	InitPath string // host path of the guest init (image/guest/init), baked in as /fc-init
 	// InitramfsSrc is the host path of image/guest/initramfs-init.c, compiled
 	// static and packed as initrd.img. Required to build the boot artifacts.
 	InitramfsSrc string
-	Kernel    string // "fedora" (default) or "host"
-	KVerPin   string // pinned fedora kernel-core NVR (CS_SANDBOX_FC_KVER); "" = latest
-	RootfsGB  int    // base rootfs size in GiB (default 14)
-	FCVersion string // firecracker release tag (default v1.16.0)
+	Kernel       string // "fedora" (default) or "host"
+	KVerPin      string // pinned fedora kernel-core NVR (CS_SANDBOX_FC_KVER); "" = latest
+	RootfsGB     int    // base rootfs size in GiB (default 14)
+	FCVersion    string // firecracker release tag (default v1.16.0)
 }
 
 // Defaulted returns a copy with empty fields filled from the defaults.
