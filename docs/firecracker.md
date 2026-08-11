@@ -124,7 +124,9 @@ is loaded — the kernel cannot mount `root=/dev/vda` on its own. The init loads
 filesystem, `switch_root`s and execs `init=` (`/fc-init`).
 
 This replaces a ~38 MB dracut initrd, which spent most of a boot probing for storage stacks, network
-setups and hardware a microVM cannot have.
+setups and hardware a microVM cannot have. Measured on the same cached kernel + base rootfs, time
+from `firecracker` exec to a shell on the real root, median of 3: **621 ms vs 2975 ms** — 2.35 s
+saved per boot.
 
 The cached initrd is keyed by a hash of that source (the `initramfs-src` stamp), so editing it
 rebuilds the boot artifacts.
@@ -172,14 +174,36 @@ that same order - so host append-order and guest consume-order must match:
 - **repo / snapshot / image-store:** content-addressed cached RO ext4 disks. The repo and
   image-store disks are attached **straight from the cache**, not copied: a reflink copy shares disk
   extents but gets a new inode, and the page cache is per-inode, so N sandboxes reading the same repo
-  held N copies of those bytes in host RAM. Sharing the inode is safe because the guest mounts them
-  read-only, and the cache GC skips any path an instance's `run.json` still names. `--repo` is a bare
-  clone the guest then `clone --shared`s (see
+  held N copies of those bytes in host RAM (measured ~767 MB per additional sandbox for a 768 MB
+  working set). Sharing the inode is safe because the guest mounts them read-only, and the cache GC
+  skips any path an instance's `run.json` still names. `--repo` is a bare clone the guest then
+  `clone --shared`s (see
   [`repo-sharing.md`](repo-sharing.md)); `--snapshot` is a frozen directory;
   `--image-store` is a shared Podman store wired into the guest Podman's `additionalimagestores` (see
   [`design.md`](design.md#shared-image-stores)). Cache keys: repo =
   `sha256`(ref tips + HEAD), image-store = `sha256`(`images.json` + `layers.json`), each 40 hex;
   disks unused for `CS_SANDBOX_FC_REPO_CACHE_TTL_DAYS` (default 14) are pruned.
+
+### Memory limits
+
+Each microVM is launched inside its own transient cgroup
+(`systemd-run --user --scope`), so a sandbox has memory accounting of its own and a runaway one is
+charged — and killed — where it belongs. Without it the VMM inherits the *launching shell's* scope,
+there is no per-sandbox `memory.current`, and the host OOM killer picks its victim by heuristic.
+
+- **`CS_SANDBOX_FC_MEMORY_MAX`** (default: `mem_size_mib` + 256 MB): the cgroup's `memory.max`. The
+  default sits above anything the guest can reach, so it is a backstop that never fires in normal
+  operation. Tighten it once sandboxes are packed past the sum of their ceilings — that is when it
+  starts doing work.
+- **`CS_SANDBOX_FC_MEMORY_SWAP_MAX`** (default `0`): `memory.swap.max`. Swap is charged *on top of*
+  `memory.max`, and where swap is zram it is RAM — budget `MemoryMax + MemorySwapMax`.
+- **`CS_SANDBOX_FC_NO_CGROUP=1`**: disable the wrapper entirely.
+
+`memory.high` is deliberately never set. Measured on this workload it is not a throttle but a cliff:
+once the cgroup can no longer reclaim, the VM stops making progress at ~97 % pressure stall while
+staying alive, with no OOM and no error for a supervisor to notice. A hard `memory.max` fails loudly
+instead. On a host with no systemd user session the wrapper is skipped with a warning to
+`serial.log` rather than failing the boot.
 
 ### Seed assembly
 
