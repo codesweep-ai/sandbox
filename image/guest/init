@@ -16,7 +16,18 @@ mount -t devtmpfs dev /dev 2>/dev/null
 # Unified cgroups v2 hierarchy. This PID1 isn't systemd, so nothing mounts it otherwise;
 # without it nested podman falls back to deprecated cgroups v1 and warns on every run.
 mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
+# Runtime state on tmpfs, before anything writes under /run. Without this /run
+# lives on the rootfs, so pid files and container runtime state survive a reboot
+# and podman starts against stale state it believes is live.
+mount -t tmpfs -o mode=755,nosuid,nodev tmpfs /run 2>/dev/null
 mkdir -p /run/sshd /dev/pts; mount -t devpts devpts /dev/pts 2>/dev/null
+# POSIX shared memory. Same reason as the cgroup mount above — nothing else
+# mounts it when PID1 is a shell script — and podman needs it: without /dev/shm
+# its lock manager cannot start at all, so every `podman` command fails.
+mkdir -p /dev/shm; mount -t tmpfs -o mode=1777,nosuid,nodev shm /dev/shm 2>/dev/null
+# Loopback comes up DOWN and nothing else raises it, so anything talking to
+# 127.0.0.1 — a published container port, a health probe — hangs.
+ip link set lo up 2>/dev/null
 modprobe vmw_vsock_virtio_transport 2>/dev/null; modprobe vsock 2>/dev/null
 
 CS_SANDBOX_USER=dev CS_SANDBOX_UID=1000 CS_SANDBOX_GID=1000 CS_SANDBOX_HOSTNAME=cs-sandbox-vm
