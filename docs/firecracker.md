@@ -184,6 +184,49 @@ that same order - so host append-order and guest consume-order must match:
   `sha256`(ref tips + HEAD), image-store = `sha256`(`images.json` + `layers.json`), each 40 hex;
   disks unused for `CS_SANDBOX_FC_REPO_CACHE_TTL_DAYS` (default 14) are pruned.
 
+### Returning memory the guest has freed
+
+The host cannot observe a guest-internal free, so without help a microVM's host
+RSS only ever climbs: a sandbox that peaks at 3 GB and drops back to 250 MB keeps
+costing 3 GB. Every microVM therefore gets a `virtio-balloon` configured purely
+for **free page reporting**, where the guest hands back ranges it is no longer
+using and Firecracker `madvise`s them away.
+
+The balloon never inflates (`amount_mib: 0`), so none of the classic
+inflate/deflate thrashing applies — this is the guest volunteering, not the host
+squeezing. Measured here: a guest that allocates, touches and frees 1 GB returns
+**993 MB of it within ~12 s**, against **zero** without the device.
+
+Two halves have to line up, and both fail silently on their own:
+
+- the device, in `run.json` (`"free_page_reporting": true`) — pre-boot only, it
+  cannot be enabled or disabled on a running VM;
+- the driver, in the guest — `image/guest/init` `modprobe`s `virtio_balloon`,
+  and a guest that never loads it reports nothing and says nothing either.
+
+Confirm with `dmesg | grep -i 'free page reporting'` inside a sandbox
+(`Free page reporting enabled`). The boot arg
+`page_reporting.page_reporting_order=0` lets the guest report the smallest runs
+it can, which leaves less behind at no measurable cost.
+
+### Sharing identical pages between sandboxes
+
+Sandboxes on one host run the same image, so most of what they hold is
+byte-identical. KSM merges those pages — but only for memory a process has
+volunteered, and Firecracker volunteers none: with `ksm/run=1` and nothing else,
+dedup across sandboxes is exactly zero while appearing to be on.
+
+cs-sandbox sets `prctl(PR_SET_MEMORY_MERGE)` around the launch, which the VMM
+inherits, so its guest RAM becomes a candidate. Measured with three same-image
+sandboxes: **Σ RSS 1302 MB against Σ PSS 677 MB — 625 MB deduplicated (48 %)**.
+
+This needs `ksmd` running on the host (`/sys/kernel/mm/ksm/run=1`), which
+cs-sandbox cannot set for you; `cs-sandbox doctor` reports it, along with the
+default scan rate (~20 MB/s), which takes minutes to converge on a multi-GB
+fleet. Set **`CS_SANDBOX_NO_KSM=1`** to opt out — worth doing when sandboxes
+belong to different trust domains, since page dedup is a documented side channel
+and across unrelated guests it only ever reaches the shared base image anyway.
+
 ### Memory limits
 
 Each microVM is launched inside its own transient cgroup
