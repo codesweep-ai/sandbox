@@ -169,8 +169,12 @@ that same order - so host append-order and guest consume-order must match:
   (near-free CoW on btrfs/xfs, a full copy elsewhere). Holds `/home/<user>`, so it persists across
   stop/start.
 - **seed:** the per-sandbox config + credentials as a small RO ext4 (next section).
-- **repo / snapshot / image-store:** content-addressed cached RO ext4 disks, reflink-copied per
-  sandbox. `--repo` is a bare clone the guest then `clone --shared`s (see
+- **repo / snapshot / image-store:** content-addressed cached RO ext4 disks. The repo and
+  image-store disks are attached **straight from the cache**, not copied: a reflink copy shares disk
+  extents but gets a new inode, and the page cache is per-inode, so N sandboxes reading the same repo
+  held N copies of those bytes in host RAM. Sharing the inode is safe because the guest mounts them
+  read-only, and the cache GC skips any path an instance's `run.json` still names. `--repo` is a bare
+  clone the guest then `clone --shared`s (see
   [`repo-sharing.md`](repo-sharing.md)); `--snapshot` is a frozen directory;
   `--image-store` is a shared Podman store wired into the guest Podman's `additionalimagestores` (see
   [`design.md`](design.md#shared-image-stores)). Cache keys: repo =

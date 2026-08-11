@@ -482,7 +482,7 @@ func (fe *Firecracker) buildRepoDisks(ctx context.Context, idir string, s Create
 		return nil, "", nil
 	}
 	c := fe.cache()
-	c.RepoCacheGC(cacheTTLDays())
+	c.RepoCacheGC(cacheTTLDays(), fe.cachedDisksInUse())
 	var disks []string
 	var man strings.Builder
 	for i, rc := range s.RepoClones {
@@ -493,25 +493,61 @@ func (fe *Firecracker) buildRepoDisks(ctx context.Context, idir string, s Create
 
 		disk := filepath.Join(idir, fmt.Sprintf("repo%d.ext4", i+1))
 		if cached, cerr := c.RepoDisk(ctx, fe.d.Runner, rc.HostPath, rc.Name); cerr == nil {
-			// CoW where supported; build is amortized across VMs.
-			if _, err := fe.d.Runner.Run(ctx, run.Opts{}, "cp", "--reflink=auto", "-f", cached, disk); err != nil {
-				return nil, "", fmt.Errorf("fc: repo disk %s: reflink: %w", rc.Name, err)
-			}
-		} else {
-			// Caching failed (not a normal path) — build the disk in place, as before.
-			bare := filepath.Join(idir, fmt.Sprintf("repo%d.git", i+1))
-			_ = os.RemoveAll(bare)
-			if _, err := fe.d.Runner.Run(ctx, run.Opts{}, "git", "clone", "-q", "--bare", rc.HostPath, bare); err != nil {
-				return nil, "", fmt.Errorf("fc: repo disk %s: clone: %w", rc.Name, err)
-			}
-			if err := fcdisk.BuildExt4Dir(ctx, fe.d.Runner, bare, disk, 96); err != nil {
-				return nil, "", fmt.Errorf("fc: repo disk %s: %w", rc.Name, err)
-			}
-			_ = os.RemoveAll(bare)
+			// Attach the cached disk itself. It is content-addressed and mounted
+			// read-only by the guest, so sharing it is safe — and it is the
+			// whole point: a reflink copy shares disk extents but gets a new
+			// inode, and the page cache is per-inode, so N sandboxes reading the
+			// same repo cached those same bytes N times in host RAM. The cache
+			// GC skips paths any instance still references (cachedDisksInUse).
+			disks = append(disks, cached)
+			continue
 		}
+		// Caching failed (not a normal path) — build the disk in place, as before.
+		bare := filepath.Join(idir, fmt.Sprintf("repo%d.git", i+1))
+		_ = os.RemoveAll(bare)
+		if _, err := fe.d.Runner.Run(ctx, run.Opts{}, "git", "clone", "-q", "--bare", rc.HostPath, bare); err != nil {
+			return nil, "", fmt.Errorf("fc: repo disk %s: clone: %w", rc.Name, err)
+		}
+		if err := fcdisk.BuildExt4Dir(ctx, fe.d.Runner, bare, disk, 96); err != nil {
+			return nil, "", fmt.Errorf("fc: repo disk %s: %w", rc.Name, err)
+		}
+		_ = os.RemoveAll(bare)
 		disks = append(disks, disk)
 	}
 	return disks, man.String(), nil
+}
+
+// cachedDisksInUse is the set of host paths that some instance's run.json still
+// names as a drive.
+//
+// Repo and image-store disks are attached straight from the artifact cache
+// rather than copied per instance, so the same inode backs every sandbox using
+// that content — which is the point: the host page cache then holds one copy
+// instead of N. The cost is that the cache GC can no longer treat those files as
+// unreferenced. Unlinking one would not disturb a *running* VM (its open fd
+// keeps the inode alive), but the next `start` would find no disk.
+//
+// run.json is the authority rather than the instance list, because it is what a
+// restart actually feeds to firecracker. The walk is layout-agnostic so it keeps
+// working if the group/instance directory nesting changes.
+func (fe *Firecracker) cachedDisksInUse() map[string]bool {
+	inUse := map[string]bool{}
+	_ = filepath.WalkDir(fe.d.InstDir, func(p string, e os.DirEntry, err error) error {
+		if err != nil || e.IsDir() || e.Name() != "run.json" {
+			return nil //nolint:nilerr // an unreadable instance dir must not block a build
+		}
+		cfg, rerr := fcconfig.ReadFile(p)
+		if rerr != nil {
+			return nil
+		}
+		for _, d := range cfg.Drives {
+			if d.PathOnHost != "" {
+				inUse[d.PathOnHost] = true
+			}
+		}
+		return nil
+	})
+	return inUse
 }
 
 // cacheTTLDays is the prune window (in days) for the content-addressed repo and
@@ -555,21 +591,19 @@ func (fe *Firecracker) buildStoreDisks(ctx context.Context, idir string, s Creat
 		return nil, "", nil
 	}
 	c := fe.cache()
-	c.StoreCacheGC(cacheTTLDays())
+	c.StoreCacheGC(cacheTTLDays(), fe.cachedDisksInUse())
 	var disks []string
 	var man strings.Builder
-	for i, name := range s.ImageStores {
+	for _, name := range s.ImageStores {
 		fmt.Fprintf(&man, "%s\n", name)
-		disk := filepath.Join(idir, fmt.Sprintf("store%d.ext4", i+1))
 		cached, err := c.StoreDisk(ctx, fe.d.Runner, fe.d.Image, name)
 		if err != nil {
 			return nil, "", fmt.Errorf("fc: image-store disk %s: %w (is the store seeded?)", name, err)
 		}
-		// CoW where supported; build amortized across VMs.
-		if _, err := fe.d.Runner.Run(ctx, run.Opts{}, "cp", "--reflink=auto", "-f", cached, disk); err != nil {
-			return nil, "", fmt.Errorf("fc: image-store disk %s: reflink: %w", name, err)
-		}
-		disks = append(disks, disk)
+		// Attached directly rather than copied, for the same reason as the repo
+		// disks: the guest mounts it read-only, and one inode means the host
+		// page cache holds a single copy across every sandbox using this store.
+		disks = append(disks, cached)
 	}
 	return disks, man.String(), nil
 }

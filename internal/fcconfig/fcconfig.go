@@ -149,6 +149,22 @@ func (c *Config) WriteFile(path string) error {
 	return os.WriteFile(path, b, 0o600)
 }
 
+// ReadFile parses a previously written run.json. It is the reverse of
+// WriteFile, and exists so callers can ask what an instance is actually
+// configured to boot — notably which host paths it attaches as drives — without
+// re-deriving it from a Spec.
+func ReadFile(path string) (*Config, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var c Config
+	if err := json.Unmarshal(b, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
 // itoa converts a small non-negative int to its decimal string without pulling
 // in strconv; drive counts are tiny so this stays simple.
 func itoa(n int) string {
