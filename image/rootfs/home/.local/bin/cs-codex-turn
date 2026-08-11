@@ -112,10 +112,16 @@ detect_state() {
         *"Sign in with ChatGPT"*|*"Welcome to Codex"*|*"Provide your own API key"*) echo "login"; return ;;
         *"esc to interrupt"*)                                            echo "working"; return ;;
     esac
-    # No blocking overlay and not working: ready once codex's status line ("<model> default ·
-    # <dir>") is up.
-    case "$p" in
-        *"default ·"*) echo "ready"; return ;;
+    # No blocking overlay and not working: ready once codex's status line is up. Match its
+    # SHAPE, not any segment's text — the bottom-most non-blank row, carrying the separator
+    # codex joins status segments with. Every segment varies: the model slug differs per
+    # provider, the items are user-configurable, and the reasoning segment reads "default"
+    # only while no effort is set, so keying on that left any member with an explicit
+    # reasoning effort permanently un-ready.
+    local last
+    last="$(printf '%s\n' "$p" | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -n 1)"
+    case "$last" in
+        *" · "*) echo "ready"; return ;;
     esac
     echo "unknown"
 }

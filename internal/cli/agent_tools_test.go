@@ -736,6 +736,64 @@ func TestClaudeTurnReadyStates(t *testing.T) {
 	}
 }
 
+// TestCodexTurnReadyStates: Codex writes its status line as "<model> <effort> · <dir>", and
+// the effort segment reads "default" only while none is configured. Keying readiness on that
+// literal left every member carrying an explicit model_reasoning_effort un-ready until the
+// startup budget ran out, whatever provider or model slug it ran. Readiness follows the
+// line's shape, so an unfamiliar effort name and a foreign model slug both stay ready.
+func TestCodexTurnReadyStates(t *testing.T) {
+	skipUnlessLinux(t)
+	for _, pane := range []string{
+		"gpt-5 default · /work",     // no effort configured
+		"gpt-5.6-sol xhigh · /work", // a tier added after this driver was written
+		"kimi-k3 turbo · /work",     // foreign slug, effort this client does not know
+	} {
+		t.Run(pane, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-codex-remote")
+			sess := filepath.Join(home, ".cs-codex", "sessions")
+			if err := os.MkdirAll(sess, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fresh := filepath.Join(sess, "rollout-2026-01-02-22222222-2222-4222-8222-222222222222.jsonl")
+			stubDir := t.TempDir()
+			writeStub(t, bin, "codex", "#!/bin/sh\nexit 0\n")
+			writeStub(t, bin, "cs-codex", "#!/bin/sh\nexit 0\n")
+			// capture-pane pads to the pane height, so the status line is the last row with
+			// content and not the last row emitted.
+			writeStub(t, bin, "tmux", `#!/bin/sh
+case "$1" in
+  has-session) [ -f "$STUB_DIR/.launched" ] && exit 0 || exit 1 ;;
+  new-session)
+    touch "$STUB_DIR/.launched"
+    : > "$FRESH_ROLLOUT"
+    exit 0 ;;
+  capture-pane) printf '  %s\n  %s\n\n\n' "$PROMPT" "$PANE"; exit 0 ;;
+  send-keys)
+    if [ -f "$STUB_DIR/.launched" ] && [ ! -f "$STUB_DIR/.submitted" ]; then
+      touch "$STUB_DIR/.submitted"
+      printf '%s\n' '{"payload":{"type":"agent_message","message":"READY ANSWER"}}' >> "$FRESH_ROLLOUT"
+      printf '%s\n' '{"payload":{"type":"task_complete"}}' >> "$FRESH_ROLLOUT"
+    fi
+    exit 0 ;;
+esac
+exit 0
+`)
+			out, exit := runScriptStdin(t, home, bin,
+				[]string{
+					"STUB_DIR=" + stubDir,
+					"FRESH_ROLLOUT=" + fresh,
+					"PANE=" + pane,
+					"PROMPT=› Improve documentation in @filename",
+					"CS_CODEX_STALL_SECS=0",
+				},
+				"do the thing\n", "cs-codex-turn", "--tmux", "codextoken", "--timeout", "30")
+			if exit != 0 || !strings.Contains(out, "READY ANSWER") {
+				t.Fatalf("pane %q not treated as ready: exit %d: %s", pane, exit, out)
+			}
+		})
+	}
+}
+
 // TestCodexTurnBindsToItsOwnRollout: current Codex creates its rollout at TUI startup, and
 // the ready screen can appear a moment before the file exists. Picking the globally newest
 // *.jsonl after startup can therefore bind the turn to a PREVIOUS session — the turn then
