@@ -208,6 +208,10 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 			fg.add(OK, "firecracker binary cached ("+d.FCVersionCache+")")
 		}
 		r.addGroup(fg)
+		// Directly after the engine's own section, so it reads as a continuation
+		// of it rather than as advice about the host in general — none of it
+		// applies to the podman engine, which reclaims on its own.
+		r.addGroup(memoryGroup())
 	}
 
 	// agent tooling (optional).
