@@ -335,7 +335,11 @@ func (p *Podman) Exec(ctx context.Context, name string, io ExecIO) error {
 	// firecracker engine does over ssh. The container's main process runs as uid 0, so
 	// without this every command would run as root with HOME=/root — the wrong agent
 	// profile, and any file it creates owned by root.
-	argv = append(argv, "--user", p.d.Host.User, "--workdir", "/home/"+p.d.Host.User, name)
+	// obj(), not the bare name: the container is created as <name>.<group>, so
+	// asking podman for the bare name finds nothing in any group, default
+	// included. Every other method here already addresses it this way.
+	argv = append(argv, "--user", p.d.Host.User, "--workdir", "/home/"+p.d.Host.User,
+		obj(p.d.group(), name))
 	if len(io.Argv) > 0 {
 		argv = append(argv, io.Argv...)
 	} else {

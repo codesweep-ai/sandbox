@@ -235,6 +235,26 @@ func TestCopyTreeArgv(t *testing.T) {
 
 // TestPodmanExecRunsAsDevUser: exec must land as the dev user in their home —
 // the container's main process is uid 0, so without --user/--workdir every
+// TestPodmanExecAddressesTheContainerObject: exec must name the container the
+// way it was created, <name>.<group>. Asking podman for the bare name finds
+// nothing in ANY group — default included — so exec failed outright.
+func TestPodmanExecAddressesTheContainerObject(t *testing.T) {
+	for _, tc := range []struct{ group, want string }{
+		{"", "box.default"},
+		{"g2", "box.g2"},
+	} {
+		f := run.NewFake()
+		p := NewPodman(Deps{Runner: f, Group: tc.group, Host: hostenv.Host{User: "dev"}})
+		if err := p.Exec(context.Background(), "box", ExecIO{Argv: []string{"true"}}); err != nil {
+			t.Fatal(err)
+		}
+		got := strings.Join(f.Calls[0], " ")
+		if !strings.Contains(got, tc.want+" true") {
+			t.Errorf("group %q: exec argv should address %q: %s", tc.group, tc.want, got)
+		}
+	}
+}
+
 // exec'd command would run as root with HOME=/root (a different agent profile,
 // root-owned files, and behaviour the firecracker engine doesn't share).
 func TestPodmanExecRunsAsDevUser(t *testing.T) {
@@ -245,7 +265,7 @@ func TestPodmanExecRunsAsDevUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(f.Calls[0], " ")
-	for _, want := range []string{"--user dev", "--workdir /home/dev", "box id -un"} {
+	for _, want := range []string{"--user dev", "--workdir /home/dev", "box.default id -un"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("exec argv missing %q: %s", want, got)
 		}
