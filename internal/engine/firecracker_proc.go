@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/codesweep-ai/sandbox/internal/fcconfig"
 	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
@@ -29,8 +31,10 @@ func launchFirecracker(idir, fcBin string) error {
 		return err
 	}
 	defer serial.Close()
-	cmd := exec.Command("podman", "unshare", "--rootless-netns",
+	argv := append(cgroupWrapper(idir, serial),
+		"podman", "unshare", "--rootless-netns",
 		fcBin, "--no-api", "--config-file", filepath.Join(idir, "run.json"))
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdout, cmd.Stderr = serial, serial
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -39,6 +43,78 @@ func launchFirecracker(idir, fcBin string) error {
 	pid := cmd.Process.Pid
 	_ = cmd.Process.Release()
 	return os.WriteFile(filepath.Join(idir, "fc.pid"), []byte(strconv.Itoa(pid)+"\n"), 0o644)
+}
+
+// cgroupWrapper returns the argv prefix that puts a microVM in its own cgroup —
+// `systemd-run --user --scope …` — or nil to launch unwrapped.
+//
+// Why bother, when a guest cannot allocate beyond its own `mem_size_mib`: with
+// no cgroup the VMM inherits the *launching shell's* scope, so a sandbox has no
+// memory accounting of its own and a runaway one is charged to whatever
+// terminal started it. The host OOM killer then picks its victim by heuristic
+// and may kill something else entirely. A per-instance scope makes the limit
+// enforceable and the kill attributable.
+//
+// The default ceiling is deliberately above what the guest can reach
+// (mem_size_mib + cgroupHeadroomMiB), so it is a backstop that never fires in
+// normal operation. Tighten it via CS_SANDBOX_FC_MEMORY_MAX once sandboxes are
+// packed past the sum of their ceilings — that is when it starts doing work.
+//
+// `memory.high` is deliberately NOT set. Measured on this workload it is not a
+// throttle but a cliff: once the cgroup can no longer reclaim, the VM makes no
+// progress at ~97% pressure stall while staying alive, with no OOM and no error
+// for a supervisor to notice. A hard `MemoryMax` fails loudly instead.
+func cgroupWrapper(idir string, warnTo io.Writer) []string {
+	if os.Getenv("CS_SANDBOX_FC_NO_CGROUP") != "" {
+		return nil
+	}
+	// A user scope needs both the binary and a live user session bus; without
+	// XDG_RUNTIME_DIR systemd-run would fail and take the boot down with it.
+	if _, err := exec.LookPath("systemd-run"); err != nil || os.Getenv("XDG_RUNTIME_DIR") == "" {
+		fmt.Fprintf(warnTo, "cs-sandbox: no systemd user session; running without a memory cgroup\n")
+		return nil
+	}
+
+	max := os.Getenv("CS_SANDBOX_FC_MEMORY_MAX")
+	if max == "" {
+		mem := cgroupDefaultMaxMiB(idir)
+		if mem <= 0 {
+			return nil // unknown sizing — better unwrapped than wrongly capped
+		}
+		max = strconv.Itoa(mem) + "M"
+	}
+
+	// The unit name must be unique per launch: a scope whose process is
+	// OOM-killed stays in `failed` state and blocks reuse of its name.
+	unit := fmt.Sprintf("cs-sandbox-fc-%s-%d", filepath.Base(idir), time.Now().UnixNano())
+	argv := []string{
+		"systemd-run", "--user", "--scope", "--quiet",
+		"--unit=" + unit,
+		"-p", "MemoryMax=" + max,
+	}
+	// Swap is charged on top of MemoryMax, and on a zram host it is RAM — so
+	// budget MemoryMax+MemorySwapMax, and default to no swap allowance.
+	swap := os.Getenv("CS_SANDBOX_FC_MEMORY_SWAP_MAX")
+	if swap == "" {
+		swap = "0"
+	}
+	argv = append(argv, "-p", "MemorySwapMax="+swap)
+	return argv
+}
+
+// cgroupHeadroomMiB is what the default MemoryMax adds on top of the guest's
+// configured RAM to cover the VMM itself (~5–20 MiB measured), its page tables
+// and the virtio queues.
+const cgroupHeadroomMiB = 256
+
+// cgroupDefaultMaxMiB derives the default ceiling from what the instance is
+// actually configured to boot with. Returns 0 when run.json cannot be read.
+func cgroupDefaultMaxMiB(idir string) int {
+	cfg, err := fcconfig.ReadFile(filepath.Join(idir, "run.json"))
+	if err != nil || cfg.MachineConfig.MemSizeMiB <= 0 {
+		return 0
+	}
+	return cfg.MachineConfig.MemSizeMiB + cgroupHeadroomMiB
 }
 
 // fcRunning reports whether the instance's firecracker process is alive.
