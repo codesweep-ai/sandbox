@@ -29,6 +29,10 @@ mkdir -p /dev/shm; mount -t tmpfs -o mode=1777,nosuid,nodev shm /dev/shm 2>/dev/
 # 127.0.0.1 — a published container port, a health probe — hangs.
 ip link set lo up 2>/dev/null
 modprobe vmw_vsock_virtio_transport 2>/dev/null; modprobe vsock 2>/dev/null
+# Free page reporting rides on this driver: the host configures the balloon, but
+# a guest that never loads it reports nothing and says nothing either — the
+# memory a sandbox frees would simply never come back to the host.
+modprobe virtio_balloon 2>/dev/null
 
 CS_SANDBOX_USER=dev CS_SANDBOX_UID=1000 CS_SANDBOX_GID=1000 CS_SANDBOX_HOSTNAME=cs-sandbox-vm
 SEED=/run/cs-sandbox-seed; mkdir -p "$SEED"

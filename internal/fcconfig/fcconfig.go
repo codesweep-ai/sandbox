@@ -8,7 +8,9 @@
 //	  "drives":             [ { "drive_id", "path_on_host", "is_root_device", "is_read_only" }, ... ],
 //	  "network-interfaces": [ { "iface_id", "host_dev_name", "guest_mac" } ],
 //	  "vsock":              { "guest_cid", "uds_path" },
-//	  "machine-config":     { "vcpu_count", "mem_size_mib" }
+//	  "machine-config":     { "vcpu_count", "mem_size_mib" },
+//	  "balloon":            { "amount_mib", "deflate_on_oom", "stats_polling_interval_s",
+//	                          "free_page_reporting" }
 //	}
 package fcconfig
 
@@ -18,7 +20,12 @@ import (
 )
 
 // DefaultBootArgs is the kernel command line used for every microVM.
-const DefaultBootArgs = "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/fc-init quiet"
+//
+// page_reporting_order is the smallest run of free pages the guest will offer
+// back to the host. It defaults to 9 (2 MiB); 0 lets the guest report anything,
+// which leaves less behind at no measurable cost.
+const DefaultBootArgs = "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/fc-init " +
+	"page_reporting.page_reporting_order=0 quiet"
 
 // GuestCID is the fixed vsock context ID assigned to every guest.
 const GuestCID = 3
@@ -57,6 +64,20 @@ type MachineConfig struct {
 	MemSizeMiB int `json:"mem_size_mib"`
 }
 
+// Balloon is the virtio-balloon device. It is configured purely for free page
+// reporting, which is what returns memory a guest has freed: without it host RSS
+// only ever climbs, because the host cannot see a guest-internal free.
+//
+// AmountMiB stays 0 so the classic balloon never inflates — none of the
+// inflate/deflate thrashing applies, this is the guest volunteering ranges it is
+// no longer using. Reporting is pre-boot only and cannot be turned off later.
+type Balloon struct {
+	AmountMiB             int  `json:"amount_mib"`
+	DeflateOnOOM          bool `json:"deflate_on_oom"`
+	StatsPollingIntervalS int  `json:"stats_polling_interval_s"`
+	FreePageReporting     bool `json:"free_page_reporting"`
+}
+
 // Config is the full Firecracker run.json document.
 type Config struct {
 	BootSource        BootSource         `json:"boot-source"`
@@ -64,6 +85,7 @@ type Config struct {
 	NetworkInterfaces []NetworkInterface `json:"network-interfaces"`
 	Vsock             Vsock              `json:"vsock"`
 	MachineConfig     MachineConfig      `json:"machine-config"`
+	Balloon           *Balloon           `json:"balloon,omitempty"`
 }
 
 // Spec is the input to Build: the host paths, network identity and resource
@@ -130,6 +152,12 @@ func Build(s Spec) *Config {
 		MachineConfig: MachineConfig{
 			VCPUCount:  s.VCPUs,
 			MemSizeMiB: s.MemMiB,
+		},
+		Balloon: &Balloon{
+			AmountMiB:             0,
+			DeflateOnOOM:          false,
+			StatsPollingIntervalS: 1,
+			FreePageReporting:     true,
 		},
 	}
 }

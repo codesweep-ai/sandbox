@@ -117,7 +117,8 @@ func TestGoldenRoundTrip(t *testing.T) {
 	if got.BootSource.BootArgs != DefaultBootArgs {
 		t.Errorf("boot_args = %q, want %q", got.BootSource.BootArgs, DefaultBootArgs)
 	}
-	if got.BootSource.BootArgs != "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/fc-init quiet" {
+	if got.BootSource.BootArgs != "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/fc-init "+
+		"page_reporting.page_reporting_order=0 quiet" {
 		t.Errorf("boot_args literal mismatch: %q", got.BootSource.BootArgs)
 	}
 
@@ -156,8 +157,25 @@ func TestTopLevelKeys(t *testing.T) {
 	}
 	sort.Strings(got)
 
-	want := []string{"boot-source", "drives", "machine-config", "network-interfaces", "vsock"}
+	want := []string{"balloon", "boot-source", "drives", "machine-config", "network-interfaces", "vsock"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("top-level keys = %v, want %v", got, want)
+	}
+}
+
+// TestBalloonEnablesFreePageReporting: the balloon exists only to carry free
+// page reporting, so it must be inert as a balloon (amount 0, no deflate-on-oom)
+// and reporting must be on. Reporting is pre-boot only — a config that omits it
+// cannot be corrected on a running VM.
+func TestBalloonEnablesFreePageReporting(t *testing.T) {
+	got := Build(Spec{VCPUs: 2, MemMiB: 1024})
+	if got.Balloon == nil {
+		t.Fatal("no balloon device: free page reporting cannot be enabled later")
+	}
+	if !got.Balloon.FreePageReporting {
+		t.Error("free_page_reporting must be true")
+	}
+	if got.Balloon.AmountMiB != 0 || got.Balloon.DeflateOnOOM {
+		t.Errorf("the balloon must stay inert, got %+v", *got.Balloon)
 	}
 }
