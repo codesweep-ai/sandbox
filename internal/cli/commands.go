@@ -163,7 +163,16 @@ func newExecCmd(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			io := engine.ExecIO{Interactive: len(args) == 1, Argv: args[1:]}
+			// A leading `--` terminates cs-sandbox's own flags; it is not part
+			// of the command to run. Interspersed parsing is off, so cobra
+			// leaves it in args — and only ssh happens to swallow it, while
+			// `podman exec` hands it to the container and fails with
+			// "executable file `--` not found".
+			rest := args[1:]
+			if len(rest) > 0 && rest[0] == "--" {
+				rest = rest[1:]
+			}
+			io := engine.ExecIO{Interactive: len(rest) == 0, Argv: rest}
 			return e.Exec(cmd.Context(), in.Name, io)
 		},
 	}
