@@ -185,21 +185,26 @@ func TestStampRoundTrip(t *testing.T) {
 // forces a rebuild.
 func TestKernelRebuildReason(t *testing.T) {
 	const pin = "6.19.10-300.fc44"
-	bc := BuildConfig{Kernel: "fedora", KVerPin: pin}
+	src := filepath.Join(t.TempDir(), "initramfs-init.c")
+	if err := os.WriteFile(src, []byte("int main(void){return 0;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bc := BuildConfig{Kernel: "fedora", KVerPin: pin, InitramfsSrc: src}
 
 	fresh := func(t *testing.T) Cache {
 		c := Cache{Dir: t.TempDir()}
 		writeFile(t, c.Kernel())
 		writeFile(t, c.Initrd())
 		writeFile(t, filepath.Join(c.Dir, "modules.tar"))
-		if err := c.writeStamp("kver", pin+".x86_64"); err != nil {
-			t.Fatal(err)
-		}
-		if err := c.writeStamp("kernel-mode", "fedora"); err != nil {
-			t.Fatal(err)
-		}
-		if err := c.writeStamp("kver-pin", pin); err != nil {
-			t.Fatal(err)
+		for k, v := range map[string]string{
+			"kver":          pin + ".x86_64",
+			"kernel-mode":   "fedora",
+			"kver-pin":      pin,
+			"initramfs-src": initramfsStamp(bc),
+		} {
+			if err := c.writeStamp(k, v); err != nil {
+				t.Fatal(err)
+			}
 		}
 		return c
 	}
@@ -235,23 +240,46 @@ func TestKernelRebuildReason(t *testing.T) {
 	if r := c.kernelRebuildReason(bc); r == "" {
 		t.Error("non-fedora mode reason = reuse, want rebuild")
 	}
+
+	// Editing the initramfs source invalidates the cached initrd.img, even
+	// though every other input still matches.
+	c = fresh(t)
+	if r := c.kernelRebuildReason(bc); r != "" {
+		t.Fatalf("precondition: fresh cache reason = %q, want reuse", r)
+	}
+	if err := os.WriteFile(bc.InitramfsSrc, []byte("int main(void){return 1;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := c.kernelRebuildReason(bc); r == "" {
+		t.Error("edited initramfs source = reuse, want rebuild")
+	}
 }
 
 // TestEnsureKernelReusesFreshCache: when the cache is fresh, ensureKernel must
 // return without shelling out (no podman build). The Fake records zero calls.
 func TestEnsureKernelReusesFreshCache(t *testing.T) {
 	const pin = "6.19.10-300.fc44"
+	src := filepath.Join(t.TempDir(), "initramfs-init.c")
+	if err := os.WriteFile(src, []byte("int main(void){return 0;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bc := BuildConfig{Kernel: "fedora", KVerPin: pin, Image: "img", InitramfsSrc: src}
 	c := Cache{Dir: t.TempDir()}
 	writeFile(t, c.Kernel())
 	writeFile(t, c.Initrd())
 	writeFile(t, filepath.Join(c.Dir, "modules.tar"))
-	for k, v := range map[string]string{"kver": pin + ".x86_64", "kernel-mode": "fedora", "kver-pin": pin} {
+	for k, v := range map[string]string{
+		"kver":          pin + ".x86_64",
+		"kernel-mode":   "fedora",
+		"kver-pin":      pin,
+		"initramfs-src": initramfsStamp(bc),
+	} {
 		if err := c.writeStamp(k, v); err != nil {
 			t.Fatal(err)
 		}
 	}
 	f := run.NewFake()
-	if err := c.ensureKernel(context.Background(), f, BuildConfig{Kernel: "fedora", KVerPin: pin, Image: "img"}); err != nil {
+	if err := c.ensureKernel(context.Background(), f, bc); err != nil {
 		t.Fatalf("ensureKernel(fresh) = %v, want nil", err)
 	}
 	if len(f.Calls) != 0 {

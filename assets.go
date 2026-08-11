@@ -143,6 +143,38 @@ func GuestInitPath(assetDir, cacheDir string) string {
 	return p
 }
 
+// GuestInitramfsSrcPath returns a host path to the initramfs init source
+// (image/guest/initramfs-init.c), materializing the embedded copy into cacheDir
+// when there is no checkout — the same pattern as GuestInitPath, and for the
+// same reason: its content hash keys the cached initrd.img, so the path must
+// resolve identically whether the assets came from a checkout or the binary.
+// Returns "" (no error) if neither source is usable; the boot-artifact build
+// then fails with an actionable error rather than booting something stale.
+func GuestInitramfsSrcPath(assetDir, cacheDir string) string {
+	const rel = "guest/initramfs-init.c"
+	if d, ok := onDiskImage(assetDir); ok {
+		p := filepath.Join(d, "guest", "initramfs-init.c")
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p
+		}
+	}
+	if cacheDir == "" {
+		return ""
+	}
+	data, err := fs.ReadFile(image(), rel)
+	if err != nil {
+		return ""
+	}
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return ""
+	}
+	p := filepath.Join(cacheDir, "guest-initramfs-init.c")
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		return ""
+	}
+	return p
+}
+
 // HostHelpers returns the guest ~/.local/bin tools (cs-claude/cs-codex families +
 // docs) as an fs.FS, from the checkout when available else embedded — for the
 // `install-agent-tools` command. Same source dir the guest home skeleton seeds

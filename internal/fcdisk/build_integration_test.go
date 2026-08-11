@@ -42,13 +42,13 @@ func TestPinnedKernelResolvesLive(t *testing.T) {
 		t.Skipf("image %s not built (run: cs-sandbox build) — %v", img, err)
 	}
 
-	// Exactly what buildFedoraKernel does: arch-qualified NEVRA, download-only so
-	// we resolve+fetch without unpacking a kernel. A miss here means the pin is
-	// stale or the spec form regressed.
+	// Exactly what buildFedoraBootArtifacts does: arch-qualified NEVRA,
+	// download-only so we resolve+fetch without unpacking a kernel. A miss here
+	// means the pin is stale or the spec form regressed.
 	script := `set -e
 FC_SPEC="kernel-core-` + DefaultKVerPin + `.$(uname -m)"
 dnf install -y --setopt=install_weak_deps=False --downloadonly "$FC_SPEC" \
-  dracut zstd xz gzip binutils file >/dev/null`
+  gcc glibc-static cpio zstd xz gzip binutils file >/dev/null`
 	if _, err := r.Run(ctx, run.Opts{}, "podman", "run", "--rm", "--user", "0:0",
 		"--entrypoint", "/bin/bash", img, "-c", script); err != nil {
 		t.Fatalf("pinned kernel-core-%s did not resolve in %s: %v\n"+

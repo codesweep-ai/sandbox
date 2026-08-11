@@ -107,13 +107,27 @@ PVH boot protocol). Two ways to obtain the `vmlinux`:
   reproducible rather than tracking whatever kernel is latest. (`extract-vmlinux` is fetched inside
   that build container; bumping `CS_SANDBOX_FC_KVER` rebuilds the cached artifacts.)
 - **`CS_SANDBOX_FC_KERNEL=host`:** boot the running host kernel (`uname -r`) instead of the pinned
-  fedora one - smaller and auto-tracking host upgrades, but **Fedora-host only** (it relies on the
-  host's `dracut` and a readable `/boot/vmlinuz-<ver>`). Note that `cs-sandbox build` does **not**
-  build host-mode artifacts: it reuses a previously-cached `vmlinux.elf`/`initrd.img` set if one is
-  present, otherwise it errors and points you back to the default fedora kernel.
+  fedora one - smaller and auto-tracking host upgrades, but it relies on a readable
+  `/boot/vmlinuz-<ver>`. Note that `cs-sandbox build` does **not** build host-mode artifacts: it
+  reuses a previously-cached `vmlinux.elf`/`initrd.img` set if one is present, otherwise it errors
+  and points you back to the default fedora kernel.
 
 The cached artifacts are `vmlinux.elf` + `initrd.img` + `modules.tar` (+ `kver`) under the artifact
 cache (`~/.cache/cs-sandbox`).
+
+#### The initrd
+
+`initrd.img` is a ~340 KB initramfs holding one static binary built from
+[`image/guest/initramfs-init.c`](../image/guest/initramfs-init.c), plus `virtio_mmio.ko`. An initrd
+is unavoidable: Fedora builds `CONFIG_VIRTIO_MMIO=m`, so **no block device exists** until that module
+is loaded — the kernel cannot mount `root=/dev/vda` on its own. The init loads it, mounts the root
+filesystem, `switch_root`s and execs `init=` (`/fc-init`).
+
+This replaces a ~38 MB dracut initrd, which spent most of a boot probing for storage stacks, network
+setups and hardware a microVM cannot have.
+
+The cached initrd is keyed by a hash of that source (the `initramfs-src` stamp), so editing it
+rebuilds the boot artifacts.
 
 ### Firecracker binary
 
