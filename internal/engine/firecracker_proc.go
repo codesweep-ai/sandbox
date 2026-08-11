@@ -37,7 +37,9 @@ func launchFirecracker(idir, fcBin string) error {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdout, cmd.Stderr = serial, serial
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	// Volunteer the guest RAM to KSM. The flag is inherited across the fork, so
+	// it has to be set around Start rather than on the child.
+	if err := withMemoryMerge(ksmEnabled(), cmd.Start); err != nil {
 		return err
 	}
 	pid := cmd.Process.Pid
