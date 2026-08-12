@@ -173,7 +173,7 @@ func newExecCmd(app *App) *cobra.Command {
 				rest = rest[1:]
 			}
 			io := engine.ExecIO{Interactive: len(rest) == 0, Argv: rest}
-			return e.Exec(cmd.Context(), in.Name, io)
+			return sandboxedExit(e.Exec(cmd.Context(), in.Name, io))
 		},
 	}
 	// Stop flag parsing after the sandbox name so `exec x id -un` passes -un through.
@@ -207,7 +207,7 @@ func newSSHCmd(app *App) *cobra.Command {
 			}
 			sshArgs = append(sshArgs, args[1:]...)
 			_, err = app.Runner.Run(cmd.Context(), run.Opts{Interactive: true}, append([]string{"ssh"}, sshArgs...)...)
-			return err
+			return sandboxedExit(err)
 		},
 	}
 	cmd.Flags().SetInterspersed(false)
