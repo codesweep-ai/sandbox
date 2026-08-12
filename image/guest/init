@@ -13,9 +13,31 @@ umask 022
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 mount -t devtmpfs dev /dev 2>/dev/null
+# devtmpfs carries device nodes but not these four symlinks — udev or systemd
+# would normally add them, and PID1 here is a shell script. Without /dev/fd every
+# bash process substitution fails, which breaks ordinary shell rc files:
+# `eval "$(pyenv init -)"` greets each login with
+# "-bash: /dev/fd/63: No such file or directory".
+ln -sf /proc/self/fd   /dev/fd
+ln -sf /proc/self/fd/0 /dev/stdin
+ln -sf /proc/self/fd/1 /dev/stdout
+ln -sf /proc/self/fd/2 /dev/stderr
+ln -sf /proc/kcore     /dev/core
 # Unified cgroups v2 hierarchy. This PID1 isn't systemd, so nothing mounts it otherwise;
 # without it nested podman falls back to deprecated cgroups v1 and warns on every run.
 mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
+# The rest of the api filesystems systemd mounts on a normal boot. None is
+# needed to reach a shell, but tools probe them and finding them absent surfaces
+# later as a confusing failure rather than an error here.
+mount -t securityfs securityfs /sys/kernel/security 2>/dev/null
+mount -t bpf        bpf        /sys/fs/bpf          2>/dev/null
+mount -t configfs   configfs   /sys/kernel/config   2>/dev/null
+mount -t pstore     pstore     /sys/fs/pstore       2>/dev/null
+# systemd raises both far above the kernel defaults, and a sandbox running a
+# build with nested containers is exactly the workload that notices: the default
+# file-max here is ~198k.
+echo 4194304 > /proc/sys/kernel/pid_max 2>/dev/null
+echo 9223372036854775807 > /proc/sys/fs/file-max 2>/dev/null
 # Runtime state on tmpfs, before anything writes under /run. Without this /run
 # lives on the rootfs, so pid files and container runtime state survive a reboot
 # and podman starts against stale state it believes is live.
@@ -33,6 +55,10 @@ modprobe vmw_vsock_virtio_transport 2>/dev/null; modprobe vsock 2>/dev/null
 # a guest that never loads it reports nothing and says nothing either — the
 # memory a sandbox frees would simply never come back to the host.
 modprobe virtio_balloon 2>/dev/null
+# udev autoloaded this on the old boot path. Without /dev/fuse, podman cannot
+# fall back to fuse-overlayfs when a native overlay mount is unavailable — and
+# it fails at `run`, long after `podman info` has claimed everything is fine.
+modprobe fuse 2>/dev/null
 
 CS_SANDBOX_USER=dev CS_SANDBOX_UID=1000 CS_SANDBOX_GID=1000 CS_SANDBOX_HOSTNAME=cs-sandbox-vm
 SEED=/run/cs-sandbox-seed; mkdir -p "$SEED"
