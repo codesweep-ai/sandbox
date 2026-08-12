@@ -131,6 +131,11 @@ saved per boot.
 The cached initrd is keyed by a hash of that source (the `initramfs-src` stamp), so editing it
 rebuilds the boot artifacts.
 
+Because this initrd does only that, everything the previous dracut one set up on the way past —
+`/dev/fd` and friends, `/run` and `/dev/shm`, the api filesystems under `/sys`, loopback, the
+`fuse` module, and systemd's `pid_max`/`file-max` — is now `/fc-init`'s job, since PID1 here is a
+shell script and nothing else would do it.
+
 ### Firecracker binary
 
 The VMM itself is **not** bundled in the `cs-sandbox` binary: it is a ~3.5 MB Linux-only executable,
