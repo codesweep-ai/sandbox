@@ -279,6 +279,15 @@ share the one rootless network namespace. At create time `cs-sandbox` maps the h
 `fc-init`) append it to the guest's `/etc/hosts`, so `ssh <hostname>` / `curl <hostname>:PORT` from a
 sandbox reach the host - NSS checks `files` before DNS, beating the unroutable name.
 
+The host service has to be listening on a **non-loopback** address for this to
+work. `169.254.1.2` is not a mapping onto the host's loopback: a guest reaching
+it arrives on the host's ordinary side, so a server bound to `127.0.0.1` refuses
+the connection while the same server bound to `0.0.0.0` answers. The failure is
+easy to misread, because the address answers ICMP either way — `ping 169.254.1.2`
+succeeds from the guest whether or not anything can be connected to. Verified on
+Firecracker: a listener on `0.0.0.0:18099` was reachable from a sandbox at
+`169.254.1.2:18099`, the same listener on `127.0.0.1:18098` was not.
+
 One catch: the pinned mapping is **IPv4-only**, but the sandbox network is also IPv4-only (the
 guest has just a link-local IPv6, no v6 route), while the host's resolver / Tailscale MagicDNS still
 hands back **AAAA** records for that name. `/etc/hosts` only wins *per address family*, so the
