@@ -59,6 +59,25 @@ modprobe virtio_balloon 2>/dev/null
 # fall back to fuse-overlayfs when a native overlay mount is unavailable — and
 # it fails at `run`, long after `podman info` has claimed everything is fine.
 modprobe fuse 2>/dev/null
+# Nested podman runs ROOTLESS here (a VM is real root on a real kernel, so the
+# container engine's rootful-inner apparatus is unnecessary — see
+# docs/firecracker.md), and rootless needs newuidmap/newgidmap to write the
+# uid_map. The image's copies carry no file capabilities, so grant them: without
+# this every `podman` as the dev user dies with "should have setuid or have
+# filecaps setuid". Granted at boot rather than baked into the image so it does
+# not also depend on file caps surviving `podman export` into the ext4 rootfs.
+setcap cap_setuid+ep /usr/bin/newuidmap 2>/dev/null
+setcap cap_setgid+ep /usr/bin/newgidmap 2>/dev/null
+# …and its network needs /dev/net/tun, which nothing else loads here. A rootless
+# inner podman reaches the network through pasta/slirp4netns, both of which open
+# the tun device; the container engine's rootful inner podman used a netavark
+# bridge instead and never wanted it (the outer container is passed --device
+# /dev/net/tun for its own netavark). devtmpfs materializes the node on modprobe
+# but root-only, and the inner engine runs as the dev user — without the chmod
+# every `podman run` dies at "Failed to open() /dev/net/tun", long after
+# `podman info` reports a healthy engine. 0666 is what a stock host ships.
+modprobe tun 2>/dev/null
+chmod 666 /dev/net/tun 2>/dev/null
 
 CS_SANDBOX_USER=dev CS_SANDBOX_UID=1000 CS_SANDBOX_GID=1000 CS_SANDBOX_HOSTNAME=cs-sandbox-vm
 SEED=/run/cs-sandbox-seed; mkdir -p "$SEED"

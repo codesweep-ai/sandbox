@@ -114,7 +114,8 @@ RUN mkdir -p /etc/containers && \
     printf '[storage]\ndriver = "overlay"\n' > /etc/containers/storage.conf && \
     printf '[containers]\ncgroups = "disabled"\n\n[engine]\ncgroup_manager = "cgroupfs"\nevents_logger = "file"\n' > /etc/containers/containers.conf
 
-# (Nested podman runs rootful via a /usr/local/bin/podman -> sudo wrapper, installed below.)
+# (Nested podman runs rootful in a container and rootless in a microVM; the
+# /usr/local/bin/podman wrapper installed below picks per engine.)
 
 # Default internal sshd port (overridable at runtime via -e CS_SANDBOX_SSH_PORT)
 ENV CS_SANDBOX_SSH_PORT=2222
@@ -347,14 +348,27 @@ RUN chmod -R a+rX /opt
 ENV JAVA_HOME=/opt/java
 ENV PATH=/opt/nvm/versions/node/v24.18.1/bin:/opt/py-tools/bin:/opt/claude/bin:/opt/codex/bin:/opt/opencode/bin:/opt/pyenv/bin:/opt/go/bin:/opt/java/bin:/opt/maven/bin:${PATH}
 
-# Make `podman` run ROOTFUL by default — the nested engine must (rootless-inner fails
-# under keep-id). A thin wrapper ahead of /usr/bin in PATH routes podman through the
-# NOPASSWD sudo the user already has, so plain `podman` (shells, scripts, tools, and
-# `ssh cs-sandbox-x podman …`) drives the rootful nested engine. No setuid (podman keys
-# rootless/rootful off the real uid, so a setuid bit just yields a broken half-state);
-# this grants nothing beyond the existing sudo. The real rootless binary stays at
-# /usr/bin/podman for anyone who wants rootless explicitly.
-RUN printf '#!/bin/sh\nexec sudo /usr/bin/podman "$@"\n' > /usr/local/bin/podman && \
+# Make `podman` do the right thing for the engine underneath it. A thin wrapper ahead
+# of /usr/bin in PATH, so plain `podman` (shells, scripts, tools, and
+# `ssh cs-sandbox-x podman …`) lands on the right one:
+#
+#   podman container — ROOTFUL, via the NOPASSWD sudo the user already has. The nested
+#     engine must be rootful: rootless-inner fails under --userns=keep-id (no cleanly
+#     sub-dividable subuid range). No setuid (podman keys rootless/rootful off the real
+#     uid, so a setuid bit just yields a broken half-state); this grants nothing beyond
+#     the existing sudo.
+#   firecracker microVM — ROOTLESS, i.e. podman as it runs anywhere else. A VM is real
+#     root on a real kernel, so none of the keep-id apparatus applies. The guest init
+#     grants newuidmap/newgidmap the file caps rootless needs (see image/guest/init).
+#
+# /run/.containerenv is podman's own marker for "inside a container": it exists in the
+# container engine and not in the microVM, where PID 1 also mounts a fresh tmpfs over
+# /run. The real binary stays at /usr/bin/podman for anyone who wants one explicitly.
+RUN printf '%s\n' \
+      '#!/bin/sh' \
+      '# Engine-aware podman (see image/Containerfile). Rootful in a container, rootless in a VM.' \
+      '[ -f /run/.containerenv ] && exec sudo /usr/bin/podman "$@"' \
+      'exec /usr/bin/podman "$@"' > /usr/local/bin/podman && \
     chmod 0755 /usr/local/bin/podman
 
 # Repo context (entrypoint, home skeleton, vendored scripts). Deferred to here — after

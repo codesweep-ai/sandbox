@@ -78,11 +78,15 @@ version regresses the scaled-down set.
 
 **Rootful inner engine.** Nested Podman runs *rootful inside the container* (container-root, which
 under keep-id is your unprivileged host user). Plain `podman` is a `/usr/local/bin/podman` wrapper
-(`exec sudo /usr/bin/podman`, ahead of `/usr/bin` on PATH; no setuid; reuses the user's NOPASSWD
-sudo), so shells, scripts, and `ssh <name> podman …` all hit the rootful engine. The vendored
+(ahead of `/usr/bin` on PATH; no setuid; reuses the user's NOPASSWD sudo), so shells, scripts, and
+`ssh <name> podman …` all hit the rootful engine. The wrapper is **engine-aware** — it `exec sudo`s
+only when `/run/.containerenv` says it is inside a container, and runs plain rootless Podman in a
+Firecracker microVM, which needs none of this (see [`firecracker.md`](firecracker.md)). The vendored
 **`user-podman`** builds on it: for `run`/`create` it injects `--user UID:GID` plus matching
 `--passwd-entry`/`--group-entry`, so the inner container runs as your uid:gid and its bind-mount
-files come back owned by you rather than by a subuid.
+files come back owned by you rather than by a subuid. It keys off the same marker and passes
+through untouched on the microVM, where a rootless inner engine already maps your uid to inner
+root — injecting there would hand the process a subuid and produce exactly what it prevents here.
 
 Why both are required: a *rootless* inner Podman needs `newuidmap`/`newgidmap`, but `--userns=keep-id`
 leaves no cleanly sub-dividable subuid range and the image drops `newuidmap`'s file caps - so

@@ -13,9 +13,13 @@ the container engine's main residual weakness - host-kernel attack surface. (The
 keeps that surface narrow with a scaled-down cap set + seccomp; a VM removes it entirely.)
 Especially valuable for the **agent** type. A bonus falls out: inside a real VM you are real root on
 a real kernel, so the whole nested-podman apparatus the container engine needs (scaled-down caps,
-`--userns=keep-id`, the `sudo` Podman wrapper - see
+`--userns=keep-id`, rootful-inner via the `sudo` Podman wrapper - see
 [`podman.md`](podman.md#nested-podman)) is **unnecessary**; Podman
-just runs.
+just runs, rootless, as it does on any normal machine. The shared wrapper detects this
+(`/run/.containerenv` exists in a container, not in a microVM) and skips the `sudo`, and the guest
+init grants `newuidmap`/`newgidmap` the file caps rootless needs - the image ships them with none,
+and without them every `podman` as the dev user fails at namespace setup. Inner images therefore
+live in `~/.local/share/containers`, not the container engine's `/var/lib/containers`.
 
 The cost: with no `virtio-fs`, the rootfs and shared directories are delivered to a microVM as
 block devices — ext4 disks built on the host and attached to the guest.
