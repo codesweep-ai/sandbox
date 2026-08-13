@@ -59,6 +59,8 @@ type Deps struct {
 	FCBinPath      string // cached firecracker binary
 	FCVersionPin   string // release the build pins to (CS_SANDBOX_FC_VERSION / the default)
 	FCVersionCache string // release actually cached (fc-version stamp); "" = unknown
+	FCCache        string // artifact cache: the reflink source (base-rootfs.ext4)
+	InstDir        string // instances root: the reflink destination
 }
 
 // Diagnose runs the checks for the given engine ("podman" | "firecracker").
@@ -207,6 +209,7 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		default:
 			fg.add(OK, "firecracker binary cached ("+d.FCVersionCache+")")
 		}
+		fg.add(reflinkCheck(ctx, d))
 		r.addGroup(fg)
 		// Directly after the engine's own section, so it reads as a continuation
 		// of it rather than as advice about the host in general — none of it

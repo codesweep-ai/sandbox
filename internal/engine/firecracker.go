@@ -225,6 +225,16 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 			return nil, err
 		}
 	}
+	// --disk: grow this instance's disk past the base rootfs size. Applied to the
+	// kept disk too, so `rm` + `create --disk N` grows a sandbox in place without
+	// losing its data — the only way to widen one that already exists, since a
+	// running VM's virtio-blk capacity is fixed at boot.
+	if s.DiskGB > 0 {
+		d.say("sizing the disk to %d GiB…", s.DiskGB)
+		if err = fcdisk.GrowRootfs(ctx, d.Runner, rootfs, s.DiskGB); err != nil {
+			return nil, err
+		}
+	}
 
 	// --- run.json ---
 	vsock := filepath.Join(idir, state.SockVsock)

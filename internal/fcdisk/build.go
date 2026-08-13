@@ -65,7 +65,7 @@ type BuildConfig struct {
 	InitramfsSrc string
 	Kernel       string // "fedora" (default) or "host"
 	KVerPin      string // pinned fedora kernel-core NVR (CS_SANDBOX_FC_KVER); "" = latest
-	RootfsGB     int    // base rootfs size in GiB (default 14)
+	RootfsGB     int    // base rootfs size in GiB (default 32)
 	FCVersion    string // firecracker release tag (default v1.16.0)
 }
 
@@ -77,8 +77,12 @@ func (b BuildConfig) Defaulted() BuildConfig {
 	if b.KVerPin == "" && b.Kernel == "fedora" {
 		b.KVerPin = DefaultKVerPin
 	}
+	// 32 GiB, not the guest's working set: the disk is sparse and reflink-shared
+	// with every instance, so the number is a ceiling the host is never billed
+	// for — only written blocks cost anything. 14 GiB was too tight for real work
+	// inside a sandbox (building the sandbox image itself needs ~20).
 	if b.RootfsGB == 0 {
-		b.RootfsGB = 14
+		b.RootfsGB = 32
 	}
 	if b.FCVersion == "" {
 		b.FCVersion = DefaultFCVersion
@@ -105,7 +109,7 @@ func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 // isExt4 reports whether p carries an ext4 superblock — magic 0xEF53, stored
 // little-endian at offset 0x438. "The file exists" is too weak a test for the
-// base rootfs: an interrupted build leaves the 14 GiB truncate placeholder in
+// base rootfs: an interrupted build leaves the truncate placeholder in
 // place, which is a hole, not a filesystem, and a microVM booted from it fails
 // in ways that point nowhere near the real cause.
 func isExt4(p string) bool {
@@ -504,8 +508,19 @@ echo "$KVER" > /artifacts/kver`
 	return nil
 }
 
-// ensureBaseRootfs builds/refreshes the base rootfs ext4 when the stamp (image id
-// | kver | kernel mode | init hash) changed or the disk is missing.
+// baseRootfsStamp is what the cached base rootfs is judged fresh against: the
+// image it was exported from, the kernel it was built for, and its size.
+//
+// The size matters as much as the rest. Without it, raising RootfsGB — the
+// default here, or CS_SANDBOX_FC_ROOTFS_GB — leaves an existing base at its old
+// size forever, so every new sandbox comes up silently smaller than asked for
+// with nothing anywhere to point at the cause.
+func baseRootfsStamp(imgid, kver, kernelMode, inithash string, gb int) string {
+	return fmt.Sprintf("%s|%s|%s|%s|%dG", imgid, kver, kernelMode, inithash, gb)
+}
+
+// ensureBaseRootfs builds/refreshes the base rootfs ext4 when the stamp (see
+// baseRootfsStamp) changed or the disk is missing.
 func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfig) error {
 	kver := c.readStamp("kver")
 	if bc.Kernel == "host" && kver == "" {
@@ -522,7 +537,7 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 			inithash = hex.EncodeToString(sum[:])[:12]
 		}
 	}
-	cur := fmt.Sprintf("%s|%s|%s|%s", imgid, kver, bc.Kernel, inithash)
+	cur := baseRootfsStamp(imgid, kver, bc.Kernel, inithash, bc.RootfsGB)
 	// The stamp alone is not enough: it can vouch for a placeholder left by an
 	// interrupted build, so require the disk to actually be a filesystem.
 	if exists(c.BaseRootfs()) && isExt4(c.BaseRootfs()) && c.readStamp("base-rootfs.stamp") == cur {

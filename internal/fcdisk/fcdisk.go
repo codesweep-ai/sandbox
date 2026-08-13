@@ -11,6 +11,7 @@ package fcdisk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,6 +62,46 @@ func (c Cache) ReflinkRootfs(ctx context.Context, r run.Runner, dst string) erro
 		_, err := r.Run(ctx, run.Opts{}, "cp", "--reflink=auto", "-f", c.BaseRootfs(), dst)
 		return err
 	})
+}
+
+// GrowRootfs grows a per-instance rootfs disk to gb GiB in place: extend the
+// (sparse) file, then extend the ext4 inside it. Data is preserved — this is the
+// grow direction only, and a request at or below the current size is a no-op
+// rather than an error, so a --disk that merely matches what a sandbox already
+// has costs nothing on every create.
+//
+// Host-side by necessity: the guest carries no e2fsprogs, so it cannot grow its
+// own root at boot, and virtio-blk fixes the capacity a running VM sees anyway.
+// The sandbox must therefore be stopped, which at create time it is.
+//
+// The disk is sparse and reflink-shared with the base, so the extension costs no
+// space until the guest writes into it — a large --disk is a ceiling, not an
+// allocation.
+func GrowRootfs(ctx context.Context, r run.Runner, img string, gb int) error {
+	fi, err := os.Stat(img)
+	if err != nil {
+		return err
+	}
+	want := int64(gb) << 30
+	if want <= fi.Size() {
+		return nil
+	}
+	if _, err := r.Run(ctx, run.Opts{}, "truncate", "-s", strconv.Itoa(gb)+"G", img); err != nil {
+		return err
+	}
+	// resize2fs refuses a filesystem it has not seen checked, so e2fsck first.
+	// Exit 1 is "errors found and corrected", which is a success for our purpose;
+	// only 2+ (reboot needed / uncorrected / usage) is a real failure.
+	if _, err := r.Run(ctx, run.Opts{}, "e2fsck", "-fp", img); err != nil {
+		var ee *run.ExitError
+		if !errors.As(err, &ee) || ee.ExitCode > 1 {
+			return fmt.Errorf("fc: checking %s before growing it to %d GiB: %w", img, gb, err)
+		}
+	}
+	if _, err := r.Run(ctx, run.Opts{}, "resize2fs", img); err != nil {
+		return fmt.Errorf("fc: growing %s to %d GiB: %w", img, gb, err)
+	}
+	return nil
 }
 
 // DiskMiB sizes an ext4 disk (in MiB) to a directory's content plus overhead and

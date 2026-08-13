@@ -40,7 +40,7 @@ type createFlags struct {
 	solo              bool
 	privileged        bool
 	inheritAgentLogin []string
-	cpus, mem         int
+	cpus, mem, disk   int
 	repos             []string
 	snapshots         []string
 	envs              []string
@@ -70,6 +70,7 @@ func newCreateCmd(app *App) *cobra.Command {
 		"inherit this agent's host login into the sandbox: "+strings.Join(seed.AgentNames(), " | ")+" (repeatable, comma-separated; default: inherit nothing)")
 	fl.IntVar(&f.cpus, "cpus", 4, "firecracker: vCPUs")
 	fl.IntVar(&f.mem, "mem", 4096, "firecracker: memory (MiB)")
+	fl.IntVar(&f.disk, "disk", 0, "firecracker: disk size (GiB); grow-only, default: the base rootfs size (32)")
 	fl.StringArrayVar(&f.repos, "repo", nil, "share a git repo: PATH[@REF][:NAME] (repeatable)")
 	fl.StringArrayVar(&f.snapshots, "snapshot", nil, "share a frozen dir copy: PATH[:NAME] (repeatable)")
 	fl.StringArrayVarP(&f.envs, "env", "e", nil, "inject env var: KEY=VALUE or KEY (repeatable)")
@@ -173,6 +174,9 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		if f.mem <= 0 {
 			return fmt.Errorf("--mem must be greater than zero")
 		}
+		if f.disk < 0 {
+			return fmt.Errorf("--disk must not be negative")
+		}
 		eng = engine.NewFirecracker(d)
 	default:
 		return fmt.Errorf("--engine must be podman or firecracker, got %q", f.engine)
@@ -193,7 +197,7 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 
 	cs := engine.CreateSpec{
 		Name: name, Group: f.group, Type: f.typ, Yolo: f.yolo, Solo: f.solo, Privileged: f.privileged,
-		CPUs: f.cpus, MemMiB: f.mem, Snapshots: snaps, RepoClones: repos,
+		CPUs: f.cpus, MemMiB: f.mem, DiskGB: f.disk, Snapshots: snaps, RepoClones: repos,
 		ImageStores: f.imageStores, InjectedEnv: injected, InheritAgentLogin: f.inheritAgentLogin,
 	}
 	inst, err := eng.Create(ctx, cs)

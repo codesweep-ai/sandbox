@@ -24,6 +24,7 @@ type CreateSpec struct {
 	Privileged        bool // podman: use --privileged instead of the scaled-down cap set
 	CPUs              int  // firecracker
 	MemMiB            int  // firecracker
+	DiskGB            int  // firecracker: grow the instance disk to this size (0 = the base rootfs size)
 	Snapshots         []spec.Snapshot
 	RepoClones        []spec.RepoClone
 	ImageStores       []string

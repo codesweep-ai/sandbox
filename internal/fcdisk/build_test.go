@@ -25,8 +25,8 @@ func TestDefaulted(t *testing.T) {
 	if got.KVerPin != DefaultKVerPin {
 		t.Errorf("KVerPin = %q, want default %q", got.KVerPin, DefaultKVerPin)
 	}
-	if got.RootfsGB != 14 {
-		t.Errorf("RootfsGB = %d, want 14", got.RootfsGB)
+	if got.RootfsGB != 32 {
+		t.Errorf("RootfsGB = %d, want 32", got.RootfsGB)
 	}
 	if got.FCVersion != DefaultFCVersion {
 		t.Errorf("FCVersion = %q, want default %q", got.FCVersion, DefaultFCVersion)

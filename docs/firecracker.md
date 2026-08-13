@@ -100,6 +100,30 @@ Each microVM is assembled from a per-image boot **kernel**, a stack of **block d
   └──────────────────────────────────────────────────────────────┘
 ```
 
+### Disk size
+
+The guest's root disk is a reflink copy of the base rootfs, so its size is the base's: **32 GiB**
+by default, `CS_SANDBOX_FC_ROOTFS_GB` at `cs-sandbox build` time to change what every sandbox gets.
+A single sandbox can be given more at create:
+
+```bash
+cs-sandbox create big --engine firecracker --disk 64    # GiB; grow-only
+```
+
+`--disk` grows the instance's disk (extend the file, `e2fsck`, `resize2fs`) before the VM boots, and
+is a no-op when the disk already has that much. It applies to a **kept** disk too, so `rm` followed
+by `create --disk N` widens an existing sandbox without losing its data - the only way to widen one,
+since a running VM's virtio-blk capacity is fixed at boot and the guest carries no `e2fsprogs` to
+resize itself.
+
+The number is a ceiling, not an allocation. The disk is **sparse** and **reflink-shared** with the
+base, so the host is billed for written blocks only: a 32 GiB base measured 6.15 GiB of real data,
+and a fresh sandbox costs ~nothing until the guest writes (one measured VM: 6.09 GiB shared with the
+base, 7.25 GiB exclusive after real work). Growing is nearly free too - ext4 leaves the added block
+groups uninitialized, so `--disk 64` on a 32 GiB base measured **6.5 MiB** of exclusive data, not the
+percent-of-capacity an eagerly-written inode table would cost. On a filesystem without reflink
+support the copy is not shared, and every sandbox then costs a full base up front.
+
 ### Guest kernel
 
 Firecracker x86_64 boots an **uncompressed ELF `vmlinux` + an initrd** (not a bzImage, and not the
