@@ -13,6 +13,13 @@ umask 022
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 mount -t devtmpfs dev /dev 2>/dev/null
+# The kernel hands PID1 a private root, and systemd would normally make it shared
+# on a normal boot. Nothing does here, so rootless podman greets the first command
+# in a fresh sandbox with `"/" is not a shared mount, this could cause issues or
+# missing mounts with rootless containers` — mounts it sets up inside a container
+# cannot propagate back out. Recursive, so the api filesystems mounted below
+# inherit it rather than each needing their own.
+mount --make-rshared / 2>/dev/null
 # devtmpfs carries device nodes but not these four symlinks — udev or systemd
 # would normally add them, and PID1 here is a shell script. Without /dev/fd every
 # bash process substitution fails, which breaks ordinary shell rc files:
