@@ -244,10 +244,8 @@ func (h HostRoute) Status(ctx context.Context) string {
 	if on := h.forwardingLegs(); len(on) > 0 {
 		// Not a warning to skim past: with forwarding on, a member of one group
 		// can route to another — and to the host's LAN — through the host.
-		fmt.Fprintf(&b, "host-route: DEGRADED — IP forwarding is enabled on %s.\n", strings.Join(on, ", "))
-		fmt.Fprintf(&b, "  A sandbox could route through the host into another group. Something re-enabled it\n")
-		fmt.Fprintf(&b, "  host-wide (a global net.ipv4.ip_forward write propagates to every interface).\n")
-		fmt.Fprintf(&b, "  Fix: cs-sandbox host-route refresh\n")
+		fmt.Fprintf(&b, "host-route: DEGRADED — forwarding is enabled on %s; a sandbox could reach "+
+			"another group (run: cs-sandbox host-route refresh)\n", strings.Join(on, ", "))
 	}
 	fmt.Fprintf(&b, "host-route: UP  (<name>.%s in the default group, <name>.<group>.%s elsewhere)\n",
 		h.Suffix, h.Suffix)
@@ -361,10 +359,12 @@ while [ "$#" -ge 3 ]; do
 done`
 
 // denyForwardingScript re-asserts the knob on every leg, including ones that
-// were already healthy. Writing the GLOBAL net.ipv4.ip_forward propagates to
-// every interface, so a later `sysctl -w net.ipv4.ip_forward=1` — or a Docker
-// install doing it at package time — silently re-enables forwarding on legs
-// wired long before. Re-asserting is what keeps that from going unnoticed.
+// were already healthy. Changing the GLOBAL net.ipv4.ip_forward propagates to
+// every interface, so a later `sysctl -w net.ipv4.ip_forward=1` on a host where
+// it was 0 — a Docker install doing it at package time, say — silently
+// re-enables forwarding on legs wired long before. (The kernel propagates on a
+// change, not on every write, so re-writing the value it already holds is a
+// no-op.) Re-asserting is what keeps that from going unnoticed.
 //
 // Written through /proc rather than `sysctl -w`, so an interface name never has
 // to survive translation into a dotted sysctl key.

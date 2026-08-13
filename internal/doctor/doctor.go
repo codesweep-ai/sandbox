@@ -286,11 +286,16 @@ func missingHostPackages(apt bool) []string {
 // something else can silently change underneath it.
 //
 // The host holds a veth into every group's subnet, so it could route between
-// them; host-route disables forwarding per leg to prevent that. But writing the
-// GLOBAL net.ipv4.ip_forward propagates to every interface, so a `sysctl -w
-// net.ipv4.ip_forward=1` — or a Docker install doing it at package time — turns
-// the legs back into a path between groups. Nothing announces that, which is
-// exactly why it belongs in doctor.
+// them; host-route disables forwarding per veth to prevent that. But *changing*
+// the GLOBAL net.ipv4.ip_forward propagates to every interface, so a `sysctl -w
+// net.ipv4.ip_forward=1` on a host where it was 0 — a Docker install doing it at
+// package time, say — turns those veths back into a path between groups. Nothing
+// announces that, which is exactly why it belongs in doctor.
+//
+// Only the per-veth values are reported. The global one is not a finding: with
+// forwarding off on every veth there is no issue whatever it says, and it cannot
+// be re-broken by a write of the value it already holds — the kernel propagates
+// on a change, not on every write.
 //
 // Every check here reads /proc, so none of it needs privilege.
 func hostRouteGroup(d Deps) Group {
@@ -314,17 +319,10 @@ func hostRouteGroup(d Deps) Group {
 		}
 	}
 	if len(forwarding) > 0 {
-		g.add(NO, "IP forwarding is enabled on "+strings.Join(forwarding, ", ")+
-			" — a sandbox could route through the host into another group; re-assert it:  cs-sandbox host-route refresh")
+		g.add(NO, "forwarding is enabled on "+strings.Join(forwarding, ", ")+
+			" — a sandbox could reach another group; fix:  cs-sandbox host-route refresh")
 	} else {
-		g.add(OK, "forwarding disabled on all "+plural(len(d.HostRouteLegs), "leg")+" — the host is not a router between groups")
-	}
-	// Informational even when the legs are correct: it is the setting whose next
-	// global write would undo them.
-	if data, err := os.ReadFile(procPath("sys/net/ipv4/ip_forward")); err == nil &&
-		strings.TrimSpace(string(data)) == "1" {
-		g.add(HM, "net.ipv4.ip_forward=1 host-wide — writing it again propagates to every interface "+
-			"and re-enables the legs; host-route re-asserts them on up/refresh")
+		g.add(OK, "forwarding disabled on all "+plural(len(d.HostRouteLegs), "group veth"))
 	}
 	return g
 }

@@ -237,12 +237,15 @@ run at all, whereas nftables availability, module coverage and set-type support 
 and kernel build — WSL2 being the obvious case. It also needs no cleanup: the knob disappears with
 the interface. A `DROP` rule between leg pairs would additionally have missed leg→LAN transit.
 
-**How it drifts, and how that surfaces.** Writing the *global* `net.ipv4.ip_forward` propagates to
-every interface, so a later `sysctl -w net.ipv4.ip_forward=1` — or a Docker install doing it at
-package time — silently re-enables forwarding on legs wired earlier. `up` and `refresh` therefore
-re-assert the knob on every leg rather than only on ones they create, and `status` reads the knobs
-back from `/proc` (no privilege needed) and reports **DEGRADED**, never plain `UP`, while any leg
-forwards.
+**How it drifts, and how that surfaces.** *Changing* the *global* `net.ipv4.ip_forward` propagates
+to every interface, so a later `sysctl -w net.ipv4.ip_forward=1` on a host where it was 0 — a Docker
+install doing it at package time, say — silently re-enables forwarding on legs wired earlier. The
+propagation is driven by the transition, not by the write: re-writing the value the knob already
+holds leaves the per-leg settings alone. `up` and `refresh` therefore re-assert the knob on every leg
+rather than only on ones they create, and `status` reads the knobs back from `/proc` (no privilege
+needed) and reports **DEGRADED**, never plain `UP`, while any leg forwards. The global value itself
+is never reported as a fault — with forwarding off on every leg there is no transit whatever it
+says — so neither `status` nor `doctor` mentions it.
 
 **Measured, with a control.** Two groups on one host, `ip_forward=1`, routes added on both sides,
 and both legs placed in firewalld's `trusted` zone (target ACCEPT) so the firewall could not be the

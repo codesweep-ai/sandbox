@@ -285,10 +285,11 @@ func TestNormalizeAllPresent(t *testing.T) {
 }
 
 // TestHostRouteGroupFlagsForwardingLegs: the host holds a veth into every
-// group's subnet, so a leg with forwarding on is a path between groups. Writing
-// the global net.ipv4.ip_forward propagates to every interface, so this can
-// come back on long after host-route wired it — nothing announces that, which
-// is why doctor looks.
+// group's subnet, so a veth with forwarding on is a path between groups. A
+// change to the global net.ipv4.ip_forward propagates to every interface, so
+// this can come back on long after host-route wired it — nothing announces
+// that, which is why doctor looks. The global itself is deliberately not
+// reported: it is set here to 1 to prove that on its own it is not a finding.
 func TestHostRouteGroupFlagsForwardingLegs(t *testing.T) {
 	root := t.TempDir()
 	procRoot = root
@@ -324,9 +325,9 @@ func TestHostRouteGroupFlagsForwardingLegs(t *testing.T) {
 	if strings.Contains(all, "cs-sandbox,") || strings.Contains(all, "on cs-sandbox ") {
 		t.Errorf("a leg with forwarding off must not be reported:\n%s", all)
 	}
-	// The global is context, not an issue in itself.
-	if !strings.Contains(all, "ip_forward=1") {
-		t.Errorf("the global setting explains how this happens:\n%s", all)
+	// ip_forward=1 above is not itself a finding: the per-veth values are.
+	if strings.Contains(all, "ip_forward") {
+		t.Errorf("the global setting is not a finding on its own:\n%s", all)
 	}
 }
 
