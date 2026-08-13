@@ -110,7 +110,6 @@ func buildRunArgs(p runParams) []string {
 		"--security-opt", "label=disable",
 		"--cap-add=NET_RAW", "--cap-add=NET_BIND_SERVICE",
 		"--sysctl", fmt.Sprintf("net.ipv4.ping_group_range=%d %d", p.GID, p.GID),
-		"--ulimit", "nofile=-1:-1", "--ulimit", "nproc=-1:-1",
 		"--userns=keep-id",
 		"--user", "0:0",
 		"-e", "TZ="+p.TZ,

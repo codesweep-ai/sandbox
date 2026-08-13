@@ -378,12 +378,9 @@ jobs:
   #
   # Everything below the setup runs as an UNPRIVILEGED user, not as root. That is
   # how a sandbox is actually created on WSL2 (a developer's own account, rootless
-  # podman, a real home) and it is not a detail: as root, podman is rootful, and
-  # crun then genuinely tries to set RLIMIT_NOFILE to infinity for the
-  # `--ulimit nofile=-1:-1` every sandbox is created with — which the kernel
-  # refuses inside the container's user namespace. Rootless podman clamps instead,
-  # which is why Linux and macOS never saw it. Testing as root would have meant
-  # testing a configuration nobody runs, and chasing its failures.
+  # podman, a real home), and rootless is the only configuration the project
+  # supports. Testing as root would mean testing a configuration nobody runs, and
+  # chasing its failures.
   smoke-wsl:
     name: smoke (windows-2025 / WSL2)
     needs: [build-test, build-artifacts]

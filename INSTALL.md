@@ -94,9 +94,9 @@ so install the `linux_amd64` release there — not on Windows. There is no Windo
 runs on the Windows side. CI validates this on Ubuntu 24.04; another distro needs the equivalent
 packages.
 
-Work as a normal user, not root: rootless podman is the supported configuration, and as root crun
-fails on the `nofile` ulimit every sandbox is created with. Enable systemd in `/etc/wsl.conf`, then
-`wsl --shutdown` from Windows to restart the distro:
+Work as a normal user, not root: rootless podman is the supported configuration, and running as
+root is neither tested nor supported. Enable systemd in `/etc/wsl.conf`, then `wsl --shutdown` from
+Windows to restart the distro:
 
 ```ini
 [boot]
