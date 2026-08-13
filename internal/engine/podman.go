@@ -326,9 +326,16 @@ func (p *Podman) Remove(ctx context.Context, name string, purge bool) error {
 }
 
 func (p *Podman) Exec(ctx context.Context, name string, io ExecIO) error {
-	argv := []string{"podman", "exec"}
+	// -i and -t are independent podman flags: -i forwards stdin into the
+	// container, -t allocates a TTY. They used to be passed together as one -it
+	// token, added only for an interactive shell — so a one-shot command
+	// declined the TTY and lost stdin with it, dropping anything piped in and
+	// still reporting exit 0. ssh forwards stdin whether or not it allocates a
+	// TTY, so the firecracker engine never had the defect; -i unconditionally
+	// makes `exec` mean the same on both engines.
+	argv := []string{"podman", "exec", "-i"}
 	if io.Interactive {
-		argv = append(argv, "-it")
+		argv = append(argv, "-t")
 	}
 	// Run as the dev user in their home, matching what `ssh <name>` gives and what the
 	// firecracker engine does over ssh. The container's main process runs as uid 0, so
@@ -344,8 +351,9 @@ func (p *Podman) Exec(ctx context.Context, name string, io ExecIO) error {
 	} else {
 		argv = append(argv, "bash", "-l")
 	}
-	// Always attach stdio so one-shot command output streams to the user (the
-	// -it TTY flags above are only added for an interactive shell).
+	// Attach the host process's stdio to the podman CLI, so a one-shot command's
+	// output streams to the user and its stdin is the caller's; -i above carries
+	// that stdin the rest of the way, into the container.
 	_, err := p.d.Runner.Run(ctx, run.Opts{Interactive: true}, argv...)
 	return err
 }

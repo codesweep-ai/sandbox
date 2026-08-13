@@ -106,6 +106,70 @@ func TestPodmanCreateLive(t *testing.T) {
 	}
 }
 
+// TestPodmanExecDeliversStdinLive: input piped into `exec` has to arrive inside
+// the sandbox. This is the assertion the argv-level tests cannot make, and the
+// one that was missing while `podman exec` ran without -i and silently ate
+// every piped payload.
+func TestPodmanExecDeliversStdinLive(t *testing.T) {
+	ctx := context.Background()
+	d := testDeps(t)
+	if err := d.EnsureNetwork(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.EnsureTierKeys(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p := NewPodman(d)
+	name := uniqName("csgotest")
+	t.Cleanup(func() { _ = p.Remove(context.Background(), name, true) })
+
+	if _, err := p.Create(ctx, CreateSpec{Name: name, Type: "agent"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	waitFile(t, d, name, "/run/cs-sandbox-ready", 90*time.Second)
+
+	// Exec hands the host process's own stdio to podman (run.Opts.Interactive),
+	// so the payload has to be staged on os.Stdin itself.
+	const marker = "STDIN_MARKER"
+	restore := stdinFrom(t, marker+"\n")
+	err := p.Exec(ctx, name, ExecIO{Argv: []string{"sh", "-c", "cat > /tmp/stdin-probe"}})
+	restore()
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	// Read the payload back out of band: Exec streams to the real stdout, which
+	// the test cannot capture, but the file the command wrote is the proof.
+	got := run.Output(ctx, d.Runner, "podman", "exec", obj(d.group(), name), "cat", "/tmp/stdin-probe")
+	if strings.TrimSpace(got) != marker {
+		t.Errorf("stdin delivered into the sandbox = %q, want %q", got, marker)
+	}
+}
+
+// stdinFrom points os.Stdin at a file holding payload, and returns the undo.
+// A real file rather than a pipe: no writer goroutine, and the command sees a
+// clean EOF. Safe because the suite runs serially (make's -p 1) and no test
+// here calls t.Parallel.
+func stdinFrom(t *testing.T, payload string) func() {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdin
+	os.Stdin = f
+	return func() {
+		os.Stdin = saved
+		f.Close()
+	}
+}
+
 func TestPodmanSoloWithholdsKeyLive(t *testing.T) {
 	ctx := context.Background()
 	d := testDeps(t)

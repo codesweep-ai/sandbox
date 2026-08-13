@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -255,6 +256,42 @@ func TestPodmanExecAddressesTheContainerObject(t *testing.T) {
 	}
 }
 
+// TestPodmanExecAttachesStdin: `podman exec` drops the caller's stdin unless it
+// is given -i, and -i used to be passed only as half of -it, i.e. only for an
+// interactive shell. A piped one-shot command therefore lost its input silently
+// and still exited 0. -i belongs on every exec; -t only on a login shell.
+func TestPodmanExecAttachesStdin(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		io      ExecIO
+		wantTTY bool
+	}{
+		{"one-shot", ExecIO{Argv: []string{"cat"}}, false},
+		{"interactive", ExecIO{Interactive: true}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := run.NewFake()
+			p := NewPodman(Deps{Runner: f, Host: hostenv.Host{User: "dev"}})
+			if err := p.Exec(context.Background(), "box", tc.io); err != nil {
+				t.Fatal(err)
+			}
+			argv := f.Calls[0]
+			if !hasArg(argv, "-i") {
+				t.Errorf("exec argv must attach stdin with -i: %v", argv)
+			}
+			if got := hasArg(argv, "-t"); got != tc.wantTTY {
+				t.Errorf("exec argv allocates a TTY = %v, want %v: %v", got, tc.wantTTY, argv)
+			}
+		})
+	}
+}
+
+// hasArg reports whether argv carries flag as a whole word — a substring test
+// over the joined argv cannot tell -i from -it.
+func hasArg(argv []string, flag string) bool {
+	return slices.Contains(argv, flag)
+}
+
 // exec'd command would run as root with HOME=/root (a different agent profile,
 // root-owned files, and behaviour the firecracker engine doesn't share).
 func TestPodmanExecRunsAsDevUser(t *testing.T) {
@@ -270,20 +307,23 @@ func TestPodmanExecRunsAsDevUser(t *testing.T) {
 			t.Errorf("exec argv missing %q: %s", want, got)
 		}
 	}
-	if strings.Contains(got, "-it") {
+	if hasArg(f.Calls[0], "-t") {
 		t.Errorf("a one-shot command should not allocate a TTY: %s", got)
 	}
 
-	// An interactive shell adds -it and defaults to a login shell.
+	// An interactive shell adds -t and defaults to a login shell.
 	f2 := run.NewFake()
 	p2 := NewPodman(Deps{Runner: f2, Host: hostenv.Host{User: "dev"}})
 	if err := p2.Exec(context.Background(), "box", ExecIO{Interactive: true}); err != nil {
 		t.Fatal(err)
 	}
 	got2 := strings.Join(f2.Calls[0], " ")
-	for _, want := range []string{"-it", "--user dev", "bash -l"} {
+	for _, want := range []string{"--user dev", "bash -l"} {
 		if !strings.Contains(got2, want) {
 			t.Errorf("interactive exec argv missing %q: %s", want, got2)
 		}
+	}
+	if !hasArg(f2.Calls[0], "-t") {
+		t.Errorf("an interactive shell should allocate a TTY: %s", got2)
 	}
 }
