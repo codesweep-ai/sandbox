@@ -101,13 +101,20 @@ test:
 ##               state root, an ssh config the host's own ssh must parse).
 ##   *Live       existing live tests, run verbatim. Keep this list short: it is
 ##               a smoke test, not the suite. `make test-integration` is that.
+##
+## One member is deliberately heavier than that rule: TestCLINestedSandboxInVMLive
+## boots a microVM, ships the CLI and the image into it, and creates a sandbox
+## inside it. It is the only cover for cs-sandbox running in its own sandbox, and
+## it self-skips without /dev/kvm, the FC artifacts, or a slim image — so on the
+## legs that lack them (macOS, WSL2) it costs nothing at all.
 SMOKE_TESTS ?= Smoke \
                TestPodmanCreateLive \
                TestCLICreateExecDestroyLive \
                TestCLIAgentToolSetLive \
                TestCLIListShowsInstanceLive \
                TestCLINetworkReachabilityLive \
-               TestCLIPortForwardLive
+               TestCLIPortForwardLive \
+               TestCLINestedSandboxInVMLive
 
 # Joined into one -run alternation. A backslash continuation in make becomes a
 # space, so the list is written space-separated and the spaces are substituted

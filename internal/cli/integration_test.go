@@ -17,9 +17,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -500,17 +502,41 @@ func TestCLINetworkReachabilityLive(t *testing.T) {
 // both podman containers and Firecracker VMs.
 func sshCapture(t *testing.T, host hostenv.Host, name, sh string) string {
 	t.Helper()
+	argv := append([]string{"ssh"}, sshArgv(t, host, name)...)
+	return run.Output(context.Background(), &run.Exec{}, append(argv, sh)...)
+}
+
+// sshArgv is sshCapture's argument vector without the trailing snippet — shared
+// so a caller that needs to stream something into the sandbox's stdin (see
+// sshPipe) reaches it over exactly the same port, key and options.
+func sshArgv(t *testing.T, host hostenv.Host, name string) []string {
+	t.Helper()
 	portStr, err := execRoot(t, "port", name)
 	if err != nil {
 		t.Fatalf("port %s: %v", name, err)
 	}
 	// Trust material is per group; these tests create default-group sandboxes.
 	key := filepath.Join(paths.GroupKeys(state.DefaultGroup), "id_cs-sandbox_user")
-	return run.Output(context.Background(), &run.Exec{}, "ssh",
+	return []string{
 		"-i", key, "-p", strings.TrimSpace(portStr),
 		"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
 		"-o", "IdentitiesOnly=yes", "-o", "LogLevel=ERROR",
-		fmt.Sprintf("%s@127.0.0.1", host.User), sh)
+		fmt.Sprintf("%s@127.0.0.1", host.User),
+	}
+}
+
+// sshPipe runs a shell snippet inside a sandbox with r streamed to its stdin.
+// Streamed rather than buffered through run.Opts.Stdin (a string) because what
+// goes through here is a binary and a ~700 MB image tar.
+func sshPipe(t *testing.T, host hostenv.Host, name, sh string, r io.Reader) string {
+	t.Helper()
+	cmd := exec.Command("ssh", append(sshArgv(t, host, name), sh)...)
+	cmd.Stdin = r
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ssh %s %q: %v\n%s", name, sh, err, out)
+	}
+	return string(out)
 }
 
 // assertHostByName checks the host-by-name wiring for a live sandbox: the seed
@@ -570,6 +596,136 @@ func TestCLIHostByNameFirecrackerLive(t *testing.T) {
 	}
 	step(t, "microVM %s booted (%s)", name, time.Since(start).Round(time.Second))
 	assertHostByName(t, host, name, func(sh string) string { return sshCapture(t, host, name, sh) })
+}
+
+// TestCLINestedSandboxInVMLive: cs-sandbox running *inside* one of its own
+// sandboxes. A Firecracker microVM is the outer sandbox; the CLI and the sandbox
+// image are shipped into it; it creates a podman sandbox of its own; and then it
+// reaches that inner sandbox by name over ssh.
+//
+// What only this member covers: the guest's nested-podman setup as a whole —
+// rootless inner engine, the newuidmap/newgidmap file caps and /dev/net/tun the
+// guest init grants it — driven by the real create path (network fabric, tier
+// keys, ssh config fragment, sshd) rather than by a bare `podman run`. The inner
+// engine is also the one the wrapper picks for a VM, so shipping the image with
+// a plain `podman load` (the user's rootless store) is what the inner create
+// must find: run it against a rootful inner engine instead and create fails
+// looking for an image that landed in a different store.
+//
+// Cost: the image goes over ssh into the guest, so it wants the slim CI image
+// (~700 MB, ~10s) and skips on the full one, which would not fit the guest disk.
+// Skips without /dev/kvm or the cached FC artifacts, like the other VM members.
+func TestCLINestedSandboxInVMLive(t *testing.T) {
+	_, host := liveSetup(t)
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		t.Skipf("/dev/kvm unavailable: %v", err)
+	}
+	if !fileExists(filepath.Join(paths.FCCache(), "vmlinux.elf")) {
+		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
+	}
+	img := image()
+	requireShippableImage(t, img)
+	bin := buildCLI(t)
+
+	fcInstancesDir(t, host)
+	outer := boxName(t, "nest")
+	t.Cleanup(func() { _, _ = execRoot(t, "destroy", outer, "-f") })
+
+	step(t, "booting outer microVM %s…", outer)
+	start := time.Now()
+	if out, err := execRoot(t, "create", outer, "--engine", "firecracker"); err != nil {
+		t.Fatalf("create firecracker: %v (out=%q)", err, out)
+	}
+	step(t, "microVM %s booted (%s)", outer, time.Since(start).Round(time.Second))
+
+	// Ship the CLI. Same binary the host just built, so the inner sandbox is
+	// created by the code under test rather than by whatever the image carries.
+	f, err := os.Open(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	sshPipe(t, host, outer, "mkdir -p ~/bin && cat > ~/bin/cs-sandbox && chmod +x ~/bin/cs-sandbox", f)
+	if got := sshCapture(t, host, outer, "~/bin/cs-sandbox ls"); !strings.Contains(got, "NAME") {
+		t.Fatalf("shipped CLI does not run in the guest: %q", got)
+	}
+
+	// Ship the image, streamed straight from `podman save` into `podman load`.
+	step(t, "shipping %s into %s…", img, outer)
+	start = time.Now()
+	save := exec.Command("podman", "save", img)
+	pipe, err := save.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := save.Start(); err != nil {
+		t.Fatalf("podman save %s: %v", img, err)
+	}
+	if out := sshPipe(t, host, outer, "podman load", pipe); !strings.Contains(out, "Loaded image") {
+		t.Fatalf("podman load in the guest did not report a loaded image:\n%s", out)
+	}
+	if err := save.Wait(); err != nil {
+		t.Fatalf("podman save %s: %v", img, err)
+	}
+	step(t, "image shipped (%s)", time.Since(start).Round(time.Second))
+
+	// The nested create: a podman sandbox, by the shipped CLI, inside the VM.
+	step(t, "creating the inner sandbox…")
+	start = time.Now()
+	const inner = "inner" // safe unqualified: its whole world is this throwaway VM
+	out := sshCapture(t, host, outer,
+		fmt.Sprintf("CS_SANDBOX_IMAGE=%s ~/bin/cs-sandbox create %s --engine podman", img, inner))
+	if !strings.Contains(out, "created "+inner) {
+		t.Fatalf("nested create did not report success:\n%s", out)
+	}
+	step(t, "inner sandbox created (%s)", time.Since(start).Round(time.Second))
+
+	// The outer VM's own view of it: running, and on the podman engine.
+	if got := sshCapture(t, host, outer, "~/bin/cs-sandbox ls"); !strings.Contains(got, inner) ||
+		!strings.Contains(got, "running") || !strings.Contains(got, "podman") {
+		t.Errorf("inner sandbox not listed as a running podman sandbox:\n%s", got)
+	}
+
+	// The point of the whole exercise: outer reaches inner BY NAME, landing as
+	// the dev user — the inner sandbox's ssh fragment, trust keys and sshd all
+	// wired up by a create that ran inside a VM.
+	who := strings.TrimSpace(sshCapture(t, host, outer,
+		fmt.Sprintf("ssh -o StrictHostKeyChecking=no %s.default 'hostname; id -un'", inner)))
+	if want := inner + "\n" + host.User; who != want {
+		t.Errorf("outer -> inner ssh = %q, want %q", who, want)
+	}
+}
+
+// requireShippableImage skips unless the sandbox image is small enough to stream
+// into a guest. The full image is ~9 GB against a ~14 GB guest disk; the slim CI
+// image the smoke profile is built around is ~700 MB.
+func requireShippableImage(t *testing.T, img string) {
+	t.Helper()
+	const maxShip = 3 << 30
+	raw := run.Output(context.Background(), &run.Exec{}, "podman", "image", "inspect", "--format", "{{.Size}}", img)
+	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		t.Skipf("cannot size image %s: %v (%q)", img, err, raw)
+	}
+	if n > maxShip {
+		t.Skipf("image %s is %.1f GiB, too big to ship into a microVM — build the slim one "+
+			"(make build-ci-image) and re-run with CS_SANDBOX_IMAGE=localhost/cs-sandbox:ci",
+			img, float64(n)/(1<<30))
+	}
+}
+
+// buildCLI builds cmd/cs-sandbox for the host and returns the binary path. The
+// guest is x86_64 Linux and so is any host that got past the /dev/kvm check, so
+// a plain build is already the right target.
+func buildCLI(t *testing.T) string {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "cs-sandbox")
+	cmd := exec.Command("go", "build", "-o", out, "./cmd/cs-sandbox")
+	cmd.Dir = "../.." // this package's dir -> repo root
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build ./cmd/cs-sandbox: %v\n%s", err, b)
+	}
+	return out
 }
 
 // TestCLIListShowsInstanceLive: `ls` reports a live instance with its engine.

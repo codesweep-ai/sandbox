@@ -368,11 +368,16 @@ jobs:
           tar -C bin/fc-cache -xzf bin/fc-artifacts.tar.gz
           ls -1 bin/fc-cache
 
-      # One test to start: the cheapest proof that a microVM boots, gets its
-      # disks, answers ssh as the dev user over the vsock bridge, and registers
-      # with the fabric's DNS. Widen once its cost here is known.
+      # Two members, and this is the only leg with a /dev/kvm to run them:
+      # TestFirecrackerCreateLive is the cheapest proof that a microVM boots, gets
+      # its disks, answers ssh as the dev user over the vsock bridge, and registers
+      # with the fabric's DNS. TestCLINestedSandboxInVMLive then goes a layer down
+      # — cs-sandbox shipped into that microVM, creating a podman sandbox inside
+      # it, reached by name over ssh — which is what covers the guest's nested
+      # podman (rootless engine, newuidmap caps, /dev/net/tun). It ships the image
+      # into the guest, so it needs the slim CI image this job already loads.
       - name: smoke (firecracker)
-        run: make test-smoke SMOKE_TESTS=TestFirecrackerCreateLive
+        run: make test-smoke SMOKE_TESTS="TestFirecrackerCreateLive TestCLINestedSandboxInVMLive"
   # Windows is supported through WSL2 — the CLI is a Linux binary inside the
   # distro, so everything happens in wsl-bash.
   #
