@@ -44,27 +44,25 @@ The image bakes in **no** developer identity - no user name, uid, gid, or per-us
 build serves every developer and machine and you never rebuild to match your local environment.
 Two pieces make this work:
 
-- **Toolchains live under `/opt`** (shared, root-owned), not in a per-user `$HOME`: pyenv+Python,
-  nvm+Node, the Go toolchain, the Temurin JDK + Maven, the native coding-agent binaries (Claude
-  Code, Codex, OpenCode), Python CLI tools in a venv, and Neovim's Mason packages (the language servers and
-  formatters, `/opt/nvim/mason`). Each is pinned in the `Containerfile` and wired up by
-  `~/.bashrc`, so the versions are reproducible rather than whatever the distro last shipped
-  (which also means one JDK on `PATH`, not whichever the distro's alternatives point at). Go
-  additionally keeps
-  upstream's `GOTOOLCHAIN=auto`, so a repo whose `go.mod` names another `go 1.x` fetches that
-  toolchain into `$GOPATH` on demand — no `sudo`, despite `/opt` being read-only.
-  All are on `PATH` for every shell (so non-interactive `ssh <name> <cmd>` finds them too). Being
-  root-owned, they are effectively read-only for the dev user - adding language versions or global
-  packages needs `sudo`; per-project virtualenvs and `node_modules` in your repos are unaffected.
-  Mason additionally honours `$MASON_ROOT` if you want a private, writable package set.
+- **Toolchains live under `/opt`** (shared, root-owned) rather than in a per-user `$HOME`:
+  pyenv+Python, nvm+Node, Go, the Temurin JDK + Maven, the coding-agent binaries, Python CLI tools
+  in a venv, and Neovim's Mason packages (`/opt/nvim/mason`). Each is pinned in the `Containerfile`
+  and wired up by `~/.bashrc`, so versions are reproducible rather than whatever the distro last
+  shipped, and all are on `PATH` for every shell — non-interactive `ssh <name> <cmd>` included.
+  Being root-owned they are read-only for the dev user, so a new language version or a global
+  package needs `sudo`; per-project virtualenvs and `node_modules` are unaffected. The two cases
+  that would chafe have escape hatches: Go keeps upstream's `GOTOOLCHAIN=auto`, so a `go.mod` naming
+  another `go 1.x` fetches it into `$GOPATH` without `sudo`, and Mason honours `$MASON_ROOT` for a
+  private, writable package set.
 - **The runtime user is created at first boot.** `cs-sandbox` passes your identity and the sandbox
-  config as environment (`CS_SANDBOX_USER`/`UID`/`GID`/`HOME`, plus `CS_SANDBOX_TYPE` / `YOLO` /
-  `SSH_PORT` / `IMAGE_STORES`), and the guest **init** - the container entrypoint, or the microVM's
-  `/fc-init` - creates the matching group + user with NOPASSWD sudo, seeds and chowns the home,
-  installs the seed material, starts sshd, and drops to that user for the main process. How the
-  guest is launched and how file ownership stays correct differ by engine: the Podman path
-  (`--userns=keep-id`, the entrypoint) is in [`podman.md`](podman.md#container-boot); the microVM
-  path (`/fc-init`, real root) in [`firecracker.md`](firecracker.md#per-sandbox-anatomy).
+  config in (`CS_SANDBOX_USER`/`UID`/`GID`, plus type, YOLO and the rest) — as container environment
+  on the Podman engine, as the seed's `cs-sandbox.conf` on the microVM engine. The guest **init**
+  (the container entrypoint, or the microVM's `/fc-init`) then creates the matching group and user
+  with NOPASSWD sudo, seeds and chowns the home, installs the seed material, starts sshd, and drops
+  to that user for the main process. How it is launched and how ownership stays correct differ by
+  engine: the Podman path (`--userns=keep-id`, the entrypoint) is in
+  [`podman.md`](podman.md#container-boot), the microVM path (`/fc-init`, real root) in
+  [`firecracker.md`](firecracker.md#per-sandbox-anatomy).
 
 ### The per-sandbox seed
 
@@ -95,40 +93,36 @@ On boot the guest init (the container entrypoint or the microVM's `/fc-init`) sp
   `ssh_config` → `~/.ssh/config.d/cs-sandbox`, and the persisted `ssh_host_*` keys - so key rotation
   just works; normalize perms; start sshd; signal readiness.
 
-The in-sandbox `~/.ssh/config.d/cs-sandbox` scopes its rules to `Host * !*.*` (dotless names = peer
-sandboxes) with `StrictHostKeyChecking accept-new`. **Both** types pin their tier key there
-(`IdentityFile`) - it is the only key each holds that peers authorize (users hold `U`, agents hold
-`G`); the pin is scoped to dotless peer names, so dotted hosts (GitHub, FQDNs) are untouched. **Agent**
-sandboxes additionally set `PreferredAuthentications publickey` - fabric/host access is always
-key-based, so when an agent's key isn't accepted (e.g. ssh to the host) it is denied immediately
-instead of falling through to the host's `password` prompt and hanging on a TTY. **User** sandboxes
-omit that (they may legitimately password-auth to a dotless LAN host) and can reach dotted external
-hosts through an agent forwarded by `ssh -A` (if you forward one) - with no keys copied in.
+The in-sandbox `~/.ssh/config.d/cs-sandbox` scopes its rules to `Host * !*.*` — dotless names, i.e.
+peer sandboxes — so dotted hosts (GitHub, FQDNs) keep ssh's defaults. Both types pin their tier key
+there as `IdentityFile`, it being the only key each holds that peers authorize. **Agent** sandboxes
+additionally set `PreferredAuthentications publickey`, so an unaccepted key (ssh to the host, say)
+is denied at once instead of falling through to a password prompt and hanging on a TTY; **user**
+sandboxes omit that, since they may legitimately password-auth to a dotless LAN host.
 
-Pinning the tier key is not enough on its own once the host does `ssh -A` into a user sandbox: the
-peer also authorizes `H`, and OpenSSH offers forwarded-agent keys *before* a file-only `IdentityFile`,
-so a forwarded `H` would be accepted first and `-A` would silently change the key the sandbox presents
-to peers. To keep sandbox→peer auth on the tier key **with or without** `-A`, the config adds
-`IdentitiesOnly yes` - but only for real peers, identified by a `Match exec` that resolves the target
-and checks it lands on the **fabric subnet** (the podman network gateway's `/24`). Hosts that don't
-resolve onto the fabric (external machines, dotless or not) are left alone, so a forwarded agent still
-reaches them. Result: a user sandbox uses `U` for every peer regardless of `-A`, while `ssh -A` still
-lets it reach external hosts with your forwarded keys.
+The pin alone is not enough once the host does `ssh -A` into a user sandbox: peers also authorize
+`H`, and OpenSSH offers forwarded-agent keys *before* a file-only `IdentityFile`, so `-A` would
+silently change the key the sandbox presents. The config therefore adds `IdentitiesOnly yes`, but
+only for real peers — a `Match exec` resolves the target and checks it lands on the fabric subnet.
+Anything that does not (external machines, dotless or not) is left alone. A user sandbox thus uses
+`U` for every peer with or without `-A`, while `ssh -A` still reaches external hosts with your
+forwarded keys, and no key is ever copied in.
 
 ### Injecting environment variables
 
 `--env KEY=VALUE` / `-e` and `--env-file FILE` (both repeatable) inject variables into the **whole
-sandbox**. `cs-sandbox` resolves them at create time into one `KEY=VALUE` block - `#` comments and
-blank lines in a file are ignored, and a bare `KEY` (no `=`) passes through the host's current value
-(like `docker --env-file`) - and writes it to the per-sandbox seed `inject-env` (mode 600). The guest
-init installs it into the user's `~/.ssh/environment`, and sshd runs with `PermitUserEnvironment=yes`
-(it already runs `UsePAM=no`, so `/etc/environment`/pam_env wouldn't apply) - so **every** ssh
-session sees the vars, interactive *and* `ssh <name> cmd`. The same set is also placed in the guest's
-**PID 1 environment** so the whole process tree inherits it (`cs-sandbox exec`, services, the agent):
-Podman sets it as the container env (`-e`), and Firecracker's `fc-init` exports it. So both engines
-cover the two namespaces ssh can't bridge under `UsePAM=no` - the ssh session env and the process
-tree - from one resolved set. `.env` is never auto-loaded - it's passed explicitly, consistent with
-`docker run` / `podman run`.
+sandbox**. `cs-sandbox` resolves them at create time into one `KEY=VALUE` block — `#` comments and
+blank lines are ignored, and a bare `KEY` passes through the host's current value, as
+`docker --env-file` does — and writes it to the seed's `inject-env` (mode 600).
+
+Two namespaces then have to be covered, because sshd runs `UsePAM=no` and so ignores
+`/etc/environment`. The guest init installs the block into `~/.ssh/environment`, which sshd reads
+under `PermitUserEnvironment=yes`, so **every** session sees the vars — interactive and
+`ssh <name> cmd` alike. The same set also goes into the guest's **PID 1 environment**, so the whole
+process tree inherits it (`cs-sandbox exec`, services, the agent): Podman passes the file to
+`podman run --env-file` — never as `-e KEY=VALUE`, whose values are world-readable in
+`/proc/<pid>/cmdline` — and Firecracker's `fc-init` exports it. `.env` is never auto-loaded; it is
+passed explicitly, as with `docker run`.
 
 ## Sandbox types and the SSH trust model
 
@@ -344,23 +338,16 @@ share the one rootless network namespace. At create time `cs-sandbox` maps the h
 `fc-init`) append it to the guest's `/etc/hosts`, so `ssh <hostname>` / `curl <hostname>:PORT` from a
 sandbox reach the host - NSS checks `files` before DNS, beating the unroutable name.
 
-The host service has to be listening on a **non-loopback** address for this to
-work. `169.254.1.2` is not a mapping onto the host's loopback: a guest reaching
-it arrives on the host's ordinary side, so a server bound to `127.0.0.1` refuses
-the connection while the same server bound to `0.0.0.0` answers. The failure is
-easy to misread, because the address answers ICMP either way — `ping 169.254.1.2`
-succeeds from the guest whether or not anything can be connected to. Verified on
-Firecracker: a listener on `0.0.0.0:18099` was reachable from a sandbox at
-`169.254.1.2:18099`, the same listener on `127.0.0.1:18098` was not.
+Two things catch people out. The host service must listen on a **non-loopback** address:
+`169.254.1.2` is not a mapping onto the host's loopback, so a guest reaching it arrives on the
+host's ordinary side and a server bound to `127.0.0.1` refuses the connection where `0.0.0.0`
+answers. It reads as a network fault because the address answers ICMP either way.
 
-One catch: the pinned mapping is **IPv4-only**, but the sandbox network is also IPv4-only (the
-guest has just a link-local IPv6, no v6 route), while the host's resolver / Tailscale MagicDNS still
-hands back **AAAA** records for that name. `/etc/hosts` only wins *per address family*, so the
-unreachable IPv6 answer would survive - and since `getaddrinfo` prefers IPv6 by default, naive
-single-address clients (e.g. `bash`'s `/dev/tcp`) would try it first and hang, and every dual-stack
-lookup would eat a v6 timeout. So the guest init also writes `/etc/gai.conf`
-(`precedence ::ffff:0:0/96 100`) to **prefer IPv4** - the standard fix for a v4-only host - which
-makes the pinned IPv4 (and v4 generally) win deterministically.
+And the pinned mapping is IPv4-only while the host's resolver still hands back **AAAA** records for
+that name. `/etc/hosts` only wins per address family, so the unreachable IPv6 answer would survive —
+and `getaddrinfo` prefers IPv6, so naive clients would try it first and hang. The guest init
+therefore writes `/etc/gai.conf` (`precedence ::ffff:0:0/96 100`) to prefer IPv4, the standard fix
+for a v4-only host.
 
 ### Optional: reach sandboxes directly by name (`host-route`)
 
@@ -428,37 +415,37 @@ an image already in your local store, e.g. the sandbox image itself); manage wit
 Because a store is written by the rootful nested engine, image-uid-0 is stored under the keep-id
 root and every container's keep-id maps it back to uid 0 inside - so images run with correct
 `root`/setuid ownership. `--image-store` works on the **microVM** engine too, where the store is
-delivered as a read-only ext4 disk built from the volume (the same content-addressed, cached
-mechanism as the base rootfs); see
-[`firecracker.md`](firecracker.md#disks). A read-only shared base with a per-sandbox
-writable primary is the supported way to share: independent engines writing one store risk lock
-contention and corruption.
+delivered as a read-only ext4 disk built from the volume — the same content-addressed, cached
+mechanism as the base rootfs (see [`firecracker.md`](firecracker.md#disks)). A read-only shared base
+with a per-sandbox writable primary is the supported way to share: independent engines writing one
+store risk lock contention and corruption.
 
 ## Bundled agent tools and login
 
-Every sandbox ships the `cs-claude`, `cs-codex`, and `cs-opencode` toolsets, so the coding agents work without
-re-authenticating per sandbox. Everything non-secret is baked into the image skeleton from
-`image/rootfs/home/` in this repo; everything secret is carried per sandbox through the seed.
+Every sandbox ships the `cs-claude`, `cs-codex`, and `cs-opencode` toolsets, so a coding agent comes
+up configured and working rather than asking setup questions. Everything non-secret is baked into
+the image skeleton from `image/rootfs/home/` in this repo; everything secret is carried per sandbox
+through the seed.
 
 **Baked in (non-secret):**
 
-- **Launch wrappers** in `~/.local/bin` (the OpenCode adapter's internals — driver architecture,
-  verified upstream behaviors, version-bump procedure — have their own reference,
-  [opencode.md](opencode.md)). `cs-claude` runs `claude` under `CLAUDE_CONFIG_DIR=~/.cs-claude`
-  in `--permission-mode auto`; `cs-codex` runs `codex` under `CODEX_HOME=~/.cs-codex` with
-  `approval_policy=on-request` + `sandbox_mode=workspace-write`; `cs-opencode` runs `opencode` under
-  `OPENCODE_CONFIG_DIR=~/.cs-opencode` with a profile-scoped session db (`OPENCODE_DB`) and inline
-  auth (`OPENCODE_AUTH_CONTENT`), plus a pinned model and blanket-allow permissions in its
-  `opencode.json`. Each uses a dedicated profile, so the sandbox's config never touches a personal
-  `~/.claude`/`~/.codex`/`~/.config/opencode`, and each pre-trusts the launch directory (or, for
-  opencode, has no trust gate) so the agent never stops at a "do you trust this folder?" gate.
+- **Launch wrappers** in `~/.local/bin`, each on a dedicated profile so a sandbox's config never
+  touches a personal `~/.claude` / `~/.codex` / `~/.config/opencode`, and each pre-answering the "do
+  you trust this folder?" gate (opencode has none):
+
+  | Wrapper | Profile | Defaults it launches with |
+  |---|---|---|
+  | `cs-claude` | `CLAUDE_CONFIG_DIR=~/.cs-claude` | `--permission-mode auto` |
+  | `cs-codex` | `CODEX_HOME=~/.cs-codex` | `approval_policy=on-request`, `sandbox_mode=workspace-write` |
+  | `cs-opencode` | `OPENCODE_CONFIG_DIR=~/.cs-opencode` | pinned model + blanket-allow permissions, profile-scoped session db (`OPENCODE_DB`), inline auth (`OPENCODE_AUTH_CONTENT`) |
+
+  The OpenCode adapter's internals have their own reference, [opencode.md](opencode.md).
 - **Remote agent tools**, also in `~/.local/bin`: `cs-claude-remote`, `cs-codex-remote`, and
   `cs-opencode-remote`, each with `-status`/`-output`/`-sessions`/`-forget` and a `-turn` driver.
-  They start or resume an agent
-  session on another host over SSH, keeping it warm in tmux, so an agent in one sandbox can hand a
-  task to an agent in another. The target host resolves per session and defaults to the sandbox
-  itself, so reaching anywhere else needs SSH access the sandbox actually has — for a user sandbox,
-  typically keys you forwarded with `ssh -A`.
+  They start or resume an agent session on another host over SSH, keeping it warm in tmux, so an
+  agent in one sandbox can hand a task to an agent in another. The target host defaults to the
+  sandbox itself, so reaching anywhere else needs SSH access the sandbox actually has — for a user
+  sandbox, typically keys you forwarded with `ssh -A`.
 - **Settings and instruction hubs**: `~/.cs-claude` (a `settings.json`, a `CLAUDE.md` hub, and a
   `CLAUDE_PERMISSIONS.md` reference), `~/.cs-codex` (a `config.toml` and an `AGENTS.md` hub), and
   `~/.cs-opencode` (an `opencode.json` and an `AGENTS.md` hub). Every hub describes **all three**
@@ -481,30 +468,26 @@ caveats are in [`agent-login.md`](agent-login.md).
 
 - Sandboxes run **rootless** with a **scaled-down cap set** (engine and container bounded by your
   unprivileged host user via keep-id), seccomp on, and `/proc/kcore` + host devices masked -
-  granting only the caps nested Podman needs. There is no host-root path absent a kernel bug.
+  granting only the caps nested Podman and ordinary network tooling need
+  ([`podman.md`](podman.md#nested-podman) lists them). There is no host-root path absent a kernel bug.
   `--privileged` is an opt-in fallback that trades that defense-in-depth for breadth. The microVM
   engine removes the shared-kernel attack surface entirely.
-- **Passwordless sudo inside is safe**, and is the usual setup for agent sandboxes. The runtime user
-  gets `NOPASSWD:ALL`, because the trust boundary is the *engine*, not in-sandbox sudo: on the
-  container engine "root" inside is just your unprivileged host uid through `--userns=keep-id`, and
-  on the microVM engine root is real but confined to the guest's own kernel. Either way `sudo` grants
-  an agent nothing it does not already control over its own disposable sandbox, while restricting it
-  would add friction (the nested-Podman wrapper shells out to `sudo` on every call) for no boundary.
+- **Passwordless sudo inside is safe**, and is the usual setup for agent sandboxes, because the
+  trust boundary is the *engine*, not in-sandbox sudo: on the container engine "root" inside is your
+  own unprivileged host uid through `--userns=keep-id`; on the microVM engine it is real root
+  confined to the guest's kernel. Either way `sudo` grants an agent nothing it does not already
+  control over its own disposable sandbox, while restricting it would add friction for no boundary.
   This holds **only** while that boundary is intact — running the image rootful, `--privileged`, or
   `--userns=host` turns the same passwordless sudo into genuine host-root.
 - SSH ports bind `127.0.0.1` only; sandboxes are not exposed on the LAN by default.
-- **No host private keys inside any sandbox.** Nothing at rest to leak from a sandbox's disk/volume;
-  sandboxes reach each other with generated per-group tier keys. If a sandbox needs your own keys (e.g. to
-  `ssh` on to another machine), you *lend* a specific set with `ssh -A` - the keys stay on the host,
-  present only for the life of that session, never copied in. The agent credential snapshot lives
-  only in the per-sandbox seed and the home volume - never in the image or git.
+- **No host private keys inside any sandbox.** Nothing at rest to leak from a sandbox's disk. Peers
+  are reached with generated per-group tier keys, and an inherited agent credential lives only in the
+  seed and the home volume, never in the image or git. When a sandbox does need your own keys,
+  `ssh -A` lends a specific set for the life of one connection and they stay on the host — but
+  anything running as you there can *use* the socket meanwhile, so scope what you load
+  ([README](../README.md#lending-a-sandbox-specific-ssh-keys-with-ssh--a)).
 - **Type governs reach, not privilege.** An agent sandbox can never `ssh` into a user sandbox — see
-  [the trust model](#sandbox-types-and-the-ssh-trust-model) above for how the H/U/G keys enforce it.
-- **`ssh -A` is a technique, not a property of a type.** Forwarding an agent lends a sandbox specific
-  host keys for the life of a connection without copying any key in; anything running as you inside
-  that sandbox can *use* the socket while you are connected. Scope what you load and forward only
-  into a sandbox whose operator you trust — the README covers the judgment in
-  [Lending a sandbox specific SSH keys](../README.md#lending-a-sandbox-specific-ssh-keys-with-ssh--a).
+  [the trust model](#sandbox-types-and-the-ssh-trust-model) for how the H/U/G keys enforce it.
 
 ## Testing
 

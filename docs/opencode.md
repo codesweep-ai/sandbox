@@ -37,65 +37,56 @@ never blunt XDG redirection, which children of opencode's bash tool would inheri
 | `~/.cs-opencode/env` (sourced with `set -a`) | provider API keys (e.g. `FIREWORKS_API_KEY`), scoped to the agent |
 | `OPENCODE_DISABLE_AUTOUPDATE=1`, `OPENCODE_DISABLE_SHARE=1` | /opt is read-only anyway; silence the nag, keep sessions private |
 
-What is *not* moved: opencode's XDG data/cache dirs (`~/.local/share/opencode` for logs and
-cloned repos, `~/.cache/opencode`) stay where they are — `OPENCODE_CONFIG_DIR` does not relocate
-them, and redirecting XDG wholesale would leak into every child of opencode's bash tool. That is
-fine inside a sandbox, where there is one user and one profile, and it is precisely why the
-credential is passed inline: upstream's `auth.json` would otherwise land in that *shared* data
-dir rather than in the profile.
+Opencode's XDG data/cache dirs (`~/.local/share/opencode`, `~/.cache/opencode`) deliberately stay
+put: `OPENCODE_CONFIG_DIR` does not relocate them, and redirecting XDG wholesale would leak into
+every child of opencode's bash tool. That is fine with one user and one profile, and it is exactly
+why the credential goes in inline — upstream's `auth.json` would otherwise land in that *shared*
+data dir rather than in the profile.
 
-YOLO (`CS_OPENCODE_YOLO` or the `~/.cs-opencode/.yolo` marker, written by `create --yolo`)
-appends `--auto` — only to the TUI and `run`, since the other subcommands reject the flag. The
-shipped profile config already blanket-allows tool permissions; `--auto` covers the residual asks
-(`doom_loop`, out-of-workspace paths, `.env` reads). There is no directory-trust gate to
-pre-answer, unlike claude/codex.
+YOLO (`CS_OPENCODE_YOLO` or the `~/.cs-opencode/.yolo` marker, written by `create --yolo`) appends
+`--auto`, and only to the TUI and `run`, since the other subcommands reject it. The shipped config
+already blanket-allows tool permissions; `--auto` covers the residual asks (`doom_loop`,
+out-of-workspace paths, `.env` reads). Unlike claude and codex there is no directory-trust gate.
 
-**The model is pinned, and the pin fails closed.** Two config keys do that job together:
+### The model pin, and why it fails closed
 
-- `model` pins `fireworks-ai/accounts/fireworks/models/kimi-k3` (provider env var
-  `FIREWORKS_API_KEY`). Without a pin opencode does not resolve a deterministic model.
-- `disabled_providers: ["opencode"]` turns off the **OpenCode Zen** gateway, which upstream loads
-  automatically and which serves free models to anonymous callers. It is the only provider that
-  works with no credential at all, so it is the only thing a broken pin can silently fall back to
-  — and falling back would send the sandbox's code to a third party the user never chose, which is
-  the one thing this project promises not to do.
-
-The two paths behaved differently before the gateway was disabled, which is why the fix is config
-rather than wrapper logic (verified at 1.18.10, pin set and `FIREWORKS_API_KEY` absent):
+Two config keys do that job together. `model` pins the model —
+`fireworks-ai/accounts/fireworks/models/kimi-k3`, via `FIREWORKS_API_KEY` — because opencode
+resolves no deterministic one without it. `disabled_providers: ["opencode"]` then turns off the
+**OpenCode Zen** gateway, which upstream loads automatically and which serves free models to
+anonymous callers: it is the only provider that works with no credential, so it is the only thing a
+broken pin could silently fall back to — and that fallback would send the sandbox's code to a third
+party the user never chose. Verified at 1.18.10 with the pin set and `FIREWORKS_API_KEY` absent:
 
 | | Zen loaded (upstream default) | Zen disabled (shipped) |
 |---|---|---|
 | `opencode run` (what the turn driver uses) | fails, exit 1 `ProviderModelNotFoundError` | fails, exit 1 |
 | the interactive TUI (`cs-opencode`) | **silently selects `opencode/big-pickle`** | no model available |
 
-Disabling it also removes a failure mode in the driver: an attached `run` against a TUI that had
-fallen back to Zen would *wedge* rather than return, so the turn only ended at the stall watchdog
-(exit 2, after `CS_OPENCODE_STALL_SECS`). With the gateway off the same turn fails in seconds —
-the client exits nonzero and the postcheck independently reports `no-assistant-message`, so the
-driver returns exit 5 with a real reason.
+Because the TUI row differs and the `run` row does not, the fix has to be config rather than wrapper
+logic. It also removes a driver failure mode: an attached `run` against a TUI that had fallen back
+to Zen would *wedge* until the stall watchdog (exit 2), where now it fails in seconds with a real
+reason (exit 5).
 
-To run a different provider, edit `~/.cs-opencode/opencode.json` inside the sandbox (or pass
-`-m provider/model` for one launch) and put that provider's key in `~/.cs-opencode/env`. Dropping
-`"opencode"` from `disabled_providers` re-enables the free gateway if that is what you want.
+To run a different provider, edit `~/.cs-opencode/opencode.json` in the sandbox (or pass
+`-m provider/model` for one launch) and put that provider's key in `~/.cs-opencode/env`; dropping
+`"opencode"` from `disabled_providers` re-enables the free gateway.
 
-**The guard is duplicated at `~/.config/opencode/opencode.json`**, holding only
-`disabled_providers`. `/opt/opencode/bin` is on `PATH`, so running bare `opencode` instead of the
-wrapper is an easy slip — and it loads none of the profile above: not the model pin, not the
-isolated db, not the `AGENTS.md` hub that tells an agent the `cs-*-remote` tools exist. That slip
-is survivable; silently shipping the sandbox's code to an anonymous gateway is not, so the XDG
-default closes that one path. Everything else stays a `cs-opencode`-only benefit, exactly as
-bare `claude` and `codex` are unconfigured. The binary is deliberately NOT aliased or shimmed.
+**The Zen guard alone is duplicated at `~/.config/opencode/opencode.json`.** `/opt/opencode/bin` is
+on `PATH`, so running bare `opencode` is an easy slip, and it picks up none of the profile above.
+That slip is survivable; silently shipping the sandbox's code to an anonymous gateway is not, so the
+XDG default closes that one path and nothing else. The binary is deliberately not aliased or
+shimmed — bare `claude` and `codex` are unconfigured in just the same way.
 
 ## Turn driver architecture (`cs-opencode-turn`)
 
 The driver never scrapes the TUI pane (opencode's TUI strings are localized and unstable). It
 drives the HTTP API that the TUI hosts when launched with `--port`:
 
-1. **The session id exists before the TUI launches.** New sessions are minted by a transient
-   `cs-opencode serve` on the same derived port + `POST /session`, then the warm tmux TUI is
-   launched `cs-opencode --port <p> -s <ses_id>`. A TUI launched bare sits on its home screen
-   and never shows externally driven turns; launched with `-s`, a human attaching watches the
-   driven session render live.
+1. **The session id exists before the TUI launches.** A transient `cs-opencode serve` on the same
+   derived port mints it via `POST /session`, then the warm tmux TUI comes up as `cs-opencode
+   --port <p> -s <ses_id>`. Launched bare it would sit on its home screen and never show
+   externally driven turns; with `-s`, a human attaching watches the driven session render live.
 2. **Readiness** is `GET /global/health`, plus a `GET /session/<id>` check that the server on
    this port actually knows our session (guards against a foreign server on a colliding port).
 3. **The turn** is a blocking `cs-opencode run --attach http://127.0.0.1:<p> -s <id> --auto
@@ -148,13 +139,11 @@ Each one shaped the driver, and "simplifying" any of them away reintroduces a si
    with `disabled_providers: ["opencode"]` a sandbox that has not been given a key has no model at
    all — which is the point. If upstream adds a second zero-credential provider that loads
    automatically, it has to be disabled here too or the pin stops failing closed.
-5. **Sessions live in SQLite** (`opencode.db` + `-wal`/`-shm`, WAL mode; `OPENCODE_DB` honored),
-   not in a JSON tree. `opencode export <id>` writes the whole conversation
-   (`{info, messages: [{info, parts}]}`) to stdout — including tool inputs/outputs and the
-   per-message `error`/`time.completed` fields, with no credential material — and puts its
-   `Exporting session: …` banner on stderr, so a capture with `2>/dev/null` parses as JSON.
-   `opencode db "<sql>" --format json|tsv` gives raw queries. Concurrent WAL reads while a TUI is
-   live are fine.
+5. **Sessions live in SQLite** (`opencode.db`, WAL mode, `OPENCODE_DB` honored), not a JSON tree.
+   `opencode export <id>` writes the whole conversation to stdout — tool inputs/outputs and the
+   per-message `error`/`time.completed` fields, no credential material — with its banner on stderr,
+   so a capture with `2>/dev/null` parses as JSON. Concurrent WAL reads while a TUI is live are
+   fine.
 
 ## Remote tool family
 
@@ -163,9 +152,8 @@ identical host-side contract — name→{token,id,host,workdir} maps, per-sessio
 scp-deploy on checksum change, the authoritative `--- … --- finished (exit N) ---` footer, and the
 `-s` status contract (`finished=0 / unknown=1 / running=2`).
 
-The two data-plane tools differ because there is no rollout JSONL to tail — claude and codex read
-per-session files, while opencode keeps everything in one SQLite db. Both use supported CLI
-surfaces rather than that schema:
+The two data-plane tools differ, because there is no rollout JSONL to tail — opencode keeps
+everything in one SQLite db. Both go through supported CLI surfaces rather than that schema:
 
 - `cs-opencode-remote-status` runs `cs-opencode export <id>` over SSH (one JSON document; not
   directory-scoped, so it works from the login directory).
@@ -189,35 +177,26 @@ upstream rename would blank the column silently.
 
 ## Live validation record
 
-Measured at 1.18.10 with a real Fireworks key on the pinned kimi-k3, isolated `$HOME`, one-word
-prompts. The credential was passed through the process environment only; nothing wrote it to disk.
+Measured at 1.18.10 on the pinned kimi-k3 with a real Fireworks key, one-word prompts, in two
+places. **Workstation**: isolated `$HOME`, the credential through the process environment only,
+never to disk. **Sandbox**: after `cs-sandbox build`, inside a real `--yolo` Firecracker sandbox on
+the rebuilt image, key injected by `create --env` — the path a user actually takes.
 
-| What | Result |
-|---|---|
-| Full turn through `cs-opencode-turn` (mint → warm TUI → attached run → postcheck → read-back) | reply returned, exit 0 |
-| Second turn on the same warm session | returned only its own reply; the previous turn's did not leak |
-| `cs-opencode-remote-status` against the real session | both turns rendered with timestamps |
-| Unattached `cs-opencode run` | reply on stdout, exit 0 |
-| Unattached `run -s <id>` | resumed the session and recalled the earlier turn |
-| Unattached `run --format json` | structured event stream |
+| What | Where | Result |
+|---|---|---|
+| Full turn through `cs-opencode-turn` (mint → warm TUI → attached run → postcheck → read-back), driven by `cs-opencode-remote --new` | both | reply returned, exit 0; 29.5 s in the sandbox |
+| Second turn on the same warm session (`--resume`) | both | returned only its own reply — the identity anchor, on real history |
+| `cs-opencode-remote-status` | both | both turns rendered with timestamps |
+| `cs-opencode-remote-sessions -v` | sandbox | last-activity resolved through `session list --format json` |
+| `-b` background turn | sandbox | `running`/exit 2 → `finished`/exit 0, footer written |
+| `cs-opencode run` in the guest | sandbox | reply on the pinned kimi-k3; 12.9 s cold, 5.1 s warm |
+| Unattached `run`, `run -s <id>`, `run --format json` | workstation | reply on stdout, exit 0; resumed and recalled the earlier turn; structured event stream |
 
-Re-measured after `cs-sandbox build`, inside a real `--yolo` Firecracker sandbox on the rebuilt
-image — the path a user actually takes, with the key injected by `create --env`:
-
-| What | Result |
-|---|---|
-| `cs-opencode run` in the guest | reply returned on the pinned kimi-k3; 12.9 s cold, 5.1 s warm |
-| `cs-opencode-remote --new` (sandbox delegating to itself) | reply returned, 29.5 s |
-| `cs-opencode-remote --resume` | returned only the new turn's reply — the identity anchor, on real history |
-| `cs-opencode-remote-sessions -v` | last-activity resolved through `session list --format json` |
-| `cs-opencode-remote-status` | both turns rendered with timestamps |
-| `-b` background turn | `running`/exit 2 → `finished`/exit 0, footer written |
-
-The last three matter beyond this release: they are what a **CLI-only driver** would rest on — one
-`cs-opencode run -s <id>` per turn, no HTTP, no warm TUI. That design is viable and would delete
-the postcheck, the identity anchoring and the derived port. It was not taken because it costs
-`cs-opencode-remote --attach` (watching a live session), which the claude and codex families both
-have. Revisit it if the attach feature ever stops earning its complexity.
+The `sessions -v`, `-status` and `-b` rows also record why the driver is shaped the way it is: they
+are what a **CLI-only driver** would rest on — one `cs-opencode run -s <id>` per turn, no HTTP, no
+warm TUI. That design is viable and would delete the postcheck, the identity anchoring and the
+derived port. It is not the one taken, because it costs `cs-opencode-remote --attach` (watching a
+live session), which the claude and codex families both have.
 
 Testing note: `tmux` resets `HOME` from the passwd entry, so a driver test cannot relocate the
 profile with `HOME=…` alone — the TUI it launches will read the real one. Inside a sandbox this is

@@ -41,14 +41,17 @@ git -C ~/<dir> switch -c cs-sandbox/<name> <base> \
   || git -C ~/<dir> switch -c cs-sandbox/<name>                # branch at @REF; falls back to HEAD if @REF won't resolve
 ```
 
-The result is a writable tree on `cs-sandbox/<name>` borrowing history read-only; new commits go to
-the sandbox's own (tiny) object store. **Git identity carries over** so commits are attributed
-correctly: each clone's *local* `user.name`/`user.email` is set to the identity that repo uses on
-the host (`git -C <repo> config user.*`, which resolves a local override, `includeIf`, or the
-global), and the sandbox's *global* `~/.gitconfig` is seeded from the host's global `user.name`/
-`user.email` (both captured at create time; the global is only set if unset, so a later in-sandbox
-change is never clobbered). Re-runs on later boots are no-ops: Podman guards on
-`~/.cs-sandbox-repos-done`; Firecracker skips any `~/<dir>` that already has a `.git`.
+The result is a writable tree on `cs-sandbox/<name>` borrowing history read-only, with new commits
+going to the sandbox's own tiny object store.
+
+**Git identity carries over**, so commits are attributed correctly. Each clone's *local*
+`user.name`/`user.email` is set to whatever identity that repo uses on the host — resolving a local
+override, an `includeIf`, or the global — and the sandbox's *global* `~/.gitconfig` is seeded from
+the host's global one. Both are captured at create time, and the global is set only if unset, so a
+later in-sandbox change is never clobbered.
+
+Re-runs on later boots are no-ops: Podman guards on `~/.cs-sandbox-repos-done`, Firecracker skips
+any `~/<dir>` that already has a `.git`.
 
 ## Delivering the source objects (the one engine-specific part)
 
@@ -58,14 +61,10 @@ sandbox (it need not match across engines):
 
 - **Podman:** `-v <hostrepo>:/run/cs-sandbox-repos/<dir>:ro` - zero copy, reading the host's live
   objects.
-- **Firecracker:** a read-only ext4 disk holding `git clone --bare <repo>` (one point-in-time object
-  copy), attached at `/run/cs-sandbox-repo-<n>`. The repo disks are `vdc…`, in the order `cs-sandbox`
-  appended them (repos, then `--snapshot`, then `--image-store`), which the guest walks with a single
-  device-letter cursor. The disk is **content-addressed cached** (key = `sha256` of the source's ref
-  tips + HEAD, 40 hex; file `<srcid>-<key>.ext4`), so VMs from the same commit reuse one build
-  (`cp --reflink=auto` per sandbox) and one disk can attach RO to many VMs at once. Cached disks
-  unused for `CS_SANDBOX_FC_REPO_CACHE_TTL_DAYS` (default 14) are pruned. See
-  [`firecracker.md`](firecracker.md).
+- **Firecracker:** a read-only ext4 disk holding `git clone --bare <repo>` — one point-in-time
+  object copy — attached at `/run/cs-sandbox-repo-<n>`. The disk is content-addressed and cached, so
+  VMs off the same commit share one build and one disk can attach RO to many at once. Device order
+  and cache mechanics are in [`firecracker.md`](firecracker.md#disks).
 
 ## Retrieve / update - host-initiated, works for agents
 
@@ -156,10 +155,9 @@ git push worker:api HEAD:cs-sandbox/worker
 - **stop/start** keeps the running sandbox and all its disks - `start` resumes the same instance
   with its data.
 - **rm keeps the data** (the home volume on Podman, `rootfs.ext4` on Firecracker) and removes only
-  the instance itself. Recreating with the **same name** reuses that home, so the checkout and its
-  commits come back; pass the **same `--repo`** so the read-only source re-attaches (the clone borrows
-  its objects). The commits live in the home, so they survive the `rm`. `ls` keeps listing that data
-  with status **`removed`** until you reuse or delete it.
+  the instance. Recreating with the **same name** reuses that home, so the checkout and its commits
+  come back; pass the **same `--repo`** too, so the read-only source the clone borrows re-attaches.
+  `ls` keeps listing the data with status **`removed`** until you reuse or delete it.
 - **destroy** drops the home (volume / `rootfs.ext4`), so the sandbox's commits are gone - **`fetch`
   before `destroy`** if it has unmerged work. It also works on a name whose sandbox `rm` already
   removed, which is how you reclaim data you decided not to keep after all.

@@ -63,9 +63,10 @@ rest of this section does not apply. In a **Podman container**, true isolated po
 needs two things: a **scaled-down capability set** on the outer container, and a **rootful** inner
 engine.
 
-**Scaled-down caps, still rootless.** The container runs *rootless* - engine and container bounded
-by your unprivileged host user via `--userns=keep-id` - granting only what the inner rootful
-Podman needs:
+### Scaled-down caps, still rootless
+
+The container runs *rootless* — engine and container bounded by your unprivileged host user via
+`--userns=keep-id` — granting only what the inner rootful Podman needs:
 
 - `CAP_SYS_ADMIN` - nested userns + mounts
 - `CAP_NET_ADMIN` - inner netavark bridge
@@ -134,7 +135,7 @@ Linux/KVM-only, so macOS always uses Podman). Everything behaves as on Linux:
 | directory sharing | ✓ | ✓* | *shared paths must be under a machine-shared root (under `$HOME`) |
 | nested Podman | ✓ | ⚠️ | works inside the VM; inner images must match the VM's architecture |
 
-(`host-route` is Linux-only - see
+(`host-route` is Linux-only — see
 [design.md](design.md#optional-reach-sandboxes-directly-by-name-host-route).)
 
 ## Private registry
@@ -149,24 +150,18 @@ controlled by two env vars (read by `cs-sandbox` and forwarded to the build as t
 | `CS_SANDBOX_PRIVATE_REGISTRY` | _(none)_ | Registry to trust, as a bare `host:port` (no `http://`/`https://` scheme). Empty registers none. |
 | `CS_SANDBOX_PRIVATE_REGISTRY_INSECURE` | `0` (secure) | `1`/`true`/`yes`/`on` → insecure: permit plain-HTTP and skip TLS verification. Anything else → secure: HTTPS with a verified cert. |
 
-Following standard docker/podman convention, the **protocol is implicit in the security setting**,
-not a scheme on the registry value: a registry is named by its bare `host:port`, a *secure* entry is
-reached over HTTPS with a verified TLS cert, and an *insecure* entry permits plain-HTTP and untrusted
-/ self-signed certs. (This mirrors Podman's `registries.conf` `location` + `insecure`, and Docker's
-`insecure-registries`.) **Secure is the default**; an insecure registry is opt-in.
-
-Both variables are read at **build** time (`cs-sandbox build`); rebuild the image after changing
-them. Examples:
+Both are read at **build** time, so rebuild the image after changing them:
 
 ```bash
-# Secure private registry (HTTPS, TLS-verified) - the default
+# Secure (HTTPS, TLS-verified) - the default
 CS_SANDBOX_PRIVATE_REGISTRY=registry.corp.example:5000 cs-sandbox build
 
-# Insecure private registry (plain-HTTP or self-signed cert)
+# Insecure (plain-HTTP or self-signed cert)
 CS_SANDBOX_PRIVATE_REGISTRY=registry.internal:5000 \
 CS_SANDBOX_PRIVATE_REGISTRY_INSECURE=1 cs-sandbox build
 ```
 
-A secure registry writes only a `location` entry (TLS enforced); an insecure one adds
-`insecure = true`, which lets Podman use plain-HTTP and accept untrusted/self-signed certs for
-that host only. Other registries are unaffected.
+Following docker/podman convention the protocol is implicit in the security setting rather than a
+scheme on the value: a secure entry writes only a `location`, an insecure one adds `insecure = true`
+so podman may use plain-HTTP and accept an untrusted cert — for that host only. Other registries are
+unaffected.

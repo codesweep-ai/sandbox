@@ -18,8 +18,8 @@ cs-sandbox create lab                                       # default: no agent 
 
 `create` snapshots the named agent's host credential (`~/.cs-claude/.credentials.json`,
 `~/.cs-codex/auth.json`, `~/.cs-opencode/auth.json`) into the per-sandbox seed, and the guest
-installs it into the home volume
-(mode 600) on **first boot only** — so a token the sandbox later refreshes is never clobbered.
+installs it into the home volume at mode 600 on **first boot only** — so a token the sandbox later
+refreshes is never clobbered.
 
 Nothing is carried unless you ask. Copying your credentials into a sandbox — especially one an
 autonomous agent drives — is a decision, so it is spelled in the command that makes it, and `create`
@@ -68,17 +68,15 @@ cs-sandbox create dev \
 ```
 
 `--env KEY` (no value) passes the variable through from your host environment; `--env-file` reads a
-whole file. Both land in the sandbox's environment for every session.
-
-Passing them yourself keeps the setup explicit and visible in the command that creates the sandbox,
-and it works for any provider: a variable a vendor adds tomorrow needs no change here, and credential
-*files* — which no environment mechanism can copy — are handled by the same `--snapshot` you would
-use for any other host directory.
+whole file. Both land in the sandbox's environment for every session. Passing them yourself keeps
+the choice visible in the command that makes it, and works for any provider — including credential
+*files*, which no environment mechanism can copy and which `--snapshot` handles like any other
+directory.
 
 For a key scoped to the agent rather than the whole sandbox, write it to `~/.cs-claude/env` (or
-`~/.cs-codex/env`, `~/.cs-opencode/env`) *inside* the sandbox — the `cs-claude` / `cs-codex` /
-`cs-opencode` wrappers source that file at launch. For OpenCode this is the usual path rather than
-the exception: it is normally driven by a provider API key (see [opencode.md](opencode.md)).
+`~/.cs-codex/env`, `~/.cs-opencode/env`) *inside* the sandbox; the wrappers source that file at
+launch. For OpenCode this is the usual path rather than the exception, since it is normally driven
+by a provider API key (see [opencode.md](opencode.md)).
 
 Note that an API key **overrides** a subscription login, so there is rarely a reason to inherit a
 login and inject a key into the same sandbox.

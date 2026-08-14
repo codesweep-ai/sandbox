@@ -111,13 +111,11 @@ by `create --disk N` widens an existing sandbox without losing its data - the on
 since a running VM's virtio-blk capacity is fixed at boot and the guest carries no `e2fsprogs` to
 resize itself.
 
-The number is a ceiling, not an allocation. The disk is **sparse** and **reflink-shared** with the
-base, so the host is billed for written blocks only: a 32 GiB base measured 6.15 GiB of real data,
-and a fresh sandbox costs ~nothing until the guest writes (one measured VM: 6.09 GiB shared with the
-base, 7.25 GiB exclusive after real work). Growing is nearly free too - ext4 leaves the added block
-groups uninitialized, so `--disk 64` on a 32 GiB base measured **6.5 MiB** of exclusive data, not the
-percent-of-capacity an eagerly-written inode table would cost. On a filesystem without reflink
-support the copy is not shared, and every sandbox then costs a full base up front.
+The number is a ceiling, not an allocation: the disk is **sparse** and **reflink-shared** with the
+base, so the host pays for written blocks only. A 32 GiB base holds 6.15 GiB of real data, and a
+fresh sandbox adds almost nothing until the guest writes. Growing is nearly free too — ext4 leaves
+the added block groups uninitialized, so `--disk 64` on a 32 GiB base cost **6.5 MiB**. Without
+reflink support the copy is not shared, and every sandbox costs a full base up front.
 
 ### Guest kernel
 
@@ -194,18 +192,16 @@ that same order - so host append-order and guest consume-order must match:
   (near-free CoW on btrfs/xfs, a full copy elsewhere). Holds `/home/<user>`, so it persists across
   stop/start.
 - **seed:** the per-sandbox config + credentials as a small RO ext4 (next section).
-- **repo / snapshot / image-store:** content-addressed cached RO ext4 disks. The repo and
-  image-store disks are attached **straight from the cache**, not copied: a reflink copy shares disk
-  extents but gets a new inode, and the page cache is per-inode, so N sandboxes reading the same repo
-  held N copies of those bytes in host RAM (measured ~767 MB per additional sandbox for a 768 MB
-  working set). Sharing the inode is safe because the guest mounts them read-only, and the cache GC
-  skips any path an instance's `run.json` still names. `--repo` is a bare clone the guest then
-  `clone --shared`s (see
-  [`repo-sharing.md`](repo-sharing.md)); `--snapshot` is a frozen directory;
-  `--image-store` is a shared Podman store wired into the guest Podman's `additionalimagestores` (see
-  [`design.md`](design.md#shared-image-stores)). Cache keys: repo =
-  `sha256`(ref tips + HEAD), image-store = `sha256`(`images.json` + `layers.json`), each 40 hex;
-  disks unused for `CS_SANDBOX_FC_REPO_CACHE_TTL_DAYS` (default 14) are pruned.
+- **repo / snapshot / image-store:** content-addressed cached RO ext4 disks. `--repo` is a bare
+  clone the guest then `clone --shared`s (see [`repo-sharing.md`](repo-sharing.md)); `--snapshot` is
+  a frozen directory; `--image-store` is a shared Podman store wired into the guest Podman's
+  `additionalimagestores` (see [`design.md`](design.md#shared-image-stores)). Repo and image-store
+  disks are attached **straight from the cache** rather than reflink-copied per sandbox: the page
+  cache is per-inode, so a copy would hold the same bytes in host RAM once per sandbox (~767 MB each,
+  measured on a 768 MB working set). Sharing one inode is safe because the guest mounts it
+  read-only, and the GC skips any path a live `run.json` still names. Cache keys are 40 hex of
+  `sha256` — ref tips + HEAD for a repo, `images.json` + `layers.json` for a store — and disks
+  unused for `CS_SANDBOX_FC_REPO_CACHE_TTL_DAYS` (default 14) are pruned.
 
 ### Returning memory the guest has freed
 
@@ -215,22 +211,16 @@ costing 3 GB. Every microVM therefore gets a `virtio-balloon` configured purely
 for **free page reporting**, where the guest hands back ranges it is no longer
 using and Firecracker `madvise`s them away.
 
-The balloon never inflates (`amount_mib: 0`), so none of the classic
-inflate/deflate thrashing applies — this is the guest volunteering, not the host
-squeezing. Measured here: a guest that allocates, touches and frees 1 GB returns
-**993 MB of it within ~12 s**, against **zero** without the device.
+The balloon never inflates (`amount_mib: 0`) — this is the guest volunteering, not the host
+squeezing, so none of the classic inflate/deflate thrashing applies. Measured: a guest that
+allocates, touches and frees 1 GB returns **993 MB within ~12 s**, against **zero** without the
+device.
 
-Two halves have to line up, and both fail silently on their own:
-
-- the device, in `run.json` (`"free_page_reporting": true`) — pre-boot only, it
-  cannot be enabled or disabled on a running VM;
-- the driver, in the guest — `image/guest/init` `modprobe`s `virtio_balloon`,
-  and a guest that never loads it reports nothing and says nothing either.
-
-Confirm with `dmesg | grep -i 'free page reporting'` inside a sandbox
-(`Free page reporting enabled`). The boot arg
-`page_reporting.page_reporting_order=0` lets the guest report the smallest runs
-it can, which leaves less behind at no measurable cost.
+Two halves have to line up, and each fails silently alone: the device in `run.json`
+(`"free_page_reporting": true`, settable pre-boot only) and the driver in the guest
+(`image/guest/init` `modprobe`s `virtio_balloon`). Confirm with `dmesg | grep -i 'free page
+reporting'` inside a sandbox. The boot arg `page_reporting.page_reporting_order=0` lets the guest
+report its smallest runs, which leaves less behind at no measurable cost.
 
 ### Sharing identical pages between sandboxes
 
@@ -252,33 +242,30 @@ and across unrelated guests it only ever reaches the shared base image anyway.
 
 ### Memory limits
 
-Each microVM is launched inside its own transient cgroup
-(`systemd-run --user --scope`), so a sandbox has memory accounting of its own and a runaway one is
-charged — and killed — where it belongs. Without it the VMM inherits the *launching shell's* scope,
-there is no per-sandbox `memory.current`, and the host OOM killer picks its victim by heuristic.
+Each microVM launches inside its own transient cgroup (`systemd-run --user --scope`), so a runaway
+sandbox is charged — and killed — where it belongs. Without one the VMM inherits the launching
+shell's scope and the host OOM killer picks its victim by heuristic.
 
-- **`CS_SANDBOX_FC_MEMORY_MAX`** (default: `mem_size_mib` + 256 MB): the cgroup's `memory.max`. The
-  default sits above anything the guest can reach, so it is a backstop that never fires in normal
-  operation. Tighten it once sandboxes are packed past the sum of their ceilings — that is when it
-  starts doing work.
-- **`CS_SANDBOX_FC_MEMORY_SWAP_MAX`** (default `0`): `memory.swap.max`. Swap is charged *on top of*
-  `memory.max`, and where swap is zram it is RAM — budget `MemoryMax + MemorySwapMax`.
+- **`CS_SANDBOX_FC_MEMORY_MAX`** (default `mem_size_mib` + 256 MB): the cgroup's `memory.max`, above
+  anything the guest can reach. A backstop until sandboxes are packed past the sum of their ceilings.
+- **`CS_SANDBOX_FC_MEMORY_SWAP_MAX`** (default `0`): `memory.swap.max`, charged *on top of*
+  `memory.max`; where swap is zram it is RAM, so budget both.
 - **`CS_SANDBOX_FC_NO_CGROUP=1`**: disable the wrapper entirely.
 
-`memory.high` is deliberately never set. Measured on this workload it is not a throttle but a cliff:
-once the cgroup can no longer reclaim, the VM stops making progress at ~97 % pressure stall while
-staying alive, with no OOM and no error for a supervisor to notice. A hard `memory.max` fails loudly
-instead. On a host with no systemd user session the wrapper is skipped with a warning to
-`serial.log` rather than failing the boot.
+`memory.high` is deliberately never set: measured on this workload it is a cliff, not a throttle —
+the VM stops making progress at ~97 % pressure stall while staying alive, with no OOM for a
+supervisor to notice. A hard `memory.max` fails loudly instead. With no systemd user session the
+wrapper is skipped, with a warning to `serial.log` rather than a failed boot.
 
 ### Seed assembly
 
 The seed is built in two stages, then packed into `seed.ext4` with `fakeroot mke2fs -d`:
 
-1. the seed builder (`internal/seed`, shared with the Podman engine) writes `instances/<name>/seed/`:
-   `authorized_keys`, the tier key, stable `host_keys/`, the sandbox-scoped `ssh_config`, `host_hosts`
-   (reach the host by name), and `claude/` + `codex/` credentials (including the API-key/cloud `env` +
-   `creds/` when present).
+1. the seed builder (`internal/seed`, shared with the Podman engine) writes
+   `instances/<group>/<name>/seed/`: `authorized_keys`, the tier key, stable `host_keys/`, the
+   sandbox-scoped `ssh_config`, `host_hosts` (reach the host by name), `inject-env`, `git_identity`,
+   and the `claude/`, `codex/` and `opencode/` subscription credentials named by
+   `--inherit-agent-login` (nothing else from those profiles — no `env` file, no API key).
 2. the firecracker engine (`internal/engine/firecracker.go`) copies those into an `fc-seed/` dir and
    adds **`cs-sandbox.conf`** - the identity + network contract: `CS_SANDBOX_USER`/`UID`/`GID`/`HOSTNAME`
    (the bare sandbox name), `TYPE`, `YOLO`, `IP`, `GW`, `DNS` - plus the separate `repos` /
@@ -351,15 +338,13 @@ Two helpers keep the fabric usable independent of user containers:
   down the bridge + aardvark-dns around *running containers*, so a lone VM would otherwise lose its
   bridge when the last container stops. The keepalive is a do-nothing container pinning the netns +
   bridge + aardvark.
-- **forwarding dnsmasq** on a secondary bridge IP `<prefix>.53` (`--bind-interfaces
-  --listen-address=<.53> --no-hosts --no-resolv --server=<gw> --hostsdir=<dir>`, run as userns-root so
-  it can traverse a `750` home to re-read the hostsdir): serves VM names from an auto-reloading
-  `--hostsdir` (`cs-sandbox` writes `<name> → ip` + SIGHUPs on create, drops it on destroy) and
-  forwards everything else to aardvark. It is found by scanning for a live dnsmasq on *our* address:
-  a resolver already serving *our* hostsdir is adopted rather than duplicated, and one holding the
-  address while serving a *different* hostsdir is reported as a conflict by name instead of being
-  left to fail with a bare "Address already in use". Asking the host this way means a root that never
-  started the resolver still sees it — and no pidfile can go stale underneath it.
+- **forwarding dnsmasq** on a secondary bridge IP `<prefix>.53`: it serves VM names from an
+  auto-reloading `--hostsdir` (`cs-sandbox` writes `<name> → ip` and SIGHUPs on create, drops it on
+  destroy) and forwards everything else to aardvark. It runs as userns-root so it can traverse a
+  `750` home to re-read that dir. It is located by scanning for a live dnsmasq on *our* address
+  rather than by pidfile — so one already serving our hostsdir is adopted instead of duplicated, one
+  serving a *different* hostsdir is reported as a conflict by name, and a root that never started it
+  still finds it.
 
 **Name resolution across engines.** VM → anything: the VM's resolver is the dnsmasq (VM names local,
 the rest forwarded to aardvark). Container → VM: Podman pins a container's `resolv.conf` to aardvark

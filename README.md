@@ -8,17 +8,14 @@
 ![Engines](https://img.shields.io/badge/engines-podman%20%C2%B7%20firecracker-informational)
 ![Platforms](https://img.shields.io/badge/platform-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows%20%28WSL2%29-lightgrey)
 
-`cs-sandbox` is a self-contained CLI that creates and manages these sandboxes. Each one is a rootless
-Linux environment built from a single image, with a modern toolchain and the **Claude Code**,
-**Codex** & **OpenCode** agents preinstalled. Spin up many named sandboxes, reach each by name over
-SSH, and share
-**only** the repos or directories you choose. Nothing on your host is shared unless you ask — not
-your files, not your SSH keys.
+`cs-sandbox` is a self-contained CLI that creates and manages these sandboxes. Each one is a
+rootless Linux environment built from a single image, with a modern toolchain and the **Claude
+Code**, **Codex** & **OpenCode** agents preinstalled. Spin up many named sandboxes, reach each by
+name over SSH, and share **only** the repos or directories you choose. Nothing on your host is
+shared unless you ask — not your files, not your SSH keys.
 
-By default your agent logins aren't shared either — but a sandbox can easily inherit them
-when you want it to, with `--inherit-agent-login`. That's usually the convenient choice: it saves you
-logging in inside the sandbox. Some of the walkthroughs below show it. The loop is
-**create → work → fetch → destroy**.
+Your agent logins aren't shared by default either, though a sandbox can inherit them with
+`--inherit-agent-login` when you want it to. The loop is **create → work → fetch → destroy**.
 
 <p align="center">
   <img alt="cs-sandbox: create → work → fetch → destroy" src="docs/demo.gif" width="760">
@@ -57,11 +54,8 @@ containers inside a sandbox, port forwarding, agents driving agents).
 
 ## How it fits together
 
-You drive everything from your host with the `cs-sandbox` CLI. Each sandbox runs on one of two
-engines (a Podman container or a Firecracker microVM) but they share a rootless network, so every
-sandbox is reachable by name. You share data into a sandbox explicitly, as a git repo
-or a frozen snapshot, and pull commits back out. The diagram below traces that: the
-host on top, the network holding the sandboxes, and how data moves in and out.
+You drive everything from your host with the `cs-sandbox` CLI. The diagram traces the shape: the
+host on top, the shared network holding the sandboxes, and how data moves in and out.
 
 ```
    your host:  cs-sandbox CLI  +  cs-claude / cs-codex   (logged in once)
@@ -83,10 +77,10 @@ host on top, the network holding the sandboxes, and how data moves in and out.
    host data in:  --repo · --snapshot        commits out:  fetch
 ```
 
-Every sandbox runs from one generic image (no identity baked in; your user is created at first
-boot). A shared rootless network joins them, so any sandbox reaches any other **by name**, across
-engines. The host reaches a sandbox by name over SSH, and a port inside a sandbox via `forward` or the
-optional `host-route`.
+Every sandbox runs from one generic image, with no identity baked in — your user is created at
+first boot. A shared rootless network joins them, so any sandbox reaches any other **by name**,
+across engines. The host reaches a sandbox by name over SSH, and a port inside one via `forward` or
+the optional `host-route`.
 
 That network belongs to a **group**, and without `--group` every sandbox joins one called `default` —
 which is why they all see each other above. If you ever need two efforts on one host that must *not*
@@ -101,16 +95,14 @@ Every sandbox boots from the same image, so there is nothing to install inside o
   helpers (ripgrep, fd, fzf, bat, jq/yq, gh, uv). Full list in
   [`image/Containerfile`](image/Containerfile).
 - **The Claude Code, Codex, and OpenCode agents**, with **`cs-claude` / `cs-codex` /
-  `cs-opencode`** — small wrappers that launch each agent on a ready-to-use, sandbox-local
-  configuration. Each agent gets its own profile directory (never your personal `~/.claude` /
-  `~/.codex` / `~/.config/opencode`), sane permission defaults, and the working directory
-  pre-trusted, so it starts working instead of asking setup questions. Run `cs-claude`
-  rather than `claude` and it's configured.
-- **Remote agent tools** — `cs-claude-remote`, `cs-codex-remote`, and `cs-opencode-remote` (each with `-status`,
-  `-output`, `-sessions`, `-forget` companions). These tools start or resume an agent session on
-  *another* sandbox over SSH, keep it warm, and hand back its output — so an agent working in one
-  sandbox can give a task to an agent in another
-  ([walkthrough 7](#7-let-one-coding-agent-drive-another)).
+  `cs-opencode`** — wrappers that launch each on a sandbox-local profile (never your personal
+  `~/.claude` / `~/.codex` / `~/.config/opencode`), with sane permission defaults and the working
+  directory pre-trusted. Run `cs-claude` rather than `claude` and it starts working instead of
+  asking setup questions.
+- **Remote agent tools** — `cs-claude-remote`, `cs-codex-remote` and `cs-opencode-remote`, each
+  with `-status`, `-output`, `-sessions` and `-forget` companions. They start or resume an agent
+  session on *another* sandbox over SSH, keep it warm, and hand back its output, so one agent can
+  give a task to another ([walkthrough 7](#7-let-one-coding-agent-drive-another)).
 
 The same tools run on your host too: `cs-sandbox install-agent-tools` puts them on your PATH, which
 is how you log in once on the host so sandboxes can inherit that login.
@@ -119,14 +111,13 @@ is how you log in once on the host so sandboxes can inherit that login.
 
 The walkthroughs assume the one-time host setup in **[INSTALL.md](INSTALL.md)** — install the
 `cs-sandbox` binary and its prerequisites, run `cs-sandbox build`, and log in once to Claude Code,
-Codex, or OpenCode on the host. It's a handful of commands, and `cs-sandbox doctor` checks every prerequisite and
-prints the fix for anything missing.
+Codex or OpenCode on the host. It's a handful of commands, and `cs-sandbox doctor` checks every
+prerequisite and prints the fix for anything missing.
 
-**About the agent login.** A sandbox does *not* get your agent login by default. Some of the
-walkthroughs below pass `--inherit-agent-login claude` (or `codex`/`opencode`), which copies that host
-login into the sandbox as it is created — the convenient choice we normally make, since it saves
-logging in inside every sandbox. When you'd rather keep a sandbox on its own account, leave the flag
-off and log in inside it with `cs-sandbox agent-login claude <name>`. See
+**About the agent login.** Several walkthroughs pass `--inherit-agent-login claude` (or
+`codex`/`opencode`), which copies that host login in as the sandbox is created — the convenient
+choice, since it saves logging in inside every one. Leave the flag off to keep a sandbox on its own
+account, and log in there with `cs-sandbox agent-login claude <name>`. See
 [agent login](docs/agent-login.md).
 
 ## Walkthroughs
@@ -368,13 +359,12 @@ depends on its **type**, set with `--type` (independent of engine). Think of it 
 | **user** sandbox | ✓ | ✓ |
 | **agent** sandbox | ✗ | ✓ |
 
-So you and your user sandboxes reach everything, but a coding agent can never `ssh` into a user
-sandbox.
+Aside from that SSH direction the two are identical — same image, same capabilities. Typically you
+spawn one user sandbox and oversee the work running across several agent sandboxes from there.
 
-This matrix describes reach **within a group**. Two sandboxes in different groups cannot connect at
-all — no DNS for one another, no route, and no key the other would accept — so the table has nothing
-to say across that boundary. Without `--group` every sandbox is in one group, and the matrix is the
-whole story.
+The matrix describes reach **within a group**. Sandboxes in different groups cannot connect at all —
+no DNS for one another, no route, and no key the other would accept. Without `--group` everything is
+in one group, and the matrix is the whole story.
 
 ### Lending a sandbox specific SSH keys with `ssh -A`
 

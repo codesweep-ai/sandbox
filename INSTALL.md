@@ -57,9 +57,9 @@ make install          # installs bin/cs-sandbox into ~/.local/bin, plus CS_SANDB
 
 ### Base packages
 
-Podman builds the image and provides the rootless network fabric - both engines need it. The OpenSSH
-client (`ssh` / `ssh-keygen`) reaches every sandbox by name, and `git` shares your repos into
-sandboxes (`--repo`) - both required too (both ship by default on macOS and most Linux desktops).
+Three, on every host: **podman** builds the image and provides the rootless network fabric that
+both engines use, the **OpenSSH client** reaches every sandbox by name, and **git** shares your
+repos in. The last two ship by default on macOS and most Linux desktops.
 
 ```bash
 sudo dnf install podman openssh-clients git                          # Fedora
@@ -74,10 +74,10 @@ sudo apt install podman openssh-client git \
   catatonit uidmap netavark aardvark-dns iptables passt slirp4netns fuse-overlayfs
 ```
 
-On macOS everything runs inside that one podman-machine VM — every sandbox, and anything they run
-in nested containers, shares its CPUs, memory and disk. Podman's default machine gets 2 GiB of RAM,
-which a single sandbox running a toolchain plus nested containers will exhaust, so size it at init
-as above; give it more if you plan to run several sandboxes at once. To resize later:
+On macOS everything runs inside that one podman-machine VM — every sandbox and every nested
+container shares its CPUs, memory and disk. The default machine gets 2 GiB, which one sandbox
+running a toolchain plus nested containers will exhaust, so size it at init as above, and give it
+more for several sandboxes at once. To resize later:
 
 ```bash
 podman machine stop && podman machine set --cpus 4 --memory 8192 --disk-size 60   # disk can only grow
@@ -94,9 +94,9 @@ so install the `linux_amd64` release there — not on Windows. There is no Windo
 runs on the Windows side. CI validates this on Ubuntu 24.04; another distro needs the equivalent
 packages.
 
-Work as a normal user, not root: rootless podman is the supported configuration, and running as
-root is neither tested nor supported. Enable systemd in `/etc/wsl.conf`, then `wsl --shutdown` from
-Windows to restart the distro:
+Work as a normal user: rootless podman is the supported configuration, and running as root is
+neither tested nor supported. Enable systemd in `/etc/wsl.conf`, then `wsl --shutdown` from Windows
+to restart the distro:
 
 ```ini
 [boot]
@@ -104,14 +104,13 @@ systemd=true
 ```
 
 Without it nothing creates `/run/user/$(id -u)`, so podman warns and falls back to `/tmp`, and
-`cs-sandbox host-route` has no systemd-resolved to work with. The two Ubuntu notes in the next
-section — subuid ranges and the AppArmor userns sysctl — are rootless-podman requirements and apply
-here even though Firecracker does not. `cs-sandbox doctor` detects WSL and checks the rest.
+`host-route` has no systemd-resolved to work with. The two Ubuntu notes in the next section — subuid
+ranges and the AppArmor userns sysctl — are rootless-podman requirements, so they apply here even
+though Firecracker does not; `cs-sandbox doctor` detects WSL and checks the rest.
 
-Keep repos you share with `--repo` on the distro's own filesystem. `/mnt/c` is DrvFs — root-owned
-and without real Unix modes — so a sandbox gets a tree whose permissions don't mean what they say.
-
-Podman is the engine here; Firecracker is untested on WSL2.
+Keep `--repo` sources on the distro's own filesystem: `/mnt/c` is DrvFs, root-owned and without real
+Unix modes, so a sandbox would get a tree whose permissions don't mean what they say. Podman is the
+engine here — Firecracker is untested on WSL2.
 
 ### Firecracker packages (Linux + KVM, x86_64)
 
@@ -168,15 +167,11 @@ Claude Code, Codex & OpenCode agents with their launch wrappers and remote tools
 
 ## 4. Host agent tools and login (recommended)
 
-**A sandbox does not get your agent login by default.** Logging in once here, on the host,
-is what lets any sandbox inherit that login at create time with `cs-sandbox create <name>
---inherit-agent-login claude` (or `codex`/`opencode`) — usually the convenient choice, since it saves
-logging in inside every sandbox you create.
+**A sandbox does not get your agent login by default.** Logging in once here, on the host, is what
+lets a sandbox inherit it at create time with `--inherit-agent-login claude` (or `codex`/`opencode`).
 
-Every sandbox already carries the agent tools (`cs-claude` / `cs-codex` / `cs-opencode` and the
-`cs-*-remote` family)
-at `~/.local/bin` — nothing to install inside them. This step puts the same tools on your **host**
-PATH (the same `~/.local/bin`), so you can log in with them and drive agents from the host:
+Every sandbox already carries the agent tools at `~/.local/bin`, so this step is about your **host**:
+it puts the same tools on your PATH, so you can log in with them and drive agents from here.
 
 ```bash
 cs-sandbox install-agent-tools    # -> ~/.local/bin  (pass a directory to install elsewhere)
@@ -193,10 +188,9 @@ cs-codex           # launch Codex - choose "Sign in with ChatGPT", then exit
 cs-opencode providers login   # OpenCode - pick a provider (it is usually driven by an API key)
 ```
 
-You can skip this step: create sandboxes without the flag and log in inside each one with
-`cs-sandbox agent-login claude <name>` (or `agent-login codex|opencode <name>`). Do the same when you want a
-sandbox on its **own account** rather than sharing yours. See
-[`docs/agent-login.md`](docs/agent-login.md).
+You can skip all of this and log in inside each sandbox instead, with `cs-sandbox agent-login
+claude <name>` — which is also how you give a sandbox its **own account** rather than sharing yours.
+See [`docs/agent-login.md`](docs/agent-login.md).
 
 **Using an API key or a cloud provider** (a direct Anthropic/OpenAI key, Amazon Bedrock, Google
 Vertex, …) instead of a subscription? Keys are never copied from your host — pass the ones a sandbox
