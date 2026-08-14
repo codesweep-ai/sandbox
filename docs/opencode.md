@@ -104,47 +104,43 @@ drives the HTTP API that the TUI hosts when launched with `--port`:
 4. **Stall watchdog**: `GET /session/status` returns a map that *deletes* a session's entry when
    it goes idle — absent key ⇒ idle. Continuously idle past `CS_OPENCODE_STALL_SECS` (default
    180) while the attached client has not returned ⇒ exit 2.
-5. **The turn is delimited by message IDENTITY, not position.** The driver records the `id` of
-   the last message that existed before submitting, and afterwards takes everything after that
-   id. A count would be wrong: the history is not append-only — compaction rewrites it and
-   inserts `summary` messages — so `messages[pre_count:]` silently returns the wrong slice once
-   the shape changes. If compaction removed the anchor itself, `time.created >= turn start`
-   bounds the turn instead. Both fields are required on every message.
+5. **The turn is delimited by message IDENTITY, not position.** The driver anchors on the `id` of
+   the last message existing before submission and takes everything after it, because the history
+   is not append-only — compaction rewrites it and inserts `summary` messages, so a count-based
+   slice silently goes wrong. If compaction removed the anchor, `time.created >= turn start`
+   bounds the turn instead.
 6. **Completion requires a postcheck** (see the first upstream reality below), scoped to THIS
-   turn's messages: the last assistant message *of the turn* must have no `info.error` and a set
-   `info.time.completed`. Checking the session's last assistant message instead would pass on the
-   previous turn's reply whenever this turn produced nothing — a silent empty success.
-7. **Output is read back from the session API**, not from the client's stdout, from the SAME
-   fetch as the postcheck (two fetches could straddle a concurrent write and disagree about what
-   the turn produced). `--format json` emits the raw new message objects.
+   turn: its last assistant message must have no `info.error` and a set `info.time.completed`.
+   Checking the *session's* last assistant message would instead pass on the previous turn's reply
+   whenever this one produced nothing — a silent empty success.
+7. **Output is read back from the session API**, not the client's stdout, and from the SAME fetch
+   as the postcheck — two fetches could straddle a concurrent write and disagree.
 
 Exit codes: `0` ok, `1` usage, `2` timed out/stalled, `3` launch/setup failure, `5` turn failed.
-`0`–`3` mean what they mean for the claude/codex drivers; `4` is deliberately skipped, because
-`cs-opencode-remote` spends it on "session busy" as its siblings do, and `5` is the state only
-opencode has — a turn that ran to completion and still failed. The session id is emitted as a
-trailing `__CS_OPENCODE_SESSION_ID__ <ses_id>` sentinel, which `cs-opencode-remote` maps to the
-session name for `--resume`.
+`0`–`3` match the claude/codex drivers; `4` is skipped because `cs-opencode-remote` spends it on
+"session busy" as its siblings do, and `5` is the state only opencode has — a turn that ran to
+completion and still failed. The session id comes back as a trailing
+`__CS_OPENCODE_SESSION_ID__ <ses_id>` sentinel, which `cs-opencode-remote` maps to the session name
+for `--resume`.
 
 The TUI port is derived deterministically from the tmux token: `21000 + (first 12 bits of
 md5(token))`. Nothing is persisted; every resume of the same token computes the same port. A
 collision between two live sessions on one guest is **fail-closed** — the session-known check
-refuses to drive a foreign TUI (exit 3) — but costs availability; widening the hash with
-collision detection is follow-up work.
+refuses to drive a foreign TUI (exit 3) — at the cost of availability for the losing session.
 
 ## Upstream realities the design depends on (verified at 1.18.10)
 
 Each one shaped the driver, and "simplifying" any of them away reintroduces a silent failure mode:
 
 1. **An attached `run` exits 0 on provider-side errors.** Client-path failures (bad model slug,
-   bad session) exit 1, but errors raised inside the server's session loop — e.g. a 401 from the
-   provider — are recorded only on the session's final assistant message (`info.error` set,
-   `info.time.completed` absent) and are NOT propagated to the attached client's exit code or
-   its `--format json` event stream (which emits nothing at all). Hence the mandatory postcheck.
-   An UNATTACHED `run` behaves correctly on all three counts — it prints the reply to stdout,
-   exits nonzero on provider errors, and streams JSON events — so the postcheck, the identity
-   anchoring and the port derivation are all costs of attaching. See the record below.
-2. **An attached `run` prints nothing to its own stdout** when a TUI hosts the server — the TUI
-   is the renderer. Hence the message-count snapshot and API read-back for turn output.
+   bad session) exit 1, but an error raised inside the server's session loop — a 401 from the
+   provider, say — is recorded only on the final assistant message (`info.error` set,
+   `info.time.completed` absent) and reaches neither the client's exit code nor its `--format json`
+   stream, which emits nothing at all. Hence the mandatory postcheck. An UNATTACHED `run` gets all
+   three right, so the postcheck, the identity anchoring and the derived port are the price of
+   attaching.
+2. **An attached `run` prints nothing to its own stdout** when a TUI hosts the server — the TUI is
+   the renderer. Hence reading turn output back from the API.
 3. **Session ids are mixed-case base62**: `ses_` + 26 chars matching `[A-Za-z0-9]` (e.g.
    `ses_04198268affeeKLgivDfdCnHrm`). Every validation regex uses `^ses_[A-Za-z0-9]{20,40}$`,
    with the length range left loose for upstream drift.
@@ -177,9 +173,9 @@ surfaces rather than that schema:
   directory-scoped, so the query is grouped by (host, workdir) using the workdir recorded for each
   session — the directory the driver created it in.
 
-Neither touches opencode's internal tables. An earlier version read last-activity with a raw
-`SELECT id, time_updated FROM session`; it worked, but a schema the project does not owe us would
-have blanked the column silently on any upstream rename.
+Neither touches opencode's internal tables. Reading last-activity with a raw `SELECT id,
+time_updated FROM session` works today, but that schema is not a surface the project owes us: an
+upstream rename would blank the column silently.
 
 ## Credentials
 

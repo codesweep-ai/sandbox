@@ -92,10 +92,9 @@ func SyncSSHConfig(h hostenv.Host, tierDir, instDir string, insts []*state.Insta
 	// host, and ssh_config takes the FIRST match for a keyword, so a later
 	// collision would silently connect to whichever block was written first.
 	blocks := 0
-	// One gateway alias per group, plus a pattern that routes anything ending in
-	// .<group> through it. The per-sandbox blocks below are the direct path and
-	// keep working when a gateway is down; the jump host is what makes names
-	// resolve the way they do INSIDE the group, and reaches services the
+	// One gateway alias per group. The per-sandbox blocks below are the direct
+	// path and keep working when a gateway is down; the jump host is what makes
+	// names resolve the way they do INSIDE the group, and reaches services the
 	// published SSH port does not.
 	for _, g := range groups {
 		if g.GWPort == 0 {

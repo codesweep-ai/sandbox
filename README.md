@@ -208,6 +208,9 @@ ssh lab
 
 # Hit the API from inside the sandbox.
 [lab]$ curl http://localhost:8000
+[lab]$ exit
+
+cs-sandbox destroy lab -f                # the login goes with it
 ```
 
 ### 4. Run an app in a container, inside the sandbox
@@ -283,6 +286,10 @@ ssh driver
 # on driver (you can run them by hand too, to see the mechanism):
 #   cs-codex-remote --new --name add-health -H worker "add /health, run it"
 #   cs-codex-remote-output add-health   # see what codex did on worker
+[driver]$ exit
+
+cs-sandbox fetch worker                  # the agent's commits, before they go
+cs-sandbox destroy driver -f && cs-sandbox destroy worker -f
 ```
 
 > Each sandbox above inherited the host login it needs (`--inherit-agent-login`), so Codex on
@@ -347,26 +354,19 @@ networking. They differ mostly in isolation versus weight. Pick with `--engine p
 | Root inside | rootful-in-userns (sudo wrapper) | **real root** |
 | Nested Podman | via a rootful-inside wrapper | native |
 | Requires | Podman | `/dev/kvm`, Linux x86_64 |
-| Default on | macOS / non-KVM hosts | Linux + KVM |
+| Default on | macOS, and any host without x86_64 KVM | x86_64 Linux + KVM |
 | **Reach for it when** | speed, macOS | stronger isolation, untrusted workloads, nested root |
 | Deep dive | [`docs/podman.md`](docs/podman.md) | [`docs/firecracker.md`](docs/firecracker.md) |
 
 ## SSH trust
 
 Every sandbox runs an SSH server, so you reach each one by name. What a sandbox can reach in turn
-depends on its **type**, set with `--type` (independent of engine): you (and your user sandboxes) can
-`ssh` into either type, but an agent sandbox can never `ssh` in as you.
+depends on its **type**, set with `--type` (independent of engine). Think of it as **two layers**:
 
-- **user sandbox** (`--type user`): yours, to work in interactively. It has its own home and can
-  `ssh` into **every** sandbox.
-- **agent sandbox** (default): one you hand to a coding agent. It has its own home and can `ssh` only
-  into **other agent sandboxes**, never into a user sandbox.
-
-It's convenient to think of these as **two layers**: a user sandbox can `ssh` into any sandbox (user
-or agent), while an agent sandbox can `ssh` only into other agent sandboxes — never back into a user
-sandbox. Aside from that SSH direction the two types are identical (same image, same capabilities).
-Typically you spawn one user sandbox and oversee the work running across several agent sandboxes from
-there.
+- **user sandbox** (`--type user`): yours, to work in interactively. It can `ssh` into **every**
+  sandbox.
+- **agent sandbox** (default): one you hand to a coding agent. It can `ssh` only into **other agent
+  sandboxes**, never into a user sandbox.
 
 | client ↓ \ server → | user sandbox | agent sandbox |
 |---|:---:|:---:|

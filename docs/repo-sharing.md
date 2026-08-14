@@ -86,7 +86,9 @@ the refspec; git's `updateInstead` default) - a diverged branch is rejected with
 branch from the sandbox's state record (one `repoclone` entry per repo: source, dir, and the
 branch), so a sandbox created before a naming change keeps the branch it was created with.
 
-`cs-sandbox inspect <name>` prints that record, and `--json` makes it machine-readable:
+`cs-sandbox inspect <name>` prints that record, and `--json` makes it machine-readable (abridged
+here — the object also carries `name`, `type`, `engine`, `network`, `created`, `port`, the
+firecracker `ip`/`cpus`/`mem`, `agentlogins`, `snapshots` and `imagestores`):
 
 ```json
 { "ref": "api.cache-redis", "group": "cache-redis", "status": "running",
@@ -167,16 +169,15 @@ git push worker:api HEAD:cs-sandbox/worker
 
 ## Implementation
 
-- The spec parser (`internal/spec`) parses `--repo` specs - strips `:NAME` first (a slash-free,
-  non-empty tail), then `@REF`; derives `dir` from the **resolved** path; validates each is a git repo
-  (`.git` or `objects/`); rejects duplicate names. It mirrors `--snapshot`'s PATH[:NAME] grammar (the
-  same directory-spec parsing in `internal/spec`).
-- One engine hook is the only divergence: Podman adds `-v …:ro`; Firecracker builds + attaches the
-  cached RO disk (the content-addressed repo-disk cache in `internal/fcdisk`). The first-boot clone and
-  `fetch`/`push` are engine-agnostic. The seed `repos` manifest is **6 fields on Podman** (`dir`, the
-  RO-source path, branch, base, `user.name`, `user.email`) and **5 on Firecracker** (`dir`, branch,
-  base, `user.name`, `user.email`) - the disk's mount point is positional.
-- The sandbox's typed state (`internal/state`, persisted to `instances/<name>/state.json`) records
-  one `repoclone` entry per repo — source, dir, and branch — for `fetch`/`push`.
+- The spec parser (`internal/spec`) strips `:NAME` first (a slash-free, non-empty tail), then
+  `@REF`, derives `dir` from the **resolved** path, checks each is a git repo, and rejects duplicate
+  names. `--snapshot` shares the grammar minus `@REF`.
+- One engine hook is the only divergence: Podman adds `-v …:ro`, Firecracker builds and attaches the
+  cached RO disk (`internal/fcdisk`); the first-boot clone and `fetch`/`push` are engine-agnostic.
+  The seed `repos` manifest is **6 fields on Podman** (`dir`, RO-source path, branch, base,
+  `user.name`, `user.email`) and **5 on Firecracker**, where the disk's mount point is positional.
+- The sandbox's typed state (`internal/state`, persisted to
+  `instances/<group>/<name>/state.json`) records one `repoclone` entry per repo — source, dir, and
+  branch — for `fetch`/`push`.
 
 This engine-independence is what lets the microVM engine share repos without `virtio-fs`.

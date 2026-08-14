@@ -64,6 +64,9 @@ archives:
       - src: docs/agent-login.md
         info:
           mode: 0644
+      - src: docs/opencode.md
+        info:
+          mode: 0644
 
 checksum:
   name_template: checksums.txt

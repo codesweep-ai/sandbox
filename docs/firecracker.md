@@ -1,25 +1,22 @@
 # sandbox - Firecracker microVM engine
 
-`cs-sandbox --engine firecracker` - the **default** engine on a Linux/KVM host - runs each sandbox
-as a Firecracker **microVM** instead of a Podman container, reusing the same OCI image, the same
-`cs-sandbox` CLI, and the same SSH + repo capabilities. This document covers what is specific to the
-microVM engine; the cross-engine model (trust, the generic image, agent tools) lives in
+`cs-sandbox --engine firecracker` - the **default** engine on an x86_64 Linux/KVM host - runs each
+sandbox as a Firecracker **microVM** instead of a Podman container, reusing the same OCI image, the
+same `cs-sandbox` CLI, and the same SSH + repo capabilities. This document covers what is specific
+to the microVM engine; the cross-engine model (trust, the generic image, agent tools) lives in
 [`design.md`](design.md).
 
 ## Why a microVM
 
-A separate guest **kernel** per sandbox replaces the shared host kernel of a container, removing
-the container engine's main residual weakness - host-kernel attack surface. (The container path
-keeps that surface narrow with a scaled-down cap set + seccomp; a VM removes it entirely.)
-Especially valuable for the **agent** type. A bonus falls out: inside a real VM you are real root on
-a real kernel, so the whole nested-podman apparatus the container engine needs (scaled-down caps,
-`--userns=keep-id`, rootful-inner via the `sudo` Podman wrapper - see
-[`podman.md`](podman.md#nested-podman)) is **unnecessary**; Podman
-just runs, rootless, as it does on any normal machine. The shared wrapper detects this
-(`/run/.containerenv` exists in a container, not in a microVM) and skips the `sudo`, and the guest
-init grants `newuidmap`/`newgidmap` the file caps rootless needs - the image ships them with none,
-and without them every `podman` as the dev user fails at namespace setup. Inner images therefore
-live in `~/.local/share/containers`, not the container engine's `/var/lib/containers`.
+A separate guest **kernel** per sandbox removes the container engine's main residual weakness —
+host-kernel attack surface — which matters most for the autonomous **agent** type.
+
+A bonus falls out. Inside a real VM you are real root on a real kernel, so the nested-podman
+apparatus the container engine needs (scaled-down caps, `--userns=keep-id`, rootful-inner via a
+`sudo` wrapper — see [`podman.md`](podman.md#nested-podman)) is **unnecessary**: Podman just runs
+rootless, as on any normal machine. The shared wrapper skips its `sudo` when `/run/.containerenv`
+says it is not in a container, the guest init grants `newuidmap`/`newgidmap` the file caps rootless
+needs (the image ships them with none), and inner images live in `~/.local/share/containers`.
 
 The cost: with no `virtio-fs`, the rootfs and shared directories are delivered to a microVM as
 block devices — ext4 disks built on the host and attached to the guest.
@@ -31,15 +28,13 @@ All rootless - no host `sudo` to *run* it - but the engine shells out to host pa
 downloads the version-pinned, SHA256-verified Firecracker binary (see [Firecracker
 binary](#firecracker-binary)) and builds the guest kernel + base rootfs into the
 artifact cache (`$XDG_CACHE_HOME/cs-sandbox`, i.e. `~/.cache/cs-sandbox`); `create` then just boots
-from it. **`cs-sandbox doctor` (which defaults to `--engine firecracker`) checks all of the below and
-prints the exact fix for anything missing.**
+from it. **`cs-sandbox doctor` (which checks the same engine `create` would pick, so firecracker on
+such a host) checks all of the below and prints the exact fix for anything missing.**
 
-- **Packages:** `passt` (Podman's rootless uplink, which VMs share), `dnsmasq` (the forwarding
-  VM-name resolver), `fakeroot` + `e2fsprogs` (build the ext4 disks), `socat` + `python3` (the
-  host→VM port/vsock bridges), `shadow-utils`/`uidmap` (`newuidmap`, for Podman's rootless userns),
-  `iproute`/`iproute2` (`ip`, for the tap/bridge fabric), `openssh-clients`/`openssh-client` (`ssh`,
-  to reach the booted VM), `curl`, `git`. The preflight detects `dnf` vs `apt` and prints the right
-  names:
+- **Packages** — the preflight detects `dnf` vs `apt` and prints the right names. The less obvious
+  entries: `passt` is Podman's rootless uplink, which VMs share; `dnsmasq` resolves VM names;
+  `fakeroot` + `e2fsprogs` build the ext4 disks; `socat` + `python3` bridge host→VM ports and vsock;
+  and `newuidmap` (from `shadow-utils`/`uidmap`) backs Podman's rootless userns.
 
   ```bash
   # Fedora
@@ -54,8 +49,8 @@ prints the exact fix for anything missing.**
   sudo usermod -aG kvm "$USER"            # grant /dev/kvm access (log out / back in afterward)
   ```
 
-- **Rootless userns:** your user needs a subuid/subgid range (the entrypoint sub-divides it for
-  nested Podman):
+- **Rootless userns:** your user needs a subuid/subgid range — rootless Podman builds the image and
+  owns the network namespace every microVM's tap lives in, and neither works without one:
 
   ```bash
   grep "^$USER:" /etc/subuid /etc/subgid  # must return a line for each file
@@ -70,8 +65,8 @@ prints the exact fix for anything missing.**
 
 > The base **Podman** install (and, on macOS, a sized podman machine — see
 > [`INSTALL.md`](../INSTALL.md)) is the one prerequisite shared with the Podman engine - it builds
-> the image and provides the network fabric on every host. The Firecracker engine is Linux/KVM-only; on macOS / non-KVM hosts sandboxes
-> use Podman automatically.
+> the image and provides the network fabric on every host. The Firecracker engine is x86_64
+> Linux/KVM-only; every other host uses Podman automatically.
 
 ## Per-sandbox anatomy
 
@@ -151,26 +146,21 @@ is unavoidable: Fedora builds `CONFIG_VIRTIO_MMIO=m`, so **no block device exist
 is loaded — the kernel cannot mount `root=/dev/vda` on its own. The init loads it, mounts the root
 filesystem, `switch_root`s and execs `init=` (`/fc-init`).
 
-This replaces a ~38 MB dracut initrd, which spent most of a boot probing for storage stacks, network
-setups and hardware a microVM cannot have. Measured on the same cached kernel + base rootfs, time
-from `firecracker` exec to a shell on the real root, median of 3: **621 ms vs 2975 ms** — 2.35 s
-saved per boot.
+It is purpose-built rather than generated with `dracut`, whose ~38 MB output spends most of a boot
+probing for storage stacks, network setups and hardware a microVM cannot have. Measured on the same
+cached kernel + base rootfs, time from `firecracker` exec to a shell on the real root, median of 3:
+**621 ms against 2975 ms** — 2.35 s per boot.
 
 The cached initrd is keyed by a hash of that source (the `initramfs-src` stamp), so editing it
-rebuilds the boot artifacts.
-
-Because this initrd does only that, everything the previous dracut one set up on the way past —
-`/dev/fd` and friends, `/run` and `/dev/shm`, the api filesystems under `/sys`, loopback, the
-`fuse` module, and systemd's `pid_max`/`file-max` — is now `/fc-init`'s job, since PID1 here is a
-shell script and nothing else would do it.
+rebuilds the boot artifacts. Everything a full init system would set up on the way past — `/dev/fd`,
+`/run` and `/dev/shm`, the api filesystems, loopback, `pid_max` — falls to `/fc-init` instead.
 
 ### Firecracker binary
 
-The VMM itself is **not** bundled in the `cs-sandbox` binary: it is a ~3.5 MB Linux-only executable,
-and embedding it would mean carrying a per-architecture blob in git and redistributing a third-party
-binary under our own signatures. `cs-sandbox build` downloads it instead — into `bin/firecracker`
-under the artifact cache — which adds no precondition, since that build already needs the network and
-podman for the kernel and the base rootfs.
+The VMM is **not** bundled in the `cs-sandbox` binary: embedding it would mean carrying a
+per-architecture blob in git and redistributing a third-party binary under our own signatures.
+`cs-sandbox build` downloads it into `bin/firecracker` under the artifact cache instead, which costs
+nothing extra — that build already needs the network and podman for the kernel and base rootfs.
 
 The release is **pinned**, never "latest":
 
@@ -301,18 +291,24 @@ The guest mounts it read-only at `/run/cs-sandbox-seed` and sources `cs-sandbox.
 A kernel boots an init, not an entrypoint, so `/fc-init` replaces the container `ENTRYPOINT` (it
 skips the keep-id / runtime-user dance - the VM is genuinely root with its own uids). In order:
 
-1. mount `proc`/`sys`/`devtmpfs`/`cgroup2`/`devpts`; `modprobe vsock`;
-2. mount the seed (`/dev/vdb`); source `cs-sandbox.conf`;
-3. create the developer user + a NOPASSWD sudoers entry;
-4. `modprobe virtio_net`, wait for the NIC, set the seeded static IP/route/`resolv.conf`;
-5. write `/etc/hosts` (localhost, self, and append `host_hosts` so `ssh <hostname>` reaches the host)
+1. mount the api filesystems (`proc`, `sys`, `devtmpfs`, `cgroup2`, `devpts`, tmpfs `/run` and
+   `/dev/shm`, `securityfs`/`bpf`/`configfs`/`pstore`), make `/` rshared, add the `/dev/fd` symlinks,
+   raise `pid_max`/`file-max`, bring `lo` up;
+2. `modprobe` what a microVM has no udev to autoload — `vsock`, `virtio_balloon` (free page
+   reporting), `fuse`, `tun` — and grant `newuidmap`/`newgidmap` the file caps rootless Podman needs;
+3. mount the seed (`/dev/vdb`); source `cs-sandbox.conf`;
+4. create the developer user + a NOPASSWD sudoers entry;
+5. `modprobe virtio_net`, wait for the NIC, set the seeded static IP/route/`resolv.conf`;
+6. write `/etc/hosts` (localhost, self, and append `host_hosts` so `ssh <hostname>` reaches the host)
    and `/etc/gai.conf` (prefer IPv4, since the net is v4-only but DNS returns AAAA - see the design
    doc's "Reaching the host by name"); open `ping_group_range` for unprivileged ICMP;
-6. **first boot:** seed `/home/<user>` from the image skeleton (`/sandbox/home`); **every boot:**
+7. **first boot:** seed `/home/<user>` from the image skeleton (`/sandbox/home`); **every boot:**
    refresh the managed ssh material (authorized_keys, tier key, `ssh_config`
-   → `config.d/cs-sandbox`, host keys); install Claude/Codex creds + onboarding/YOLO markers;
-7. the `--repo` alternates-clone; RO-mount `--snapshot` / `--image-store` disks (device-letter cursor);
-8. `sshd -p 22`; print `FC-VM-READY`; `exec socat VSOCK-LISTEN:22 … :22` as PID1.
+   → `config.d/cs-sandbox`, host keys) and install `inject-env` into `~/.ssh/environment` and PID 1's
+   own environment; install the Claude/Codex/OpenCode creds + onboarding/YOLO markers;
+8. seed the global git identity; run the `--repo` alternates-clone; RO-mount `--snapshot` /
+   `--image-store` disks (device-letter cursor);
+9. `sshd -p 22`; print `FC-VM-READY`; `exec socat VSOCK-LISTEN:22 … :22` as PID1.
 
 Boot to ready is ~1-2 s.
 
@@ -482,4 +478,4 @@ Firecracker is a deliberately lean rust-vmm/KVM VMM, which trades features for a
   makes the rootfs copy ~free on btrfs/xfs.
 - **VM names are sandbox-registered** on create/destroy rather than auto-discovered the way container
   names are - but `ssh <other>` is identical.
-- **Linux/KVM only** - macOS always uses the Podman engine.
+- **x86_64 Linux/KVM only** - every other host uses the Podman engine.

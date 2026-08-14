@@ -136,8 +136,8 @@ sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
 A Firecracker sandbox boots its own guest kernel, built from the sandbox image - pinned and
 reproducible, with no dependency on the host's `/boot` kernel. Full detail:
-[`docs/firecracker.md`](docs/firecracker.md#prerequisites). On macOS / non-KVM hosts this step is
-skipped and sandboxes default to Podman.
+[`docs/firecracker.md`](docs/firecracker.md#prerequisites). On macOS, and on any host without
+x86_64 KVM, this step is skipped and sandboxes default to Podman.
 
 ## 3. Build the sandbox artifacts
 
@@ -145,7 +145,7 @@ Every sandbox runs from one generic image (no user identity baked in - your user
 boot). `cs-sandbox build` sets up the reusable, host-wide artifacts once so later `create`s are fast:
 
 ```bash
-cs-sandbox build                       # image + (on Linux/KVM) the Firecracker artifacts
+cs-sandbox build                       # image + (on x86_64 Linux/KVM) the Firecracker artifacts
 ```
 
 With no flags it prepares **every engine the host supports**: the podman image always, plus the
@@ -184,8 +184,8 @@ cs-sandbox install-agent-tools    # -> ~/.local/bin  (pass a directory to instal
 
 `cs-claude` / `cs-codex` / `cs-opencode` invoke the `claude` / `codex` / `opencode` CLIs, so those
 must be installed on the host too; `install-agent-tools` tells you which are missing. Then log in
-once with each you use — the credential a sandbox inherits is snapshotted into it on first boot,
-**never baked into the image**:
+once with each you use — the credential a sandbox inherits is copied into its per-sandbox seed at
+create time and installed on first boot, **never baked into the image**:
 
 ```bash
 cs-claude          # launch Claude Code - log in with /login, then exit
@@ -241,11 +241,12 @@ For bash system-wide instead of per-user: `cs-sandbox completion bash | sudo tee
 
 **State lives in your home, not next to the binary** — instances and
 tier keys under `$XDG_DATA_HOME/cs-sandbox` (`~/.local/share/cs-sandbox`), the firecracker artifact
-cache under `$XDG_CACHE_HOME/cs-sandbox` (`~/.cache/cs-sandbox`); override with
+cache under `$XDG_CACHE_HOME/cs-sandbox` (`~/.cache/cs-sandbox`); on macOS those are
+`~/Library/Application Support/cs-sandbox` and `~/Library/Caches/cs-sandbox`. Override with
 `CS_SANDBOX_INSTANCES_DIR` / `CS_SANDBOX_TIER_DIR` / `CS_SANDBOX_FC_CACHE`, or `CS_SANDBOX_HOME` for all of it.
 
-Separate state directories give you separate sets of sandboxes that can run side by side, because
-the network underneath is per-host and shared: addresses and SSH ports are checked against what is
-actually live on the host rather than against one directory's records, each directory gets its own
-`~/.ssh/config.d` fragment, and the network's own working dir (`~/.cache/cs-sandbox/net`, moved by
+Separate state directories give you separate sets of sandboxes that run side by side, because the
+network underneath stays shared: addresses and ports are checked against what is actually live on
+the host rather than against one directory's records, each directory gets its own
+`~/.ssh/config.d` fragment, and the network's working dir (`~/.cache/cs-sandbox/net`, moved by
 `CS_SANDBOX_FC_NET`) stays put when you relocate the rest.

@@ -1,19 +1,20 @@
 # sandbox - Podman container engine
 
-`cs-sandbox --engine podman` - the **default on macOS**, and available on any host - runs each
-sandbox as a rootless **Podman container** instead of a Firecracker microVM, reusing the same OCI
-image, the same `cs-sandbox` CLI, and the same SSH + repo capabilities. This document covers what is
-specific to the container engine; the cross-engine model (trust, the generic image, networking,
-shared image stores, agent tools) lives in [`design.md`](design.md).
+`cs-sandbox --engine podman` - the **default on macOS and on any host without x86_64 KVM**, and
+available on every host - runs each sandbox as a rootless **Podman container** instead of a
+Firecracker microVM, reusing the same OCI image, the same `cs-sandbox` CLI, and the same SSH + repo
+capabilities. This document covers what is specific to the container engine; the cross-engine model
+(trust, the generic image, networking, shared image stores, agent tools) lives in
+[`design.md`](design.md).
 
 ## Why a container
 
 The container shares the host kernel - no separate guest kernel to build or boot - so it is the
-**lighter, faster-to-start** engine and the **only** engine on macOS / non-KVM hosts. The
-trade-off: isolation rests on the **container boundary** (a scaled-down
-capability set + seccomp, bounded by your unprivileged host user) rather than a separate kernel -
-which is why the autonomous **agent** type defaults to the microVM on a Linux/KVM host. See
-[firecracker.md](firecracker.md#why-a-microvm) for the other side of that trade.
+**lighter, faster-to-start** engine and the **only** engine on macOS and on any host without x86_64
+KVM. The trade-off: isolation rests on the **container boundary** (a scaled-down capability set +
+seccomp, bounded by your unprivileged host user) rather than a separate kernel - which is why an
+x86_64 Linux/KVM host defaults to the microVM instead, autonomous **agent** sandboxes being what
+that buys most. See [firecracker.md](firecracker.md#why-a-microvm) for the other side of that trade.
 
 The one prerequisite is **Podman** itself (on macOS, plus a podman machine — size it at init:
 `podman machine init --cpus 4 --memory 8192 --disk-size 60 --now`, since every sandbox shares that
@@ -70,42 +71,43 @@ Podman needs:
 - `CAP_SYS_PTRACE` - pasta opening the build worker's netns during `podman build`
 - `/dev/net/tun` + `--security-opt unmask=/proc/sys` - so inner netavark can write `net.ipv4.ip_forward`
 
+Two more are added for the sandbox itself rather than for nesting: `CAP_NET_RAW` and
+`CAP_NET_BIND_SERVICE`, so ordinary network tooling and a service on a low port work as they would
+on a normal machine (unprivileged `ping` comes from a `net.ipv4.ping_group_range` sysctl, not a cap).
+
 The default seccomp filter stays **on** and `/proc/kcore` + host devices stay masked. Because the
 container is rootless the caps are namespaced - bounded by your host user, with no host-root path
 absent a kernel bug - so this is strictly safer than `--privileged`, which turns seccomp off and
 unmasks everything. `cs-sandbox create --privileged` is a one-flag fallback if a kernel/podman
 version regresses the scaled-down set.
 
-**Rootful inner engine.** Nested Podman runs *rootful inside the container* (container-root, which
-under keep-id is your unprivileged host user). Plain `podman` is a `/usr/local/bin/podman` wrapper
-(ahead of `/usr/bin` on PATH; no setuid; reuses the user's NOPASSWD sudo), so shells, scripts, and
-`ssh <name> podman …` all hit the rootful engine. The wrapper is **engine-aware** — it `exec sudo`s
-only when `/run/.containerenv` says it is inside a container, and runs plain rootless Podman in a
-Firecracker microVM, which needs none of this (see [`firecracker.md`](firecracker.md)). The vendored
-**`user-podman`** builds on it: for `run`/`create` it injects `--user UID:GID` plus matching
-`--passwd-entry`/`--group-entry`, so the inner container runs as your uid:gid and its bind-mount
-files come back owned by you rather than by a subuid. It keys off the same marker and passes
-through untouched on the microVM, where a rootless inner engine already maps your uid to inner
-root — injecting there would hand the process a subuid and produce exactly what it prevents here.
+### Rootful inner engine
+
+Nested Podman runs *rootful inside the container* (container-root, which under keep-id is your
+unprivileged host user). Plain `podman` is a `/usr/local/bin/podman` wrapper
+ahead of `/usr/bin` on PATH — no setuid, reusing the user's NOPASSWD sudo — so shells, scripts and
+`ssh <name> podman …` all hit the rootful engine. It is **engine-aware**, `exec sudo`ing only when
+`/run/.containerenv` says it is in a container and running plain rootless Podman in a microVM. The
+vendored **`user-podman`** builds on it: for `run`/`create` it injects `--user UID:GID` and matching
+`--passwd-entry`/`--group-entry`, so an inner container's bind-mount files come back owned by you
+rather than by a subuid. It keys off the same marker and passes through untouched on the microVM,
+where a rootless inner engine already maps your uid to inner root.
 
 Why both are required: a *rootless* inner Podman needs `newuidmap`/`newgidmap`, but `--userns=keep-id`
 leaves no cleanly sub-dividable subuid range and the image drops `newuidmap`'s file caps - so
 rootless-inner fails *even with `--privileged`*. A *rootful* inner Podman runs as container-root
-and, with the namespaced `CAP_SYS_ADMIN`, sets up the nested userns/mounts directly. So the working
-combination is `CAP_SYS_ADMIN` + rootful-inner, with native overlay and seccomp still on.
+and, with the namespaced `CAP_SYS_ADMIN`, sets up the nested userns/mounts directly.
 
-The image carries `crun`, `slirp4netns`, `passt`, a `storage.conf` defaulting to **native**
-`overlay` (no `mount_program`; `fuse-overlayfs` is a fallback only), and `containers.conf` with
-`cgroups = "disabled"` - which silences a benign cgroup-v2 warning on every nested run (a rootless
-nested container can't delegate controllers to its children). The only cost is that resource
-limits don't apply to nested containers, which they couldn't anyway in this setup.
-
-SELinux confinement is turned off for the container (`--security-opt label=disable`); no `:Z`/`:z`
-relabeling is applied, which also avoids the macOS virtiofs-relabel problem.
+Supporting that, the image carries `crun`, `slirp4netns`, `passt`, a `storage.conf` defaulting to
+native `overlay` (`fuse-overlayfs` is a fallback only), and `containers.conf` with `cgroups =
+"disabled"`, which silences a benign cgroup-v2 warning on every nested run at the cost of resource
+limits that could not apply to a nested container anyway. SELinux confinement is off for the
+container (`--security-opt label=disable`) with no `:Z`/`:z` relabeling, which also avoids the macOS
+virtiofs-relabel problem.
 
 ### Per-sandbox container storage
 
-A dedicated volume `cs-sandbox-containers-<name>` mounts at the rootful store
+A dedicated volume `cs-sandbox-containers-<name>.<group>` mounts at the rootful store
 `/var/lib/containers`, so nested images/layers persist across recreation, don't bloat the home
 volume, and sit on a **non-overlay** backing filesystem - which lets the kernel's native overlay
 work instead of falling back to slower `fuse-overlayfs`. On first boot the entrypoint probes

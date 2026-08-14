@@ -1,12 +1,12 @@
 # sandbox - agent login
 
-How a sandbox gets a logged-in Claude Code or Codex, and what `cs-sandbox` will and will not copy
-from your host. The design-level summary lives in
+How a sandbox gets a logged-in Claude Code, Codex or OpenCode, and what `cs-sandbox` will and will
+not copy from your host. The design-level summary lives in
 [`design.md`](design.md#bundled-agent-tools-and-login).
 
 ## Inheriting your host login is opt-in
 
-By default a sandbox has **no** Claude or Codex login. `--inherit-agent-login` carries your host
+By default a sandbox has **no** agent login at all. `--inherit-agent-login` carries your host
 login in at create time — usually the convenient choice, since it saves logging in inside the
 sandbox:
 
@@ -27,7 +27,7 @@ reports what the sandbox ended up with:
 
 ```
 created dev (type=agent, engine=podman, ssh port=2201)
-  shell: ssh dev
+  shell: ssh dev.default
   agent login: claude (inherited from your host)
 ```
 
@@ -41,10 +41,10 @@ Use this when you didn't inherit a login, or when you want the sandbox on a **se
 rate-limit pool** rather than sharing yours.
 
 It is also the route when the host keeps the credential in the **macOS Keychain** rather than in a
-file — both agents use the Keychain when one is available, and `--inherit-agent-login` copies a file,
-so there is nothing to carry (`create` says so). Where the credential does land in a file — a
-headless or SSH session, or Codex with `cli_auth_credentials_store = "file"` — inheriting works just
-as it does on Linux.
+file — Claude Code and Codex both use the Keychain when one is available, and
+`--inherit-agent-login` copies a file, so there is nothing to carry (`create` says so). Where the
+credential does land in a file — a headless or SSH session, or Codex with
+`cli_auth_credentials_store = "file"` — inheriting works just as it does on Linux.
 
 ## One subscription, many sandboxes
 
