@@ -1,39 +1,37 @@
 # sandbox - design
 
-`cs-sandbox` provisions multiple named, SSH-reachable dev **sandboxes** on a Linux or macOS
-host. Each sandbox runs as either a rootless **Firecracker microVM** (the default on a
-Linux/KVM host) or a rootless **Podman container** (the default on macOS, and available on any
+`cs-sandbox` provisions multiple named, SSH-reachable dev **sandboxes** on a Linux or macOS host
+(and on Windows through WSL2, which is a Linux host as far as everything below is concerned). Each
+sandbox runs as either a rootless **Firecracker microVM** (the default on an x86_64 Linux/KVM host)
+or a rootless **Podman container** (the default everywhere else, and available on any
 host). The two engines are interchangeable: they share one image, one SSH trust model, one
 network fabric, the same directory-sharing flags, and the same agent tools.
 
 This document describes the **cross-engine model** - what every sandbox shares regardless of engine,
 in the order a sandbox comes to life: what it's built from and how it boots, how you reach and trust
 it, what you share into it, nested-Podman image management and agents, then security.
-Three companion documents cover the engine- and feature-specific parts:
+Companion documents cover the engine- and feature-specific parts:
 
 - [`podman.md`](podman.md) - the Podman container engine.
 - [`firecracker.md`](firecracker.md) - the Firecracker microVM engine.
 - [`repo-sharing.md`](repo-sharing.md) - the `--repo` checkout model.
 - [`agent-login.md`](agent-login.md) - how a sandbox gets a logged-in agent, and what is never copied.
+- [`opencode.md`](opencode.md) - the OpenCode adapter.
 
 ## Overview
 
-- **Two sandbox types**, differing only in SSH direction — otherwise the same image and capabilities:
-  - **user** - your interactive workspace, the layer above: it can `ssh` into any sandbox (other user
-    sandboxes and agent sandboxes), but no agent sandbox can `ssh` back into it. Receives **no** host
-    SSH keys of its own; if it needs your keys you can lend a specific set for a session (`ssh -A`),
-    so they are never copied in.
-  - **agent** (default) - a sandbox for running a coding agent. Its own persistent home, **no** host
-    SSH credentials of any kind, and it can `ssh` into other agent sandboxes but never a user sandbox.
-- **Reach any sandbox by name**, never by port number - from the host (`ssh <name>`) and
-  between sandboxes, across both engines.
+- **Two sandbox types**, differing only in SSH direction: a **user** sandbox is your interactive
+  workspace and reaches every sandbox; an **agent** sandbox (the default) reaches other agents but
+  never a user sandbox. Neither holds any host SSH key.
+- **Reach any sandbox by name**, never by port number — from the host (`ssh <name>`) and between
+  sandboxes, across both engines.
 - **Groups**, an opt-in boundary: `--group` gives a set of sandboxes its own network, SSH keys and
   gateway. Without it everything joins one group (`default`) and behaves as a single fabric.
 - **True nested Podman** inside every sandbox.
 - **One generic image** with no developer identity baked in; the matching user is created at
   first boot, so one build serves every developer and machine.
-- **The same behavior on Linux and macOS** (which runs the Podman engine in a podman-machine VM -
-  see [`podman.md`](podman.md#macos)).
+- **The same behavior on Linux, macOS and WSL2** (macOS runs the Podman engine in a podman-machine
+  VM - see [`podman.md`](podman.md#macos)).
 
 ## Anatomy of a sandbox
 
@@ -167,47 +165,111 @@ The single rule that blocks "agent → user": `G` is never written into a user s
 
 ### Solo sandboxes (`--solo`)
 
-By default every agent sits in the mesh of the matrix above - any agent can SSH into any other
-agent (the shared `G` key). `cs-sandbox create <name> --type agent --solo` denies one agent any
-**outbound SSH** into the fabric: it **can't SSH into any peer or the host**, but **peers and the
-host can still SSH into it**. The restriction is one-directional. Agent-only (rejected for
-`--type user`, which intentionally carries `H` and reaches peers).
+By default every agent sits in the mesh above — any agent can SSH into any other, on the shared `G`
+key. `create <name> --solo` takes one agent out of it, in one direction only. It is agent-only,
+rejected for `--type user`, which intentionally carries `H` and reaches peers:
 
-This is an **SSH-credential boundary, not a network one**, and it is asymmetric:
+- **Outbound (blocked).** A solo agent is seeded **no** tier private key — no `U`, no `G` — so it
+  holds nothing any sandbox or the host authorizes and cannot authenticate outward at all. Its ssh
+  config pins no `IdentityFile` and keeps `PreferredAuthentications publickey`, so the attempt
+  fails fast rather than hanging.
+- **Inbound (allowed).** Its `authorized_keys` is normal (`H + U + G`), so the host, user sandboxes
+  and other agents still SSH *in* and drive it.
 
-- **Outbound (blocked).** A solo agent is seeded **no** tier private key - no `U` and no `G`. It
-  therefore holds no key that any sandbox (or the host) authorizes, so it cannot authenticate
-  outward to anything. (Its in-sandbox ssh config also pins no `IdentityFile` and keeps the
-  agent's `PreferredAuthentications publickey`, so an outbound attempt fails fast.)
-- **Inbound (allowed).** Its `authorized_keys` is **normal** (`H + U + G`, exactly like any agent),
-  so the host, user sandboxes, and other agents can still SSH *in* and drive it.
+This is a credential boundary, not a network one: a solo agent still `ping`s and `curl`s peers, the
+host, the LAN and the internet, and peers still reach its services. What it loses is any
+*authenticated SSH foothold* — which is the mitigation for the shared-`G` property under
+[Limitations](#limitations).
 
-It is otherwise a normal sandbox on the shared fabric: its network access is exactly like any
-other sandbox's - it `ping`s / `curl`s peers, the host, the LAN, and the internet, and peers reach
-*its* services. `--solo` is purely a credential restriction; what it removes is the solo agent's
-ability to get an *authenticated SSH foothold* on anything else.
-
-Implemented in the seed builder (`internal/seed`): the solo flag withholds the tier private key
-while leaving `authorized_keys` untouched. Solo state is recorded as
-`"solo":true` in the sandbox's typed state (`internal/state`, persisted to `instances/<name>/state.json`)
-and a `cs-sandbox.solo` Podman label, and surfaced in the `SOLO` column of `cs-sandbox ls`.
-
-This is the mitigation for the "any agent can SSH into any other agent" property noted under
-[Limitations](#limitations): put a sandbox you don't fully trust on `--solo` and it can't SSH into
-your other sandboxes (you keep full reach into it).
+The seed builder withholds the tier key and leaves `authorized_keys` untouched. The state is
+recorded as `"solo":true` in `instances/<group>/<name>/state.json` and a `cs-sandbox.solo` Podman
+label, and shown in the `SOLO` column of `cs-sandbox ls`.
 
 ## Groups
 
 Groups are **opt-in**: without `--group` every sandbox joins one called `default`, and the rest of
-this document describes exactly that case. Reach for a group when unrelated fleets share a host and
-must not see each other.
+this document describes exactly that case. Reach for one when two unrelated efforts share a host and
+must not interfere — two experiments comparing approaches, each needing its own copy of the same
+fixture.
 
-A **group** owns an isolated network, its own SSH trust material and a gateway. Identity is
-`(group, name)`, so the same name may exist in several groups and the canonical reference is
-`<name>.<group>`; a bare name always means the default group, never whichever group happens to hold
-it. Members of a group reach each other by name; members of different groups neither resolve nor
-connect, and hold no credential the other would accept. `default` is an ordinary group, not a
-special case in the implementation. Full model in [groups.md](groups.md).
+```bash
+cs-sandbox create api --group cache-redis   # creates the group if it does not exist
+cs-sandbox exec api.cache-redis ls          # identity is (group, name)
+cs-sandbox group ls                         # also: group create, group rm [-f]
+```
+
+Identity is `(group, name)`, so the same name may exist in several groups and the canonical
+reference is `<name>.<group>`. **A bare name always means the default group** — never "whichever
+group happens to hold it", which would make a reference's meaning depend on the rest of the host:
+`ssh api` would work until an unrelated experiment created its own `api`, and then either break or,
+worse, keep working while denoting a different sandbox. A miss names the qualified references that
+do exist; `ls -q` and `ls --json` emit the qualified form for the same reason. `CS_SANDBOX_GROUP`
+sets the default for new sandboxes.
+
+### What a group owns
+
+| Artifact | Name | Purpose |
+|---|---|---|
+| Podman network | `cs-sandbox-<group>` | the isolation boundary (`isolate=true`) |
+| SSH keys | `keys/groups/<group>/` | trust material, valid only inside the group |
+| Gateway | `cs-sandbox-<group>-keepalive` | pins the bridge; published as the group's ssh jump host |
+| Fabric dir | `net/<group>/` | per-group dnsmasq state and VM name records |
+| Tap prefix | recorded in `group.json` | allocated, not hashed: interface names are host-global, and a collision would surface far from its cause |
+
+The default group keeps the historical spelling of the first two — network `cs-sandbox-net` (so its
+gateway is `cs-sandbox-net-keepalive`) and fabric dir `net/` — so a fabric that predates groups is
+undisturbed. Otherwise it is an ordinary group, with no special case in the implementation.
+
+Podman object names carry the group because they are host-global; the guest hostname and DNS alias
+stay bare, so members keep reaching each other as plain `<name>`. A `--repo` branch carries it too
+(see [Branches and groups](repo-sharing.md#branches-and-groups)). `group rm` refuses while members
+exist (`-f` destroys them first) and reclaims the network, gateway, keys and host-route leg; the
+default group's network is shared host-wide and never reclaimed.
+
+### Two layers of isolation
+
+**The network.** Every group network is created `--opt isolate=true`, the default group's included —
+separate bridges are not enough on their own, because netavark otherwise forwards between bridges in
+the same rootless namespace. Isolation is not one-sided (measured: `isolate=true` on one network
+does not block a *non-isolated* peer), so a default network lacking it is recreated on first use,
+but only when nothing except its own keepalive is attached. A named group's network is never
+recreated, and no pre-existing network is adopted unless it inspects as ours and isolated — an
+unlabelled network of that name may be the user's own.
+
+**The keys.** Each group has its own `U` and `G`. This is what makes the boundary robust rather than
+merely correct: if `isolate` ever regressed, a shared key would turn a reachability bug into a
+breach. Measured on Podman 5.8.2 / netavark, two groups on one host:
+
+| | Result |
+|---|---|
+| Cross-group by raw IP | blocked |
+| Outbound internet from a member | works |
+| Group A's key against a group B sandbox | `Permission denied (publickey)` |
+| Group B's own key against a group B sandbox | succeeds |
+
+### Reaching a group from the host
+
+Host access does not use the sandbox network at all: each member's sshd is published on
+`127.0.0.1:<port>` and `sync-ssh-config` gives it a `Host <name>.<group>` block pinned to that
+group's user key (plus the bare alias, for default-group members only). This plane keeps working
+when a group's fabric is broken, which is exactly when you need it.
+
+**The gateway** is the second route, and the one that gives you names. Each group publishes one port
+— drawn from 2400-2499, so it cannot collide with a member's — fronting its keepalive container,
+which doubles as the group's ssh jump host:
+
+```bash
+ssh cache-redis-gw                    # a shell inside the group
+ssh -L 8080:api:8000 cache-redis-gw   # reach a member's service BY NAME
+```
+
+Inside the group names resolve over the group's own DNS, so one published port reaches every member
+on any port they bind. The gateway runs with `--dns <prefix>.53`, the fabric dnsmasq: aardvark knows
+container names but not microVM ones, so a gateway on the default resolver would be nameless for
+half its members, and `group create` replaces one that cannot resolve them. It authorizes only its
+group's key, and its ssh config block offers only that key — otherwise sshd's `MaxAuthTries` would
+be spent before the right one was tried. `ssh -J` to a member's *alias* does not work: that alias is
+a host loopback port, which means nothing inside the group.
 
 ## Networking and name resolution
 
@@ -306,15 +368,22 @@ By default the host reaches a sandbox only over SSH or an explicit `forward`; it
 <name>` or `curl <name>:PORT` the way a *peer* sandbox can, because the fabric lives in podman's
 rootless network namespace and a sandbox's address isn't in the host's root netns.
 
-`cs-sandbox host-route up` opts in to direct reachability, under a **one-time `sudo`**: it wires
-the host onto the sandbox subnet (a veth into the rootless netns) and points **systemd-resolved**
-at the fabric's own DNS resolver for the **`.cs.sandbox`** domain. After that, `ping
-<name>.cs.sandbox`, `curl http://<name>.cs.sandbox:8000`, and any other protocol work from the
-host, for both engines. Names are published into the resolver **rootlessly**, so create/destroy
-need no further sudo, and `/etc/hosts` is never touched. It is **off by default, Linux-only,
-needs systemd-resolved**, and is the **only** feature that uses `sudo` (and only for `up`/`down`,
-never in the create/exec path). Mechanism and rationale (including why a name suffix is required)
-are in [`firecracker.md`](firecracker.md#optional-reach-sandboxes-directly-from-the-host-host-route).
+`cs-sandbox host-route up` opts in, under a **one-time `sudo`**: it wires the host onto the sandbox
+subnet with a veth into the rootless netns, and points **systemd-resolved** at the fabric's own DNS
+for the **`.cs.sandbox`** domain. After that `ping <name>.cs.sandbox`, `curl
+http://<name>.cs.sandbox:8000` and any other protocol work, on both engines. Names are published
+rootlessly, so create/destroy need no further sudo and `/etc/hosts` is never touched. It is **off by
+default, Linux-only, needs systemd-resolved**, and is the **only** feature that uses `sudo` — for
+`up`/`down` alone, never in the create/exec path.
+
+Groups are separate bridges, so a veth reaches exactly one of them: host-route wires **one leg per
+group**, names them the usual way (`api.cs.sandbox` for the default group,
+`api.cache-redis.cs.sandbox` elsewhere), and keeps each group's names in its own resolver scope. A
+group created after `up` needs one `host-route refresh`, since wiring a leg is the part that needs
+root. Forwarding is disabled on every leg, so the host cannot become a router *between* groups, and
+`status` reports **DEGRADED** rather than `UP` if that ever drifts. Mechanism and rationale — the
+veth, the resolver scopes, the forwarding knob, and why a name suffix is required — are in
+[`firecracker.md`](firecracker.md#optional-reach-sandboxes-directly-from-the-host-host-route).
 
 ## Directory sharing
 
@@ -450,14 +519,19 @@ Two tiers, split by whether they touch a real engine:
   down, and **skip gracefully** when podman or the image is unavailable. The suite runs with `-p 1`,
   because packages share one rootless network namespace and host SSH port pool.
 
+The **smoke profile** (`make test-smoke`, the `SMOKE_TESTS` list in the Makefile) is not a third
+tier: it is the subset of the integration tier that CI runs on every host — Linux, macOS and
+Windows/WSL2 — against a slimmed image (`make build-ci-image`). Keep it short; see
+[CONTRIBUTING.md](../CONTRIBUTING.md).
+
 ## Limitations
 
 - **No per-agent isolation _by default_.** Agent sandboxes in a group share that group's agent-tier
   SSH key (the `G` key from the [trust model](#sandbox-types-and-the-ssh-trust-model) above), so any
   agent sandbox can SSH into any other **in the same group**. Agents are walled off from you and from
-  user sandboxes, but not from each other. Two ways to narrow it: [`--solo`](#solo-sandboxes---solo)
-  denies one sandbox any outbound SSH (it can't reach peers or the host, though they can still reach
-  it; network reach is unchanged), and [`--group`](groups.md) separates whole fleets, which also
-  removes network reach and shares no key across the boundary.
+  user sandboxes, but not from each other. Two ways to narrow it.
+  [`--solo`](#solo-sandboxes---solo) denies one sandbox any outbound SSH, leaving its network reach
+  intact and keeping it reachable from peers. [`--group`](#groups) separates whole fleets, which
+  removes network reach too and shares no key across the boundary.
 - **Not bit-for-bit reproducible.** The image runs a package update at build time, so rebuilds can
   pick up newer upstream packages.

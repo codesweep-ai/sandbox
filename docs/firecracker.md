@@ -318,9 +318,11 @@ Containers and VMs share **one** rootless L2 fabric per group - a dedicated Podm
 (`cs-sandbox-net` for the `default` group, `cs-sandbox-<group>` otherwise) - so they reach each other
 directly and by name across engines, within that group. Rather than a separate namespace, a VM
 runs **inside Podman's own rootless network namespace** (entered with `podman unshare
---rootless-netns`), with a tap on the network's bridge (tap `fdt<lastoctet>`, MAC
-`02:fc:0a:59:00:<lastoctet>`) and a static address from the **high end of the subnet**
-(`<prefix>.200-.250`, above the low addresses netavark hands containers, so no clash).
+--rootless-netns`), with a tap on the network's bridge and a static address from the **high end of
+the subnet** (`<prefix>.200-.250`, above the low addresses netavark hands containers, so no clash).
+Tap name and MAC both derive from that last octet — `fd0000200` and `02:fc:0a:59:00:c8` — the tap
+prefixed per group, since interface names are host-global and two groups' VMs routinely land on the
+same octet (see [design.md](design.md#what-a-group-owns)).
 
 ```
   Podman rootless netns
@@ -328,7 +330,7 @@ runs **inside Podman's own rootless network namespace** (entered with `podman un
   │ bridge   10.89.0.1   (aardvark gateway)                      │
   │   ├── dnsmasq               10.89.0.53                       │
   │   ├── keepalive container                                    │
-  │   ├── VM eth0               10.89.0.200   (tap fdt200)       │
+  │   ├── VM eth0               10.89.0.200   (tap fd0000200)    │
   │   └── container             10.89.0.3                        │
   └──────────────▲───────────────────────────────▲───────────────┘
                  │                               ┊  (veth enslaved to bridge)
@@ -368,47 +370,42 @@ but records its `--dns` servers and forwards misses to them - so `cs-sandbox cre
 on the first sandbox and is reclaimed only when no VM runs **and** no `cs-sandbox` container besides
 the keepalive remains **and** host-route is off.
 
-**The fabric is host-global; an instances dir is not.** There is one netns, one bridge and one
-loopback per host, but `CS_SANDBOX_HOME` / `CS_SANDBOX_INSTANCES_DIR` can point at several
-independent sandbox roots (a second checkout, a test run). A root reads only *its own* `state.json`
-files, so that list is never a complete picture of what is on the fabric. Anything a second root
-could otherwise collide with is therefore decided by asking the host:
+### The fabric is host-global; an instances dir is not
 
-- **VM address** - a candidate in `<prefix>.200-.250` is taken if this root records it *or* the tap
-  `fdt<lastoctet>` already exists in the netns. The taps are the authoritative record: they are
-  host-global and outlive whichever root created them.
-- **Host SSH port** - a candidate is taken if this root records it *or* something already answers on
-  `127.0.0.1:<port>`. A stopped sandbox is caught by the first check (nothing is listening for it),
-  another root's running forwarder only by the second.
-- **Fabric GC** - a live tap counts as "a VM still needs this", the same as a locally recorded
-  running VM.
-- **`~/.ssh/config.d`** - one managed fragment **per root** rather than one shared file, so
-  regenerating one root's `Host` blocks cannot delete another's (see
-  [design.md](design.md#networking-and-name-resolution)).
-- **Stale name records** - a create killed outright (no deferred cleanup) leaves its name in the
-  hostsdir. Fabric bring-up sweeps records whose address has no tap: names are published only once
-  the tap exists, so "no tap" means nothing answers there. The test is host-global, which is what
-  makes it safe here - a sweep driven by one root's instance list would delete the live names of
-  every sandbox it cannot see. A stopped sandbox loses its record and re-registers on `start`.
+There is one netns, one bridge and one loopback per host, but `CS_SANDBOX_HOME` /
+`CS_SANDBOX_INSTANCES_DIR` can point at several independent sandbox roots (a second checkout, a test
+run), and a root reads only *its own* `state.json` files. So anything two roots could collide on is
+decided by asking the host, not by consulting that list:
 
-The fabric's own working dir (the dnsmasq hostsdir + log, the host-route marker) is host-global for
-the same reason: `$XDG_CACHE_HOME/cs-sandbox/net`, independent of `CS_SANDBOX_HOME` and
-`CS_SANDBOX_FC_CACHE`, so every root shares one. (`CS_SANDBOX_FC_NET` overrides it for isolated
-runs; diverging it while a fabric is up is what the conflict check above reports.)
+- **VM address** - taken if this root records it *or* a tap for that octet already exists under the
+  group's prefix. Taps are host-global and outlive whichever root created them.
+- **Host SSH port** - taken if this root records it *or* something answers on `127.0.0.1:<port>`. A
+  stopped sandbox is caught by the first check, another root's running forwarder only by the second.
+- **Fabric GC** - a live tap counts as "a VM still needs this".
+- **Stale name records** - a create killed outright leaves its name in the hostsdir, so bring-up
+  sweeps records whose address has no tap (names are published only once the tap exists). Driving
+  that sweep off one root's instance list would instead delete the live names of every sandbox it
+  cannot see.
+
+`~/.ssh/config.d` follows the same rule from the other direction: one managed fragment **per root**,
+so regenerating one root's `Host` blocks cannot delete another's (see
+[design.md](design.md#networking-and-name-resolution)). The fabric's working dir — the dnsmasq
+hostsdir and log, the host-route marker — is host-global at `$XDG_CACHE_HOME/cs-sandbox/net`,
+independent of `CS_SANDBOX_HOME` and `CS_SANDBOX_FC_CACHE`, so every root shares one
+(`CS_SANDBOX_FC_NET` overrides it for isolated runs).
 
 ### host → VM ssh
 
-The host can't address the rootless netns directly, so `ssh <name>` reaches the guest via a published
-host port bridged with a **unix socket** (sockets ignore network namespaces): a host-side `socat`
-binds the port (the managed `~/.ssh/config.d` fragment gives the name `HostName 127.0.0.1` / `Port N`
-/ `HostKeyAlias`, written the same way for both engines)
-and relays through `fwd.sock` to a per-VM `socat` inside the netns that connects to the guest's `:22`.
-Per-VM and lifecycle-tracked.
+The host can't address the rootless netns directly, so `ssh <name>` reaches the guest through a
+**unix socket**, which ignores network namespaces. A host-side `socat` binds the published port and
+relays through `fwd.sock` to a per-VM `socat` inside the netns, which connects to the guest's `:22`.
+Both are per-VM and lifecycle-tracked. The managed `~/.ssh/config.d` fragment supplies the name,
+`HostName 127.0.0.1`, `Port N` and `HostKeyAlias`, written the same way for both engines.
 
 A Firecracker **vsock** is retained as a no-IP standby transport (it is *not* the routine ssh path):
 guest CID 3; PID1 is `socat VSOCK-LISTEN:22 → TCP4:127.0.0.1:22`; the host side is a hybrid-vsock unix
-socket `instances/<name>/vm.vsock`, and `image/guest/vsock-connect` speaks Firecracker's `CONNECT <port>` →
-`OK <hostport>` handshake (wired as an ssh `ProxyCommand` in the generated config).
+socket `instances/<group>/<name>/vm.vsock`, and `image/guest/vsock-connect` speaks Firecracker's
+`CONNECT <port>` → `OK <hostport>` handshake (wired as an ssh `ProxyCommand` in the generated config).
 
 ### Optional: reach sandboxes directly from the host (`host-route`)
 
@@ -433,40 +430,73 @@ create/destroy republish names with **no further sudo**; only `up`/`down` touch 
 the resolver (`resolvectl revert`) and removes the veth. (Suffix default `cs.sandbox`, override
 `CS_SANDBOX_DNS_SUFFIX`.)
 
+#### One leg per group
+
+Groups are separate bridges on separate subnets, so the veth pair is wired per group, each with its
+own resolver scope (`~<group>.cs.sandbox`) — one shared resolver would hand every group the names of
+all the others. The default group keeps `cs-sandbox`/`cs-sandbox-ns`; others derive theirs from the
+group's tap prefix with `fd` swapped for `hr` (`fd0001` → `hr0001h`/`hr0001n`), since the fabric
+counts interfaces carrying the tap prefix as running microVMs.
+
+Wiring needs root, so a group created after `up` needs one `host-route refresh`. Unwiring does not,
+so `group rm` retires its own leg — it must, or the leg strands the bridge under a name podman will
+hand to the next network, whose members then get a gateway that does not exist.
+
+#### The host must not become a router between groups
+
+A host holding legs on two group bridges could forward between them: netavark's isolation lives
+inside the rootless netns, and sandboxes hold `NET_ADMIN`, so a member can route to another group's
+subnet via the host's leg. `host-route` writes `0` to each leg's `net.ipv4.conf.<leg>.forwarding`
+(and the v6 equivalent) before the link comes up. `ip_forward()` gates on the **incoming** interface,
+so the leg carries no transit at all — not to another group, not to the host's LAN — while host
+access is untouched, being INPUT and OUTPUT.
+
+A kernel knob rather than a firewall rule, because it exists wherever host-route can run at all
+(nftables coverage varies by distribution, WSL2 especially) and disappears with the interface.
+Changing the *global* `net.ipv4.ip_forward` propagates to every interface, so `up` and `refresh`
+re-assert the knob on every leg, and `status` reads it back from `/proc` and reports **DEGRADED**
+while any leg forwards.
+
+Measured on two groups, `ip_forward=1`, routes added both ways, both legs in firewalld's `trusted`
+zone so the firewall could not be the thing doing the work:
+
+| A→B through the host's leg | TCP | ICMP |
+|---|---|---|
+| `forwarding=1` (positive control) | REACHABLE | REACHABLE |
+| `forwarding=0` (as host-route sets it) | BLOCKED | BLOCKED |
+
+The positive control is the point: it shows the bypass is real, so the blocked row means the knob
+closed it rather than that the probe never worked. The group **gateway** remains the stronger option
+regardless: one published port per group, and no host-level path between groups at all.
+
 ## Implementation notes
 
-**`cs-sandbox` integration.** `cs-sandbox create` dispatches by engine - the Podman path (the
-`internal/engine` podman adapter) is unchanged; the Firecracker path (the firecracker engine,
-`internal/engine/firecracker.go`):
+`create` dispatches by engine. The Firecracker path (`internal/engine/firecracker.go`):
 
-- builds/uses the cached artifacts and the per-sandbox disks (`internal/fcdisk`);
-- allocates a subnet address + SSH port (microVMs draw 2300-2399, via `internal/ports`), skipping
-  anything already live on the host as well as anything recorded (see "The fabric is host-global");
-- writes `run.json` (boot-source + drives + vsock + a virtio-net tap);
-- launches Firecracker via the engine's `launch` step (fabric up via `internal/fcnet` → tap → host→VM
-  forwarder → `podman unshare --rootless-netns` firecracker into the netns), recording
-  `fcip`/`port`/`cpus`/`mem`/repoclones in the sandbox's typed state (`internal/state`, persisted to
-  `instances/<name>/state.json`). A VM that never signals `FC-VM-READY` is torn down and the create fails loudly.
+- builds or reuses the cached artifacts and the per-sandbox disks (`internal/fcdisk`);
+- allocates a subnet address + SSH port (`internal/ports`), skipping anything this root recorded as
+  well as anything already live on the host
+  ([above](#the-fabric-is-host-global-an-instances-dir-is-not));
+- writes `run.json` — boot source, drives, vsock, virtio-net tap;
+- launches Firecracker: `internal/fcnet` brings the fabric up, then tap → host→VM forwarder →
+  `podman unshare --rootless-netns firecracker`, recording `fcip`/`port`/`cpus`/`mem`/repoclones in
+  the sandbox's state. A VM that never signals `FC-VM-READY` is torn down and the create fails
+  loudly.
 
-The name is registered in `launch`, immediately after the tap comes up, so a record and a link share
-a lifetime (what makes the stale-record sweep above sound).
-
-Lifecycle: `start` relaunches, re-asserting the name; `stop` shuts
-the VM down (in-guest sync+reboot, then kill) and GCs the fabric; `rm`/`destroy` also drop the tap, the
-name registration, and the disks. `exec` / `agent-login` go over `ssh` (no `podman
-exec` equivalent).
+The name is registered in `launch` immediately after the tap comes up, so a record and a link share
+a lifetime — which is what makes the stale-record sweep above sound. `start` relaunches and
+re-asserts the name; `stop` shuts the VM down (in-guest sync+reboot, then kill) and GCs the fabric;
+`rm`/`destroy` also drop the tap, the name registration and the disks. `exec` and `agent-login` go
+over ssh, there being no `podman exec` equivalent.
 
 **Concurrency.** Parallel creates race on shared host state (IP/port allocation, the one-per-host
-fabric, image builds). The lock is per-root, so it serializes creates within one instances dir; the
-host-level checks above are what keep *different* roots from colliding. A host-wide lock (`internal/lock`, `instances/.create.lock`) wraps only the
-race-sensitive prefix (allocate → write the state claim → fabric up); the long parts (disk builds, the
-boot wait) run unlocked so creates overlap. The claim is written before the long build, and an EXIT trap reaps a
-failed create so it can't leak its reserved address/port. The cache builds are concurrency-safe
-(PID-private temp + atomic `mv`).
-
-**Engine specifics.** `fakeroot` fakes ownership but not *read* permission, so the `0000`
-`shadow`/`gshadow` are made readable before `mke2fs`. Firecracker drives **virtio-over-MMIO**, so
-`virtio_mmio` is in the initramfs.
+fabric, image builds). A file lock (`internal/lock`, `instances/.create.lock`) wraps only the
+race-sensitive prefix (allocate → write the state claim → fabric up); the long parts (disk builds,
+the boot wait) run unlocked so creates overlap. It lives in the instances dir, so it serializes
+creates within one root — the host-level checks above are what keep *different* roots from
+colliding. The claim is written before the long build, and a deferred cleanup reaps a failed create
+(with `rm`, so a reused home disk survives) so it cannot leak its reserved address/port. The cache
+builds are concurrency-safe (PID-private temp + atomic `mv`).
 
 ## Constraints
 

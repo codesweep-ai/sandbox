@@ -43,10 +43,12 @@ is shared with the microVM engine and described in
 
 ### Home volume
 
-The home is a **named volume** `cs-sandbox-home-<name>` mounted at `/home/<user>` - correct Linux
-permissions on both OSes (which sshd's strict checks require), with no virtiofs perm issues. The
+The home is a **named volume** `cs-sandbox-home-<name>.<group>` mounted at `/home/<user>` - correct
+Linux permissions on both OSes (which sshd's strict checks require), with no virtiofs perm issues. The
 trade-off: no direct host `cd` into the home - use `cs-sandbox exec`, `ssh`, or `podman cp`. It
-persists across stop/start; `cs-sandbox destroy` removes it.
+persists across stop/start; `cs-sandbox destroy` removes it. (Podman names are host-global, so the
+container and its volumes carry the group even in the default one — see
+[design.md](design.md#what-a-group-owns).)
 
 `cs-sandbox exec` runs as the **dev user** in their home, the same identity `ssh <name>` gives you
 (the container's main process runs as uid 0, so the exec passes `--user`/`--workdir` explicitly).

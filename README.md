@@ -312,36 +312,30 @@ cs-sandbox create bench --group cache-redis  --repo ~/projects/bench
 cs-sandbox create api   --group cache-memory --repo ~/projects/api --inherit-agent-login claude
 cs-sandbox create bench --group cache-memory --repo ~/projects/bench
 
-# Identity is (group, name), so a sandbox is named <name>.<group>.
-cs-sandbox ls
+# Identity is (group, name), and a bare name always means the default group —
+# never "whichever group has it", so a reference can't change meaning later.
 cs-sandbox exec api.cache-redis  pwd
 cs-sandbox exec api.cache-memory pwd     # same name, a different sandbox
-
-# A bare name always means the default group — never "whichever group has it",
-# so a reference can't change meaning as groups come and go.
 cs-sandbox exec api pwd                  # error, and it names both candidates
 
-# Inside a group, members reach each other by bare name as they always have —
-# and bench always reaches its OWN experiment's api. That's the whole point:
-# neither run can contaminate the other's numbers.
+# Inside a group, members still reach each other by bare name — and bench always
+# reaches its OWN api, which is the whole point: neither run taints the other.
 ssh bench.cache-redis
 [bench]$ ssh api hostname                # prints "api" — cache-redis's, not the other one
 [bench]$ ssh api.cache-memory            # ssh: Could not resolve hostname
 [bench]$ exit
 
-# Each group publishes one port fronting its gateway, which is also its ssh jump
-# host: through it the host reaches members by name, on any port they bind.
+# Each group's gateway is its ssh jump host, reaching members by name on any port.
 ssh cache-redis-gw                       # a shell inside that experiment
 ssh -L 8080:api:8000 cache-redis-gw      # forward that experiment's api, once it serves
 
-# -f destroys the group's sandboxes along with it.
-cs-sandbox group rm cache-redis -f
+cs-sandbox group rm cache-redis -f       # -f destroys the group's sandboxes too
 cs-sandbox group rm cache-memory -f
 ```
 
 > Groups are an isolation boundary, not just a namespace: members of different groups get no DNS for
 > one another, no route between their networks, and no SSH key the other side would accept. Full
-> model in [`docs/groups.md`](docs/groups.md).
+> model in [`docs/design.md`](docs/design.md#groups).
 
 ## Choosing an engine: Podman vs Firecracker
 
@@ -410,26 +404,24 @@ independent of sandbox type. Lend deliberately — two conditions to keep in min
   reach each other with generated per-group tier keys. If a sandbox ever needs your own keys, you can lend
   a specific set for a session ([`ssh -A`](#lending-a-sandbox-specific-ssh-keys-with-ssh--a)) — they
   stay on the host.
-- **Agent/user SSH isolation.** Per-type [SSH trust](#ssh-trust) (the "two layers, user above agent"
-  model) is enforced: a user sandbox can `ssh` into any sandbox, but an agent sandbox reaches only
-  other agent sandboxes — never a user sandbox — so an agent can't pivot through SSH into your
-  workspace.
-- **`--yolo`** (agent sandboxes) drops the agents' approval prompts, safe because the sandbox itself
-  is the isolation boundary. **`--solo`** additionally denies the agent any *outbound* SSH into its
-  group, while keeping it reachable for you to drive.
+- **Agent/user SSH isolation.** The per-type [SSH trust](#ssh-trust) matrix is enforced by the keys
+  themselves, so an agent can't pivot through SSH into your workspace.
+- **`--yolo`** drops the agents' approval prompts, safe because the sandbox itself is the isolation
+  boundary. **`--solo`** (agent sandboxes only) additionally denies the agent any *outbound* SSH into
+  its group, while keeping it reachable for you to drive.
 - **Groups are an optional second boundary.** `--group <name>` puts a set of sandboxes on their own
   network with their own SSH keys, so they can neither resolve, reach, nor authenticate to sandboxes
   in another group — the agent/user matrix above applies inside a group, not across groups. Use it
   when unrelated efforts share a host; ignore it and everything lives in one group
-  ([`docs/groups.md`](docs/groups.md)).
+  ([`docs/design.md`](docs/design.md#groups)).
 - It is not a hardened multi-tenant boundary; isolation is whatever the chosen engine provides.
 
 ## Docs
 
 - [`INSTALL.md`](INSTALL.md): one-time host setup. Podman, the Firecracker/KVM prerequisites,
   building the image, installing the agent tools, and the agent login.
-- [`docs/design.md`](docs/design.md): the cross-engine model (types & trust, networking, the generic
-  image, the seed, shared image stores, agent tools & login, security).
+- [`docs/design.md`](docs/design.md): the cross-engine model — types & trust, the seed, groups,
+  networking, shared image stores, agent tools & login, security.
 - [`docs/podman.md`](docs/podman.md): the Podman container engine (boot, nested Podman, storage,
   macOS, private registry).
 - [`docs/firecracker.md`](docs/firecracker.md): the Firecracker microVM engine.
@@ -437,8 +429,6 @@ independent of sandbox type. Lend deliberately — two conditions to keep in min
 - [`docs/agent-login.md`](docs/agent-login.md): how a sandbox gets a logged-in agent, and what is never copied.
 - [`docs/opencode.md`](docs/opencode.md): the OpenCode adapter — profile isolation, the turn
   driver, and the version-bump procedure.
-- [`docs/groups.md`](docs/groups.md): groups — isolated networks, per-group SSH keys, gateways,
-  and how the host reaches a group.
 
 `cs-sandbox help` is the full command reference.
 
