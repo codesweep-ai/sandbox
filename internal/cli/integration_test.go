@@ -539,6 +539,16 @@ func sshPipe(t *testing.T, host hostenv.Host, name, sh string, r io.Reader) stri
 	return string(out)
 }
 
+// sshOK is sshCapture for a command that must succeed: it fails the test with
+// what the command itself printed, rather than returning "". sshCapture reads
+// through run.Output, which discards a non-zero exit as an empty string — right
+// for a probe, and the reason an assertion several engines deep would otherwise
+// report nothing but the empty string it compared against.
+func sshOK(t *testing.T, host hostenv.Host, name, sh string) string {
+	t.Helper()
+	return sshPipe(t, host, name, sh, nil) // nil stdin: /dev/null, as exec.Cmd does
+}
+
 // assertHostByName checks the host-by-name wiring for a live sandbox: the seed
 // pins the host's name(s) to the reachable pasta address, and inside the guest a
 // getaddrinfo client (gai.conf ordering) picks that IPv4 over any unreachable
@@ -600,8 +610,10 @@ func TestCLIHostByNameFirecrackerLive(t *testing.T) {
 
 // TestCLINestedSandboxInVMLive: cs-sandbox running *inside* one of its own
 // sandboxes. A Firecracker microVM is the outer sandbox; the CLI and the sandbox
-// image are shipped into it; it creates a podman sandbox of its own; and then it
-// reaches that inner sandbox by name over ssh.
+// image are shipped into it; it creates a podman sandbox of its own; it reaches
+// that inner sandbox by name over ssh; and the "workload" subtest then runs a
+// container inside THAT — the full microVM -> sandbox -> container stack, each
+// layer built by the code under test.
 //
 // What only this member covers: the guest's nested-podman setup as a whole —
 // rootless inner engine, the newuidmap/newgidmap file caps and /dev/net/tun the
@@ -610,10 +622,14 @@ func TestCLIHostByNameFirecrackerLive(t *testing.T) {
 // engine is also the one the wrapper picks for a VM, so shipping the image with
 // a plain `podman load` (the user's rootless store) is what the inner create
 // must find: run it against a rootful inner engine instead and create fails
-// looking for an image that landed in a different store.
+// looking for an image that landed in a different store. The subtest covers the
+// other half of that wrapper — the rootful nested engine a sandbox gets, here
+// running under a hypervisor, where the podman-only tests exercise it on the
+// host.
 //
 // Cost: the image goes over ssh into the guest, so it wants the slim CI image
 // (~700 MB, ~10s) and skips on the full one, which would not fit the guest disk.
+// The workload subtest adds a second, ~4 MB image on top of that.
 // Skips without /dev/kvm or the cached FC artifacts, like the other VM members.
 func TestCLINestedSandboxInVMLive(t *testing.T) {
 	_, host := liveSetup(t)
@@ -693,6 +709,80 @@ func TestCLINestedSandboxInVMLive(t *testing.T) {
 		fmt.Sprintf("ssh -o StrictHostKeyChecking=no %s.default 'hostname; id -un'", inner)))
 	if want := inner + "\n" + host.User; who != want {
 		t.Errorf("outer -> inner ssh = %q, want %q", who, want)
+	}
+
+	// One layer further down: a container workload inside the inner sandbox —
+	// microVM, sandbox, container, three engines deep. The engine that runs it
+	// is the ROOTFUL nested podman the /usr/local/bin/podman wrapper picks
+	// inside a container (SPEC R104/R105), which is a different engine and a
+	// different store from the guest's rootless one — so the image makes the
+	// second hop too. Nothing else covers R102's namespaced capability set
+	// doing its job under a hypervisor rather than on the host.
+	//
+	// A subtest, so it can skip on its own: the workload image comes from a
+	// registry, and on an offline host losing this stage is right where losing
+	// the boot, the ship and the nested create above it would not be.
+	t.Run("workload", func(t *testing.T) {
+		const workload = "docker.io/library/busybox"
+		requireWorkloadImage(t, workload)
+
+		// Piped straight through: `podman save` on the host, `podman load` in
+		// the inner sandbox, with the guest only the ssh hop in between. It is
+		// 4 MB, but staging it in the guest would put it in a third store that
+		// nothing under test reads.
+		step(t, "shipping %s into %s…", workload, inner)
+		save := exec.Command("podman", "save", workload)
+		pipe, err := save.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := save.Start(); err != nil {
+			t.Fatalf("podman save %s: %v", workload, err)
+		}
+		load := fmt.Sprintf("ssh -o StrictHostKeyChecking=no %s.default 'podman load'", inner)
+		if out := sshPipe(t, host, outer, load, pipe); !strings.Contains(out, "Loaded image") {
+			t.Fatalf("podman load in the inner sandbox did not report a loaded image:\n%s", out)
+		}
+		if err := save.Wait(); err != nil {
+			t.Fatalf("podman save %s: %v", workload, err)
+		}
+
+		// The workload itself. Default networking, no --network=none: publishing
+		// a port from a nested container is a shipped promise (README), so a
+		// netavark bridge that cannot come up in here is a failure, not a
+		// reason to ask for less.
+		step(t, "running the innermost container…")
+		got := sshOK(t, host, outer, fmt.Sprintf(
+			"ssh -o StrictHostKeyChecking=no %s.default 'podman run --rm %s echo nested-ok'", inner, workload))
+		if !strings.Contains(got, "nested-ok") {
+			t.Fatalf("podman run inside the inner sandbox printed %q, want it to print nested-ok", got)
+		}
+
+		// And it ran on the engine that makes this worth its minutes. A rootless
+		// answer means the wrapper took its microVM branch inside a container —
+		// the run above would still pass, while proving something much weaker.
+		rootless := strings.TrimSpace(sshCapture(t, host, outer, fmt.Sprintf(
+			`ssh -o StrictHostKeyChecking=no %s.default "podman info --format '{{.Host.Security.Rootless}}'"`, inner)))
+		if rootless != "false" {
+			t.Errorf("inner sandbox's nested engine reports rootless=%q, want %q", rootless, "false")
+		}
+	})
+}
+
+// requireWorkloadImage makes sure the innermost workload image is in the host's
+// store, pulling it once if it is not. It skips rather than fails when there is
+// no registry to pull from: the smoke profile runs on developer machines too,
+// and an offline host should lose this one stage, not the run.
+func requireWorkloadImage(t *testing.T, img string) {
+	t.Helper()
+	ctx := context.Background()
+	r := &run.Exec{}
+	if _, err := r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "image", "exists", img); err == nil {
+		return
+	}
+	step(t, "pulling %s (the innermost workload, ~4 MB)…", img)
+	if _, err := r.Run(ctx, run.Opts{}, "podman", "pull", img); err != nil {
+		t.Skipf("cannot pull %s: %v", img, err)
 	}
 }
 
