@@ -120,7 +120,7 @@ jobs:
       - uses: actions/setup-go@v7
         if: runner.os != 'Windows'
         with:
-          go-version: stable
+          go-version-file: go.mod
           check-latest: true
           cache: ${{ matrix.label != 'macos-arm64 / self-hosted' }}
 
@@ -131,7 +131,7 @@ jobs:
           wsl-version: 2
 
       # The distro is bare, so this is what actions/setup-go does for the others:
-      # a Go toolchain (Ubuntu 24.04 ships 1.22 and go.mod needs 1.25) plus gcc,
+      # a Go toolchain (Ubuntu 24.04 ships 1.22 and go.mod needs 1.26) plus gcc,
       # without which `go test -race` cannot build — and running -race on two of
       # three hosts but not the third is exactly the asymmetry this matrix exists
       # to remove. The symlink puts go on PATH for every later step, so none of
@@ -241,7 +241,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version-file: go.mod
           check-latest: true
 
       - name: cache them
@@ -311,7 +311,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version-file: go.mod
           check-latest: true
 
       - uses: actions/download-artifact@v7
@@ -343,7 +343,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version-file: go.mod
           check-latest: true
 
       # /dev/kvm is present on these runners but root:kvm, and the runner user is
@@ -483,8 +483,10 @@ jobs:
           sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null \
             || echo "no apparmor userns restriction here — nothing to relax"
 
-      # Ubuntu 24.04 ships Go 1.22 and go.mod needs 1.25, so take the same
-      # "latest stable" the other jobs get from actions/setup-go.
+      # Ubuntu 24.04 ships Go 1.22 and go.mod needs 1.26, so fetch a toolchain.
+      # This leg takes latest stable rather than the go.mod floor the other jobs
+      # pin through setup-go: there is no setup-go inside WSL, and latest stable
+      # always satisfies the floor.
       - name: install Go
         shell: wsl-bash {0}
         run: |
@@ -568,7 +570,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version-file: go.mod
           check-latest: true
 
       - uses: actions/download-artifact@v7
@@ -657,7 +659,7 @@ jobs:
       # restore fails trying to unpack over it.
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
+          go-version-file: go.mod
           check-latest: true
           cache: false
 
