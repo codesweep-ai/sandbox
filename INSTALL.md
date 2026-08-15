@@ -23,6 +23,15 @@ tar xzf cs-sandbox_*.tar.gz cs-sandbox               # unpack the binary from yo
 install -m755 cs-sandbox ~/.local/bin/cs-sandbox     # anywhere on your PATH
 ```
 
+To verify the cosign signature as well:
+
+```bash
+cosign verify-blob checksums.txt \
+  --signature checksums.txt.sig --certificate checksums.txt.pem \
+  --certificate-identity-regexp 'https://github.com/codesweep-ai/sandbox/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
 ### Or build from source
 
 Needs **Go 1.25+**, **git**, and **goreleaser** (which produces the version-stamped static binary):
