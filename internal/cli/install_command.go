@@ -38,7 +38,7 @@ func newInstallAgentToolsCmd(app *App) *cobra.Command {
 			}
 			n := 0
 			for _, e := range entries {
-				if e.IsDir() || e.Name() == "user-podman" { // user-podman is guest-only
+				if e.IsDir() {
 					continue
 				}
 				data, err := fs.ReadFile(src, e.Name())

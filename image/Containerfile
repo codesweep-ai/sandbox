@@ -69,9 +69,8 @@ RUN dnf -y install \
 # account (pam_unix auth/account) or fail/hang trying to open a login session
 # (pam_systemd registering with a logind that isn't there). Replacing every PAM stack with
 # pam_permit.so makes the sudo PAM transaction unconditionally succeed, so passwordless
-# sudo is reliable and non-interactive. That matters because the rootful nested-podman
-# wrapper shells out to `sudo` on every podman call (see below); a PAM stall there would
-# wedge nested podman. sshd is likewise run with UsePAM=no for the same reason.
+# sudo is reliable and non-interactive — otherwise `sudo` in a sandbox hangs or refuses.
+# sshd is likewise run with UsePAM=no for the same reason.
 RUN echo -e "auth       sufficient   pam_permit.so\n\
 account    sufficient   pam_permit.so\n\
 password   sufficient   pam_permit.so\n\
@@ -100,22 +99,20 @@ RUN if [ -n "$CS_SANDBOX_PRIVATE_REGISTRY" ]; then \
       } >> /etc/containers/registries.conf; \
     fi
 
-# Configure nested podman. The container runs with a scaled-down cap set by default
-# (SYS_ADMIN/NET_ADMIN/MKNOD/SYS_PTRACE + /dev/net/tun + unmask=/proc/sys, seccomp on;
-# --privileged is an opt-in fallback) — and it's rootless, so caps are bounded by the
-# unprivileged host user, while nested podman runs ROOTFUL as container-root (which
-# under keep-id is your unprivileged host user). Default to the
-# kernel's NATIVE overlay driver (fast path): the per-instance cs-sandbox-containers volume
-# mounted at /var/lib/containers gives the store a non-overlay backing fs, so on
-# kernel >= 5.11 native overlay mounts directly — no fuse-overlayfs userspace layer
-# and its perf cost. The entrypoint auto-falls-back to fuse-overlayfs (still
-# installed) if a native overlay mount isn't possible here.
+# Configure nested podman. It runs ROOTLESS, as the sandbox user, exactly as podman does
+# on any normal machine and in a microVM; /sandbox/nested-rootless supplies the two things
+# a container otherwise lacks (mapped subuid ranges and newuidmap file caps). The outer
+# container runs with a scaled-down cap set (SYS_ADMIN/SETFCAP + /dev/net/tun +
+# unmask=ALL, seccomp on; --privileged is an opt-in fallback) and is itself rootless, so
+# those caps are bounded by the unprivileged host user. Default to the kernel's NATIVE
+# overlay driver (fast path): the per-instance cs-sandbox-containers volume mounted at the
+# user's rootless graphroot gives the store a non-overlay backing fs, so on kernel >= 5.13
+# native overlay mounts directly — no fuse-overlayfs userspace layer and its perf cost.
+# The entrypoint auto-falls-back to fuse-overlayfs (still installed) if a native overlay
+# mount isn't possible here.
 RUN mkdir -p /etc/containers && \
     printf '[storage]\ndriver = "overlay"\n' > /etc/containers/storage.conf && \
     printf '[containers]\ncgroups = "disabled"\n\n[engine]\ncgroup_manager = "cgroupfs"\nevents_logger = "file"\n' > /etc/containers/containers.conf
-
-# (Nested podman runs rootful in a container and rootless in a microVM; the
-# /usr/local/bin/podman wrapper installed below picks per engine.)
 
 # Default internal sshd port (overridable at runtime via -e CS_SANDBOX_SSH_PORT)
 ENV CS_SANDBOX_SSH_PORT=2222
@@ -348,29 +345,6 @@ RUN chmod -R a+rX /opt
 ENV JAVA_HOME=/opt/java
 ENV PATH=/opt/nvm/versions/node/v24.18.1/bin:/opt/py-tools/bin:/opt/claude/bin:/opt/codex/bin:/opt/opencode/bin:/opt/pyenv/bin:/opt/go/bin:/opt/java/bin:/opt/maven/bin:${PATH}
 
-# Make `podman` do the right thing for the engine underneath it. A thin wrapper ahead
-# of /usr/bin in PATH, so plain `podman` (shells, scripts, tools, and
-# `ssh cs-sandbox-x podman …`) lands on the right one:
-#
-#   podman container — ROOTFUL, via the NOPASSWD sudo the user already has. The nested
-#     engine must be rootful: rootless-inner fails under --userns=keep-id (no cleanly
-#     sub-dividable subuid range). No setuid (podman keys rootless/rootful off the real
-#     uid, so a setuid bit just yields a broken half-state); this grants nothing beyond
-#     the existing sudo.
-#   firecracker microVM — ROOTLESS, i.e. podman as it runs anywhere else. A VM is real
-#     root on a real kernel, so none of the keep-id apparatus applies. The guest init
-#     grants newuidmap/newgidmap the file caps rootless needs (see image/guest/init).
-#
-# /run/.containerenv is podman's own marker for "inside a container": it exists in the
-# container engine and not in the microVM, where PID 1 also mounts a fresh tmpfs over
-# /run. The real binary stays at /usr/bin/podman for anyone who wants one explicitly.
-RUN printf '%s\n' \
-      '#!/bin/sh' \
-      '# Engine-aware podman (see image/Containerfile). Rootful in a container, rootless in a VM.' \
-      '[ -f /run/.containerenv ] && exec sudo /usr/bin/podman "$@"' \
-      'exec /usr/bin/podman "$@"' > /usr/local/bin/podman && \
-    chmod 0755 /usr/local/bin/podman
-
 # Repo context (entrypoint, home skeleton, vendored scripts). Deferred to here — after
 # the toolchain compiles — so edits to these files don't bust the expensive cache above.
 COPY . /sandbox
@@ -378,6 +352,7 @@ COPY . /sandbox
 # The guest environment declaration, at a path both entry paths read. Installed
 # rather than referenced under /sandbox so it looks like the config it is.
 RUN install -Dm0644 /sandbox/etc/cs-sandbox/env /etc/cs-sandbox/env
+
 
 # Pre-build the ENTIRE Neovim setup, so the first `nvim` in a sandbox is instant and needs
 # no network. Three kinds of artifact, and they can't all live in the same place:

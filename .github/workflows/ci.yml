@@ -387,8 +387,8 @@ jobs:
       # down — cs-sandbox shipped into that microVM, creating a podman sandbox
       # inside it, reached by name over ssh, and then a container run inside that
       # sandbox — which is what covers the guest's nested podman (rootless engine,
-      # newuidmap caps, /dev/net/tun) and the rootful nested engine a sandbox gets
-      # under a hypervisor. It ships the images into the guest, so it needs the
+      # newuidmap caps, /dev/net/tun) and the nested engine a sandbox gets under a
+      # hypervisor. It ships the images into the guest, so it needs the
       # slim CI image this job already loads.
       - name: smoke (firecracker)
         run: make test-smoke SMOKE_TESTS="TestFirecrackerCreateLive TestCLINestedSandboxInVMLive"

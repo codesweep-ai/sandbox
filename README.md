@@ -220,6 +220,9 @@ ssh web
 [web]$ exit
 # That's Podman nested inside Podman, or Podman inside a Firecracker microVM,
 # depending on the engine - both are already set up for you.
+#
+# The nested engine is rootless and runs as you, so a bind mount works the way
+# you would expect: files an inner container writes come back owned by you.
 ```
 
 ### 5. Reach a sandbox port from the host with `forward`
@@ -337,8 +340,8 @@ networking. They differ mostly in isolation versus weight. Pick with `--engine p
 | | **Podman container** | **Firecracker microVM** |
 |---|---|---|
 | Isolation | shares the host kernel, scaled-down capabilities | **own kernel**, hardware virtualization |
-| Root inside | rootful-in-userns (sudo wrapper) | **real root** |
-| Nested Podman | via a rootful-inside wrapper | native |
+| Root inside | rootful-in-userns (`sudo`) | **real root** |
+| Nested Podman | rootless | rootless |
 | Requires | Podman | `/dev/kvm`, Linux x86_64 |
 | Default on | macOS, and any host without x86_64 KVM | x86_64 Linux + KVM |
 | **Reach for it when** | speed, macOS | stronger isolation, untrusted workloads, nested root |

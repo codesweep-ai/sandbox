@@ -29,9 +29,9 @@ func TestBuildRunArgsScaledDownCaps(t *testing.T) {
 		"--network cs-sandbox-net --network-alias feature",
 		"-p 127.0.0.1:2201:22",
 		"--dns 10.89.0.53 --dns 10.89.0.1",
-		"--cap-add=SYS_ADMIN", "--cap-add=NET_ADMIN", "--cap-add=MKNOD", "--cap-add=SYS_PTRACE",
+		"--cap-add=SYS_ADMIN", "--cap-add=SETFCAP",
 		"--device /dev/net/tun",
-		"--security-opt unmask=/proc/sys",
+		"--security-opt unmask=ALL",
 		"--security-opt label=disable",
 		"--sysctl net.ipv4.ping_group_range=1000 1000",
 		"--userns=keep-id",
@@ -43,6 +43,8 @@ func TestBuildRunArgsScaledDownCaps(t *testing.T) {
 		"--label cs-sandbox.ssh_port=2201",
 		"--label cs-sandbox.name=feature",
 		"-v cs-sandbox-home-feature:/home/dev",
+		// The nested store is the user's rootless graphroot, on its own volume.
+		"-v cs-sandbox-containers-feature:/home/dev/.local/share/containers",
 		"-v /inst/feature/seed:/run/cs-sandbox-seed:ro",
 		"localhost/cs-sandbox:44 sleep infinity",
 	} {
@@ -52,6 +54,13 @@ func TestBuildRunArgsScaledDownCaps(t *testing.T) {
 	}
 	if strings.Contains(got, "--privileged") {
 		t.Error("scaled-down path must NOT use --privileged")
+	}
+	// A rootless inner podman makes its own user namespace and holds these there, so
+	// the outer container has no use for them (SPEC.md R102).
+	for _, gone := range []string{"NET_ADMIN", "MKNOD", "SYS_PTRACE"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("nested rootless podman does not need %s:\n%s", gone, got)
+		}
 	}
 }
 

@@ -1,8 +1,8 @@
 // Package store manages shared image stores — the podman volume
 // cs-sandbox-shared-<name> holding an image set that sandboxes reuse read-only
-// via --image-store. Stores are seeded with the rootful nested engine (in a
-// helper container) so images are owned by the keep-id subuid base every sandbox
-// shares.
+// via --image-store. Stores are seeded by a nested ROOTLESS engine in a helper
+// container, the same kind of engine (and the same keep-id id mapping) that every
+// sandbox reads them with.
 package store
 
 import (
@@ -15,6 +15,12 @@ import (
 )
 
 const volPrefix = "cs-sandbox-shared-"
+
+// storePodman addresses the store's graphroot explicitly, so store work never
+// touches the helper container's own (throwaway) rootless store. The runroot sits
+// under the user's XDG_RUNTIME_DIR because the engine runs unprivileged and cannot
+// create a directory at the root of /run.
+const storePodman = `/usr/bin/podman --root /seed --runroot "$XDG_RUNTIME_DIR/seed-rr" --storage-driver overlay`
 
 var nameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
@@ -52,7 +58,7 @@ func (m Manager) Create(ctx context.Context, name string) error {
 		return err
 	}
 	// Initialize the overlay store layout so an unseeded store mounts cleanly.
-	initScript := `/usr/bin/podman --root /seed --runroot /run/seed-rr --storage-driver overlay images >/dev/null 2>&1 || true`
+	initScript := asUser(storePodman + ` images >/dev/null 2>&1 || true`)
 	argv := append(m.helperRun(name, "--entrypoint", "/bin/bash"), "-c", initScript)
 	_, err := m.Runner.Run(ctx, run.Opts{}, argv...)
 	return err
@@ -85,26 +91,30 @@ func (m Manager) Seed(ctx context.Context, name string, images []string, fromHos
 			}
 		}
 		extra = []string{"-v", hostStore + ":/var/lib/host-store:ro", "--entrypoint", "/bin/bash"}
-		script = `
+		// The host store is the caller's own rootless store, so the seeding engine —
+		// which runs as that same uid under keep-id — can read it directly. The config
+		// goes in the SEEDING USER's home, not /etc: a rootless engine reads only its
+		// own storage.conf, so additionalimagestores in the system file is ignored.
+		script = `mkdir -p /home/seeder/.config/containers
+printf "[storage]\ndriver = \"overlay\"\n\n[storage.options]\nadditionalimagestores = [\"/var/lib/host-store\"]\n" > /home/seeder/.config/containers/storage.conf
+` + asUser(`
 set -e
-mkdir -p /etc/containers
-printf "[storage]\ndriver = \"overlay\"\n\n[storage.options]\nadditionalimagestores = [\"/var/lib/host-store\"]\n" > /etc/containers/storage.conf
 for img in "$@"; do
   echo ">> copying $img  (host store -> shared store)"
-  /usr/bin/podman save "$img" | /usr/bin/podman --root /seed --runroot /run/seed-rr --storage-driver overlay load
+  /usr/bin/podman save "$img" | `+storePodman+` load
 done
 echo "== shared store now contains: =="
-/usr/bin/podman --root /seed --runroot /run/seed-rr --storage-driver overlay images`
+`+storePodman+` images`)
 	} else {
 		extra = []string{"--entrypoint", "/bin/bash"}
-		script = `
+		script = asUser(`
 set -e
 for img in "$@"; do
   echo ">> pulling $img"
-  /usr/bin/podman --root /seed --runroot /run/seed-rr --storage-driver overlay pull "$img"
+  ` + storePodman + ` pull "$img"
 done
 echo "== shared store now contains: =="
-/usr/bin/podman --root /seed --runroot /run/seed-rr --storage-driver overlay images`
+` + storePodman + ` images`)
 	}
 	argv := m.helperRun(name, extra...)
 	argv = append(argv, "-c", script, "_")
@@ -129,7 +139,7 @@ func (m Manager) List(ctx context.Context) []string {
 
 // Images lists the images in one store (best-effort).
 func (m Manager) Images(ctx context.Context, name string) (string, error) {
-	script := `/usr/bin/podman --root /seed --runroot /run/seed-rr --storage-driver overlay images --format "{{.Repository}}:{{.Tag}}  {{.Size}}" 2>/dev/null`
+	script := asUser(storePodman + ` images --format "{{.Repository}}:{{.Tag}}  {{.Size}}" 2>/dev/null`)
 	argv := append(m.helperRun(name, "--entrypoint", "/bin/bash"), "-c", script)
 	res, err := m.Runner.Run(ctx, run.Opts{}, argv...)
 	if err != nil {
@@ -159,12 +169,51 @@ func (m Manager) Remove(ctx context.Context, name string, force bool) error {
 // helperRun builds the common `podman run --rm --userns=keep-id …` argv up to
 // and including the image; preImage flags (e.g. --entrypoint, extra -v) go
 // before the image, and callers append the post-image command. Mounts the store
-// at /seed and runs the rootful nested engine for storage ops.
+// at /seed.
+//
+// The flags match a sandbox's, because the engine that WRITES a store has to be
+// the same kind as the engine that reads it. A store is read by the nested
+// rootless podman of every sandbox that mounts it, and rootless and rootful
+// engines disagree about the store's on-disk ownership: a rootful seeder leaves
+// the graphroot mode 0700 root-owned, which a rootless reader cannot even open,
+// and image uid 0 stored under the wrong id. Seeded through the same keep-id
+// mapping, the ids line up in every sandbox of the same host user.
 func (m Manager) helperRun(name string, preImage ...string) []string {
 	argv := []string{"podman", "run", "--rm", "--userns=keep-id", "--user", "0:0",
-		"--cap-add=SYS_ADMIN", "--security-opt", "label=disable",
+		"--cap-add=SYS_ADMIN", "--cap-add=SETFCAP",
+		"--security-opt", "label=disable", "--security-opt", "unmask=ALL",
 		"-v", vol(name) + ":/seed"}
 	argv = append(argv, preImage...)
 	argv = append(argv, m.Image)
 	return argv
+}
+
+// asUser wraps a root-side seeding script so it bootstraps rootless podman and
+// then runs the storage work as the unprivileged user, whose ids a sandbox's own
+// nested engine reproduces. $STORE_USER is that user, resolved from the keep-id
+// entry podman injects for the caller's uid.
+func asUser(script string) string {
+	return `
+set -e
+# The caller's own id inside this userns: the one keep-id maps to id 0 of the parent
+# (rootless) namespace, which is the host user. /seed cannot answer this — podman chowns
+# a fresh volume to the container's --user, which is root.
+_own() { awk '$2 <= 0 && 0 < $2 + $3 { print $1 - $2; exit }' "$1"; }
+STORE_UID=$(_own /proc/self/uid_map); STORE_GID=$(_own /proc/self/gid_map)
+STORE_USER=$(getent passwd "$STORE_UID" | cut -d: -f1)
+if [ -z "$STORE_USER" ]; then
+  STORE_USER=seeder
+  getent group "$STORE_GID" >/dev/null || groupadd -g "$STORE_GID" "$STORE_USER"
+  useradd -u "$STORE_UID" -g "$STORE_GID" -M -d /home/seeder -s /bin/bash "$STORE_USER"
+fi
+mkdir -p /home/seeder && chown -R "$STORE_UID:$STORE_GID" /home/seeder && chown "$STORE_UID:$STORE_GID" /seed
+/sandbox/nested-rootless "$STORE_USER" "$STORE_UID" "$STORE_GID"
+runuser -u "$STORE_USER" -- env HOME=/home/seeder XDG_RUNTIME_DIR=/run/user/$STORE_UID \
+  bash -c ` + shellQuote(script) + ` _ "$@"
+`
+}
+
+// shellQuote renders s as a single-quoted shell word.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

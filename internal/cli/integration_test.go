@@ -257,9 +257,10 @@ func TestCLIAgentToolSetLive(t *testing.T) {
 			t.Errorf("%s resolved to %q, want ~/.local/bin/%s", tool, got, tool)
 		}
 	}
-	// The guest-only user-podman lives there too and is executable.
-	if got := strings.TrimSpace(inBox(ctx, r, host, name, "test -x ~/.local/bin/user-podman && echo ok")); got != "ok" {
-		t.Errorf("user-podman not executable in sandbox: %q", got)
+	// Plain `podman` is the real binary, not a wrapper on PATH ahead of it: the
+	// nested engine is rootless on both engines now, so there is nothing to wrap.
+	if got := strings.TrimSpace(inBox(ctx, r, host, name, "command -v podman")); got != "/usr/bin/podman" {
+		t.Errorf("podman resolved to %q, want /usr/bin/podman (no wrapper)", got)
 	}
 }
 
@@ -616,16 +617,14 @@ func TestCLIHostByNameFirecrackerLive(t *testing.T) {
 // layer built by the code under test.
 //
 // What only this member covers: the guest's nested-podman setup as a whole —
-// rootless inner engine, the newuidmap/newgidmap file caps and /dev/net/tun the
-// guest init grants it — driven by the real create path (network fabric, tier
-// keys, ssh config fragment, sshd) rather than by a bare `podman run`. The inner
-// engine is also the one the wrapper picks for a VM, so shipping the image with
-// a plain `podman load` (the user's rootless store) is what the inner create
-// must find: run it against a rootful inner engine instead and create fails
-// looking for an image that landed in a different store. The subtest covers the
-// other half of that wrapper — the rootful nested engine a sandbox gets, here
-// running under a hypervisor, where the podman-only tests exercise it on the
-// host.
+// rootless inner engine, the newuidmap/newgidmap file caps and /dev/net/tun
+// /sandbox/nested-rootless grants it — driven by the real create path (network
+// fabric, tier keys, ssh config fragment, sshd) rather than by a bare `podman
+// run`. Shipping the image with a plain `podman load` puts it in the user's own
+// rootless store, which is exactly the store the inner create then reads. The
+// subtest goes one layer deeper still: a container run by the inner sandbox's
+// own nested engine, under a hypervisor, where the podman-only tests exercise
+// the same engine on the host.
 //
 // Cost: the image goes over ssh into the guest, so it wants the slim CI image
 // (~700 MB, ~10s) and skips on the full one, which would not fit the guest disk.
@@ -713,11 +712,10 @@ func TestCLINestedSandboxInVMLive(t *testing.T) {
 
 	// One layer further down: a container workload inside the inner sandbox —
 	// microVM, sandbox, container, three engines deep. The engine that runs it
-	// is the ROOTFUL nested podman the /usr/local/bin/podman wrapper picks
-	// inside a container (SPEC R104/R105), which is a different engine and a
-	// different store from the guest's rootless one — so the image makes the
-	// second hop too. Nothing else covers R102's namespaced capability set
-	// doing its job under a hypervisor rather than on the host.
+	// is the inner sandbox's own nested rootless podman (SPEC R104), a different
+	// engine and a different store from the guest's — so the image makes the
+	// second hop too. Nothing else covers R102's namespaced capability set doing
+	// its job under a hypervisor rather than on the host.
 	//
 	// A subtest, so it can skip on its own: the workload image comes from a
 	// registry, and on an offline host losing this stage is right where losing
@@ -758,13 +756,14 @@ func TestCLINestedSandboxInVMLive(t *testing.T) {
 			t.Fatalf("podman run inside the inner sandbox printed %q, want it to print nested-ok", got)
 		}
 
-		// And it ran on the engine that makes this worth its minutes. A rootless
-		// answer means the wrapper took its microVM branch inside a container —
-		// the run above would still pass, while proving something much weaker.
+		// And it ran on the engine that makes this worth its minutes: the inner
+		// sandbox's nested podman, rootless as the dev user. A rootful answer
+		// would mean something re-introduced a privileged inner engine — the run
+		// above would still pass, while proving something much weaker.
 		rootless := strings.TrimSpace(sshCapture(t, host, outer, fmt.Sprintf(
 			`ssh -o StrictHostKeyChecking=no %s.default "podman info --format '{{.Host.Security.Rootless}}'"`, inner)))
-		if rootless != "false" {
-			t.Errorf("inner sandbox's nested engine reports rootless=%q, want %q", rootless, "false")
+		if rootless != "true" {
+			t.Errorf("inner sandbox's nested engine reports rootless=%q, want %q", rootless, "true")
 		}
 	})
 }
@@ -939,6 +938,41 @@ func TestCLISocksForwardLive(t *testing.T) {
 }
 
 // TestCLIImageStoreUseLive: a sandbox created with --image-store can use an image
+// TestCLINestedRootlessPodmanLive: nested podman in a container sandbox is rootless,
+// and an inner container's bind-mounted files come back owned by the sandbox user (R106).
+//
+// The second half is what the container engine has to earn: a keep-id container is the
+// one place where an inner root could be a subuid writing files nobody in the sandbox
+// owns. Rootless makes the sandbox user the inner root, so plain `podman run -v` is
+// enough — and no flag, wrapper or injected --user stands behind that.
+func TestCLINestedRootlessPodmanLive(t *testing.T) {
+	r, host := liveSetup(t)
+	ctx := context.Background()
+	const workload = "docker.io/library/busybox"
+	requireWorkloadImage(t, workload)
+	name := boxName(t, "rootless")
+	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
+
+	if out, err := execRoot(t, "create", name, "--engine", "podman"); err != nil {
+		t.Fatalf("create: %v (%s)", err, out)
+	}
+	if got := strings.TrimSpace(inBox(ctx, r, host, name,
+		"podman info --format '{{.Host.Security.Rootless}}'")); got != "true" {
+		t.Fatalf("nested engine reports rootless=%q, want \"true\"", got)
+	}
+	// The store is the user's own rootless graphroot, on its own volume.
+	if got := strings.TrimSpace(inBox(ctx, r, host, name,
+		"podman info --format '{{.Store.GraphRoot}}'")); !strings.HasSuffix(got, "/.local/share/containers/storage") {
+		t.Errorf("nested graphroot = %q, want the user's rootless store", got)
+	}
+	uid := strings.TrimSpace(inBox(ctx, r, host, name, "id -u"))
+	owner := strings.TrimSpace(inBox(ctx, r, host, name, "mkdir -p ~/nested && "+
+		"podman run --rm -v ~/nested:/w "+workload+" touch /w/f >/dev/null 2>&1; stat -c %u ~/nested/f"))
+	if owner != uid {
+		t.Errorf("file written by an inner container is owned by uid %q, want the sandbox user %q", owner, uid)
+	}
+}
+
 // from the seeded store via nested podman, without pulling — end to end.
 func TestCLIImageStoreUseLive(t *testing.T) {
 	r, host := liveSetup(t)
@@ -960,7 +994,7 @@ func TestCLIImageStoreUseLive(t *testing.T) {
 		t.Fatalf("create --image-store: %v (%s)", err, out)
 	}
 
-	// The nested (rootful) podman sees busybox from the mounted store — no pull.
+	// The nested (rootless) podman sees busybox from the mounted store — no pull.
 	got := inBox(ctx, r, host, name, "podman images docker.io/library/busybox --format '{{.Repository}}' 2>/dev/null")
 	if !strings.Contains(got, "busybox") {
 		t.Errorf("nested podman did not see busybox from the --image-store: %q", got)

@@ -75,13 +75,14 @@ if ! id -u "$CS_SANDBOX_USER" >/dev/null 2>&1; then
   exit 1
 fi
 
-# passwordless sudo (the rootful `podman` wrapper / nested podman + general dev use)
+# passwordless sudo (general dev use inside the sandbox)
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$CS_SANDBOX_USER" > /etc/sudoers.d/cs-sandbox
 chmod 440 /etc/sudoers.d/cs-sandbox
 
-# subuid/subgid for nested podman (idempotent)
-grep -q "^$CS_SANDBOX_USER:" /etc/subuid || echo "$CS_SANDBOX_USER:100000:65536" >> /etc/subuid
-grep -q "^$CS_SANDBOX_USER:" /etc/subgid || echo "$CS_SANDBOX_USER:100000:65536" >> /etc/subgid
+# Nested podman runs ROOTLESS, as it does on any normal machine and in a microVM.
+# This grants the file caps and writes the keep-id-derived subuid/subgid ranges it
+# needs; see the script and SPEC.md §11.2.
+/sandbox/nested-rootless "$CS_SANDBOX_USER" "$CS_SANDBOX_UID" "$CS_SANDBOX_GID"
 
 # --- home: ensure it exists, seed on first boot, fix ownership -------------------
 # IMPORTANT: never `chown -R "$CS_SANDBOX_HOME"` — repos are bind-mounted UNDER the home and
@@ -246,10 +247,10 @@ if [ -f "$SEED/repos" ] && [ ! -f "$CS_SANDBOX_HOME/.cs-sandbox-repos-done" ]; t
   touch "$CS_SANDBOX_HOME/.cs-sandbox-repos-done"
 fi
 
-# --- nested ROOTFUL podman: storage driver + additional (shared) image stores ----
+# --- nested ROOTLESS podman: storage driver + additional (shared) image stores ----
 # Prefer the kernel's native overlay driver (fast); fall back to fuse-overlayfs only if
 # a native overlay mount isn't possible here. The decision is cached in the (persistent)
-# /var/lib/containers volume so the probe runs at most once per instance.
+# nested-store volume so the probe runs at most once per instance.
 # Additional read-only image stores arrive via CS_SANDBOX_IMAGE_STORES (colon-separated
 # graphroot paths, each a named shared store bind-mounted RO by sandbox). They're listed
 # as `additionalimagestores` so nested podman reuses images already in them instead of
@@ -264,16 +265,32 @@ if [ -n "${CS_SANDBOX_IMAGE_STORES:-}" ]; then
   IFS="$_oifs"
 fi
 
+# Written to the USER's config, not /etc: a rootless engine resolves its storage config
+# to ~/.config/containers/storage.conf and does NOT inherit [storage.options] from the
+# system file, so additionalimagestores placed there would be silently ignored and every
+# --image-store sandbox would re-pull.
+USER_CONTAINERS_CONF="$CS_SANDBOX_HOME/.config/containers"
 write_storage_conf() {  # $1 = native|fuse
+  mkdir -p "$USER_CONTAINERS_CONF"
   {
     printf '[storage]\ndriver = "overlay"\n\n[storage.options]\n'
     [ -n "$ais" ] && printf 'additionalimagestores = [%s]\n' "$ais"
     [ "$1" = "fuse" ] && printf '\n[storage.options.overlay]\nmount_program = "/usr/bin/fuse-overlayfs"\n'
-  } > /etc/containers/storage.conf
+  } > "$USER_CONTAINERS_CONF/storage.conf"
+  chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CS_SANDBOX_HOME/.config" 2>/dev/null || true
 }
 
-FUSE_FLAG="/var/lib/containers/.cs-sandbox-nested-fuse"
-NATIVE_FLAG="/var/lib/containers/.cs-sandbox-nested-native-ok"
+# The nested store is the user's rootless graphroot, on its own volume mounted here.
+# podman creates the mount point as root, so hand it over before the engine first runs.
+NESTED_STORE="$CS_SANDBOX_HOME/.local/share/containers"
+mkdir -p "$NESTED_STORE"
+chown "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$NESTED_STORE"
+
+FUSE_FLAG="$NESTED_STORE/.cs-sandbox-nested-fuse"
+NATIVE_FLAG="$NESTED_STORE/.cs-sandbox-nested-native-ok"
+# Probed AS THE USER: rootless podman is the engine whose overlay mount has to work,
+# and root's answer would not be evidence about it.
+probe_nested() { runuser -u "$CS_SANDBOX_USER" -- /usr/bin/podman info >/dev/null 2>&1; }
 if command -v /usr/bin/podman >/dev/null 2>&1; then
   if [ -f "$FUSE_FLAG" ]; then
     write_storage_conf fuse
@@ -281,12 +298,13 @@ if command -v /usr/bin/podman >/dev/null 2>&1; then
     write_storage_conf native
   else
     write_storage_conf native
-    if /usr/bin/podman info >/dev/null 2>&1; then
+    if probe_nested; then
       touch "$NATIVE_FLAG"
     else
       write_storage_conf fuse
       touch "$FUSE_FLAG"
     fi
+    chown "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$FUSE_FLAG" "$NATIVE_FLAG" 2>/dev/null || true
   fi
 fi
 

@@ -52,7 +52,7 @@ type runParams struct {
 	Home      string
 	TZ        string
 	HomeVol   string
-	ContVol   string
+	ContVol   string // nested podman's store, mounted at the user's rootless graphroot
 	SeedDir   string
 	Image     string
 	EnvFile   string   // path to the seed's inject-env (--env KEY=VALUE lines), if any
@@ -99,11 +99,24 @@ func buildRunArgs(p runParams) []string {
 	if p.Privileged {
 		a = append(a, "--privileged")
 	} else {
+		// What nested ROOTLESS podman needs, and nothing more (SPEC.md §11.2):
+		//   SYS_ADMIN  — the inner engine's namespaces and mounts.
+		//   SETFCAP    — so /sandbox/nested-rootless can grant newuidmap/newgidmap
+		//                the file caps rootless podman writes uid_maps with.
+		//   /dev/net/tun — pasta/slirp4netns, how a rootless inner container reaches
+		//                the network.
+		//   unmask=ALL — the inner container mounts a fresh procfs in a NEW user
+		//                namespace, which the kernel refuses while any of this
+		//                container's /proc is masked ("mount `proc` to `proc`:
+		//                Operation not permitted"). Cheaper than it reads: the
+		//                container is rootless, so its root is an unprivileged
+		//                subuid and the kernel still denies /proc/kcore,
+		//                sysrq-trigger and the non-namespaced sysctls on its own.
+		// Seccomp stays on, and the container still sees only the devices above.
 		a = append(a,
-			"--cap-add=SYS_ADMIN", "--cap-add=NET_ADMIN", "--cap-add=MKNOD",
-			"--cap-add=SYS_PTRACE",
+			"--cap-add=SYS_ADMIN", "--cap-add=SETFCAP",
 			"--device", "/dev/net/tun",
-			"--security-opt", "unmask=/proc/sys",
+			"--security-opt", "unmask=ALL",
 		)
 	}
 	a = append(a,
@@ -135,7 +148,13 @@ func buildRunArgs(p runParams) []string {
 		"--label", "cs-sandbox.name="+p.Name,
 		"--label", "cs-sandbox.group="+sandboxGroup,
 		"-v", p.HomeVol+":"+p.Home,
-		"-v", p.ContVol+":/var/lib/containers",
+		// The nested engine is rootless, so its store is the rootless graphroot under
+		// the user's home — the same path the microVM uses. Its own volume all the
+		// same (SPEC.md §11.3): nested images then survive recreation, stay out of the
+		// home volume, and land on a non-overlay filesystem where the kernel's native
+		// overlay driver works. Mounted deeper than the home volume, which podman
+		// orders correctly for us.
+		"-v", p.ContVol+":"+p.Home+"/.local/share/containers",
 		"-v", p.SeedDir+":/run/cs-sandbox-seed:ro",
 	)
 	if p.Yolo {

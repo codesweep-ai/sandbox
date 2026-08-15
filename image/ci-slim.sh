@@ -44,13 +44,12 @@ test -f "$src" || { echo "ci-slim: no Containerfile at $src" >&2; exit 1; }
 #            behind a `command -v jq` guard. Without jq the guard is simply
 #            false, so a sandbox that inherited a login comes up showing "API
 #            Usage Billing" instead of signed in — with no error anywhere.
-#   podman   nested podman is a shipped feature, `internal/store` shells
-#            /usr/bin/podman inside this image for every store operation, and the
-#            Containerfile installs a /usr/local/bin/podman wrapper that execs
-#            it. Without the binary that wrapper is a command on PATH guaranteed
-#            to fail, and the entrypoint's nested-engine setup (guarded the same
-#            silent way) never runs. An image like that is not the thing under
-#            test. It costs ~260 MB of the ~690 MB total, and it is worth it.
+#   podman   nested podman is a shipped feature and `internal/store` shells
+#            /usr/bin/podman inside this image for every store operation.
+#            Without the binary the entrypoint's nested-engine setup (guarded
+#            the same silent way) never runs. An image like that is not the
+#            thing under test. It costs ~260 MB of the ~690 MB total, and it is
+#            worth it.
 #            fuse-overlayfs/slirp4netns/passt/containers-common come with it
 #            because the entrypoint's storage and network fallbacks name them.
 #

@@ -1,0 +1,56 @@
+#!/bin/bash
+# nested-rootless — prepare a guest so the user inside it can run ROOTLESS podman.
+# Runs as root, early, on every entry path: the container entrypoint, the microVM's
+# guest init, and the shared-store seeder in internal/store. See SPEC.md §11.2.
+#
+# Rootless podman needs two things a container does not have by default (a microVM has
+# the second already, but takes the same path so both engines agree on the first):
+#
+#   1. subuid/subgid ranges that are ACTUALLY MAPPED in this user namespace. Under
+#      --userns=keep-id the container sees a window of uids borrowed from the caller's
+#      host subuid range (typically 0..65536 on Linux), and NOTHING outside it. A stock
+#      `useradd`-allocated range (100000+) is invisible here, and newuidmap rejects it —
+#      so the ranges are derived from /proc/self/uid_map rather than assumed.
+#   2. cap_setuid/cap_setgid file capabilities on newuidmap/newgidmap, which rootless
+#      podman uses to write the uid_map of each inner container. The image's copies carry
+#      none (file caps do not survive the rootless image build), so they are granted here.
+#      This needs CAP_SETFCAP on the container — see buildRunArgs in internal/engine.
+#
+# Usage: nested-rootless <user> <uid> <gid>
+set -u
+U_NAME=${1:?user}; U_UID=${2:?uid}; U_GID=${3:?gid}
+
+# Every id mapped into this userns except uid 0 (the container's own root) and the
+# user's own id, emitted as shadow-utils "start:count" ranges. Splitting around the
+# user's own id is required: podman refuses a subuid range that contains it.
+#
+# Capped at SUB_COUNT so both engines land on the SAME ranges: a container's window is
+# whatever the host's subuid range gives (65536, but a microVM's map is the whole uid
+# space). Identical ranges are what lets one shared image store, seeded once, be read by
+# a sandbox on either engine — the store records image uid 0 as an absolute id, so writer
+# and reader have to agree on the base. 65536 is podman's own default range size.
+SUB_COUNT=65536
+_subranges() {  # $1 = id to exclude, $2 = /proc/self/uid_map | /proc/self/gid_map
+  awk -v excl="$1" -v cap="$SUB_COUNT" '
+    { lo=$1; hi=$1+$3-1; if (lo<1) lo=1; if (hi>cap) hi=cap; if (hi<lo) next
+      if (excl>=lo && excl<=hi) {
+        if (excl>lo) print lo":"(excl-lo)
+        if (excl<hi) print (excl+1)":"(hi-excl)
+      } else print lo":"(hi-lo+1)
+    }' "$2"
+}
+
+# Rewritten rather than appended to: a stale range (from a previous boot, or auto-allocated
+# by useradd) is worse than none, because newuidmap fails on the first unmapped id.
+: > /etc/subuid; : > /etc/subgid
+for _r in $(_subranges "$U_UID" /proc/self/uid_map); do echo "$U_NAME:$_r" >> /etc/subuid; done
+for _r in $(_subranges "$U_GID" /proc/self/gid_map); do echo "$U_NAME:$_r" >> /etc/subgid; done
+
+setcap cap_setuid+ep /usr/bin/newuidmap 2>/dev/null
+setcap cap_setgid+ep /usr/bin/newgidmap 2>/dev/null
+
+# podman keeps its runtime state here; without it every command dies at
+# "lstat /run/user/<uid>: no such file or directory" before it reads any config.
+mkdir -p "/run/user/$U_UID"
+chown "$U_UID:$U_GID" "/run/user/$U_UID"
+chmod 700 "/run/user/$U_UID"

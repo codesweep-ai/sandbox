@@ -66,23 +66,15 @@ modprobe virtio_balloon 2>/dev/null
 # fall back to fuse-overlayfs when a native overlay mount is unavailable — and
 # it fails at `run`, long after `podman info` has claimed everything is fine.
 modprobe fuse 2>/dev/null
-# Nested podman runs ROOTLESS here (a VM is real root on a real kernel, so the
-# container engine's rootful-inner apparatus is unnecessary — see
-# SPEC.md §12), and rootless needs newuidmap/newgidmap to write the
-# uid_map. The image's copies carry no file capabilities, so grant them: without
-# this every `podman` as the dev user dies with "should have setuid or have
-# filecaps setuid". Granted at boot rather than baked into the image so it does
-# not also depend on file caps surviving `podman export` into the ext4 rootfs.
-setcap cap_setuid+ep /usr/bin/newuidmap 2>/dev/null
-setcap cap_setgid+ep /usr/bin/newgidmap 2>/dev/null
-# …and its network needs /dev/net/tun, which nothing else loads here. A rootless
-# inner podman reaches the network through pasta/slirp4netns, both of which open
-# the tun device; the container engine's rootful inner podman used a netavark
-# bridge instead and never wanted it (the outer container is passed --device
-# /dev/net/tun for its own netavark). devtmpfs materializes the node on modprobe
-# but root-only, and the inner engine runs as the dev user — without the chmod
-# every `podman run` dies at "Failed to open() /dev/net/tun", long after
-# `podman info` reports a healthy engine. 0666 is what a stock host ships.
+# Nested podman runs ROOTLESS here, as it does in a container (SPEC.md §11.2). The
+# setup both engines share is /sandbox/nested-rootless, which runs below once the dev
+# user exists; what it needs from this file is the network. A rootless inner podman
+# reaches it through pasta/slirp4netns, both of which open /dev/net/tun — and nothing
+# else loads that module here (the container engine is passed --device /dev/net/tun
+# for the same reason). devtmpfs materializes the node on modprobe but root-only, and
+# the inner engine runs as the dev user — without the chmod every `podman run` dies at
+# "Failed to open() /dev/net/tun", long after `podman info` reports a healthy engine.
+# 0666 is what a stock host ships.
 modprobe tun 2>/dev/null
 chmod 666 /dev/net/tun 2>/dev/null
 
@@ -95,6 +87,10 @@ hostname "$CS_SANDBOX_HOSTNAME" 2>/dev/null
 getent group "$CS_SANDBOX_GID" >/dev/null 2>&1 || groupadd -g "$CS_SANDBOX_GID" "$CS_SANDBOX_USER" 2>/dev/null
 id -u "$CS_SANDBOX_USER" >/dev/null 2>&1 || useradd -u "$CS_SANDBOX_UID" -g "$CS_SANDBOX_GID" -m -d "$HOME_DIR" -s /bin/bash "$CS_SANDBOX_USER" 2>/dev/null
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$CS_SANDBOX_USER" > /etc/sudoers.d/cs-sandbox; chmod 440 /etc/sudoers.d/cs-sandbox
+# Nested rootless podman: file caps + subuid/subgid ranges. Rewrites whatever useradd
+# auto-allocated above, so a microVM and a container hand the same ids to their nested
+# engines and one seeded image store serves both.
+/sandbox/nested-rootless "$CS_SANDBOX_USER" "$CS_SANDBOX_UID" "$CS_SANDBOX_GID" 2>/dev/null
 
 # --- networking: virtio-net on the shared cs-sandbox bridge (outbound NAT + VM<->VM by name).
 # The host attaches a tap; the guest just configures the static address from the seed. ---
@@ -294,10 +290,11 @@ fi
 
 # --image-store: each line of seed/imagestores ("name") maps to one RO ext4 disk holding a
 # shared podman image store, mounted RO at /var/lib/shared/<name> and registered with the
-# (rootful, via the sudo wrapper) guest podman as an additionalimagestores — so nested
-# `podman` reuses those images instead of re-pulling. image-root in the store is a real 0
-# (built that way on the host), matching the VM's real-root podman, so setuid bins / ownership
-# stay correct. Follows the repo+snapshot disks on the same device-letter cursor.
+# guest's nested rootless podman as an additionalimagestores — so nested `podman` reuses
+# those images instead of re-pulling. The store was seeded by the same kind of rootless
+# engine over the same subuid ranges (see /sandbox/nested-rootless), so image uid 0 and
+# setuid bins land on the ids the reader expects. Follows the repo+snapshot disks on the
+# same device-letter cursor.
 if [ -f "$SEED/imagestores" ]; then
   _ais=""
   while IFS= read -r st_name; do

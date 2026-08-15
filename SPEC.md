@@ -506,13 +506,19 @@ writable store.
 
 **R85.** Image stores **MUST** work on both engines.
 
-In a microVM you are real root on your own kernel, so nesting just works. In a container it needs a
-scaled-down capability set and a rootful inner engine, both specified in §11.2.
+The inner engine is rootless on both engines, so a sandbox runs Podman the way any normal machine
+does. In a microVM you are real root on your own kernel and it simply works; in a container it needs
+a scaled-down capability set and the bootstrap specified in §11.2.
 
-Because a store is written by the rootful nested engine, image uid 0 is stored under the keep-id
-root, and every container's keep-id maps it back to uid 0 inside. Images therefore run with correct
-root and setuid ownership. On the microVM engine the store is delivered as a read-only ext4 disk
-built from the volume, using the same content-addressed cache as the base rootfs.
+**R85a.** Every entry path **MUST** give its nested engine the same subuid/subgid ranges, so one store
+serves both engines.
+
+A store is written by a nested rootless engine and read by another one. Image uid 0 is therefore
+stored as the sandbox user's own id. The ids line up in any sandbox of the same host user, so images
+run with correct root and setuid ownership. R85a is what makes that true across engines. A
+store records absolute ids, so a writer and a reader disagreeing about the base would disagree about
+every file in it. On the microVM engine the store is delivered as a read-only ext4 disk built from the volume,
+using the same content-addressed cache as the base rootfs.
 
 A read-only shared base with a per-sandbox writable primary is the only supported way to share,
 because independent engines writing one store risk lock contention and corruption.
@@ -592,7 +598,7 @@ which keep-id maps to the caller's host uid.
 **R99.** The entrypoint **MUST**, in this order:
 
 1. create the group and user, and grant NOPASSWD sudo;
-2. add the subuid and subgid range nested Podman needs;
+2. run the §11.2 bootstrap that nested rootless Podman needs;
 3. seed and chown the home, install the seed's SSH material and agent credentials, and start sshd;
 4. hand off to that user, with `runuser`, for the main process.
 
@@ -613,55 +619,77 @@ rather than by root.
 
 ### 11.2 Nested Podman
 
-True isolated Podman-in-Podman needs two things in a container: a scaled-down capability set on the
-outer container, and a rootful inner engine. In a microVM neither applies.
+True isolated Podman-in-Podman needs a scaled-down capability set on the outer container and a
+bootstrap inside it. In a microVM neither applies, but the inner engine is rootless either way.
 
 **R102.** The container **MUST** run rootless, bounded by the caller's unprivileged host user through
 `--userns=keep-id`, and **MUST** be granted only these capabilities:
 
 | Capability | Why |
 |---|---|
-| `CAP_SYS_ADMIN` | nested user namespaces and mounts |
-| `CAP_NET_ADMIN` | the inner netavark bridge |
-| `CAP_MKNOD` | inner device nodes |
-| `CAP_SYS_PTRACE` | pasta opening the build worker's netns during `podman build` |
+| `CAP_SYS_ADMIN` | the inner engine's namespaces and mounts |
+| `CAP_SETFCAP` | granting `newuidmap`/`newgidmap` their file capabilities |
 | `CAP_NET_RAW`, `CAP_NET_BIND_SERVICE` | ordinary network tooling, and a service on a low port |
 
-**R103.** The default seccomp filter **MUST** stay on, and `/proc/kcore` and host devices **MUST** stay masked.
+**R103.** The default seccomp filter **MUST** stay on, and the container **MUST** see no host devices beyond
+`/dev/net/tun`.
 
 The last two capabilities are for the sandbox itself rather than for nesting. Unprivileged `ping`
 comes from a `net.ipv4.ping_group_range` sysctl rather than a capability. Because the container is
 rootless the capabilities are namespaced, so this is strictly safer than `--privileged`, which turns
 seccomp off and unmasks everything.
 
-**R104.** The inner Podman **MUST** run rootful inside the container, reached through a PATH wrapper ahead
-of `/usr/bin` rather than a setuid binary.
+**R104.** The inner Podman **MUST** run rootless, as the sandbox user, with no wrapper and no `sudo` — plain
+`podman` **MUST** be the real binary on both engines.
 
-**R105.** The wrapper **MUST** be engine-aware, taking the `sudo` path only when it detects a container and
-running plain rootless Podman in a microVM.
+**R105.** The container **MUST** unmask `/proc`. A nested user namespace cannot mount a fresh `procfs` while
+any of the container's `/proc` is masked, and the inner engine needs one for every container it runs.
 
-**R106.** For `run` and `create` the wrapper **MUST** inject `--user UID:GID` with matching passwd and group
-entries, so an inner container's bind-mounted files come back owned by the caller.
+**R106.** An inner container's bind-mounted files **MUST** come back owned by the sandbox user, with no flag
+from the caller.
 
-R102 and R104 are one mechanism in two halves, and neither half works alone. A rootless inner
-Podman would need `newuidmap` and `newgidmap`, and neither can work here: `--userns=keep-id` leaves
-no subuid range to sub-divide, and the image drops `newuidmap`'s file capabilities. A rootful inner
-Podman runs as container root instead and, with the namespaced `CAP_SYS_ADMIN`, sets up the nested
-namespaces and mounts directly.
+R102's capability set is the whole bootstrap's mirror image. A rootless inner Podman makes its own
+user namespace and holds its privileges *there*, so the outer container needs neither `CAP_NET_ADMIN`
+nor `CAP_MKNOD` nor `CAP_SYS_PTRACE`. What it does need is two things a container lacks.
+
+Rootless Podman writes each inner container's `uid_map` through `newuidmap`/`newgidmap`. The image's
+copies carry no file capabilities, because none survive a rootless image build. Hence `CAP_SETFCAP`,
+and a boot-time `setcap`.
+
+It also needs subuid/subgid ranges *mapped in this user namespace*. `--userns=keep-id` lends the
+container a window borrowed from the caller's host subuid range, and a stock `useradd`-allocated
+range at 100000 falls outside it. So the ranges are derived from `/proc/self/uid_map`, never
+assumed.
+
+R105 is the price, and it is smaller than it looks. The container is rootless, so its root is an
+unprivileged subuid. The kernel independently denies that root `/proc/kcore`, `/proc/sysrq-trigger`
+and every non-namespaced sysctl. R106 falls out for free: the sandbox user *is* the inner root, so
+what an inner container writes to a bind mount is already theirs.
+
+Both halves of the bootstrap live in one script, `image/rootfs/nested-rootless`, which every entry
+path runs: the container entrypoint, the microVM's guest init, and the shared-store seeder. That is
+what satisfies R85a — the ranges are derived the same way and capped the same way, so a store seeded
+once is readable on either engine.
 
 Supporting that, the image carries `crun`, `slirp4netns` and `passt`, plus a `storage.conf`
-defaulting to native `overlay`. Its `containers.conf` disables cgroups, which silences a benign
+defaulting to native `overlay`. The per-sandbox storage config goes in the *user's*
+`~/.config/containers/storage.conf`. A rootless engine resolves its storage config there and does not
+inherit `[storage.options]` from the system file. Configured in `/etc`, §9's shared image stores
+would be ignored in silence. Its `containers.conf` disables cgroups, which silences a benign
 cgroup v2 warning on every nested run, at the cost of limits that could not apply to a nested
 container anyway. SELinux confinement is off for the container with no relabeling, which also avoids
 the macOS virtiofs relabel problem.
 
 ### 11.3 Nested container storage
 
-**R107.** Nested container storage **MUST** be a dedicated volume mounted at the rootful store, on a
-non-overlay backing filesystem.
+**R107.** Nested container storage **MUST** be a dedicated volume mounted at the sandbox user's rootless
+graphroot, on a non-overlay backing filesystem.
 
-**R108.** The entrypoint **MUST** probe for native overlay on first boot, **MUST** fall back to `fuse-overlayfs`
-only when native overlay is unusable, and **MUST** cache that decision.
+**R108.** The entrypoint **MUST** probe for native overlay on first boot **as the sandbox user**, **MUST** fall
+back to `fuse-overlayfs` only when native overlay is unusable, and **MUST** cache that decision.
+
+The probe runs as the user because the rootless engine is the one whose overlay mount has to work;
+root's answer would not be evidence about it.
 
 A dedicated volume keeps nested images across recreation and keeps them out of the home volume. It
 also puts them on a filesystem where the kernel's native overlay works, rather than falling back to
@@ -710,10 +738,10 @@ actionable install line.
 A separate guest kernel per sandbox removes the container engine's main residual weakness, which is
 host-kernel attack surface, and that matters most for the autonomous agent type.
 
-A bonus falls out of that. Inside a VM you are genuinely root on your own kernel, so the whole
-nested-Podman apparatus of §11.2 becomes unnecessary and Podman runs rootless as it would anywhere.
-The shared wrapper skips its `sudo`, the guest init grants `newuidmap` and `newgidmap` the file
-capabilities rootless needs, and inner images live under the user's own home.
+A bonus falls out of that. Inside a VM you are genuinely root on your own kernel, so §11.2's
+capability set and `/proc` unmasking are unnecessary. Only the file capabilities and the shared subuid
+ranges are still wanted, and the guest init runs the same `nested-rootless` script for them. Inner
+images live under the user's own home on both engines.
 
 The cost is that with no `virtio-fs`, the root filesystem and every shared directory reach the guest
 as block devices. They are ext4 disks, built on the host and attached to the VM.

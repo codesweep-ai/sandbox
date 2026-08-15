@@ -39,8 +39,12 @@ func TestHelperRunOrder(t *testing.T) {
 	if idxOf(argv, "cs-sandbox-shared-base:/seed") < 0 {
 		t.Errorf("store must be mounted at /seed: %v", argv)
 	}
-	if !contains(joined, "--userns=keep-id") || !contains(joined, "--cap-add=SYS_ADMIN") {
-		t.Errorf("helper must run rootful-in-userns with SYS_ADMIN: %v", argv)
+	// The seeding engine must be set up the way a sandbox's nested engine is, so the
+	// ids it writes into the store are the ids every reader resolves (see helperRun).
+	for _, want := range []string{"--userns=keep-id", "--cap-add=SYS_ADMIN", "--cap-add=SETFCAP", "unmask=ALL"} {
+		if !contains(joined, want) {
+			t.Errorf("store helper must match a sandbox's nested-rootless setup, missing %s: %v", want, argv)
+		}
 	}
 }
 

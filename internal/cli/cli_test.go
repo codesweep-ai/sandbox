@@ -122,8 +122,7 @@ func TestBuildPodmanQuietFlag(t *testing.T) {
 }
 
 // TestInstallAgentToolsCopies: the command copies the tool set into the target
-// dir with the right modes (scripts 0755, docs 0644) and skips the guest-only
-// user-podman.
+// dir with the right modes (scripts 0755, docs 0644).
 func TestInstallAgentToolsCopies(t *testing.T) {
 	dest := t.TempDir()
 	if _, err := runRoot(t, &App{}, "install-agent-tools", dest); err != nil {
@@ -145,10 +144,6 @@ func TestInstallAgentToolsCopies(t *testing.T) {
 		if m := mode(t, filepath.Join(dest, doc)); m.Perm() != 0o644 {
 			t.Errorf("%s mode = %o, want 644", doc, m.Perm())
 		}
-	}
-	// The guest-only helper is skipped.
-	if _, err := os.Stat(filepath.Join(dest, "user-podman")); !os.IsNotExist(err) {
-		t.Errorf("user-podman should not be installed on the host (err=%v)", err)
 	}
 }
 

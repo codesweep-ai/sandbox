@@ -71,18 +71,10 @@ export EDITOR=nvim
 
 # ~/.local/bin (e.g. mdtohtml, mdview) is already on PATH via the block near the top of this file.
 
-# Nested podman (sandbox): how it runs depends on the engine under you, and the
-# /usr/local/bin/podman wrapper picks — just use `podman`.
-#   podman container: ROOTFUL (wrapper routes through sudo). Podman-in-podman must be,
-#     under --userns=keep-id. Still a rootless container, so caps are bounded by your
-#     unprivileged host user, not host root. Images: /var/lib/containers (own volume).
-#   firecracker microVM: ROOTLESS, i.e. podman as on any normal machine — a VM is real
-#     root on a real kernel, so none of the above applies. Images: ~/.local/share/containers.
-# For inner containers that run as YOU (uid:gid + names, files owned by you not subuid
-# 524288) use:
-#   user-podman run ...  — podman + auto --user/--passwd-entry/--group-entry
-#     (a no-op passthrough in a microVM, where plain podman already gives you that)
-# The real binary is always /usr/bin/podman.
+# Nested podman (sandbox): ROOTLESS on both engines, as it runs on any normal machine.
+# Just use `podman` — no wrapper, no sudo. You are the inner root, so a bind-mounted
+# file an inner container writes comes back owned by YOU.
+#   Images: ~/.local/share/containers (its own volume on the podman engine).
 
 # Pyenv (shared, under /opt — see SPEC.md §3.1; `sudo` to add Python versions)
 export PYENV_ROOT="${PYENV_ROOT:-/opt/pyenv}"
