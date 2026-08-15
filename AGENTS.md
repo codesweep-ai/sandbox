@@ -5,6 +5,7 @@ authoritative — when one covers what you need, open it rather than inferring t
 answer from the code. When nothing covers it, say so instead of guessing.
 
 - [`README.md`](README.md) — what this is, and how to run it.
+- [`INSTALL.md`](INSTALL.md) — how to get the tool, and the setup it needs once.
 - [`MANUAL.md`](MANUAL.md) — the full surface, for someone using the tool.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — conventions, and the rituals a diff does
   not show. Read it before your first change.
