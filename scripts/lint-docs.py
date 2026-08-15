@@ -106,7 +106,8 @@ SHARED_VERBS = r"""
 is|are|was|were|be|been|being|has|have|had|does|do|did|can|cannot|could|may|
 might|must|should|would|will|serves?|holds?|keeps?|makes?|takes?|gives?|
 gets?|goes|comes?|runs?|sends?|reads?|writes?|records?|replays?|matches|
-means?|needs?|names?|shows?|says?|tells?|lets?|leaves?|puts?|adds?|drops?|
+means?|needs?|names?|shows?|says?|calls?|called|tells?|lets?|leaves?|puts?|
+adds?|drops?|
 refuses?|reports?|carries|carry|costs?|works?|fails?|exists?|belongs?|
 applies|apply|covers?|happens?|arrives?|starts?|stops?|waits?|wants?|uses?|
 sits?|lives?|turns?|appends?|aligns?|differs?|blanks?|restores?|proposes?|
@@ -147,8 +148,15 @@ VERB_RE = re.compile(rf"\b({VERBS})\b", re.I | re.X)
 # A sentence boundary: a terminator, then whitespace, then something that starts
 # a sentence — a capital, a markdown marker, or one of the project's own
 # lower-case names.
+#
+# Quotation marks sit on both sides of a boundary and belong in both classes.
+# A sentence can end inside them, as `he called it "done." It shipped` does, and
+# the next can open with one, as `stops on it. "No key MUST be written"` does.
+# Without them the splitter joins the two and reports a length that is not real.
+_CLOSERS = "*`)\\]\"'”’"
+_OPENERS = "A-Z`*\\[\"'“‘"
 _STARTERS = "".join(rf"|{re.escape(w)}\b" for w in LOWERCASE_STARTERS)
-BOUNDARY = re.compile(rf"(?<=[.!?])[*`)\]]*\s+(?=[A-Z`*\[]{_STARTERS})")
+BOUNDARY = re.compile(rf"(?<=[.!?])[{_CLOSERS}]*\s+(?=[{_OPENERS}]{_STARTERS})")
 
 
 def prose(text):
