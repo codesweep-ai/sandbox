@@ -1,7 +1,7 @@
 # sandbox - installation
 
-`cs-sandbox` is a single, self-contained Go binary. Get it (download a release or build from a clone),
-put it on your PATH, then set up the host once with the steps below - then see the
+`cs-sandbox` is a single, self-contained Go binary. Download a release or build it from a clone, put
+it on your PATH, then set the host up once with the steps below. After that, head for the
 [README](README.md) walkthroughs.
 
 > **`cs-sandbox doctor` checks every prerequisite below and prints the exact fix for anything
@@ -57,9 +57,9 @@ make install          # installs bin/cs-sandbox into ~/.local/bin, plus CS_SANDB
 
 ### Base packages
 
-Three, on every host: **podman** builds the image and provides the rootless network fabric that
-both engines use, the **OpenSSH client** reaches every sandbox by name, and **git** shares your
-repos in. The last two ship by default on macOS and most Linux desktops.
+You need three, on every host. **Podman** builds the image and provides the rootless network fabric that both
+engines use. The **OpenSSH client** reaches every sandbox by name, and **git** shares your repos in.
+The last two ship by default on macOS and most Linux desktops.
 
 ```bash
 sudo dnf install podman openssh-clients git                          # Fedora
@@ -74,10 +74,10 @@ sudo apt install podman openssh-client git \
   catatonit uidmap netavark aardvark-dns iptables passt slirp4netns fuse-overlayfs
 ```
 
-On macOS everything runs inside that one podman-machine VM — every sandbox and every nested
+On macOS everything runs inside that one podman-machine VM, so every sandbox and every nested
 container shares its CPUs, memory and disk. The default machine gets 2 GiB, which one sandbox
-running a toolchain plus nested containers will exhaust, so size it at init as above, and give it
-more for several sandboxes at once. To resize later:
+running a toolchain plus nested containers will exhaust. Size it at init as above, and give it more
+if you want several sandboxes at once. To resize it later, stop it first:
 
 ```bash
 podman machine stop && podman machine set --cpus 4 --memory 8192 --disk-size 60   # disk can only grow
@@ -94,9 +94,9 @@ so install the `linux_amd64` release there — not on Windows. There is no Windo
 runs on the Windows side. CI validates this on Ubuntu 24.04; another distro needs the equivalent
 packages.
 
-Work as a normal user: rootless podman is the supported configuration, and running as root is
-neither tested nor supported. Enable systemd in `/etc/wsl.conf`, then `wsl --shutdown` from Windows
-to restart the distro:
+Work as a normal user. Rootless podman is the supported configuration, and running as root is
+neither tested nor supported. Enable systemd in `/etc/wsl.conf`, then run `wsl --shutdown` from
+Windows to restart the distro:
 
 ```ini
 [boot]
@@ -104,20 +104,22 @@ systemd=true
 ```
 
 Without it nothing creates `/run/user/$(id -u)`, so podman warns and falls back to `/tmp`, and
-`host-route` has no systemd-resolved to work with. The two Ubuntu notes in the next section — subuid
-ranges and the AppArmor userns sysctl — are rootless-podman requirements, so they apply here even
-though Firecracker does not; `cs-sandbox doctor` detects WSL and checks the rest.
+`host-route` has no systemd-resolved to work with.
 
-Keep `--repo` sources on the distro's own filesystem: `/mnt/c` is DrvFs, root-owned and without real
-Unix modes, so a sandbox would get a tree whose permissions don't mean what they say. Podman is the
-engine here — Firecracker is untested on WSL2.
+Two notes in the next section apply here even though Firecracker does not: the subuid ranges and the
+AppArmor userns sysctl are rootless-podman requirements rather than Firecracker ones. `cs-sandbox
+doctor` detects WSL and checks the rest.
+
+Keep `--repo` sources on the distro's own filesystem. `/mnt/c` is DrvFs, root-owned and without real
+Unix modes, so a sandbox would get a tree whose permissions do not mean what they say. Podman is the
+engine here, and Firecracker is untested on WSL2.
 
 ### Firecracker packages (Linux + KVM, x86_64)
 
-`cs-sandbox build` (step 3) downloads the Firecracker binary — pinned to a release (default
-`v1.16.0`, override with `CS_SANDBOX_FC_VERSION`) and verified against a SHA256 committed in the
-source — and builds the guest kernel + base rootfs; you provide a few host packages and `/dev/kvm`
-access first.
+`cs-sandbox build` (step 3) downloads the Firecracker binary and builds the guest kernel and base
+rootfs. The binary is pinned to a release, `v1.16.0` by default and overridable with
+`CS_SANDBOX_FC_VERSION`, and is verified against a SHA256 committed in the source. You provide a few
+host packages and `/dev/kvm` access first.
 
 ```bash
 # Fedora  (the base packages above are required too)
@@ -133,10 +135,10 @@ grep "^$USER:" /etc/subuid /etc/subgid  # must return a line in each file (rootl
 sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 ```
 
-A Firecracker sandbox boots its own guest kernel, built from the sandbox image - pinned and
-reproducible, with no dependency on the host's `/boot` kernel. Full detail:
-[`docs/firecracker.md`](docs/firecracker.md#prerequisites). On macOS, and on any host without
-x86_64 KVM, this step is skipped and sandboxes default to Podman.
+A Firecracker sandbox boots its own guest kernel, built from the sandbox image, so it is pinned
+and reproducible with no dependency on the host's `/boot`. The reasoning is in
+[SPEC.md](SPEC.md#122-the-guest-kernel). On macOS, and on any host without x86_64 KVM, this step is
+skipped and sandboxes use Podman.
 
 ## 3. Build the sandbox artifacts
 
@@ -147,9 +149,9 @@ boot). `cs-sandbox build` sets up the reusable, host-wide artifacts once so late
 cs-sandbox build                       # image + (on x86_64 Linux/KVM) the Firecracker artifacts
 ```
 
-With no flags it prepares **every engine the host supports**: the podman image always, plus the
-Firecracker binary/kernel/base-rootfs on a Firecracker-capable host (**it fails** if the Firecracker
-packages above are missing). Restrict it when you want to:
+With no flags it prepares **every engine the host supports**. That means the podman image always,
+plus the Firecracker binary, kernel and base rootfs on a Firecracker-capable host. It **fails** when
+the Firecracker packages above are missing. Restrict it when you want to:
 
 ```bash
 cs-sandbox build --engine podman       # image only (skip Firecracker)
@@ -159,10 +161,10 @@ cs-sandbox build --engine firecracker  # force the Firecracker set (implies the 
 `cs-sandbox create` assumes `build` has run: it **does not** build under the covers, and fails with a
 "run: cs-sandbox build" message if the image or Firecracker artifacts are missing.
 
-The image bundles a broad toolchain (podman/skopeo/buildah, tmux, chromium, java/maven, go), CLI
-helpers (ripgrep, fd, fzf, bat, git-delta, jq/yq, gh, uv), Neovim, pyenv/Python + nvm/Node, and the
-Claude Code, Codex & OpenCode agents with their launch wrappers and remote tools — see
-[what's in a sandbox](README.md#whats-in-a-sandbox), and the
+The image bundles a broad toolchain: podman, skopeo and buildah, tmux, chromium, java and maven, Go,
+pyenv with Python, nvm with Node, and Neovim. It adds the usual CLI helpers, and the Claude Code,
+Codex and OpenCode agents with their launch wrappers and remote tools. See
+[what's in a sandbox](README.md#whats-in-a-sandbox) for the tour, and
 [`image/Containerfile`](image/Containerfile) for the full package list.
 
 ## 4. Host agent tools and login (recommended)
@@ -170,17 +172,19 @@ Claude Code, Codex & OpenCode agents with their launch wrappers and remote tools
 **A sandbox does not get your agent login by default.** Logging in once here, on the host, is what
 lets a sandbox inherit it at create time with `--inherit-agent-login claude` (or `codex`/`opencode`).
 
-Every sandbox already carries the agent tools at `~/.local/bin`, so this step is about your **host**:
-it puts the same tools on your PATH, so you can log in with them and drive agents from here.
+Every sandbox already carries the agent tools at `~/.local/bin`, so this step is about your
+**host**. It puts the same tools on your PATH, so you can log in with them and drive agents from
+here.
 
 ```bash
 cs-sandbox install-agent-tools    # -> ~/.local/bin  (pass a directory to install elsewhere)
 ```
 
-`cs-claude` / `cs-codex` / `cs-opencode` invoke the `claude` / `codex` / `opencode` CLIs, so those
-must be installed on the host too; `install-agent-tools` tells you which are missing. Then log in
-once with each you use — the credential a sandbox inherits is copied into its per-sandbox seed at
-create time and installed on first boot, **never baked into the image**:
+`cs-claude`, `cs-codex` and `cs-opencode` invoke the `claude`, `codex` and `opencode` CLIs, so those
+must be installed on the host too. `install-agent-tools` tells you which are missing.
+
+Then log in once with each one you use. The credential a sandbox inherits is copied into its
+per-sandbox seed at create time and installed on first boot, and is **never baked into the image**:
 
 ```bash
 cs-claude          # launch Claude Code - log in with /login, then exit
@@ -188,9 +192,9 @@ cs-codex           # launch Codex - choose "Sign in with ChatGPT", then exit
 cs-opencode providers login   # OpenCode - pick a provider (it is usually driven by an API key)
 ```
 
-You can skip all of this and log in inside each sandbox instead, with `cs-sandbox agent-login
-claude <name>` — which is also how you give a sandbox its **own account** rather than sharing yours.
-See [`docs/agent-login.md`](docs/agent-login.md).
+You can skip all of this and log in inside each sandbox instead, with `cs-sandbox agent-login claude
+<name>`. That is also how you give a sandbox its **own account** rather than sharing yours. See
+[SPEC.md](SPEC.md#101-login).
 
 **Using an API key or a cloud provider** (a direct Anthropic/OpenAI key, Amazon Bedrock, Google
 Vertex, …) instead of a subscription? Keys are never copied from your host — pass the ones a sandbox
@@ -200,7 +204,7 @@ needs explicitly at create time:
 cs-sandbox create dev --env ANTHROPIC_API_KEY          # passes the value through from your shell
 ```
 
-See [`docs/agent-login.md`](docs/agent-login.md) for cloud targets and credential files.
+See [SPEC.md](SPEC.md#101-login) for what is and is not carried.
 
 ## 5. Verify the installation
 
@@ -228,19 +232,17 @@ cs-sandbox completion fish > ~/.config/fish/completions/cs-sandbox.fish   # fish
 # or, ad hoc for the current shell (any of them):  source <(cs-sandbox completion bash)
 ```
 
-For bash system-wide instead of per-user: `cs-sandbox completion bash | sudo tee
-/etc/bash_completion.d/cs-sandbox`. Run `cs-sandbox completion --help` for per-shell setup details.
+To install the bash completion system-wide instead of per-user, pipe it into
+`/etc/bash_completion.d/cs-sandbox` with `sudo tee`. Run `cs-sandbox completion --help` for
+per-shell setup details.
 
 ## State and cache locations
 
-**State lives in your home, not next to the binary** — instances and
-tier keys under `$XDG_DATA_HOME/cs-sandbox` (`~/.local/share/cs-sandbox`), the firecracker artifact
-cache under `$XDG_CACHE_HOME/cs-sandbox` (`~/.cache/cs-sandbox`); on macOS those are
-`~/Library/Application Support/cs-sandbox` and `~/Library/Caches/cs-sandbox`. Override with
-`CS_SANDBOX_INSTANCES_DIR` / `CS_SANDBOX_TIER_DIR` / `CS_SANDBOX_FC_CACHE`, or `CS_SANDBOX_HOME` for all of it.
+**State lives in your home, not next to the binary**, so you can move or replace `cs-sandbox`
+without losing your sandboxes. [MANUAL.md](MANUAL.md#files) lists every path it reads and writes,
+and [its environment section](MANUAL.md#environment) the variables that relocate them.
 
-Separate state directories give you separate sets of sandboxes that run side by side, because the
-network underneath stays shared: addresses and ports are checked against what is actually live on
-the host rather than against one directory's records, each directory gets its own
-`~/.ssh/config.d` fragment, and the network's working dir (`~/.cache/cs-sandbox/net`, moved by
-`CS_SANDBOX_FC_NET`) stays put when you relocate the rest.
+Pointing `CS_SANDBOX_HOME` at another directory gives you a second set of sandboxes that runs
+alongside the first, because the network underneath stays shared.
+[SPEC.md](SPEC.md#127-the-fabric-is-host-global-an-instances-root-is-not) covers what keeps two
+sets from colliding.

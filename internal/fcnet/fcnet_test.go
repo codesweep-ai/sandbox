@@ -241,7 +241,7 @@ func TestDownSkipsTheDeleteWhenTheBridgeIsUnknown(t *testing.T) {
 // from the hostsdir and forwards the rest to aardvark. The gateway exists so the
 // host can reach members BY NAME, so it must be given the second one — without
 // it a microVM member is reachable by address and nameless, which is the promise
-// docs/design.md makes going unkept on the firecracker engine.
+// SPEC.md makes going unkept on the firecracker engine.
 func TestGatewayIsGivenTheFabricResolver(t *testing.T) {
 	f := run.NewFake()
 	f.OnStdout("network inspect", "10.89.0.1\n")            // Gateway() -> prefix 10.89.0

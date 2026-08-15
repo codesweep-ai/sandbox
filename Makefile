@@ -12,7 +12,7 @@ VERSION    := $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 LDFLAGS    := -s -w -X github.com/codesweep-ai/sandbox/internal/cli.Version=$(VERSION)
 GO_FILES   := $(shell git ls-files '*.go')
 
-.PHONY: build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-smoke test-integration vet fmt fmt-check check lint snapshot release release-check clean
+.PHONY: build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-smoke test-integration vet fmt fmt-check check docs lint snapshot release release-check clean
 
 ## build: host binary at bin/cs-sandbox via goreleaser (single target)
 build:
@@ -157,7 +157,10 @@ fmt-check:
 		echo "$$unformatted"; \
 		exit 1; \
 	fi
-check: fmt-check vet test
+## docs: the prose rules from CONTRIBUTING.md, over every doc in the set
+docs:
+	python3 scripts/lint-docs.py
+check: fmt-check vet test docs
 lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { \
 		echo "golangci-lint is not installed; see https://golangci-lint.run/welcome/install/" >&2; \

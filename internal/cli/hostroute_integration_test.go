@@ -53,7 +53,7 @@ func setForwarding(t *testing.T, r *run.Exec, leg, v string) {
 }
 
 // TestHostRouteBlocksCrossGroupForwardingLive is the live proof behind the claim
-// in docs/firecracker.md that the host is not a router between groups.
+// in SPEC.md §6.4 that the host is not a router between groups.
 //
 // The assertion that matters is an A/B, not a bare "is it blocked": with
 // forwarding ON the bypass must be REACHABLE, and only then does BLOCKED with it

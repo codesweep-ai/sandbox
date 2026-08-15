@@ -47,26 +47,10 @@ archives:
     files:
       - README.md
       - INSTALL.md
+      - MANUAL.md
+      - SPEC.md
+      - CONTRIBUTING.md
       - LICENSE
-      # Ship the user docs.
-      - src: docs/design.md
-        info:
-          mode: 0644
-      - src: docs/podman.md
-        info:
-          mode: 0644
-      - src: docs/firecracker.md
-        info:
-          mode: 0644
-      - src: docs/repo-sharing.md
-        info:
-          mode: 0644
-      - src: docs/agent-login.md
-        info:
-          mode: 0644
-      - src: docs/opencode.md
-        info:
-          mode: 0644
 
 checksum:
   name_template: checksums.txt

@@ -5,7 +5,7 @@
 # home). It then seeds the home volume from the image skeleton, wires up ssh + Claude
 # auth + the nested-podman storage driver, starts sshd, and finally drops privileges
 # to that user for the container's main process. Under --userns=keep-id the created
-# uid maps to your host user, so files stay owned by you on both sides. See docs/design.md.
+# uid maps to your host user, so files stay owned by you on both sides. See SPEC.md §11.
 set -u
 
 CS_SANDBOX_USER="${CS_SANDBOX_USER:-dev}"

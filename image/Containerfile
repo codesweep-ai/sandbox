@@ -4,7 +4,7 @@ FROM registry.fedoraproject.org/fedora:44
 # no per-user home. The toolchains live under /opt (shared, root-owned), and the
 # container user (matching the host's name/uid/gid/home) is created at first boot by
 # the entrypoint. So one image serves every developer and machine — no rebuild to
-# match your local identity. See docs/design.md.
+# match your local identity. See SPEC.md.
 
 # Make dnf resilient to slow/flaky mirrors: drop any mirror that can't sustain ~100 KiB/s
 # for 20s and fail over to the next, with parallel downloads + extra retries. First step so
@@ -60,7 +60,7 @@ RUN dnf -y install \
 # `--userns=keep-id` (container "root" == your unprivileged host uid) or a microVM's own
 # kernel. The agent already owns its disposable sandbox, so sudo grants nothing outside it.
 # Running this image rootful, `--privileged`, or `--userns=host` would break that boundary
-# and turn this into real host-root. See docs/design.md "Security model".
+# and turn this into real host-root. See SPEC.md "Security model".
 #
 # The container user is created at first boot (see image/rootfs/entrypoint) with a LOCKED
 # password (useradd -p '*') and is granted NOPASSWD:ALL via /etc/sudoers.d. There is no
@@ -79,7 +79,7 @@ session    sufficient   pam_permit.so" > /etc/pam.d/sudo
 
 # Register a private podman registry so nested podman can pull from a local/private registry.
 # Build-args (cs-sandbox forwards the matching CS_SANDBOX_PRIVATE_REGISTRY[_INSECURE] env vars;
-# see docs/design.md "Private registry"):
+# see SPEC.md "Private registry"):
 #   CS_SANDBOX_PRIVATE_REGISTRY=host:port    registry to trust, as a BARE host:port (podman's
 #                                            registries.conf `location` form — no scheme); empty
 #                                            -> register none.

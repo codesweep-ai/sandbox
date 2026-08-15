@@ -10,3 +10,6 @@
 
 # Local credentials and env config
 /.env
+
+# Python bytecode, written when anything imports scripts/lint-docs.py
+__pycache__/

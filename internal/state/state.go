@@ -147,7 +147,7 @@ func ObjectName(group, name string) string {
 // ("cannot lock ref"). Appended, the two are siblings and coexist.
 //
 // The default group keeps the bare form. It is what every example in README.md
-// and docs/repo-sharing.md shows, it is what a host repo's existing branches are
+// and SPEC.md §7.3 shows, it is what a host repo's existing branches are
 // already called, and with one group there is nothing to disambiguate.
 func BranchName(group, name string) string {
 	if group == "" || group == DefaultGroup {

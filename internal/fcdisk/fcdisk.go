@@ -1,7 +1,7 @@
 // Package fcdisk builds the on-disk artifacts a firecracker microVM boots from:
 // the cached kernel/initrd/base-rootfs, the per-instance reflink rootfs copy, and
 // the seed.ext4 disk (the cs-sandbox.conf + trust seed + share manifests, packed
-// with `fakeroot mke2fs -d`), per docs/firecracker.md.
+// with `fakeroot mke2fs -d`), per SPEC.md §12.3.
 //
 // EnsureArtifacts (build.go) BUILDS any missing/stale artifacts — the firecracker
 // binary download, the fedora guest kernel + initrd + modules, and the base

@@ -4,7 +4,7 @@
 # dance: set up the developer user from the RO seed disk (/dev/vdb), bring up eth0 on the
 # shared cs-sandbox bridge (outbound NAT + VM<->VM by name), alternates-clone the --repo objects
 # from the RO repo disks (/dev/vdc…), start sshd, and expose it over VSOCK (port 22) so the
-# host reaches it with no IP networking at all. See docs/firecracker.md.
+# host reaches it with no IP networking at all. See SPEC.md §12.
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 # As kernel-launched PID1 our umask is 0000, so any file created by a shell redirect (e.g.
 # ~/.ssh/config below, /etc/resolv.conf) would be world-writable — and ssh then rejects its
@@ -68,7 +68,7 @@ modprobe virtio_balloon 2>/dev/null
 modprobe fuse 2>/dev/null
 # Nested podman runs ROOTLESS here (a VM is real root on a real kernel, so the
 # container engine's rootful-inner apparatus is unnecessary — see
-# docs/firecracker.md), and rootless needs newuidmap/newgidmap to write the
+# SPEC.md §12), and rootless needs newuidmap/newgidmap to write the
 # uid_map. The image's copies carry no file capabilities, so grant them: without
 # this every `podman` as the dev user dies with "should have setuid or have
 # filecaps setuid". Granted at boot rather than baked into the image so it does

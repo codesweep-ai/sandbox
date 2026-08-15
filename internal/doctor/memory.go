@@ -10,7 +10,7 @@ import (
 // costs in memory. All advisory: a host missing every one of them still runs
 // sandboxes, just with a bigger footprint. It is here because each fails
 // silently — KSM left off dedupes nothing while looking enabled, and reclaim on
-// a zram host frees far less than the numbers suggest. See docs/firecracker.md.
+// a zram host frees far less than the numbers suggest. See SPEC.md §12.4.
 //
 // Every check reads /proc or /sys, so none of it needs privilege.
 func memoryGroup() Group {

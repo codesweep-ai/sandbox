@@ -96,7 +96,11 @@ func newDestroyCmd(app *App) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVarP(&force, "force", "f", false, "do not prompt")
+	// Not "do not prompt": nothing prompts. Without -f, destroy reports what it
+	// would delete and exits 0, so -f is the confirmation rather than a way past
+	// one.
+	cmd.Flags().BoolVarP(&force, "force", "f", false,
+		"confirm the deletion; without it, destroy only reports what it would delete")
 	return cmd
 }
 

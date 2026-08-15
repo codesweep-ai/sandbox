@@ -1,5 +1,5 @@
 // Package fcnet is the firecracker network fabric: the shared L2 network that
-// microVMs and podman containers both live on (see docs/firecracker.md).
+// microVMs and podman containers both live on (see SPEC.md §12.6).
 //
 // Firecracker runs INSIDE podman's rootless network namespace so it can reach
 // /dev/kvm and the tap on podman's bridge. This package manages, all through

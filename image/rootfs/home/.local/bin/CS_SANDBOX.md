@@ -27,7 +27,8 @@ cs-sandbox create web --engine podman --snapshot ~/data # frozen read-only copy 
 
 ssh feature                     # shell in by name (preferred for interactive work)
 cs-sandbox exec feature ls      # run one command instead
-cs-sandbox ls                   # what exists: STATUS (running/stopped/removed), AGE, type, engine
+cs-sandbox ls                   # GROUP NAME STATUS AGE TYPE ENGINE YOLO SOLO
+                                # STATUS is running, stopped or removed
 cs-sandbox ls -q                # names only, one per line — pipe it into other commands
 cs-sandbox port feature         # its host SSH port, if a tool needs it (ssh <name> does not)
 
@@ -37,7 +38,8 @@ cs-sandbox push feature         # send host commits in (fast-forward, clean tree
 cs-sandbox stop feature         # keep everything, shut it down
 cs-sandbox start feature        # bring it back
 cs-sandbox rm feature           # remove the sandbox, KEEP its data (recreate to reuse)
-cs-sandbox destroy feature -f   # delete the sandbox AND its data (-f skips the prompt)
+cs-sandbox destroy feature -f   # delete the sandbox AND its data (-f confirms; without it,
+                                # destroy only prints what it would delete)
 ```
 
 Data kept by `rm` stays listed by `ls` with STATUS `removed`, so it can't sit on disk unnoticed:

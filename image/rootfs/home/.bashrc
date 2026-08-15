@@ -84,7 +84,7 @@ export EDITOR=nvim
 #     (a no-op passthrough in a microVM, where plain podman already gives you that)
 # The real binary is always /usr/bin/podman.
 
-# Pyenv (shared, under /opt — see docs/design.md; `sudo` to add Python versions)
+# Pyenv (shared, under /opt — see SPEC.md §3.1; `sudo` to add Python versions)
 export PYENV_ROOT="${PYENV_ROOT:-/opt/pyenv}"
 export PYENV_VIRTUALENV_DISABLE_PROMPT=1
 [[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
@@ -100,7 +100,7 @@ export NVM_DIR="${NVM_DIR:-/opt/nvm}"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
 
-# Go (shared toolchain under /opt — see docs/design.md; `sudo` to change the toolchain
+# Go (shared toolchain under /opt — see SPEC.md §3.1; `sudo` to change the toolchain
 # itself). GOTOOLCHAIN is left at upstream's "auto", so a repo whose go.mod names a
 # different `go 1.x` downloads that toolchain into GOPATH on demand — no sudo needed,
 # which is Go's equivalent of switching versions with nvm/pyenv.

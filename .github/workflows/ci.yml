@@ -218,6 +218,18 @@ jobs:
   # One cache key covers both, deliberately: a change under internal/fcdisk (the
   # firecracker release and guest-kernel pins live there) rebuilds the image too,
   # which costs ~70s on a rare path and keeps the pair honest.
+  # The prose rules from CONTRIBUTING.md. Its own job because it needs no Go
+  # toolchain and no matrix, so it answers in seconds and answers even when the
+  # tests are failing. `make check` runs it too, for the contributor who runs
+  # one command before pushing.
+  docs:
+    name: docs prose
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: make docs
+
   build-artifacts:
     name: build-artifacts (ubuntu-latest)
     runs-on: ubuntu-latest
