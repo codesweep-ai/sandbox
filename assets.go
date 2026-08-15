@@ -1,8 +1,18 @@
-// Package assets embeds the image build assets — the Containerfile, the guest
-// rootfs skeleton, and the guest init — so a single downloaded binary can build
-// the sandbox image and boot microVMs with no source checkout. When run from a
-// checkout the on-disk image/ tree is preferred (see internal/paths.AssetDir);
-// this embedded copy is the fallback that makes the binary self-contained.
+// Package assets holds the image build assets embedded into the cs-sandbox
+// binary. It is not this module's entry point: cs-sandbox is a command-line
+// tool rather than a library, and the program is cmd/cs-sandbox.
+//
+//	go install github.com/codesweep-ai/sandbox/cmd/cs-sandbox@latest
+//
+// The package sits at the module root only because a //go:embed directive
+// cannot reach a parent directory and the tree it embeds, image/, is there.
+// Everything the tool actually does lives under internal/.
+//
+// What it embeds — the Containerfile, the guest rootfs skeleton, and the guest
+// init — is what lets a single downloaded binary build the sandbox image and
+// boot microVMs with no source checkout. When run from a checkout the on-disk
+// image/ tree is preferred (see internal/paths.AssetDir); this embedded copy is
+// the fallback that makes the binary self-contained.
 package assets
 
 import (
