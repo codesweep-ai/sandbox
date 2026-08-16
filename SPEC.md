@@ -520,6 +520,14 @@ store records absolute ids, so a writer and a reader disagreeing about the base 
 every file in it. On the microVM engine the store is delivered as a read-only ext4 disk built from the volume,
 using the same content-addressed cache as the base rootfs.
 
+**R85b.** Each engine **MUST** register a mounted store in the config its nested engine actually reads:
+the sandbox user's `~/.config/containers/storage.conf`, never the system file.
+
+A rootless engine resolves its storage config under the user's home, and does not inherit
+`[storage.options]` from `/etc`. Written to the system file, the disks still mount and the stores
+are then ignored in silence: `podman images` simply comes back empty. That silence is why each
+engine's path carries its own live test.
+
 A read-only shared base with a per-sandbox writable primary is the only supported way to share,
 because independent engines writing one store risk lock contention and corruption.
 
@@ -642,8 +650,9 @@ seccomp off and unmasks everything.
 **R104.** The inner Podman **MUST** run rootless, as the sandbox user, with no wrapper and no `sudo` — plain
 `podman` **MUST** be the real binary on both engines.
 
-**R105.** The container **MUST** unmask `/proc`. A nested user namespace cannot mount a fresh `procfs` while
-any of the container's `/proc` is masked, and the inner engine needs one for every container it runs.
+**R105.** The container **MUST** unmask the paths the engine masks by default, with `unmask=ALL`. A nested
+user namespace cannot mount a fresh `procfs` while any of the container's `/proc` is masked, and the
+inner engine needs one for every container it runs.
 
 **R106.** An inner container's bind-mounted files **MUST** come back owned by the sandbox user, with no flag
 from the caller.
@@ -672,13 +681,12 @@ what satisfies R85a — the ranges are derived the same way and capped the same 
 once is readable on either engine.
 
 Supporting that, the image carries `crun`, `slirp4netns` and `passt`, plus a `storage.conf`
-defaulting to native `overlay`. The per-sandbox storage config goes in the *user's*
-`~/.config/containers/storage.conf`. A rootless engine resolves its storage config there and does not
-inherit `[storage.options]` from the system file. Configured in `/etc`, §9's shared image stores
-would be ignored in silence. Its `containers.conf` disables cgroups, which silences a benign
-cgroup v2 warning on every nested run, at the cost of limits that could not apply to a nested
-container anyway. SELinux confinement is off for the container with no relabeling, which also avoids
-the macOS virtiofs relabel problem.
+defaulting to native `overlay`. That system file sets the driver and nothing per-sandbox. The
+entrypoint writes the *user's* `~/.config/containers/storage.conf`, which is the config a rootless
+engine reads and where R85b puts §9's shared image stores. Its `containers.conf` disables cgroups,
+which silences a benign cgroup v2 warning on every nested run, at the cost of limits that could not
+apply to a nested container anyway. SELinux confinement is off for the container with no relabeling,
+which also avoids the macOS virtiofs relabel problem.
 
 ### 11.3 Nested container storage
 
@@ -869,13 +877,15 @@ error for a supervisor to notice. The hard `memory.max` ceiling fails loudly ins
 **R131.** `/fc-init` **MUST** run as PID 1 and **MUST**, in this order:
 
 1. mount the API filesystems, make `/` rshared, and bring up loopback;
-2. `modprobe` what a microVM has no udev to autoload, and grant `newuidmap` its file capabilities;
+2. `modprobe` what a microVM has no udev to autoload;
 3. mount the seed and source its config;
-4. create the developer user with NOPASSWD sudo;
+4. create the developer user with NOPASSWD sudo, then run the shared `nested-rootless` bootstrap for
+   their subuid ranges and `newuidmap`'s file capabilities;
 5. bring up the NIC with the seeded static address, route and resolver;
 6. write `/etc/hosts` and `/etc/gai.conf`, and open the unprivileged ICMP group range;
 7. seed or refresh the home as §3.3 describes, and install the agent credentials;
-8. run the `--repo` clones and mount the read-only disks with the device-letter cursor;
+8. run the `--repo` clones, mount the read-only disks with the device-letter cursor, and register the
+   image stores among them per R85b;
 9. start sshd, signal readiness, and hand off to the vsock listener.
 
 A kernel boots an init rather than an entrypoint, which is why this replaces the container
@@ -962,8 +972,8 @@ Firecracker is a deliberately lean VMM, which trades features for a small surfac
 
 ## 13. Security model
 
-**R141.** Sandboxes **MUST** run rootless, with a scaled-down capability set, seccomp on, and `/proc/kcore`
-and host devices masked.
+**R141.** Sandboxes **MUST** run rootless, with a scaled-down capability set, seccomp on, and no host
+device beyond `/dev/net/tun`.
 
 **R142.** SSH ports **MUST** bind `127.0.0.1` only.
 
@@ -973,6 +983,12 @@ The engine is the trust boundary, and everything else follows from that. There i
 absent a kernel bug: the engine and the container are bounded by your unprivileged host user through
 keep-id. The microVM engine removes the shared-kernel attack surface entirely. `--privileged` trades
 that defence in depth for breadth, which is why it is a flag rather than a default.
+
+R105 unmasks the container's `/proc`, which is why R141 no longer names `/proc/kcore`. The masking
+was the outer of two defences, and not the load-bearing one. The container's root is an unprivileged
+subuid, so the kernel denies it `/proc/kcore`, `/proc/sysrq-trigger` and every non-namespaced sysctl
+on its own. Spending that layer is what buys a rootless inner engine, which holds its privileges in
+its own user namespace rather than in this container's.
 
 **Passwordless sudo inside a sandbox is safe**, and is the usual setup for an agent sandbox. On the
 container engine, root inside is your own unprivileged host uid through `--userns=keep-id`. On the
@@ -1011,8 +1027,8 @@ key out, so scope what you load.
 
 ## 16. Conformance and testing
 
-An implementation conforms when it satisfies R1–R143. The test suite is the reference, and it has
-two tiers, split by whether they touch a real engine.
+An implementation conforms when it satisfies R1–R143, R85a and R85b included. The test suite is the
+reference, and it has two tiers, split by whether they touch a real engine.
 
 **Unit tests** (`make test`) are pure and fast, with no external processes. They cover the logic
 where a silent bug would be costly: the seed trust material, agent-login inheritance, spec parsing,
