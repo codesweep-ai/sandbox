@@ -377,16 +377,17 @@ func (fe *Firecracker) Remove(ctx context.Context, name string, purge bool) erro
 // shutdown gracefully stops the VM (reboot -f over ssh), then kills firecracker.
 func (fe *Firecracker) shutdown(ctx context.Context, name string) {
 	idir := fe.d.InstanceDir(name)
-	if !fcRunning(idir) {
-		_ = os.Remove(filepath.Join(idir, "fc.pid"))
-		return
-	}
-	// Best-effort graceful reboot over the published port.
-	if in, err := state.Load(fe.d.InstDir, fe.d.group(), name); err == nil && in.Port > 0 {
-		reboot := append(fe.sshArgs(name, in.Port), "sync; sudo sh -c \"sync; reboot -f\"")
-		cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		_, _ = fe.d.Runner.Run(cctx, run.Opts{}, reboot...)
-		cancel()
+	// Only the graceful half is worth skipping when the pid is gone: it costs an
+	// ssh round trip to a VM whose wrapper already died. killFirecracker runs
+	// either way, because a dead wrapper says nothing about the VMM below it.
+	if fcRunning(idir) {
+		// Best-effort graceful reboot over the published port.
+		if in, err := state.Load(fe.d.InstDir, fe.d.group(), name); err == nil && in.Port > 0 {
+			reboot := append(fe.sshArgs(name, in.Port), "sync; sudo sh -c \"sync; reboot -f\"")
+			cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			_, _ = fe.d.Runner.Run(cctx, run.Opts{}, reboot...)
+			cancel()
+		}
 	}
 	killFirecracker(idir)
 }

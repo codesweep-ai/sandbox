@@ -134,33 +134,40 @@ func fcRunning(idir string) bool {
 
 // killFirecracker kills the instance's firecracker process (TERM, then KILL) and
 // reaps any survivor by config-file match.
+//
+// The config-file sweep runs on every path out, not only after a SIGKILL.
+// fc.pid holds the `podman unshare` wrapper and the VMM is its grandchild, so
+// the wrapper can die while the microVM keeps running — which is the state a
+// killed test or a timed-out run leaves behind. On that path the pid reads as
+// gone, and every check here agrees the work is done while the guest is still
+// up. Only the config file names the process that actually has to die, and
+// Remove deletes the directory holding it moments later, so a sweep skipped
+// here is a microVM nothing can address again.
 func killFirecracker(idir string) {
 	pidFile := filepath.Join(idir, "fc.pid")
+	defer func() {
+		_ = exec.Command("pkill", "-9", "-f", "config-file "+filepath.Join(idir, "run.json")).Run()
+		_ = os.Remove(pidFile)
+	}()
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		return
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil || pid <= 0 {
-		_ = os.Remove(pidFile)
 		return
 	}
 	if syscall.Kill(pid, 0) != nil {
-		_ = os.Remove(pidFile)
 		return
 	}
 	_ = syscall.Kill(pid, syscall.SIGTERM)
 	for range 16 {
 		if syscall.Kill(pid, 0) != nil {
-			_ = os.Remove(pidFile)
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
-	// belt-and-suspenders: reap any firecracker for this instance's config.
-	_ = exec.Command("pkill", "-9", "-f", "config-file "+filepath.Join(idir, "run.json")).Run()
-	_ = os.Remove(pidFile)
 }
 
 // removeVsock removes stale vm.vsock* sockets before (re)boot. The glob also
