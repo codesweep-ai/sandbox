@@ -145,9 +145,14 @@ SMOKE_RUN := $(subst $(space),|,$(strip $(SMOKE_TESTS)))
 ## The image defaults to the slim one this profile is built around. Overriding it
 ## is honoured, but a bare `make test-smoke` should not silently spend minutes
 ## seeding the 9 GB image into a store disk for the microVM member.
+##
+## -timeout stays under the 25 minutes the smoke-firecracker job allows, so that
+## when a member wedges it is Go that ends the run. Go names the test and prints
+## every goroutine; the job timeout above it kills the runner and reports only
+## that time ran out. Raise the job first if this ever has to grow.
 test-smoke:
 	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
-	  go test -tags smoke -count=1 -p 1 -v -timeout 900s -run '$(SMOKE_RUN)' ./...
+	  go test -tags smoke -count=1 -p 1 -v -timeout 1200s -run '$(SMOKE_RUN)' ./...
 
 ## test-integration: live tests (real podman/firecracker on a Linux/KVM host);
 ## each skips gracefully when podman or the sandbox image is unavailable.
@@ -157,8 +162,15 @@ test-smoke:
 ## containers and microVMs, so without it a package prints nothing for minutes.
 ## The smoke suite is tagged for this run too, so a full local pass covers it
 ## first — its failures are cheap and point at the host, not the engine.
+##
+## -timeout is per package, and it is a deadlock detector rather than a budget:
+## it exists to end a wedged test, not to hold the suite to a pace. Set near the
+## real runtime it reports the slowest host instead, and the panic names whichever
+## test the clock happened to land on rather than the one at fault. internal/cli
+## alone runs half an hour when nothing is cached, since seeding the image store
+## for the nested-microVM tests costs minutes before a VM even boots.
 test-integration:
-	go test -tags integration -p 1 -v -timeout 900s ./...
+	go test -tags integration -p 1 -v -timeout 3600s ./...
 
 ## vet / fmt / lint
 vet:
