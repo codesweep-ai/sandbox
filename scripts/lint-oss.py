@@ -974,6 +974,35 @@ def check_targets(repo):
     return out
 
 
+def check_target(body):
+    """The check target's prerequisites and its recipe, or (None, None)."""
+    # [^\S\n] rather than \s: the latter crosses the newline and swallows the
+    # tab-indented recipe, so a delegating target reads as its own prerequisite.
+    m = re.search(r"^check:[^\S\n]*(.*)$", body, re.M)
+    if not m:
+        return None, None
+    recipe = ""
+    for line in body[m.end():].lstrip("\n").split("\n"):
+        if line and not line[0].isspace():
+            break
+        recipe += line + "\n"
+    return m.group(1).split(), recipe
+
+
+def check_reaches(repo, prereqs, recipe, target, needle):
+    """Whether `check` runs target, directly or through a delegating script."""
+    if target in prereqs or needle in recipe:
+        return True
+    # A project that routes its gates through one script satisfies this by
+    # calling the tool there instead.
+    script = re.search(r"([\w./-]*check\.sh)", recipe)
+    if script:
+        delegated = repo.read(script.group(1).lstrip("./")) or ""
+        if needle in delegated or f"make {target}" in delegated:
+            return True
+    return False
+
+
 @rule("OSS-411", ERROR, "The check target reaches both linters",
       "The one command a contributor runs before pushing is the contract "
       "between them and CI. A gate it does not reach is one they meet after "
@@ -982,30 +1011,12 @@ def check_check_covers_docs(repo):
     body = repo.makefile()
     if not body:
         return [skipped("OSS-411", "no Makefile")]
-    # [^\S\n] rather than \s: the latter crosses the newline and swallows the
-    # tab-indented recipe, so a delegating target reads as its own prerequisite.
-    m = re.search(r"^check:[^\S\n]*(.*)$", body, re.M)
-    if not m:
+    prereqs, recipe = check_target(body)
+    if prereqs is None:
         return [err("OSS-411", "the Makefile has no check target")]
-    prereqs = m.group(1).split()
-    recipe = ""
-    for line in body[m.end():].lstrip("\n").split("\n"):
-        if line and not line[0].isspace():
-            break
-        recipe += line + "\n"
-    out = []
-    for target, linter in (("docs", "lint-docs"), ("oss", "lint-oss")):
-        if target in prereqs or linter in recipe:
-            continue
-        # A project that routes its gates through one script satisfies this by
-        # calling the linter there instead.
-        script = re.search(r"([\w./-]*check\.sh)", recipe)
-        if script:
-            delegated = repo.read(script.group(1).lstrip("./")) or ""
-            if linter in delegated or f"make {target}" in delegated:
-                continue
-        out.append(err("OSS-411", f"check does not reach {linter}"))
-    return out
+    return [err("OSS-411", f"check does not reach {linter}")
+            for target, linter in (("docs", "lint-docs"), ("oss", "lint-oss"))
+            if not check_reaches(repo, prereqs, recipe, target, linter)]
 
 
 @rule("OSS-412", WARN, "The toolchain floor is declared once",
@@ -1094,6 +1105,43 @@ def check_tag_shapes(repo):
         return [err("OSS-416", "tags that match the release trigger but are not "
                                "versions: " + ", ".join(bad[:6]))]
     return []
+
+
+@rule("OSS-417", ERROR, "The language's own static analysis is in the gate",
+      "gofmt and go vet catch what will not compile or is plainly wrong. They "
+      "say nothing about a stdlib call written out by hand, a parameter "
+      "nothing reads, or a helper that already exists under another name — the "
+      "residue that accumulates fastest in generated code, and the reason a "
+      "reviewer's attention goes on mechanics instead of design. A `lint` "
+      "target nobody runs is the same as no target: it has to hang off `check` "
+      "and off CI, or it reports only to whoever remembers it exists.")
+def check_language_lint(repo):
+    if not repo.has("go.mod"):
+        return [skipped("OSS-417", "no go.mod; this rule is Go-specific")]
+    out = []
+    cfgs = [".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json"]
+    cfg = next((c for c in cfgs if repo.has(c)), None)
+    if not cfg:
+        out.append(err("OSS-417", "no .golangci.yml, so golangci-lint runs its "
+                                  "default set and every linter that finds this "
+                                  "residue is off"))
+    body = repo.makefile()
+    if body:
+        prereqs, recipe = check_target(body)
+        if prereqs is None:
+            out.append(err("OSS-417", "the Makefile has no check target"))
+        elif not check_reaches(repo, prereqs, recipe, "lint", "golangci-lint"):
+            out.append(err("OSS-417", "check does not reach golangci-lint"))
+        if "deadcode" not in body:
+            # `unused` is package-scoped: a function whose only caller lives in
+            # another package looks used to it, and an exported one nothing
+            # calls is invisible. Whole-program reachability is a separate tool.
+            out.append(warn("OSS-417", "no deadcode target; golangci-lint's "
+                                       "`unused` cannot see across packages"))
+    bodies = "\n".join(repo.workflows().values())
+    if bodies and "golangci-lint" not in bodies and "make check" not in bodies:
+        out.append(err("OSS-417", "no CI job runs golangci-lint"))
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -80,10 +80,11 @@ BINARY_OK = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".icns",
              ".mp4", ".mov", ".wasm")
 
 # The targets the project's task runner must carry. `check` is the one command a
-# contributor runs before pushing, and it must reach the prose linter.
-REQUIRED_TARGETS = ["build", "test", "check", "docs", "oss", "clean"]
+# contributor runs before pushing, and it must reach every linter: the prose
+# ones and the language's own.
+REQUIRED_TARGETS = ["build", "test", "check", "lint", "docs", "oss", "clean"]
 
 # The rest of the family's vocabulary. A missing one is a warning: somebody who
 # has worked on a sibling repository will reach for it.
 EXPECTED_TARGETS = ["help", "install", "uninstall", "fmt", "fmt-check", "vet",
-                    "lint"]
+                    "deadcode"]
