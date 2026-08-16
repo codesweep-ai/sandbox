@@ -162,6 +162,10 @@ BOUNDARY = re.compile(rf"(?<=[.!?])[{_CLOSERS}]*\s+(?=[{_OPENERS}]{_STARTERS})")
 def prose(text):
     """The document with everything that is not prose removed."""
     text = re.sub(r"```.*?```", "", text, flags=re.S)   # fenced code
+    # HTML comments, including the marker pairs a tool injects to own a block of
+    # a file. The raw-HTML pattern below cannot catch these: its \b after the
+    # tag name never matches the space in "<!-- MARKER -->".
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
     text = re.sub(r"^\s*\|.*$", "", text, flags=re.M)   # tables
     text = re.sub(r"^\s*\[[^\]]+\]:.*$", "", text, flags=re.M)  # link defs
     # Raw HTML blocks. The tag list is explicit on purpose: a bare "starts with
