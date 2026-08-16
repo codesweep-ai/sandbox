@@ -1,0 +1,1743 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>. · ledger</title>
+<script>(function themeInit() {
+  var t = null;
+  var m = /[?&]theme=(light|dark)\b/.exec(location.search);
+  if (m) t = m[1]; // URL override wins; not persisted
+  if (t !== 'light' && t !== 'dark') {
+    try { t = localStorage.getItem('ledger-theme'); } catch (e) { /* file:// may block storage */ }
+  }
+  if (t !== 'light' && t !== 'dark') {
+    t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  }
+  document.documentElement.setAttribute('data-theme', t);
+})();</script>
+<style>
+
+/* vendored: @codesweep-ai/ui v1.12.0 src/styles/tokens.css */
+/* ============================================================
+   @codesweep-ai/ui — Design Tokens
+   ============================================================ */
+
+:root {
+  /* --- Spacing --- */
+  --space-0: 0;
+  --space-px: 1px;
+  --space-0-5: 0.125rem;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+
+  /* --- Radii --- */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* --- Typography --- */
+  --font-family-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji";
+  --font-family-mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo,
+    Consolas, "Liberation Mono", "Cascadia Code", monospace;
+
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-md: 1rem;
+  --font-size-lg: 1.25rem;
+  --font-size-xl: 1.5rem;
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.2;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.7;
+
+  /* --- Prose / long-form ramp (generated content; larger than app chrome) ---
+     Drives the `.prose` utility (base.css) and MarkdownViewer's markdown CSS. */
+  --font-size-prose-h1: 2rem;        /* 32px */
+  --font-size-prose-h2: 1.5rem;      /* 24px */
+  --font-size-prose-h3: 1.25rem;     /* 20px */
+  --font-size-prose-h4: 1rem;        /* 16px */
+  --font-size-prose-body: 1rem;      /* 16px — larger than chrome body */
+  --font-size-prose-small: 0.875rem; /* 14px */
+  --line-height-prose: 1.65;
+  --max-width-prose: 65ch;
+
+  /* --- Shadows (dark-mode defaults — need higher opacity on dark bg) --- */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-up: 0 -3px 6px rgba(0, 0, 0, 0.5);
+
+  /* --- Transitions --- */
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.2s ease;
+
+  /* --- Brand / header chrome (fixed, theme-independent) ---
+     The header + footer bar is always dark in BOTH themes, so every color
+     used on it must read on a dark surface regardless of the active theme. */
+  --color-brand: #00d4ff;          /* logo cyan — on-dark only; never place on a light surface */
+  --color-brand-accent: #1ee0ca;
+  --color-header-bg: #0b0f14;      /* softened off pure black (color review) */
+  --color-header-text: #ffffff;
+  --color-header-text-muted: #9aa4af;  /* inactive header nav links — on-dark muted */
+  --color-header-text-active: #1ee0ca; /* active header nav link — on-dark accent */
+  --color-nav-hover: #333333;
+  --color-text-inverse: #ffffff;
+
+  /* --- Dark Theme (default) --- */
+  --bg: #0b0f14;
+  --fg: #d1d9e0;
+  --muted: #9aa4af;
+  --card: #0f1620;
+  --border: rgba(255, 255, 255, 0.08);
+
+  /* --- Syntax highlighting (dark) --- */
+  --syntax-keyword: #f97583;
+  --syntax-string: #85e89d;
+  --syntax-number: #79b8ff;
+  --syntax-title: #b392f0;
+  --syntax-attr: #79b8ff;
+  --syntax-builtin: #ffab70;
+  --syntax-comment: #6a737d;
+
+  --color-brand-accent-bg: rgba(30, 224, 202, 0.05);
+  --color-brand-accent-bg-hover: rgba(30, 224, 202, 0.1);
+  --color-brand-accent-bg-strong: rgba(30, 224, 202, 0.15);
+
+  --color-link: #3b82f6;
+  --color-link-hover: #2563eb;
+
+  --color-error: #f87171;
+  --color-error-bg: rgba(248, 113, 113, 0.1);
+  --color-success: #34d399;
+  --color-success-bg: rgba(52, 211, 153, 0.2);
+  --color-warning: #f59e0b;
+  --color-warning-bg: rgba(245, 158, 11, 0.1);
+  --color-neutral: #9ca3af;
+  --color-neutral-bg: rgba(156, 163, 175, 0.2);
+  /* severe: the step between warning and error, for 4-level ordered severity
+     scales (low/med/high/critical). Status colors ship with a label or shape —
+     never color alone; adjacent hot hues (warning/severe/error) are not
+     separable by hue for CVD readers. Added v1.12.0. */
+  --color-severe: #f97316;
+  --color-severe-bg: rgba(249, 115, 22, 0.1);
+
+  --color-btn-primary: #17c9b5;
+  --color-btn-primary-text: #000000;
+  --color-btn-success-text: #000000;
+  --color-btn-warning-text: #000000;
+  --color-btn-disabled-bg: rgba(59, 130, 246, 0.5);
+  --color-btn-disabled-text: rgba(255, 255, 255, 0.7);
+
+  --color-highlight: rgba(250, 204, 21, 0.35);
+
+  --color-bg-subtle: rgba(255, 255, 255, 0.05);
+  --color-bg-muted: rgba(128, 128, 128, 0.05);
+  --color-bg-muted-hover: rgba(128, 128, 128, 0.1);
+  --color-row-hover: rgba(255, 255, 255, 0.06);
+
+  /* --- Z-index --- */
+  --z-sticky: 10;
+  --z-header: 100;
+  --z-modal: 200;
+  --z-tooltip: 300; /* above modal — chart/UI tooltips. Added v1.5.0. */
+  --z-toast: 400;   /* above tooltips — transient feedback. Added v1.11.0. */
+
+  /* --- Overlay --- */
+  --color-overlay: rgba(0, 0, 0, 0.5);
+
+  /* --- Header shadow (always dark, not theme-dependent) --- */
+  --shadow-header: 0 2px 10px rgba(0, 0, 0, 0.3);
+
+  /* --- Letter spacing --- */
+  --letter-spacing-wide: 0.5px;
+
+  /* --- Tree indentation --- */
+  --tree-indent-size: 1rem;
+  --tree-indent-base: 0.5rem;
+
+  /* --- Icon sizes --- */
+  --icon-size-xs: 12px;
+  --icon-size-sm: 14px;
+  --icon-size-md: 16px;
+  --icon-size-lg: 18px;
+
+  /* --- Pulse / indicator dot sizes (PulseBadge) --- */
+  --pulse-size-sm: 6px;
+  --pulse-size-md: 8px;
+  --pulse-size-lg: 10px;
+
+  /* --- Categorical palette (charts, legends, grouping) — muted set (color review) --- */
+  --color-cat-1: #6f93c9;   /* blue    */
+  --color-cat-2: #4fb3a6;   /* teal    */
+  --color-cat-3: #d2a44e;   /* amber   */
+  --color-cat-4: #d77f8b;   /* rose    */
+  --color-cat-5: #9e90cc;   /* violet  */
+  --color-cat-6: #d89259;   /* orange  */
+  --color-cat-7: #5fae8a;   /* emerald */
+  --color-cat-8: #c489c9;   /* fuchsia */
+  --color-cat-9: #6ab0d4;   /* sky     */
+  --color-cat-10: #9cb866;  /* lime    */
+
+  /* --- Categorical sub-shades (light / mid / dark per hue) --- */
+  --color-cat-1-light: #93c5fd;
+  --color-cat-1-mid: #3b82f6;
+  --color-cat-1-dark: #2563eb;
+  --color-cat-2-light: #5eead4;
+  --color-cat-2-mid: #14b8a6;
+  --color-cat-2-dark: #0d9488;
+  --color-cat-3-light: #fcd34d;
+  --color-cat-3-mid: #f59e0b;
+  --color-cat-3-dark: #d97706;
+  --color-cat-4-light: #fda4af;
+  --color-cat-4-mid: #f43f5e;
+  --color-cat-4-dark: #e11d48;
+  --color-cat-5-light: #c4b5fd;
+  --color-cat-5-mid: #8b5cf6;
+  --color-cat-5-dark: #7c3aed;
+  --color-cat-6-light: #fdba74;
+  --color-cat-6-mid: #f97316;
+  --color-cat-6-dark: #ea580c;
+  --color-cat-7-light: #6ee7b7;
+  --color-cat-7-mid: #10b981;
+  --color-cat-7-dark: #059669;
+  --color-cat-8-light: #f0abfc;
+  --color-cat-8-mid: #d946ef;
+  --color-cat-8-dark: #c026d3;
+  --color-cat-9-light: #7dd3fc;
+  --color-cat-9-mid: #0ea5e9;
+  --color-cat-9-dark: #0284c7;
+  --color-cat-10-light: #bef264;
+  --color-cat-10-mid: #84cc16;
+  --color-cat-10-dark: #65a30d;
+
+  /* --- Semantic typography --- */
+  --font-size-page-title: var(--font-size-xl);
+  --font-size-section-title: var(--font-size-lg);
+  --font-size-card-header: var(--font-size-sm);
+  --font-size-label: var(--font-size-xs);
+  --font-size-body: var(--font-size-sm);
+  --font-size-caption: var(--font-size-xs);
+  --font-size-stat: var(--font-size-xl);
+
+  /* --- Code typography --- */
+  --font-size-code: 13px;
+  --line-height-code: 1.6;
+
+  /* --- Chart typography --- */
+  --font-size-chart-axis: 11px;
+
+  /* --- Card content --- */
+  --card-content-height: 28rem;
+
+  /* --- Input / Layout Widths --- */
+  --input-min-width: 150px;
+  --content-width-sm: 200px;
+  --chart-tooltip-max-width: 240px;
+  --auth-card-width: 420px;
+  --toast-max-width: 360px;
+
+  /* --- Modal --- */
+  --modal-max-width: 700px;
+  --modal-margin-top: 5vh;
+  --modal-max-height: 80vh;
+
+  /* --- Marketing layer (consumed via @codesweep-ai/ui/marketing) ---
+     Theme-independent. The display/sketch FONTS are loaded only by
+     styles/marketing.css, so product surfaces never download them; these
+     variables just name the families with safe fallbacks. */
+  --font-display: "Geist", var(--font-family-sans);
+  --font-sketch: "Caveat", cursive;
+  --font-size-display: 3.5rem;            /* hero headline (~56px) */
+  --font-size-marketing-title: 2.25rem;   /* section h2 (~36px) */
+  --font-size-marketing-lede: 1.0625rem;  /* hero / section lede (~17px) */
+  --font-size-sketch: 1.375rem;           /* handwritten eyebrow (~22px) */
+  --font-size-sketch-sm: 1rem;            /* handwritten caption (~16px) */
+  --marketing-max: 75rem;                 /* page container (~1200px) */
+  --marketing-max-base: 61.25rem;         /* ~980px */
+  --marketing-max-narrow: 45rem;          /* ~720px */
+  --marketing-prose: 47.5rem;             /* section header text block (~760px) */
+  --marketing-lede-max: 38rem;            /* hero lede measure (~608px) */
+  --marketing-avatar: 4.5rem;             /* about-page headshot / logo (~72px) */
+  --marketing-section-py: 3rem;           /* vertical padding per section (~48px) */
+}
+
+:root[data-theme="light"] {
+  /* --- Shadows (lighter for white backgrounds) --- */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08);
+  --shadow-md: 0 2px 8px rgba(15, 23, 42, 0.12);
+  --shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.18);
+  --shadow-up: 0 -3px 6px rgba(15, 23, 42, 0.1);
+
+  --bg: #f3f4f6;        /* soft cool gray — page recedes (color review) */
+  --fg: #1f2937;
+  --muted: #6b7280;
+  --card: #ffffff;      /* white cards lift off the page (color review) */
+  --border: rgba(0, 0, 0, 0.1);
+
+  /* --- Syntax highlighting (light) --- */
+  --syntax-keyword: #d73a49;
+  --syntax-string: #22863a;
+  --syntax-number: #005cc5;
+  --syntax-title: #6f42c1;
+  --syntax-attr: #005cc5;
+  --syntax-builtin: #e36209;
+  --syntax-comment: #6a737d;
+
+  --color-brand-accent: #0d9488;
+  --color-brand-accent-bg: rgba(13, 148, 136, 0.08);
+  --color-brand-accent-bg-hover: rgba(13, 148, 136, 0.12);
+  --color-brand-accent-bg-strong: rgba(13, 148, 136, 0.18);
+
+  --color-link: #2563eb;
+  --color-link-hover: #1d4ed8;
+
+  --color-error: #dc2626;
+  --color-error-bg: rgba(220, 38, 38, 0.1);
+  --color-success: #10b981;
+  --color-success-bg: rgba(16, 185, 129, 0.2);
+  --color-warning: #b45309;
+  --color-warning-bg: rgba(210, 153, 34, 0.15);
+  --color-neutral: #6b7280;
+  --color-neutral-bg: rgba(107, 114, 128, 0.2);
+  --color-severe: #c2410c;
+  --color-severe-bg: rgba(194, 65, 12, 0.1);
+
+  --color-btn-primary: #0d9488;
+  --color-btn-primary-text: #ffffff;
+  --color-btn-success-text: #ffffff;
+  --color-btn-warning-text: #ffffff;
+  --color-btn-disabled-bg: rgba(37, 99, 235, 0.5);
+  --color-btn-disabled-text: rgba(255, 255, 255, 0.7);
+
+  --color-highlight: rgba(250, 204, 21, 0.4);
+
+  --color-bg-subtle: rgba(0, 0, 0, 0.03);
+  --color-bg-muted: rgba(128, 128, 128, 0.08);
+  --color-bg-muted-hover: rgba(128, 128, 128, 0.12);
+  --color-row-hover: rgba(0, 0, 0, 0.04);
+
+  /* --- Categorical palette (light — muted set, darkened for contrast on white) --- */
+  --color-cat-1: #3f6491;   /* blue    */
+  --color-cat-2: #2f8a80;   /* teal    */
+  --color-cat-3: #a9772f;   /* amber   */
+  --color-cat-4: #b15562;   /* rose    */
+  --color-cat-5: #6c5da0;   /* violet  */
+  --color-cat-6: #b06a3c;   /* orange  */
+  --color-cat-7: #3f7d5e;   /* emerald */
+  --color-cat-8: #95548c;   /* fuchsia */
+  --color-cat-9: #2f78a0;   /* sky     */
+  --color-cat-10: #6f8a40;  /* lime    */
+
+  /* --- Categorical sub-shades (light — adjusted for white backgrounds) --- */
+  --color-cat-1-light: #60a5fa;
+  --color-cat-1-mid: #2563eb;
+  --color-cat-1-dark: #1d4ed8;
+  --color-cat-2-light: #2dd4bf;
+  --color-cat-2-mid: #0d9488;
+  --color-cat-2-dark: #0f766e;
+  --color-cat-3-light: #f59e0b;
+  --color-cat-3-mid: #b45309;
+  --color-cat-3-dark: #92400e;
+  --color-cat-4-light: #f43f5e;
+  --color-cat-4-mid: #be123c;
+  --color-cat-4-dark: #9f1239;
+  --color-cat-5-light: #8b5cf6;
+  --color-cat-5-mid: #6d28d9;
+  --color-cat-5-dark: #5b21b6;
+  --color-cat-6-light: #f97316;
+  --color-cat-6-mid: #c2410c;
+  --color-cat-6-dark: #9a3412;
+  --color-cat-7-light: #10b981;
+  --color-cat-7-mid: #047857;
+  --color-cat-7-dark: #065f46;
+  --color-cat-8-light: #d946ef;
+  --color-cat-8-mid: #a21caf;
+  --color-cat-8-dark: #86198f;
+  --color-cat-9-light: #0ea5e9;
+  --color-cat-9-mid: #0369a1;
+  --color-cat-9-dark: #075985;
+  --color-cat-10-light: #84cc16;
+  --color-cat-10-mid: #4d7c0f;
+  --color-cat-10-dark: #3f6212;
+}
+
+/* ============================================================
+   Syntax Highlighting (highlight.js)
+   ============================================================ */
+
+.hljs {
+  color: var(--fg);
+  background: transparent;
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: var(--syntax-comment);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-addition {
+  color: var(--syntax-keyword);
+}
+
+.hljs-string,
+.hljs-doctag,
+.hljs-regexp {
+  color: var(--syntax-string);
+}
+
+.hljs-number,
+.hljs-literal {
+  color: var(--syntax-number);
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--syntax-title);
+}
+
+.hljs-attribute,
+.hljs-attr {
+  color: var(--syntax-attr);
+}
+
+.hljs-variable,
+.hljs-template-variable,
+.hljs-built_in {
+  color: var(--syntax-builtin);
+}
+
+.hljs-type,
+.hljs-params {
+  color: var(--syntax-attr);
+}
+
+.hljs-meta {
+  color: var(--syntax-builtin);
+}
+
+.code-query-match {
+  background: var(--color-highlight);
+  color: var(--fg);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* ============================================================
+   Utility Classes
+   ============================================================ */
+
+.text-label-upper {
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-semibold);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: var(--letter-spacing-wide);
+}
+
+
+/* vendored: @codesweep-ai/ui v1.12.0 src/styles/base.css (tailwind directives stripped) */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* Layout stability: a vertical scrollbar appearing/disappearing must never
+   re-center or shift page content. Always show the track (classic-scrollbar
+   platforms: Windows, Linux, always-show-scrollbars macOS) and reserve the
+   gutter where supported. Overlay-scrollbar systems (macOS default) are
+   visually unaffected either way. Fixed-viewport apps that manage all
+   scrolling in inner containers may override with "html: overflow-y: auto".
+   Inner scroll containers should carry "scrollbar-gutter: stable" themselves.
+   Added v1.12.0. */
+html {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+body {
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-sm);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* Skeleton — used by loading states */
+.cs-skeleton {
+  display: inline-block;
+  background: var(--color-bg-subtle);
+  animation: cs-skeleton-pulse 1.5s ease-in-out infinite;
+}
+.cs-skeleton--circle {
+  display: inline-block;
+}
+@keyframes cs-skeleton-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cs-skeleton {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+/* PulseBadge — used inline next to AgentStatus when in-flight */
+.cs-pulse {
+  display: inline-block;
+  border-radius: 50%;
+  animation: cs-pulse 1.4s ease-in-out infinite;
+  transform-origin: center;
+}
+@keyframes cs-pulse {
+  0%, 100% { transform: scale(0.8); opacity: 0.6; }
+  50%      { transform: scale(1.2); opacity: 1; }
+}
+
+/* StreamingText — blinking trailing cursor while content streams */
+.cs-stream-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  vertical-align: -2px;
+  margin-left: 2px;
+  background: var(--color-brand-accent);
+  animation: cs-stream-cursor 1s steps(2, end) infinite;
+}
+@keyframes cs-stream-cursor {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cs-pulse {
+    animation: none;
+    opacity: 0.85;
+    transform: none;
+  }
+  .cs-stream-cursor {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* Prose — long-form / generated content. Apply to a container to restyle its
+   descendants with the prose type ramp (larger than app chrome). MarkdownViewer
+   has its own richer CSS (markdown-content.css) driven by the same tokens. */
+.prose {
+  max-width: var(--max-width-prose);
+  font-size: var(--font-size-prose-body);
+  line-height: var(--line-height-prose);
+  color: var(--fg);
+}
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4 {
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  margin: var(--space-6) 0 var(--space-3);
+}
+.prose > :first-child {
+  margin-top: 0;
+}
+.prose h1 {
+  font-size: var(--font-size-prose-h1);
+}
+.prose h2 {
+  font-size: var(--font-size-prose-h2);
+}
+.prose h3 {
+  font-size: var(--font-size-prose-h3);
+}
+.prose h4 {
+  font-size: var(--font-size-prose-h4);
+}
+.prose p,
+.prose ul,
+.prose ol {
+  margin: 0 0 var(--space-4);
+}
+.prose ul,
+.prose ol {
+  padding-left: var(--space-6);
+}
+.prose small {
+  font-size: var(--font-size-prose-small);
+}
+.prose pre,
+.prose code {
+  font-family: var(--font-family-mono);
+}
+
+/* Toast enter — slide-up + fade-in. Per the design system: 200ms ease-out. */
+@keyframes cs-toast-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.cs-toast-enter {
+  animation: cs-toast-enter 200ms ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cs-toast-enter {
+    animation: none;
+  }
+}
+
+
+/* ledger viewer — styled exclusively through @codesweep-ai/ui tokens */
+:root, :root[data-theme="light"] {
+  /* chart series: validated blue/amber pair (dataviz palette validator, both
+     themes' card surfaces). Expressed as design-system tokens — cat-1-mid
+     re-themes itself; the amber needs a different step per theme. */
+  --chart-found: var(--color-cat-1-mid);
+  --chart-fixed: var(--color-cat-3-dark);
+  --sev-c: var(--color-error);
+  --sev-h: var(--color-severe);
+}
+:root[data-theme="light"] {
+  --chart-fixed: var(--color-cat-3-mid);
+}
+/* Root scrollbar stability now comes from the design system's base.css
+   (v1.12.0); inner scrollers below carry their own gutters. */
+html { scroll-padding-top: 84px; }
+.hdr {
+  display: flex; align-items: center; gap: var(--space-3);
+  background: var(--color-header-bg); color: var(--color-header-text);
+  padding: var(--space-3) var(--space-5); box-shadow: var(--shadow-header);
+}
+.brandbar { width: 4px; height: 1.25em; background: var(--color-brand); border-radius: var(--radius-xs); }
+.htitle { font-weight: var(--font-weight-semibold); }
+.htitle .proj { color: var(--color-brand); }
+.hspace { flex: 1; }
+.tbtn {
+  background: transparent; color: var(--color-header-text);
+  border: 1px solid rgba(255,255,255,0.25); border-radius: var(--radius-sm);
+  padding: 2px 10px; font-size: var(--font-size-xs); cursor: pointer;
+}
+.tbtn:hover { background: var(--color-nav-hover); }
+/* One column, one grammar: the narrow (brief-width) presentation is the ledger's
+   only layout at every viewport (LGR-036 deleted the wide fork). */
+main { max-width: 760px; margin: 0 auto; padding: var(--space-4) var(--space-5) var(--space-6); }
+.viewbar { border-bottom: none; padding-bottom: 0; margin-bottom: var(--space-1); }
+.masthead { margin-bottom: var(--space-4); }
+.mastlinks { display: flex; gap: var(--space-3); margin-top: var(--space-1); }
+body.briefmode .filterbar { display: none !important; }
+.chip.hasactive { border-color: var(--color-brand-accent); color: var(--fg); }
+.cyc { min-width: 108px; text-align: center; }
+.arrange { flex-basis: 100%; display: flex; justify-content: flex-start; gap: var(--space-2); }
+.chip.cyc2 { text-align: center; background: var(--color-neutral-bg); }
+#cycGroup { min-width: 142px; }
+#cycSort { min-width: 118px; }
+#cycStatus { min-width: 122px; }
+.chip[disabled] { opacity: 0.35; cursor: default; }
+.lg { font-size: var(--font-size-xs); color: var(--muted); white-space: nowrap; }
+.lg i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+.lg .swf { background: var(--chart-found); }
+.lg .swx { background: var(--chart-fixed); }
+#ctip {
+  position: fixed; display: none; pointer-events: none; z-index: var(--z-tooltip);
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md); padding: 4px 8px; font-size: var(--font-size-xs); color: var(--fg);
+}
+.controls {
+  background: var(--bg);
+  display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center;
+  padding: var(--space-2) 0; border-bottom: 1px solid var(--border); margin-bottom: var(--space-3);
+}
+.search {
+  background: var(--card); color: var(--fg); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 4px 10px; min-width: var(--input-min-width);
+}
+.chipset { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.chipset .cl { font-size: var(--font-size-label); color: var(--muted); text-transform: uppercase; letter-spacing: var(--letter-spacing-wide); margin-right: 2px; }
+.chip {
+  border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--color-bg-muted);
+  color: var(--muted); padding: 1px 10px; font-size: var(--font-size-xs); cursor: pointer;
+}
+.chip.on { background: var(--color-brand-accent-bg-strong); border-color: var(--color-brand-accent); color: var(--fg); }
+.chip.aux { border-style: dashed; }
+.grp { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: var(--space-4); overflow: hidden; }
+.grp > header {
+  display: flex; justify-content: space-between; padding: var(--space-2) var(--space-3);
+  cursor: pointer; font-weight: var(--font-weight-semibold);
+  background: linear-gradient(var(--color-bg-subtle), var(--color-bg-subtle)) var(--card);
+  user-select: none;
+  position: sticky; top: 0; z-index: 1;
+}
+.grp > header .cnt { color: var(--muted); font-weight: var(--font-weight-regular); }
+.grp.ideas { border-style: dashed; }
+.grp.ideas > header { color: var(--muted); }
+.idm { font-family: var(--font-family-mono); font-size: var(--font-size-xs); color: var(--muted); min-width: 64px; flex-shrink: 0; }
+.ttl { min-width: 0; }
+.mono { font-family: var(--font-family-mono); }
+.wo { border: 1px solid var(--color-brand-accent); color: var(--color-brand-accent); border-radius: var(--radius-xs); padding: 0 4px; }
+.stale { background: var(--color-warning-bg); color: var(--color-warning); border-radius: var(--radius-xs); padding: 0 4px; }
+.sev { font-size: var(--font-size-xs); color: var(--muted); white-space: nowrap; }
+.sev i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+.sev-critical i { background: var(--sev-c); box-shadow: 0 0 0 2px var(--color-error-bg), 0 0 0 3.5px var(--sev-c); }
+.sev-critical { color: var(--sev-c); font-weight: var(--font-weight-semibold); }
+.sev-high i { background: var(--sev-h); }
+.sev-med i { background: var(--color-neutral); }
+.sev-low i { background: transparent; border: 1.5px solid var(--color-neutral); }
+.tag {
+  font-size: 10px; text-transform: uppercase; letter-spacing: var(--letter-spacing-wide);
+  border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 0 4px; color: var(--muted); flex-shrink: 0;
+}
+.detail {
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-md);
+  margin: 0 var(--space-3) var(--space-3); padding: var(--space-3) var(--space-4) var(--space-4);
+}
+.dlbl {
+  font-size: var(--font-size-label); font-weight: var(--font-weight-semibold); color: var(--muted);
+  text-transform: uppercase; letter-spacing: var(--letter-spacing-wide); margin: var(--space-3) 0 var(--space-1);
+}
+.detail .dlbl:first-child { margin-top: 0; }
+.detail .prose { font-size: var(--font-size-sm); line-height: var(--line-height-relaxed); max-width: none; }
+.detail .prose p, .detail .prose ul, .detail .prose ol { margin-bottom: var(--space-2); }
+.note { border-left: 2px solid var(--border); padding-left: var(--space-3); margin: var(--space-2) 0; }
+.note .d { font-family: var(--font-family-mono); font-size: var(--font-size-xs); color: var(--muted); margin-bottom: 2px; }
+.evd { font-size: var(--font-size-sm); display: flex; flex-direction: column; gap: 2px; }
+.linksrow { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.lnk {
+  background: var(--color-brand-accent-bg); border: 1px solid var(--color-brand-accent);
+  color: var(--color-brand-accent); border-radius: var(--radius-sm); padding: 1px 8px;
+  font-family: var(--font-family-mono); font-size: var(--font-size-xs); cursor: pointer;
+}
+.lnk:hover { background: var(--color-brand-accent-bg-hover); }
+.dmeta { margin-top: var(--space-3); font-size: var(--font-size-xs); color: var(--muted); }
+.mdcode {
+  background: var(--color-bg-subtle); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3); overflow-x: auto; font-size: var(--font-size-code);
+  line-height: var(--line-height-code); margin: var(--space-2) 0;
+}
+.mdi { background: var(--color-bg-subtle); border-radius: var(--radius-xs); padding: 0 3px; font-size: 0.92em; }
+.mdtblwrap { overflow-x: auto; margin: var(--space-2) 0; }
+.mdtbl { border-collapse: collapse; font-size: var(--font-size-sm); }
+.mdtbl th, .mdtbl td { border: 1px solid var(--border); padding: 3px 8px; text-align: left; }
+.mdtbl th { background: var(--color-bg-subtle); }
+blockquote { border-left: 3px solid var(--border); padding-left: var(--space-3); color: var(--muted); margin: var(--space-2) 0; }
+.empty { text-align: center; color: var(--muted); padding: var(--space-6); }
+.plink { color: var(--color-link); font-size: var(--font-size-xs); }
+.linkish {
+  background: none; border: none; padding: 0; font: inherit; color: var(--color-link);
+  cursor: pointer; text-decoration: underline;
+}
+.modalcard.intro {
+  border-color: var(--color-brand-accent);
+  background: linear-gradient(var(--color-brand-accent-bg), var(--color-brand-accent-bg)), var(--card);
+}
+.introdesc { font-size: var(--font-size-sm); margin: var(--space-2) 0 0; }
+.gband {
+  background: var(--color-brand-accent-bg-strong);
+  border-left: 2px solid var(--color-brand-accent);
+  color: var(--fg);
+  padding: var(--space-1) var(--space-2); border-radius: var(--radius-xs);
+  margin: var(--space-4) 0 var(--space-1);
+}
+.introbody .dlbl:first-child { margin-top: 0; }
+.introbody .gent { padding: 0 var(--space-2); }
+.gent { margin: var(--space-2) 0 0; }
+.gterm { font-weight: 600; font-size: var(--font-size-sm); }
+.gdef { color: var(--muted); font-size: var(--font-size-xs); margin-top: 1px; }
+.introfoot { color: var(--muted); font-size: var(--font-size-xs); margin: var(--space-4) 0 0; border-top: 1px solid var(--border); padding-top: var(--space-2); }
+.newb {
+  background: var(--color-brand-accent); color: var(--color-btn-primary-text);
+  border-radius: var(--radius-xs); padding: 0 4px; font-size: 10px;
+  text-transform: uppercase; letter-spacing: var(--letter-spacing-wide); flex-shrink: 0;
+}
+.qstale { color: var(--color-warning); }
+.actdate {
+  font-size: var(--font-size-label); font-weight: var(--font-weight-semibold); color: var(--muted);
+  text-transform: uppercase; letter-spacing: var(--letter-spacing-wide);
+  padding: var(--space-3) var(--space-3) var(--space-1);
+}
+.actrow { display: flex; gap: var(--space-2); align-items: baseline; padding: var(--space-1) var(--space-3); cursor: pointer; border-top: 1px solid var(--border); }
+.actrow:hover { background: var(--color-row-hover); }
+.actk {
+  font-size: 10px; text-transform: uppercase; letter-spacing: var(--letter-spacing-wide);
+  border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 0 4px;
+  color: var(--muted); flex-shrink: 0; min-width: 56px; text-align: center;
+}
+.actk-note { border-color: var(--color-brand-accent); color: var(--color-brand-accent); }
+.actk-closed { border-color: var(--color-success); color: var(--color-success); }
+.actrow .ttl { flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stack { display: flex; flex-direction: column; gap: var(--space-4); }
+.stack .cards { max-height: none; overflow-y: visible; }
+.stack .lane > header.coll { cursor: pointer; user-select: none; }
+.lane > header {
+  position: sticky; top: 0; z-index: 1;
+  background: linear-gradient(var(--color-bg-subtle), var(--color-bg-subtle)) var(--card);
+}
+.listcards { max-height: none; overflow-y: visible; }
+.qrow.qfirst { border-top: none; margin-top: 0; padding-top: 0; }
+.qrow { padding: var(--space-2) 0 0; border-top: 1px solid var(--border); margin-top: var(--space-2); cursor: pointer; }
+.qrowhead { display: flex; gap: var(--space-2); align-items: baseline; }
+.qttl { margin-top: 2px; }
+.boardmode .listonly { display: none; }
+.lane { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.lane > header {
+  display: flex; justify-content: space-between; padding: var(--space-2) var(--space-3);
+  font-weight: var(--font-weight-semibold); background: var(--color-bg-subtle); border-bottom: 1px solid var(--border);
+}
+.lane > header .cnt { color: var(--muted); font-weight: var(--font-weight-regular); }
+.lane.fixnext { border-color: var(--color-brand-accent); }
+.lane.fixnext > header { color: var(--color-brand-accent); }
+.lane.dim { opacity: 0.35; }
+.ip { color: var(--color-brand-accent); border: 1px solid var(--color-brand-accent); border-radius: var(--radius-xs); padding: 0 4px; font-size: var(--font-size-xs); }
+.lane.ideas { border-style: dashed; }
+.lane.ideas > header { color: var(--muted); }
+.lanenote { padding: var(--space-1) var(--space-3); font-size: var(--font-size-xs); color: var(--muted); border-bottom: 1px dashed var(--border); }
+.cards { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2); max-height: 72vh; overflow-y: auto; scrollbar-gutter: stable; }
+.bcard { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); cursor: pointer; }
+.bcard:hover { border-color: var(--color-brand-accent); }
+.bcard.idea .bttl { color: var(--muted); }
+.bhead { display: flex; gap: var(--space-2); align-items: baseline; }
+.bttl { font-size: var(--font-size-sm); margin-top: 2px; }
+.bwhy { color: var(--muted); font-size: var(--font-size-xs); border-left: 2px solid var(--color-brand-accent); padding-left: 6px; margin-top: var(--space-1); }
+.rank {
+  background: var(--color-brand-accent); color: var(--color-btn-primary-text);
+  border-radius: 50%; width: 16px; height: 16px; line-height: 16px; text-align: center;
+  font-size: 10px; font-weight: var(--font-weight-bold); flex-shrink: 0; align-self: center;
+}
+.bmeta { color: var(--muted); font-size: var(--font-size-xs); margin-top: var(--space-1); }
+.laneempty { text-align: center; color: var(--muted); font-size: var(--font-size-xs); padding: var(--space-3); }
+.modalwrap {
+  position: fixed; inset: 0; background: var(--color-overlay); z-index: var(--z-modal);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: var(--modal-margin-top) var(--space-4) var(--space-4);
+}
+.modalwrap[hidden] { display: none; }
+.modalcard {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg); position: relative;
+  width: 100%; max-width: var(--modal-max-width); max-height: var(--modal-max-height);
+  overflow-y: auto; scrollbar-gutter: stable; padding: var(--space-4) var(--space-5) var(--space-5);
+}
+.modalx {
+  position: sticky; top: 0; float: right; margin: -4px -8px 0 var(--space-3);
+  background: var(--color-bg-muted); color: var(--muted); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); width: 26px; height: 26px; font-size: var(--font-size-lg);
+  line-height: 1; cursor: pointer;
+}
+.modalx:hover { color: var(--fg); background: var(--color-bg-muted-hover); }
+.mhead { display: flex; gap: var(--space-2); align-items: baseline; flex-wrap: wrap; }
+.mhead .mmeta { margin-left: auto; color: var(--muted); font-size: var(--font-size-xs); }
+.mttl { font-size: var(--font-size-lg); font-weight: var(--font-weight-semibold); margin: var(--space-2) 0 var(--space-3); line-height: var(--line-height-tight); }
+.modalcard .detail { margin: 0; }
+.foot { text-align: center; color: var(--muted); font-size: var(--font-size-xs); margin-top: var(--space-5); }
+/* ---- brief (landing) view: glanceable blocks, phone-first ---- */
+.brief { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: var(--space-4); }
+.bdesc { font-size: var(--font-size-lg); line-height: var(--line-height-relaxed); }
+.bblock { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-3) var(--space-4); }
+.bhead2 {
+  display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3);
+  font-size: var(--font-size-label); font-weight: var(--font-weight-semibold); color: var(--muted);
+  text-transform: uppercase; letter-spacing: var(--letter-spacing-wide); margin-bottom: var(--space-2);
+}
+.bhead2 .cnt { text-transform: none; letter-spacing: normal; font-weight: var(--font-weight-regular); }
+.brief .actrow { padding-left: 0; padding-right: 0; }
+.brief .bcard { background: var(--color-bg-subtle); }
+.bmore { background: none; border: none; color: var(--color-link); cursor: pointer; font-size: var(--font-size-xs); padding: var(--space-2) 0 0; }
+.bviews { display: flex; gap: var(--space-2); justify-content: center; }
+.barwrap { overflow-x: scroll; max-width: 448px; margin-left: auto; }
+.barwrap svg { display: block; margin-left: auto; }
+.barf { fill: var(--chart-found); }
+.barx { fill: var(--chart-fixed); }
+.basel { stroke: var(--border); }
+.todayl { stroke: var(--color-brand-accent); stroke-width: 1.5; }
+.bhead2 .cnt .lg { margin-right: var(--space-2); }
+
+/* ---- phone (LGR-016): stack, don't shrink ---- */
+@media (max-width: 720px) {
+  .idm { min-width: 0; }
+  main { padding: var(--space-3); }
+  .hdr { padding: var(--space-2) var(--space-3); }
+  .modalwrap { padding: var(--space-2); }
+  .modalcard { max-width: 100%; max-height: 95vh; padding: var(--space-3); }
+  .bdesc { font-size: var(--font-size-md); }
+}
+
+</style>
+</head>
+<body>
+<header class="hdr">
+<span class="brandbar"></span>
+<span class="htitle"><span class="proj">.</span> · ledger</span>
+<span class="hspace"></span>
+<button id="themeBtn" class="tbtn">theme</button>
+</header>
+<main>
+<div class="controls viewbar"><span class="chipset" id="viewChips"><span class="cl">view</span>
+<button class="chip on" id="viewBrief">brief</button>
+<button class="chip" id="viewBoard">board</button>
+<button class="chip" id="viewList">list</button>
+<button class="chip" id="viewActivity">activity</button></span>
+<button id="helpBtn" class="chip aux" title="how to read this ledger">?</button></div>
+
+<div class="controls filterbar">
+<input id="q" class="search" type="search" placeholder="search id, title, details&hellip;">
+<button id="cycStatus" class="chip cyc" title="click to cycle">status · all</button>
+<button id="cycType" class="chip cyc" title="click to cycle">type · all</button>
+<button id="cycSev" class="chip cyc" title="click to cycle">sev · all</button>
+<button id="staleBtn" class="chip aux">stale only</button>
+<button id="resetChip" class="chip aux" disabled>reset</button>
+<span class="arrange listonly">
+<button id="cycGroup" class="chip cyc2" title="click to cycle">group · status</button>
+<button id="cycSort" class="chip cyc2" title="click to cycle">sort · id</button></span>
+<button id="newBtn" class="chip aux" hidden>new since last visit</button>
+</div>
+<div id="groups"></div>
+<footer class="foot">rendered by cs-ledger v0.3.1 · @codesweep-ai/ui tokens v1.12.0 · 14 issues · 0 drafts · last activity 2026-08-15</footer>
+</main>
+<div id="modal" class="modalwrap" hidden><div class="modalcard"><button id="modalx" class="modalx" title="close (Esc)">&times;</button><div id="modalbody"></div></div></div>
+<div id="ctip"></div>
+<script id="ledger-data" type="application/json">{"project":".","staleAfterDays":14,"records":[{"id":"SBX-001","title":"Building a microVM's image-store disk holds the whole store in memory","type":"defect","severity":"high","status":"open","foundBy":"session agent, while reading internal/fcdisk/cache.go","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"`Cache.StoreDisk` tars a shared image store inside a helper container and captures the archive through the `run.Runner` seam (`internal/fcdisk/cache.go:140`). `run.Exec.Run` collects a command's stdout into a `bytes.Buffer` and returns it as a string, so the entire tar lands in memory. `os.WriteFile` at line 147 then converts that string to a byte slice, which copies it a second time.\n\nA shared store exists to hold container images, so its size is measured in gigabytes rather than megabytes. Seeding a store with this project's own image (9.3 GB, or 693 MB for the CI slim build) and creating a microVM against it asks the host for roughly twice the store's size in resident memory, at once.\n\nTo see it, run `cs-sandbox seed-store big \u003ca large image>` and then `cs-sandbox create x --engine firecracker --image-store big`, watching the RSS of the `cs-sandbox` process. The miss path is the one that costs: a cache hit returns early at line 128 and never tars anything.\n\nThe smoke test that covers this path (`TestCLINestedSandboxInVMLive`) defaults to the slim image, so CI never reaches a size where the allocation hurts. Streaming the tar to the temp file, rather than through a captured `Result`, would keep the cost flat.","notes":[],"links":[]},{"id":"SBX-002","title":"A pid file that outlives a host reboot can make stop signal an unrelated process","type":"defect","severity":"high","status":"open","foundBy":"session agent, while reading internal/engine/firecracker_proc.go and internal/forward/forward.go","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"Two places decide a tracked process is alive by sending signal 0 to a recorded pid, and neither checks that the process is the one they recorded. `fcRunning` reads `\u003cinstance>/fc.pid` for a microVM (`internal/engine/firecracker_proc.go:132`). `alive` reads the pid out of a forward record for a detached `ssh -N` child (`internal/forward/forward.go:244`).\n\nBoth records live under the instances directory, which survives a host reboot, and nothing sweeps them at boot. Linux issues pids from a counter that restarts low after a reboot and wraps, so a number recorded before the reboot can belong to something else after it.\n\nThe consequences follow from the check alone. `cs-sandbox ls` reports a dead microVM as running, `start` refuses it as already up, and `stop` sends SIGTERM and then SIGKILL to whatever now holds the number (`killFirecracker`). `unforward`, `rm` and `destroy` reach the same code for forwards. The victim is another process of yours, because a pid you can signal is one you own.\n\nReproduce it by creating a Firecracker sandbox, rebooting the host, and comparing `cat \u003cinstance>/fc.pid` against `ps -p \u003cpid>`. Recording the process start time from field 22 of `/proc/\u003cpid>/stat` beside the pid, and requiring both to match, closes it without a new dependency.","notes":[],"links":[]},{"id":"SBX-003","title":"Building a --snapshot disk changes the permissions of the caller's own files","type":"defect","severity":"med","status":"open","foundBy":"session agent, while reading internal/fcdisk/fcdisk.go","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"`BuildExt4Dir` runs `find \"$FC_DIR\" ! -readable -exec chmod u+rX {} +` over its source directory before `mke2fs -d` reads it (`internal/fcdisk/fcdisk.go:143`). The pre-pass was added for image stores, which carry the mode-0000 `/etc/gshadow` that every distro base image ships, and which would otherwise stop the build dead.\n\n`buildSnapshotDisks` passes the user's own host path as that directory (`internal/engine/firecracker.go:601`). So `--snapshot`, documented as a read-only point-in-time copy of a host directory, edits the source it claims only to read.\n\nfakeroot does not contain the change. It records the intended mode in its own database and still issues a real `chmod`, which lands on disk. Measured directly: a file created 0000, passed through `fakeroot -- bash -c 'find \u003cdir> ! -readable -exec chmod u+rX {} +'`, comes back 0600.\n\nReproduce it with `chmod 000 ~/keys/secret`, then `cs-sandbox create x --engine firecracker --snapshot ~/keys`, then `stat -c %a ~/keys/secret`. The image-store path already unpacks into a temp tree first (`internal/fcdisk/cache.go`), which is where the pre-pass belongs for a snapshot too.","notes":[],"links":[]},{"id":"SBX-004","title":"A microVM silently drops its fifteenth shared disk","type":"defect","severity":"med","status":"open","foundBy":"session agent, while reading image/guest/init","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"The guest init walks its auxiliary disks with a fixed letter list, `_letters=(c d e f g h i j k l m n o p)` (`image/guest/init:236`). That covers `/dev/vdc` through `/dev/vdp`, which is fourteen devices, and `--repo`, `--snapshot` and `--image-store` all advance the same cursor.\n\nPast the fourteenth the index reads off the end of the array. The script does not run under `set -u`, so the expansion is empty, the device path becomes `/dev/vd`, the `[ -b ]` test fails, and the loop moves on without printing anything.\n\nNothing on the host side caps the count. `fcconfig.Build` sizes the drive list from the spec, and no caller validates it, so `create` attaches fifteen drives, reports success, and hands back a sandbox missing one of the directories you asked for. A repo you expected at `~/\u003cname>` is simply absent.\n\nThe Podman engine bind-mounts each share and has no such limit, so the same command line means different things on the two engines. Either reject the fifteenth share in `create` with a clear message, or extend the guest past `vdp`.","notes":[],"links":[]},{"id":"SBX-005","title":"An undocumented environment variable can publish sandbox SSH beyond loopback","type":"defect","severity":"med","status":"open","foundBy":"session agent, while comparing the CS_SANDBOX_* variables in the code against the ones in the docs","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"R142 in SPEC.md §13 states that SSH ports must bind `127.0.0.1` only. `internal/cli/root.go:174` reads `CS_SANDBOX_SSH_BIND`, defaulting it to `127.0.0.1`, and passes the value through unvalidated. It reaches podman's publish flag at `internal/engine/podman.go:95` and the microVM's host forwarder at `internal/engine/firecracker.go:285`, and a group's gateway takes the same value.\n\nSo `CS_SANDBOX_SSH_BIND=0.0.0.0 cs-sandbox create web` puts that sandbox's SSH port on every interface of the host, on both engines. Confirm it with `ss -ltnp | grep \u003cport>` after the create.\n\nNo document mentions the variable. Sandboxes accept key authentication only, so this is not an open door, but it moves a boundary the spec states as a requirement, and it does so through a name a reader can only find in the source.\n\nDecide which one is true. Either the spec should describe the override and what it costs, following the rule that a flag with a cost says so where the reader meets it, or `create` should reject a non-loopback value.","notes":[],"links":["SBX-006"]},{"id":"SBX-006","title":"CS_SANDBOX_ENGINE selects the engine and appears in no document","type":"defect","severity":"low","status":"open","foundBy":"session agent, while comparing the CS_SANDBOX_* variables in the code against the ones in the docs","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"`internal/cli/create.go:65` defaults the `--engine` flag from `CS_SANDBOX_ENGINE`. Grepping the markdown for that name returns nothing, in MANUAL.md or anywhere else.\n\nSo a user on a Linux host with KVM who wants Podman has to pass `--engine podman` on every create, or read the source to learn that one export would do it. The variable is the closest thing the tool has to a user-level engine default, and it is invisible.\n\nMANUAL.md is where a flag's meaning lives, by the table in CONTRIBUTING.md, so the entry belongs beside `--engine` there.","notes":[],"links":["SBX-010"]},{"id":"SBX-007","title":"The first install path in INSTALL.md leads to an empty releases page","type":"defect","severity":"med","status":"open","foundBy":"session agent, while checking INSTALL.md against the repository's tags","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"INSTALL.md §1 offers two ways to get the binary, and leads with \"Download a release\": grab `cs-sandbox_\u003cversion>_\u003cos>_\u003carch>.tar.gz` and `checksums.txt`, verify the checksum, then verify the cosign signature.\n\nNothing is published behind that. `git ls-remote --tags origin` returns no output, so the repository has never been tagged, and `.github/workflows/release.yml` fires on a tag. The releases page is empty.\n\nA first-time reader takes the first path offered, finds nothing to download, and has to work out that the second half of the section is the only one that works today. That is the worst moment in the documentation to lose someone.\n\nCutting a first tag closes it and makes the whole section true at once. Until then, lead the section with the source build and say plainly that no release is published yet.","notes":[],"links":[]},{"id":"SBX-008","title":"The in-use guard on rm-store cannot see a microVM that reads the store","type":"defect","severity":"low","status":"open","foundBy":"session agent, while reading internal/store/store.go","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"`Manager.Remove` refuses to delete a shared image store that is in use, and it establishes use with `podman ps -a --filter volume=cs-sandbox-shared-\u003cname>`. That query finds container sandboxes and nothing else.\n\nA Firecracker sandbox reads a store as a read-only ext4 disk built from the volume, and holds no podman container against it. So `cs-sandbox rm-store big` succeeds while every microVM on the host is mounting `big`, and the error that would have named those sandboxes never appears.\n\nNothing breaks at that moment, because the cached disk under the artifact cache keeps running VMs and their restarts alive. The next `create --image-store big` fails with \"volume does not exist\", a long way from the command that caused it.\n\nThe check reads as a safety net, which is why the blind spot matters more than the immediate damage. Instance state already records the answer: `state.Instance.Shared` holds the store names a sandbox was created with.","notes":[],"links":[]},{"id":"SBX-009","title":"The spec says a group's tap prefix is never reclaimed, and the code reclaims it","type":"defect","severity":"low","status":"open","foundBy":"session agent, while checking SPEC.md §17's open questions against the code","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"Open question 2 in SPEC.md §17 reads: \"A group's tap prefix is allocated and never reclaimed within a host's lifetime. Whether exhaustion is reachable in practice has not been measured.\"\n\n`App.allocTapPrefix` builds its taken set from the groups that exist right now (`internal/cli/group_commands.go:246`) and returns the lowest `fd%04x` not in it. A removed group is not in `state.ListGroups`, so its prefix is free again on the next allocation. Exhaustion needs 65536 groups alive at once, which answers the second sentence too.\n\nThe live hazard runs the other way, and the open question does not name it. A reissued prefix is only safe because `removeGroup` drops the host-route leg, takes the fabric down and reclaims the network before the group record goes. That ordering is what a reader should be warned about, rather than an exhaustion that cannot happen.\n\nRewrite the open question as a statement of what the allocator does, or close it.","notes":[],"links":[]},{"id":"SBX-010","title":"Give a user a persistent way to choose the default engine","type":"feature-idea","severity":"low","status":"open","foundBy":"SPEC.md §17, open question 1","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"The engine default is derived from the host: Firecracker on x86_64 Linux with a usable `/dev/kvm`, and Podman everywhere else (`internal/cli/create.go:25`). Open question 1 in SPEC.md §17 asks whether a user-level default should override that, and where it would be configured.\n\nThere is a real reason to want one. A developer on a KVM host who is debugging a container-engine behaviour, or who wants the faster create path, currently repeats `--engine podman` on every command that creates something.\n\nHalf the mechanism already exists and is undocumented: `--engine` defaults from `CS_SANDBOX_ENGINE`. The open question is really whether that is the whole answer, or whether the tool should grow a config file for it.\n\nAn environment variable is the cheaper answer and fits a tool that keeps no host-wide config today. Documenting it and saying so in the spec would close the question without new code.","notes":[],"links":["SBX-006"]},{"id":"SBX-011","title":"Nothing reclaims the data that rm leaves behind","type":"improvement","severity":"med","status":"open","foundBy":"SPEC.md §17, open question 3","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"`cs-sandbox rm` deliberately keeps a sandbox's home so that `create` with the same name reuses it. `internal/engine/orphan.go` makes that data visible: `ls` shows it with status `removed` and an age, and `destroy` purges it.\n\nWhat is missing is any pressure to act. Open question 3 in SPEC.md §17 records this as undecided. A host used daily accumulates a microVM `rootfs.ext4` or a `cs-sandbox-home-\u003cname>` volume per removed sandbox, each holding a full home directory, and only a human reading the `ls` output will ever notice.\n\nThe pieces for a policy are already there. `Orphan.Since` carries the age, and the Firecracker artifact caches already prune on a TTL that `CS_SANDBOX_FC_REPO_CACHE_TTL_DAYS` controls.\n\nA `prune` verb that purges orphans older than a TTL would follow the pattern the caches already set, and would keep deletion explicit rather than automatic. Reporting the total size that `removed` data occupies would be the smaller first step.","notes":[],"links":[]},{"id":"SBX-012","title":"Agent sandboxes in one group can SSH into each other, and only --solo prevents it","type":"feature-idea","severity":"med","status":"open","foundBy":"SPEC.md §14, first limitation","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"SPEC.md §14 records the boundary honestly: agent sandboxes in a group share that group's agent tier key, so any agent sandbox can SSH into any other in the same group. Agents are walled off from you and from your user sandboxes, and not from each other.\n\nThat is the right default for the driving pattern the README shows in walkthrough 7, where one agent runs a session on another. It is the wrong default when two agents are running untrusted work side by side, because one compromised agent reaches every peer in its fleet, and the agent tools make reaching a peer a single command.\n\nThe two escapes each cost something. `--solo` removes a sandbox's outbound SSH entirely, so it can no longer drive anyone. `--group` separates whole fleets and shares no key across the boundary, so it also separates the fixtures you wanted to compare.\n\nWhat is missing is the middle: a way to say which peers a given agent sandbox may reach. Per-sandbox keys with an explicit allow list would give it, at the cost of a key per member rather than a key per tier.","notes":[],"links":[]},{"id":"SBX-013","title":"An arm64 Linux host falls back to Podman even though Firecracker supports aarch64","type":"feature-idea","severity":"low","status":"open","foundBy":"session agent, while reading the engine default in internal/cli/create.go","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"`defaultEngine` chooses Podman whenever `runtime.GOARCH != \"amd64\"`, and R112 in SPEC.md §12 makes that a requirement (`internal/cli/create.go:25`). So an arm64 Linux host with a working `/dev/kvm` gets a container sandbox and cannot ask for a microVM at all.\n\nFirecracker itself runs on aarch64, and part of the support is already written. `fcArch` maps `arm64` to `aarch64`, and `fcDigests` carries a pinned checksum for the aarch64 release tarball (`internal/fcdisk/build.go:41`).\n\nThe guest side is what is missing, and the comment on the gate says so: the artifacts target x86_64. Two pieces would need work. The kernel build lifts an ELF out of Fedora's `kernel-core` with the upstream `extract-vmlinux` script, which is written around an x86 bzImage. `DefaultBootArgs` opens `console=ttyS0`, which is the wrong console for an arm64 guest.\n\nThe payoff is a real one: an arm64 Linux server, or an Ampere or Graviton host, is a plausible place to run a fleet of agent sandboxes. Nothing else in the tool is x86-only.","notes":[],"links":[]},{"id":"SBX-014","title":"Two builds of the sandbox image a week apart are different images with the same name","type":"improvement","severity":"low","status":"open","foundBy":"SPEC.md §14, second limitation","opened":"2026-08-15","resolved":null,"stint":null,"evidence":{"commits":[],"integrated":[],"verified":null},"resolution":null,"details":"SPEC.md §14 records that the image is not bit-for-bit reproducible, because `image/Containerfile` runs a package update at build time and a rebuild can pick up newer upstream packages.\n\nThe consequence is that two hosts running the same `cs-sandbox build` from the same commit can hold materially different sandboxes, and neither can say how they differ. When an agent's work reproduces on one host and not another, the image is a suspect nobody can rule out.\n\nFull reproducibility is expensive and probably not worth it here. Recording what was built is cheap, and answers the question that actually gets asked. The guest kernel already shows the shape: `CS_SANDBOX_FC_KVER` pins a Fedora `kernel-core` NVR, and `kernelRebuildReason` rebuilds when the pin moves.\n\nWriting the package manifest into the image, and surfacing it from `inspect` or `doctor`, would let two hosts diff their sandboxes. Pinning the base image by digest rather than by tag would narrow the drift at the same time.","notes":[],"links":[]}],"drafts":[],"queue":{"recommendedBy":"session agent, from the 2026-08-15 repository review","updated":"2026-08-15","items":[{"id":"SBX-002","why":"A stale pid file can send SIGKILL to another of your processes after a host reboot."},{"id":"SBX-003","why":"Creating a sandbox silently changes the permissions of files in the directory you shared."},{"id":"SBX-007","why":"The first install path every new user takes points at a releases page with nothing on it."},{"id":"SBX-001","why":"A store holding real images needs twice its size in host memory to build a microVM disk."},{"id":"SBX-005","why":"An undocumented variable moves the loopback-only SSH bind that R142 requires."},{"id":"SBX-004","why":"Past fourteen shares a microVM drops one and still reports success."},{"id":"SBX-006","why":"One MANUAL.md entry, and it is most of the answer to the engine-default question."}]},"description":null,"commitUrlTemplate":null,"derived":{"terminalStatuses":["closed","wont-fix","moved-to-roadmap"],"lastActivity":{"SBX-001":"2026-08-15","SBX-002":"2026-08-15","SBX-003":"2026-08-15","SBX-004":"2026-08-15","SBX-005":"2026-08-15","SBX-006":"2026-08-15","SBX-007":"2026-08-15","SBX-008":"2026-08-15","SBX-009":"2026-08-15","SBX-010":"2026-08-15","SBX-011":"2026-08-15","SBX-012":"2026-08-15","SBX-013":"2026-08-15","SBX-014":"2026-08-15"},"events":[{"d":"2026-08-15","kind":"opened","k":"SBX-001","x":""},{"d":"2026-08-15","kind":"opened","k":"SBX-002","x":""},{"d":"2026-08-15","kind":"opened","k":"SBX-003","x":""},{"d":"2026-08-15","kind":"opened","k":"SBX-004","x":""},{"d":"2026-08-15","kind":"opened","k":"SBX-005","x":""},{"d":"2026-08-15","kind":"opened","k":"SBX-006","x":""},{"d":"2026-08-15","kind":"opened","k":"SBX-007","x":""},{"d":"2026-08-15","kind":"opened","k":"SBX-008","x":""},{"d":"2026-08-15","kind":"opened","k":"SBX-009","x":""},{"d":"2026-08-15","kind":"opened","k":"SBX-010","x":""},{"d":"2026-08-15","kind":"opened","k":"SBX-011","x":""},{"d":"2026-08-15","kind":"opened","k":"SBX-012","x":""},{"d":"2026-08-15","kind":"opened","k":"SBX-013","x":""},{"d":"2026-08-15","kind":"opened","k":"SBX-014","x":""}],"daily":{"2026-08-15":{"f":14,"x":0}},"firstEventDate":"2026-08-15","queuePredates":0,"unqueuedCriticals":[],"draftsAwaiting":[]}}</script>
+<script>
+var mdToHtml = function mdToHtml(src) {
+  if (src === null || src === undefined) return '';
+  var escFn = function (s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  };
+  var blocks = [];
+  var txt = String(src).replace(/```[^\n]*\n([\s\S]*?)```/g, function (m, code) {
+    blocks.push('<pre class="mdcode"><code>' + escFn(code.replace(/\n+$/, '')) + '</code></pre>');
+    return ' ' + (blocks.length - 1) + ' ';
+  });
+  txt = escFn(txt);
+  var inline = function (s) {
+    s = s.replace(/`([^`]+)`/g, '<code class="mdi">$1</code>');
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (m, t, u) {
+      return /^(https?:\/\/|#)/.test(u) ? '<a href="' + u + '" rel="noopener">' + t + '</a>' : m;
+    });
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/(^|[\s(>])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+    return s;
+  };
+  var lines = txt.split('\n');
+  var out = [], p = [], i = 0, m;
+  var flushP = function () { if (p.length) out.push('<p>' + inline(p.join(' ')) + '</p>'); p = []; };
+  while (i < lines.length) {
+    var L = lines[i];
+    if (/^ \d+ \s*$/.test(L.trim())) { flushP(); out.push(L.trim()); i++; continue; }
+    if (!L.trim()) { flushP(); i++; continue; }
+    m = L.match(/^(#{1,6})\s+(.*)$/);
+    if (m) { flushP(); var lv = Math.min(m[1].length + 2, 6); out.push('<h' + lv + '>' + inline(m[2]) + '</h' + lv + '>'); i++; continue; }
+    if (/^\s*\|.*\|\s*$/.test(L) && i + 1 < lines.length && /^\s*\|[\s\-|:]+\|\s*$/.test(lines[i + 1])) {
+      flushP();
+      var hdr = L, rows = [];
+      i += 2;
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(lines[i]); i++; }
+      var cells = function (ln) {
+        return ln.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(function (c) { return inline(c.trim()); });
+      };
+      var t = '<div class="mdtblwrap"><table class="mdtbl"><thead><tr>';
+      cells(hdr).forEach(function (c) { t += '<th>' + c + '</th>'; });
+      t += '</tr></thead><tbody>';
+      rows.forEach(function (rw) {
+        t += '<tr>';
+        cells(rw).forEach(function (c) { t += '<td>' + c + '</td>'; });
+        t += '</tr>';
+      });
+      t += '</tbody></table></div>';
+      out.push(t);
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(L)) {
+      flushP();
+      var items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        var item = lines[i].replace(/^\s*[-*]\s+/, '');
+        i++;
+        while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i])) {
+          item += ' ' + lines[i].trim();
+          i++;
+        }
+        items.push('<li>' + inline(item) + '</li>');
+      }
+      out.push('<ul>' + items.join('') + '</ul>');
+      continue;
+    }
+    if (/^\s*\d+\.\s+/.test(L)) {
+      flushP();
+      var oitems = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        var oi = lines[i].replace(/^\s*\d+\.\s+/, '');
+        i++;
+        while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i])) {
+          oi += ' ' + lines[i].trim();
+          i++;
+        }
+        oitems.push('<li>' + inline(oi) + '</li>');
+      }
+      out.push('<ol>' + oitems.join('') + '</ol>');
+      continue;
+    }
+    if (/^\s*&gt;\s?/.test(L)) {
+      flushP();
+      var q = [];
+      while (i < lines.length && /^\s*&gt;\s?/.test(lines[i])) { q.push(lines[i].replace(/^\s*&gt;\s?/, '')); i++; }
+      out.push('<blockquote>' + inline(q.join(' ')) + '</blockquote>');
+      continue;
+    }
+    p.push(L.trim());
+    i++;
+  }
+  flushP();
+  return out.join('\n').replace(/ (\d+) /g, function (mm, n) { return blocks[Number(n)]; });
+};
+(function viewerMain() {
+  'use strict';
+  var $ = function (s) { return document.querySelector(s); };
+  var esc = function (s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  };
+  var DATA = JSON.parse(document.getElementById('ledger-data').textContent);
+  var STALE = typeof DATA.staleAfterDays === 'number' ? DATA.staleAfterDays : 14;
+  var TODAY = new Date();
+  // Every data-only derivation ships precomputed in DATA.derived (single
+  // source: the cs-ledger binary). The viewer computes only what needs the
+  // clock or the visitor — ages, staleness, new-badges, the trend window —
+  // each a comparison over values emitted at render time.
+  var DERIVED = DATA.derived;
+  var TERMINAL = {};
+  DERIVED.terminalStatuses.forEach(function (s) { TERMINAL[s] = 1; });
+  var recs = DATA.records.slice();
+  var drafts = DATA.drafts.slice();
+
+  function keyOf(r) { return r.id ? r.id : 'draft:' + r.member + '/' + r.slug; }
+  function enrich(r, isDraft) {
+    r._draft = !!isDraft;
+    r._idea = !isDraft && r.type === 'feature-idea' && r.status === 'open';
+    r._terminal = !!TERMINAL[r.status];
+    r._last = DERIVED.lastActivity[keyOf(r)] || '';
+    r._age = r._last ? Math.floor((TODAY - new Date(r._last + 'T00:00:00')) / 86400000) : 0;
+    r._stale = STALE > 0 && !r._terminal && r._age > STALE;
+  }
+  recs.forEach(function (r) { enrich(r, false); });
+  drafts.forEach(function (d) { enrich(d, true); });
+  var byKey = {};
+  recs.concat(drafts).forEach(function (r) { byKey[keyOf(r)] = r; });
+
+  var QUEUE = (DATA.queue && Array.isArray(DATA.queue.items)) ? DATA.queue : null;
+  var qRank = {};
+  if (QUEUE) QUEUE.items.forEach(function (it, i) {
+    if (it && it.id && !(it.id in qRank)) qRank[it.id] = { rank: i + 1, why: it.why || '' };
+  });
+
+  // Since-last-visit: read the previous visit date, stamp today's. Client-side
+  // only — the rendered HTML stays a deterministic function of the records.
+  // Key is namespaced BY PROJECT (LGR-013): localStorage is per-origin, and two
+  // ledgers served from one host must not share a visit stamp. Theme stays
+  // shared deliberately — one person, one preference.
+  var VISIT_KEY = 'ledger-last-visit:' + (DATA.project || '');
+  var prevVisit = null;
+  try {
+    prevVisit = localStorage.getItem(VISIT_KEY);
+    localStorage.setItem(VISIT_KEY,
+      new Date(TODAY.getTime() - TODAY.getTimezoneOffset() * 60000).toISOString().slice(0, 10));
+  } catch (e) { /* file:// may block storage */ }
+  var newCount = 0;
+  recs.concat(drafts).forEach(function (r) {
+    r._new = !!(prevVisit && r._last && r._last > prevVisit);
+    if (r._new) newCount++;
+  });
+
+  var state = {
+    view: (function () {
+      var m = /[?&]view=(list|board|activity|brief)\b/.exec(location.search);
+      return m ? m[1] : 'brief';
+    })(),
+    newOnly: false, q: '', status: 'all',
+    types: { 'defect': 1, 'improvement': 1, 'feature-idea': 1 },
+    sevs: { 'critical': 1, 'high': 1, 'med': 1, 'low': 1 },
+    staleOnly: false, groupBy: 'status', sort: 'id',
+    collapsed: { 'closed': 1, 'retired': 1, 'bl-done': 1 }
+  };
+
+  function sevHtml(s) {
+    var lbl = s === 'critical' ? 'crit' : s;
+    return '<span class="sev sev-' + s + '" title="severity: ' + s + '"><i></i>' + lbl + '</span>';
+  }
+  function tagHtml(t) {
+    return '<span class="tag tag-' + t + '">' + (t === 'feature-idea' ? 'idea' : t) + '</span>';
+  }
+
+  // ---- sparkline (found vs fixed, cumulative)
+  function sparkline() {
+    var el = $('#spark');
+    if (!el) return;
+    var perDay = DERIVED.daily, d0 = DERIVED.firstEventDate;
+    if (!d0) { el.innerHTML = ''; return; }
+    var today = new Date(TODAY.getTime() - TODAY.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    if (today < d0) today = d0;
+    var days = [];
+    var t = new Date(d0 + 'T00:00:00Z').getTime();
+    var end = new Date(today + 'T00:00:00Z').getTime();
+    for (; t <= end; t += 86400000) days.push(new Date(t).toISOString().slice(0, 10));
+    var BW = 8, BARW = 6, H = 46, P = 3;
+    var max = 1;
+    days.forEach(function (d) { var c = perDay[d]; if (c && c.f + c.x > max) max = c.f + c.x; });
+    var W = days.length * BW;
+    var unit = (H - 2 * P) / max;
+    var svg = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="daily found and resolved, ending today">';
+    var pts = [];
+    days.forEach(function (d, i) {
+      var c = perDay[d] || { f: 0, x: 0 };
+      pts.push({ date: d, f: c.f, x: c.x });
+      var y = H - P;
+      var fh = c.f * unit, xh = c.x * unit;
+      if (fh > 0) { svg += '<rect class="barf" x="' + (i * BW + 1) + '" y="' + (y - fh) + '" width="' + BARW + '" height="' + fh + '"></rect>'; y -= fh; }
+      if (xh > 0) { svg += '<rect class="barx" x="' + (i * BW + 1) + '" y="' + (y - xh) + '" width="' + BARW + '" height="' + xh + '"></rect>'; }
+    });
+    svg += '<line class="todayl" x1="' + (W - 1) + '" x2="' + (W - 1) + '" y1="0" y2="' + H + '"></line>';
+    svg += '<line class="basel" x1="0" x2="' + W + '" y1="' + (H - P + 0.5) + '" y2="' + (H - P + 0.5) + '"></line></svg>';
+    el.innerHTML = svg;
+    el.scrollLeft = el.scrollWidth;
+    var tip = $('#ctip');
+    var svgEl = el.querySelector('svg');
+    svgEl.addEventListener('mousemove', function (ev) {
+      var rect = svgEl.getBoundingClientRect();
+      var i = Math.max(0, Math.min(days.length - 1, Math.floor((ev.clientX - rect.left) / BW)));
+      var pt = pts[i];
+      tip.style.display = 'block';
+      tip.style.left = (ev.clientX + 12) + 'px';
+      tip.style.top = (ev.clientY - 12) + 'px';
+      tip.innerHTML = '<b>' + pt.date + '</b><br>' + pt.f + ' found · ' + pt.x + ' resolved';
+    });
+    svgEl.addEventListener('mouseleave', function () { tip.style.display = 'none'; });
+  }
+
+  // ---- filtering / grouping
+  function pass(r, ignoreStatus) {
+    if (!ignoreStatus && state.status !== 'all') {
+      if (state.status === 'open' && !(r.status === 'open' && !r._idea && !r._draft)) return false;
+      if (state.status === 'in-progress' && r.status !== 'in-progress') return false;
+      if (state.status === 'closed' && r.status !== 'closed') return false;
+      if (state.status === 'ideas' && !r._idea) return false;
+      if (state.status === 'drafts' && !r._draft) return false;
+      if (state.status === 'retired' && !(r.status === 'wont-fix' || r.status === 'moved-to-roadmap')) return false;
+    }
+    if (!state.types[r.type]) return false;
+    if (!state.sevs[r.severity]) return false;
+    if (state.staleOnly && !r._stale) return false;
+    if (state.newOnly && !r._new) return false;
+    if (state.q) {
+      var hay = keyOf(r) + ' ' + (r.title || '') + ' ' + (r.details || '') + ' ' + (r.foundBy || '');
+      (r.notes || []).forEach(function (n) { hay += ' ' + n.text; });
+      if (hay.toLowerCase().indexOf(state.q.toLowerCase()) < 0) return false;
+    }
+    return true;
+  }
+
+  function groupsFor(items) {
+    var gs = [];
+    if (state.groupBy === 'status') {
+      [
+        { key: 'in-progress', label: 'In progress', f: function (r) { return r.status === 'in-progress'; } },
+        { key: 'open', label: 'Open', f: function (r) { return r.status === 'open' && !r._idea && !r._draft; } },
+        { key: 'drafts', label: 'Drafts — unfiled (member branches)', f: function (r) { return r._draft; }, cls: 'ideas' },
+        { key: 'ideas', label: 'Ideas / roadmap', f: function (r) { return r._idea; }, cls: 'ideas' },
+        { key: 'closed', label: 'Closed', f: function (r) { return r.status === 'closed'; } },
+        { key: 'retired', label: 'Retired (wont-fix · moved-to-roadmap)', f: function (r) { return r.status === 'wont-fix' || r.status === 'moved-to-roadmap'; } }
+      ].forEach(function (b) {
+        var it = items.filter(b.f);
+        if (it.length) gs.push({ key: b.key, label: b.label, items: it, cls: b.cls || '' });
+      });
+    } else if (state.groupBy === 'stint') {
+      var m = {};
+      items.forEach(function (r) { var k = r.stint || 'unassigned'; (m[k] = m[k] || []).push(r); });
+      Object.keys(m).sort().forEach(function (k) {
+        gs.push({ key: 'st-' + k, label: k === 'unassigned' ? 'No stint' : 'Stint ' + k, items: m[k], cls: '' });
+      });
+    } else {
+      ['defect', 'improvement', 'feature-idea'].forEach(function (t) {
+        var it = items.filter(function (r) { return r.type === t; });
+        if (it.length) gs.push({ key: 't-' + t, label: t, items: it, cls: t === 'feature-idea' ? 'ideas' : '' });
+      });
+    }
+    return gs;
+  }
+
+  var SEVORD = { critical: 0, high: 1, med: 2, low: 3 };
+  function cmp(a, b) {
+    if (state.sort === 'sev') { var d = SEVORD[a.severity] - SEVORD[b.severity]; if (d) return d; }
+    if (state.sort === 'date' && a._last !== b._last) return a._last < b._last ? 1 : -1;
+    var ka = keyOf(a), kb = keyOf(b);
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  }
+
+  function staleHtml(r) {
+    return r._stale ? '<span class="stale" title="no activity for ' + r._age + ' days">stale ' + r._age + 'd</span>' : '';
+  }
+
+
+  function detailHtml(r) {
+    var h = '<div class="detail">';
+    if (r.details) h += '<div class="dlbl">details</div><div class="prose">' + mdToHtml(r.details) + '</div>';
+    if (r.notes && r.notes.length) {
+      h += '<div class="dlbl">notes</div>';
+      r.notes.forEach(function (n) {
+        h += '<div class="note"><div class="d">' + esc(n.date) + '</div><div class="prose">' + mdToHtml(n.text) + '</div></div>';
+      });
+    }
+    if (r.resolution) h += '<div class="dlbl">resolution</div><div class="prose">' + mdToHtml(r.resolution) + '</div>';
+    var ev = r.evidence || {};
+    // commitUrlTemplate (ledger.json, optional): shas become links; absent
+    // template keeps plain mono text. Template is check-validated (http(s),
+    // contains {sha}).
+    var shas = function (list) {
+      if (!DATA.commitUrlTemplate) return '<span class="mono">' + esc(list.join(', ')) + '</span>';
+      return list.map(function (sha) {
+        return '<a class="mono shalink" href="' + esc(DATA.commitUrlTemplate.replace('{sha}', sha)) + '">' + esc(sha) + '</a>';
+      }).join(', ');
+    };
+    if ((ev.commits && ev.commits.length) || (ev.integrated && ev.integrated.length) || ev.verified) {
+      h += '<div class="dlbl">evidence</div><div class="evd">';
+      if (ev.commits && ev.commits.length) h += '<div><b>commits</b> ' + shas(ev.commits) + '</div>';
+      if (ev.integrated && ev.integrated.length) h += '<div><b>integrated</b> ' + shas(ev.integrated) + '</div>';
+      if (ev.verified) h += '<div class="prose"><b>verified</b> — ' + mdToHtml(ev.verified) + '</div>';
+      h += '</div>';
+    }
+    if (r.links && r.links.length) {
+      h += '<div class="dlbl">links</div><div class="linksrow">';
+      r.links.forEach(function (l) { h += '<button class="lnk" data-link="' + esc(l) + '">' + esc(l) + '</button>'; });
+      h += '</div>';
+    }
+    h += '<div class="dmeta">opened ' + esc(r.opened) + ' · status ' + esc(r.status) +
+      (r.resolved ? ' · resolved ' + esc(r.resolved) : '') + ' · last activity ' + esc(r._last) + '</div>';
+    return h + '</div>';
+  }
+
+  function bcardHtml(r, rank, why) {
+    var k = keyOf(r);
+    var rk = rank || (r.id && qRank[r.id] && !r._terminal ? qRank[r.id].rank : 0);
+    var h = '<div class="bcard' + (r._idea ? ' idea' : '') + '" data-open="' + esc(k) + '">';
+    h += '<div class="bhead">' + (rk ? '<span class="rank">' + rk + '</span>' : '') +
+      '<span class="idm">' + esc(r.id || 'draft') + '</span>' +
+      (r._idea ? '' : sevHtml(r.severity)) + tagHtml(r.type) +
+      (r.status === 'in-progress' ? '<span class="ip">in progress</span>' : '') +
+      (r._new ? '<span class="newb">new</span>' : '') + '</div>';
+    h += '<div class="bttl">' + esc(r.title) + '</div>';
+    if (why) h += '<div class="bwhy">' + esc(why) + '</div>';
+    var meta = [];
+    if (r._draft) meta.push(esc(r.member));
+    if (r.status === 'wont-fix' || r.status === 'moved-to-roadmap') meta.push(esc(r.status));
+    if (r.stint) meta.push(esc(r.stint));
+    if (r._stale) meta.push('stale ' + r._age + 'd');
+    if (r._terminal) meta.push('&#10003; ' + esc(r.resolved || ''));
+    if (meta.length) h += '<div class="bmeta">' + meta.join(' &middot; ') + '</div>';
+    return h + '</div>';
+  }
+
+  function buildLanes() {
+    var items = recs.concat(drafts).filter(function (r) { return pass(r, true); });
+    var lanes = [];
+    var resolvedDesc = function (a, b) {
+      var ar = a.resolved || '', br = b.resolved || '';
+      if (ar !== br) return ar < br ? 1 : -1;
+      var ka = keyOf(a), kb = keyOf(b);
+      return ka < kb ? 1 : -1;
+    };
+    var statusPass = function (r) {
+      if (state.status === 'all') return true;
+      if (state.status === 'open') return r.status === 'open' && !r._idea && !r._draft;
+      if (state.status === 'in-progress') return r.status === 'in-progress';
+      if (state.status === 'closed') return r.status === 'closed';
+      if (state.status === 'ideas') return r._idea;
+      if (state.status === 'drafts') return r._draft;
+      if (state.status === 'retired') return r.status === 'wont-fix' || r.status === 'moved-to-roadmap';
+      return true;
+    };
+    var laneOf = function (key, label, cls, f, sorter) {
+      var rs = items.filter(function (r) { return f(r) && statusPass(r); });
+      rs.sort(sorter || cmp);
+      return { key: key, label: label, cls: cls, cards: rs.map(function (r) { return bcardHtml(r); }) };
+    };
+    // Lane EXISTENCE is a function of the dataset only — filters change cards
+    // within lanes but never add/remove a lane, so columns keep their place.
+    // In-progress lives at the top of Open; retired folds into Closed.
+    var inprogFirst = function (a, b) {
+      var ai = a.status === 'in-progress' ? 0 : 1, bi = b.status === 'in-progress' ? 0 : 1;
+      if (ai !== bi) return ai - bi;
+      return cmp(a, b);
+    };
+    lanes.push(laneOf('open', 'Open', '', function (r) {
+      return (r.status === 'open' || r.status === 'in-progress') && !r._idea && !r._draft;
+    }, inprogFirst));
+    if (drafts.length)
+      lanes.push(laneOf('drafts', 'Drafts', 'ideas', function (r) { return r._draft; }));
+    if (recs.some(function (r) { return r._idea; }))
+      lanes.push(laneOf('ideas', 'Ideas', 'ideas', function (r) { return r._idea; }));
+    lanes.push(laneOf('done', 'Closed / retired', '', function (r) { return r._terminal; }, resolvedDesc));
+    if (state.status !== 'all') {
+      lanes.forEach(function (ln) { if (!ln.cards.length) ln.cls = (ln.cls || '') + ' dim'; });
+    }
+    return lanes;
+  }
+
+  function laneSectionHtml(ln) {
+    var col = state.collapsed['bl-' + ln.key];
+    var h = '<div class="lane ' + (ln.cls || '') + '"><header class="coll" data-g="bl-' + esc(ln.key) + '"><span>' +
+      (col ? '&#9656; ' : '&#9662; ') + esc(ln.label) + '</span><span class="cnt">' +
+      ln.cards.length + '</span></header>';
+    if (ln.note && !col) h += '<div class="lanenote">' + ln.note + '</div>';
+    if (!col) h += '<div class="cards">' + (ln.cards.length ? ln.cards.join('') : '<div class="laneempty">none</div>') + '</div>';
+    return h + '</div>';
+  }
+
+  function renderBoard() {
+    // narrow (default): stacked status sections — the status chip is the only
+    // status instrument; the queue lives in the brief (rank badges remain on
+    // cards). Filtered-empty sections drop, mirroring the list's groups.
+    var sections = buildLanes().filter(function (ln) { return ln.cards.length; });
+    if (!sections.length) {
+      $('#groups').innerHTML = '<div class="empty">No records match the current filters.<br><button class="lnk" id="resetBtn">reset filters</button></div>';
+      return;
+    }
+    var h2 = '<div class="stack">';
+    sections.forEach(function (ln) { h2 += laneSectionHtml(ln); });
+    h2 += '</div>';
+    $('#groups').innerHTML = h2;
+  }
+
+
+
+  function activityEvents(items) {
+    var allowed = {};
+    items.forEach(function (r) { allowed[keyOf(r)] = 1; });
+    var evs = [];
+    DERIVED.events.forEach(function (e) {
+      if (allowed[e.k]) evs.push({ d: e.d, kind: e.kind, r: byKey[e.k], k: e.k, x: e.x });
+    });
+    return evs;
+  }
+
+  function renderActivity() {
+    var items = recs.concat(drafts).filter(function (r) { return pass(r, false); });
+    var evs = activityEvents(items);
+    var CAP = 100;
+    var shown = evs.slice(0, CAP);
+    var h = '<section class="grp"><header><span>&#9662; Activity — newest first</span><span class="cnt">' +
+      (evs.length > CAP ? CAP + ' of ' + evs.length : evs.length) + '</span></header><div class="grpbody">';
+    var curDate = null;
+    shown.forEach(function (e) {
+      if (e.d !== curDate) { curDate = e.d; h += '<div class="actdate">' + esc(e.d) + '</div>'; }
+      h += '<div class="actrow" data-open="' + esc(e.k) + '">' +
+        '<span class="actk actk-' + e.kind + '">' + esc(e.kind === 'moved-to-roadmap' ? 'roadmap' : e.kind === 'wont-fix' ? 'wontfix' : e.kind) + '</span>' +
+        '<span class="idm">' + esc(e.r.id || 'draft') + '</span>' +
+        (prevVisit && e.d > prevVisit ? '<span class="newb">new</span>' : '') +
+        '<span class="ttl">' + esc(e.r.title) + '</span>' +
+        '</div>';
+    });
+    h += '</div>';
+    if (evs.length > CAP) {
+      h += '<div class="lanenote">' + (evs.length - CAP) +
+        ' older events not shown — narrow the filters, or read the records directly</div>';
+    }
+    h += '</section>';
+    if (!evs.length) {
+      h = '<div class="empty">No activity matches the current filters.<br><button class="lnk" id="resetBtn">reset filters</button></div>';
+    }
+    $('#groups').innerHTML = h;
+  }
+
+  function renderBrief() {
+    var resolvedN = 0;
+    recs.forEach(function (r) { if (r._terminal) resolvedN++; });
+    var h = '<div class="brief">';
+    h += '<div class="bblock btrend"><div class="bhead2"><span>trend · daily</span><span class="cnt">' +
+      '<span class="lg"><i class="swf"></i>' + recs.length + ' found</span> ' +
+      '<span class="lg"><i class="swx"></i>' + resolvedN + ' resolved</span> ' +
+      '</span></div><div id="spark" class="barwrap"></div></div>';
+
+    var tops = [];
+    if (QUEUE) {
+      for (var j = 0; j < QUEUE.items.length; j++) {
+        var it = QUEUE.items[j];
+        if (!it || !it.id) continue;
+        for (var k2 = 0; k2 < recs.length; k2++) {
+          if (recs[k2].id === it.id && !recs[k2]._terminal) { tops.push({ it: it, r: recs[k2] }); break; }
+        }
+      }
+    }
+    var shown = tops.slice(0, 3);
+    var qhead = '';
+    if (QUEUE && QUEUE.updated) {
+      qhead = '<span class="cnt">queue · ' + shown.length + ' of ' + tops.length + ' · as of ' + esc(QUEUE.updated);
+      var newer = DERIVED.queuePredates;
+      if (newer > 0) qhead += '<span class="qstale"> · predates ' + newer + ' newer event' + (newer > 1 ? 's' : '') + '</span>';
+      qhead += '</span>';
+    }
+    h += '<div class="bblock"><div class="bhead2"><span>up next</span>' + qhead + '</div>';
+    if (shown.length) {
+      shown.forEach(function (t, ti) {
+        h += '<div class="qrow' + (ti === 0 ? ' qfirst' : '') + '" data-open="' + esc(t.r.id) + '"><div class="qrowhead">' +
+          '<span class="rank">' + qRank[t.r.id].rank + '</span>' +
+          '<span class="idm">' + esc(t.r.id) + '</span>' + (t.r._idea ? '' : sevHtml(t.r.severity)) + tagHtml(t.r.type) + '</div>' +
+          '<div class="qttl">' + esc(t.r.title) + '</div>' +
+          '<div class="bwhy">' + esc(t.it.why || '') + '</div></div>';
+      });
+    } else {
+      h += '<div class="laneempty">no live queue recommendation — see the board</div>';
+    }
+    h += '</div>';
+
+    var needs = [];
+    DERIVED.draftsAwaiting.forEach(function (dd) { needs.push({ k: dd.k, label: 'draft awaiting an id: ' + dd.title }); });
+    recs.forEach(function (r) {
+      if (r.status === 'in-progress' && r._stale) needs.push({ k: r.id, label: r.id + ' — in progress but stale ' + r._age + 'd' });
+    });
+    DERIVED.unqueuedCriticals.forEach(function (id) { needs.push({ k: id, label: id + ' — critical but not in the queue' }); });
+    h += '<div class="bblock"><div class="bhead2"><span>needs you</span></div>';
+    if (needs.length) {
+      needs.slice(0, 5).forEach(function (n) {
+        h += '<div class="actrow" data-open="' + esc(n.k) + '"><span class="ttl">' + esc(n.label) + '</span></div>';
+      });
+    } else {
+      h += '<div class="laneempty">nothing — the agents have it</div>';
+    }
+    h += '</div>';
+
+    h += '<div class="bviews"><button class="chip" data-goview="board">board</button>' +
+      '<button class="chip" data-goview="list">list</button>' +
+      '<button class="chip" data-goview="activity">activity</button></div>';
+    h += '</div>';
+    $('#groups').innerHTML = h;
+    sparkline();
+  }
+
+  function renderList() {
+    if (state.view === 'brief') { renderBrief(); return; }
+    if (state.view === 'board') { renderBoard(); return; }
+    if (state.view === 'activity') { renderActivity(); return; }
+    var items = recs.concat(drafts).filter(function (r) { return pass(r, false); });
+    var h = '';
+    var resolvedDescL = function (a, b) {
+      var ar = a.resolved || '', br = b.resolved || '';
+      if (ar !== br) return ar < br ? 1 : -1;
+      var ka = keyOf(a), kb = keyOf(b);
+      return ka < kb ? 1 : -1;
+    };
+    groupsFor(items).forEach(function (g) {
+      if ((g.key === 'closed' || g.key === 'retired') && state.sort === 'id') g.items.sort(resolvedDescL);
+      else g.items.sort(cmp);
+      var col = state.collapsed[g.key];
+      h += '<section class="grp ' + (g.cls || '') + '"><header data-g="' + g.key + '"><span>' +
+        (col ? '&#9656;' : '&#9662;') + ' ' + esc(g.label) + '</span><span class="cnt">' + g.items.length + '</span></header>';
+      if (!col) {
+        h += '<div class="cards listcards">';
+        g.items.forEach(function (r) { h += bcardHtml(r); });
+        h += '</div>';
+      }
+      h += '</section>';
+    });
+    if (!items.length) {
+      h = '<div class="empty">No records match the current filters.<br><button class="lnk" id="resetBtn">reset filters</button></div>';
+    }
+    $('#groups').innerHTML = h;
+  }
+
+  function resetFilters() {
+    state.q = ''; state.status = 'all'; state.staleOnly = false; state.newOnly = false;
+    state.types = { 'defect': 1, 'improvement': 1, 'feature-idea': 1 };
+    state.sevs = { 'critical': 1, 'high': 1, 'med': 1, 'low': 1 };
+    $('#q').value = '';
+    syncControls();
+  }
+
+
+  function syncControls() {
+    $('#staleBtn').classList.toggle('on', state.staleOnly);
+    $('#newBtn').classList.toggle('on', state.newOnly);
+    var af = 0;
+    if (state.status !== 'all') af++;
+    if (!(state.types.defect && state.types.improvement && state.types['feature-idea'])) af++;
+    if (!(state.sevs.critical && state.sevs.high && state.sevs.med && state.sevs.low)) af++;
+    if (state.staleOnly) af++;
+    $('#cycStatus').textContent = 'status · ' + (STATUS_FACES[state.status] || state.status);
+    var ti = cycleIndex(TYPE_CYCLE, state.types, TYPE_KEYS);
+    $('#cycType').textContent = 'type · ' + (ti >= 0 ? TYPE_CYCLE[ti].face : 'custom');
+    var si = cycleIndex(SEV_CYCLE, state.sevs, SEV_KEYS);
+    $('#cycSev').textContent = 'sev · ' + (si >= 0 ? SEV_CYCLE[si].face : 'custom');
+    $('#cycStatus').classList.toggle('hasactive', state.status !== 'all');
+    $('#cycType').classList.toggle('hasactive', ti !== 0);
+    $('#cycSev').classList.toggle('hasactive', si !== 0);
+    $('#resetChip').disabled = af === 0;
+    $('#cycGroup').textContent = 'group · ' + GROUP_FACES[state.groupBy];
+    $('#cycSort').textContent = 'sort · ' + SORT_FACES[state.sort];
+    $('#cycGroup').classList.toggle('hasactive', state.groupBy !== 'status');
+    $('#cycSort').classList.toggle('hasactive', state.sort !== 'id');
+    renderList();
+  }
+
+  function showModal(k) {
+    clearIntroSkin();
+    var all = recs.concat(drafts);
+    var r = null;
+    for (var j = 0; j < all.length; j++) if (keyOf(all[j]) === k) { r = all[j]; break; }
+    if (!r) return;
+    var h = '<div class="mhead"><span class="idm">' + esc(r.id || 'draft') + '</span>' +
+      (r._idea ? '' : sevHtml(r.severity)) + tagHtml(r.type) +
+      (r._draft ? '<span class="tag">' + esc(r.member) + '</span>' : '') +
+      (r.stint ? '<span class="wo">' + esc(r.stint) + '</span>' : '') + staleHtml(r) +
+      '<span class="mmeta">' + (r._terminal ? '&#10003; ' + esc(r.resolved || '') : esc(r.foundBy || '')) + '</span></div>';
+    h += '<div class="mttl">' + esc(r.title) + '</div>';
+    h += detailHtml(r);
+    $('#modalbody').innerHTML = h;
+    var m = $('#modal');
+    m.hidden = false;
+    m.scrollTop = 0;
+    var mc = m.querySelector('.modalcard');
+    if (mc) mc.scrollTop = 0;
+    if (r.id) { try { history.replaceState(null, '', '#' + r.id); } catch (e) { /* file:// */ } }
+  }
+  function closeModal() {
+    clearIntroSkin();
+    $('#modal').hidden = true;
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* file:// */ }
+  }
+
+  function updateView() {
+    document.getElementById('viewBrief').classList.toggle('on', state.view === 'brief');
+    document.getElementById('viewList').classList.toggle('on', state.view === 'list');
+    document.getElementById('viewBoard').classList.toggle('on', state.view === 'board');
+    document.getElementById('viewActivity').classList.toggle('on', state.view === 'activity');
+    document.querySelector('.filterbar').classList.toggle('boardmode', state.view !== 'list');
+    document.body.classList.toggle('briefmode', state.view === 'brief');
+  }
+
+  // ---- wiring
+  $('#groups').addEventListener('click', function (ev) {
+    var gv = ev.target.closest('[data-goview]');
+    if (gv) { state.view = gv.getAttribute('data-goview'); updateView(); renderList(); return; }
+    var bc = ev.target.closest('.bcard,.actrow,.qrow');
+    if (bc) { showModal(bc.getAttribute('data-open')); return; }
+    var lnk = ev.target.closest('.lnk');
+    if (lnk && lnk.id === 'resetBtn') { resetFilters(); return; }
+    if (lnk && lnk.getAttribute('data-link')) { showModal(lnk.getAttribute('data-link')); return; }
+    var gh = ev.target.closest('header[data-g]');
+    if (gh) {
+      var g = gh.getAttribute('data-g');
+      if (state.collapsed[g]) delete state.collapsed[g]; else state.collapsed[g] = 1;
+      renderList();
+    }
+  });
+  $('#viewBrief').addEventListener('click', function () { state.view = 'brief'; updateView(); renderList(); });
+  $('#viewList').addEventListener('click', function () { state.view = 'list'; updateView(); renderList(); });
+  $('#viewBoard').addEventListener('click', function () { state.view = 'board'; updateView(); renderList(); });
+  $('#viewActivity').addEventListener('click', function () { state.view = 'activity'; updateView(); renderList(); });
+  var newBtn = $('#newBtn');
+  if (newCount > 0) {
+    newBtn.hidden = false;
+    newBtn.textContent = 'new since last visit (' + newCount + ')';
+  }
+  newBtn.addEventListener('click', function () { state.newOnly = !state.newOnly; syncControls(); });
+  function introHtml() {
+    var ent = function (term, def) {
+      return '<div class="gent"><div class="gterm">' + term + '</div><div class="gdef">' + def + '</div></div>';
+    };
+    return '<div class="introbody"><div class="dlbl">how to read this ledger</div>' +
+      '<p class="introdesc">A ledger is a repo&#39;s issue tracker kept as files inside the repo: records — one JSON file per defect, improvement, or idea — written mostly by AI agents as they work, and read by the humans directing them. This page is a view of those files.</p>' +
+      '<div class="dlbl gband">views</div>' +
+      ent('brief', 'the gist: the opened-vs-resolved trend, the queue&#39;s top picks (see &#8220;up next&#8221;) with their rationales, and what needs a human.') +
+      ent('board', 'current state by status; queued records carry their rank badge.') +
+      ent('list', 'every record, groupable (status &#183; stint &#183; type) and sortable.') +
+      ent('activity', 'what happened, newest first. Derived, not logged: one row per dated fact (opened, each note, resolved), so the same id appears once per event.') +
+      '<div class="dlbl gband">concepts</div>' +
+      ent('record', 'one tracked issue: a type (defect &#183; improvement &#183; idea), a severity (low &#8594; critical), a status (open &#8594; in-progress &#8594; closed / wont-fix / roadmap), and evidence when closed.') +
+      ent('up next', 'the queue: a person or agent&#39;s take on what to fix next, each pick with its why. The &#8220;as of&#8221; date is when that judgment was made; the brief flags when it predates newer events.') +
+      ent('needs you', 'derived, never authored: the things stuck until a human weighs in — drafts awaiting an id, in-progress records gone quiet (abandoned or alive — your call), open criticals no queue pick covers. The queue is the agents&#39; to-do list; this is yours. It can only be empty, never stale, and empty is the good state.') +
+      ent('note', 'a dated update appended to a record; history accretes, never rewrites.') +
+      ent('stint', 'the named burst of work a record was picked up in — a branch, an agent run, a working session. Set when work starts, so in-flight work is visible.') +
+      ent('stale', 'computed in your browser: no activity on a record for the repo&#39;s configured window.') +
+      ent('new', 'new since this browser&#39;s last visit; a first visit marks nothing.') +
+      '<div class="dlbl gband">sources</div>' +
+      ent('ledger.json', 'project config: name, description, the staleness window.') +
+      ent('issues/&lt;id&gt;.json', 'one record per issue — the ledger itself.') +
+      ent('drafts/&lt;member&gt;/', 'observations from agents working in parallel, awaiting an id — ids are assigned at integration.') +
+      ent('queue.json', 'the fix-next recommendation behind &#8220;up next&#8221;; its author is named inside it.') +
+      '<p class="introfoot">All the views in the ledger are generated from exactly these files and never edited by hand. The files themselves are written by whoever does the work — usually agents, following the repo&#39;s operating manual (ledger/AGENTS.md). ' +
+      'Click any card or row for the full story: narrative, dated notes, and closure evidence (commits + how it was verified).</p>' +
+      '</div>';
+  }
+  function showIntroModal() {
+    $('#modalbody').innerHTML = introHtml();
+    var m = $('#modal');
+    m.hidden = false;
+    var mc = m.querySelector('.modalcard');
+    if (mc) { mc.classList.add('intro'); mc.scrollTop = 0; }
+  }
+  function clearIntroSkin() {
+    var mc = $('#modal .modalcard');
+    if (mc) mc.classList.remove('intro');
+  }
+  $('#helpBtn').addEventListener('click', showIntroModal);
+  if (prevVisit === null && state.view !== 'brief') showIntroModal();
+
+  $('#modal').addEventListener('click', function (ev) {
+    if (ev.target.id === 'modal' || ev.target.closest('#modalx')) { closeModal(); return; }
+    var lnk = ev.target.closest('.lnk');
+    if (lnk && lnk.getAttribute('data-link')) showModal(lnk.getAttribute('data-link'));
+  });
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape' && !$('#modal').hidden) closeModal();
+  });
+  $('#staleBtn').addEventListener('click', function () { state.staleOnly = !state.staleOnly; syncControls(); });
+  // narrow-mode cycling filter chips (LGR-022): curated states, fixed footprint
+  var TYPE_KEYS = ['defect', 'improvement', 'feature-idea'];
+  var SEV_KEYS = ['critical', 'high', 'med', 'low'];
+  var TYPE_CYCLE = [
+    { face: 'all', set: { defect: 1, improvement: 1, 'feature-idea': 1 } },
+    { face: 'defects', set: { defect: 1 } },
+    { face: 'improv', set: { improvement: 1 } },
+    { face: 'ideas', set: { 'feature-idea': 1 } }
+  ];
+  var SEV_CYCLE = [
+    { face: 'all', set: { critical: 1, high: 1, med: 1, low: 1 } },
+    { face: 'crit', set: { critical: 1 } },
+    { face: 'high+', set: { critical: 1, high: 1 } },
+    { face: 'med+', set: { critical: 1, high: 1, med: 1 } }
+  ];
+  function cycleIndex(cycle, cur, keys) {
+    for (var i = 0; i < cycle.length; i++) {
+      var ok = true;
+      keys.forEach(function (k) { if (!!cycle[i].set[k] !== !!cur[k]) ok = false; });
+      if (ok) return i;
+    }
+    return -1;
+  }
+  var STATUS_FACES = { all: 'all', open: 'open', 'in-progress': 'in prog', closed: 'closed', ideas: 'ideas', retired: 'retired', drafts: 'drafts' };
+  function statusCycleList() {
+    var c = { open: 0, 'in-progress': 0, closed: 0, ideas: 0, retired: 0, drafts: drafts.length };
+    recs.forEach(function (r) {
+      if (r._idea) c.ideas++;
+      else if (r.status === 'open') c.open++;
+      else if (r.status === 'in-progress') c['in-progress']++;
+      else if (r.status === 'closed') c.closed++;
+      else c.retired++;
+    });
+    return ['all', 'open', 'in-progress', 'closed', 'ideas', 'retired', 'drafts'].filter(function (s) {
+      return s === 'all' || c[s] > 0;
+    });
+  }
+  $('#cycStatus').addEventListener('click', function () {
+    var list = statusCycleList();
+    state.status = list[(list.indexOf(state.status) + 1) % list.length];
+    syncControls();
+  });
+  $('#cycType').addEventListener('click', function () {
+    var next = TYPE_CYCLE[(cycleIndex(TYPE_CYCLE, state.types, TYPE_KEYS) + 1) % TYPE_CYCLE.length];
+    state.types = Object.assign({}, next.set);
+    syncControls();
+  });
+  $('#cycSev').addEventListener('click', function () {
+    var next = SEV_CYCLE[(cycleIndex(SEV_CYCLE, state.sevs, SEV_KEYS) + 1) % SEV_CYCLE.length];
+    state.sevs = Object.assign({}, next.set);
+    syncControls();
+  });
+  $('#resetChip').addEventListener('click', function () { resetFilters(); });
+  var GROUP_CYCLE = ['status', 'stint', 'type'];
+  var GROUP_FACES = { status: 'status', stint: 'stint', type: 'type' };
+  var SORT_CYCLE = ['id', 'date', 'sev'];
+  var SORT_FACES = { id: 'id', date: 'activity', sev: 'severity' };
+  $('#cycGroup').addEventListener('click', function () {
+    state.groupBy = GROUP_CYCLE[(GROUP_CYCLE.indexOf(state.groupBy) + 1) % GROUP_CYCLE.length];
+    syncControls();
+  });
+  $('#cycSort').addEventListener('click', function () {
+    state.sort = SORT_CYCLE[(SORT_CYCLE.indexOf(state.sort) + 1) % SORT_CYCLE.length];
+    syncControls();
+  });
+  $('#q').addEventListener('input', function (ev) { state.q = ev.target.value; renderList(); });
+
+  var themeBtn = $('#themeBtn');
+  function themeLabel() {
+    var cur = document.documentElement.getAttribute('data-theme');
+    themeBtn.innerHTML = cur === 'dark' ? '&#9788; light' : '&#9789; dark';
+  }
+  themeBtn.addEventListener('click', function () {
+    var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('ledger-theme', next); } catch (e) { /* file:// */ }
+    themeLabel();
+  });
+  themeLabel();
+
+  var hashTarget = null;
+  if (location.hash) {
+    var target = decodeURIComponent(location.hash.slice(1));
+    var all = recs.concat(drafts);
+    for (var j = 0; j < all.length; j++) {
+      if (keyOf(all[j]) === target) { hashTarget = target; break; }
+    }
+  }
+  updateView();
+  renderList();
+  if (hashTarget) showModal(hashTarget);
+})();
+</script>
+</body>
+</html>

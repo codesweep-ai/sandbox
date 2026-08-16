@@ -1,0 +1,16 @@
+{
+  "id": "SBX-007",
+  "title": "The first install path in INSTALL.md leads to an empty releases page",
+  "type": "defect",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent, while checking INSTALL.md against the repository's tags",
+  "opened": "2026-08-15",
+  "resolved": null,
+  "stint": null,
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "INSTALL.md §1 offers two ways to get the binary, and leads with \"Download a release\": grab `cs-sandbox_<version>_<os>_<arch>.tar.gz` and `checksums.txt`, verify the checksum, then verify the cosign signature.\n\nNothing is published behind that. `git ls-remote --tags origin` returns no output, so the repository has never been tagged, and `.github/workflows/release.yml` fires on a tag. The releases page is empty.\n\nA first-time reader takes the first path offered, finds nothing to download, and has to work out that the second half of the section is the only one that works today. That is the worst moment in the documentation to lose someone.\n\nCutting a first tag closes it and makes the whole section true at once. Until then, lead the section with the source build and say plainly that no release is published yet.",
+  "notes": [],
+  "links": []
+}

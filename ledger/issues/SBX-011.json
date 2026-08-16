@@ -1,0 +1,16 @@
+{
+  "id": "SBX-011",
+  "title": "Nothing reclaims the data that rm leaves behind",
+  "type": "improvement",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "SPEC.md §17, open question 3",
+  "opened": "2026-08-15",
+  "resolved": null,
+  "stint": null,
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "`cs-sandbox rm` deliberately keeps a sandbox's home so that `create` with the same name reuses it. `internal/engine/orphan.go` makes that data visible: `ls` shows it with status `removed` and an age, and `destroy` purges it.\n\nWhat is missing is any pressure to act. Open question 3 in SPEC.md §17 records this as undecided. A host used daily accumulates a microVM `rootfs.ext4` or a `cs-sandbox-home-<name>` volume per removed sandbox, each holding a full home directory, and only a human reading the `ls` output will ever notice.\n\nThe pieces for a policy are already there. `Orphan.Since` carries the age, and the Firecracker artifact caches already prune on a TTL that `CS_SANDBOX_FC_REPO_CACHE_TTL_DAYS` controls.\n\nA `prune` verb that purges orphans older than a TTL would follow the pattern the caches already set, and would keep deletion explicit rather than automatic. Reporting the total size that `removed` data occupies would be the smaller first step.",
+  "notes": [],
+  "links": []
+}

@@ -13,6 +13,3 @@
 
 # Python bytecode, written when anything imports scripts/lint-docs.py
 __pycache__/
-
-# The issue ledger, kept local rather than published with the source
-/ledger/

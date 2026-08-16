@@ -1,0 +1,34 @@
+{
+  "recommendedBy": "session agent, from the 2026-08-15 repository review",
+  "updated": "2026-08-15",
+  "items": [
+    {
+      "id": "SBX-002",
+      "why": "A stale pid file can send SIGKILL to another of your processes after a host reboot."
+    },
+    {
+      "id": "SBX-003",
+      "why": "Creating a sandbox silently changes the permissions of files in the directory you shared."
+    },
+    {
+      "id": "SBX-007",
+      "why": "The first install path every new user takes points at a releases page with nothing on it."
+    },
+    {
+      "id": "SBX-001",
+      "why": "A store holding real images needs twice its size in host memory to build a microVM disk."
+    },
+    {
+      "id": "SBX-005",
+      "why": "An undocumented variable moves the loopback-only SSH bind that R142 requires."
+    },
+    {
+      "id": "SBX-004",
+      "why": "Past fourteen shares a microVM drops one and still reports success."
+    },
+    {
+      "id": "SBX-006",
+      "why": "One MANUAL.md entry, and it is most of the answer to the engine-default question."
+    }
+  ]
+}

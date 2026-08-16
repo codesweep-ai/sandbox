@@ -1,0 +1,16 @@
+{
+  "id": "SBX-013",
+  "title": "An arm64 Linux host falls back to Podman even though Firecracker supports aarch64",
+  "type": "feature-idea",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "session agent, while reading the engine default in internal/cli/create.go",
+  "opened": "2026-08-15",
+  "resolved": null,
+  "stint": null,
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "`defaultEngine` chooses Podman whenever `runtime.GOARCH != \"amd64\"`, and R112 in SPEC.md §12 makes that a requirement (`internal/cli/create.go:25`). So an arm64 Linux host with a working `/dev/kvm` gets a container sandbox and cannot ask for a microVM at all.\n\nFirecracker itself runs on aarch64, and part of the support is already written. `fcArch` maps `arm64` to `aarch64`, and `fcDigests` carries a pinned checksum for the aarch64 release tarball (`internal/fcdisk/build.go:41`).\n\nThe guest side is what is missing, and the comment on the gate says so: the artifacts target x86_64. Two pieces would need work. The kernel build lifts an ELF out of Fedora's `kernel-core` with the upstream `extract-vmlinux` script, which is written around an x86 bzImage. `DefaultBootArgs` opens `console=ttyS0`, which is the wrong console for an arm64 guest.\n\nThe payoff is a real one: an arm64 Linux server, or an Ampere or Graviton host, is a plausible place to run a fleet of agent sandboxes. Nothing else in the tool is x86-only.",
+  "notes": [],
+  "links": []
+}

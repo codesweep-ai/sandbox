@@ -1,0 +1,16 @@
+{
+  "id": "SBX-014",
+  "title": "Two builds of the sandbox image a week apart are different images with the same name",
+  "type": "improvement",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "SPEC.md §14, second limitation",
+  "opened": "2026-08-15",
+  "resolved": null,
+  "stint": null,
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "SPEC.md §14 records that the image is not bit-for-bit reproducible, because `image/Containerfile` runs a package update at build time and a rebuild can pick up newer upstream packages.\n\nThe consequence is that two hosts running the same `cs-sandbox build` from the same commit can hold materially different sandboxes, and neither can say how they differ. When an agent's work reproduces on one host and not another, the image is a suspect nobody can rule out.\n\nFull reproducibility is expensive and probably not worth it here. Recording what was built is cheap, and answers the question that actually gets asked. The guest kernel already shows the shape: `CS_SANDBOX_FC_KVER` pins a Fedora `kernel-core` NVR, and `kernelRebuildReason` rebuilds when the pin moves.\n\nWriting the package manifest into the image, and surfacing it from `inspect` or `doctor`, would let two hosts diff their sandboxes. Pinning the base image by digest rather than by tag would narrow the drift at the same time.",
+  "notes": [],
+  "links": []
+}

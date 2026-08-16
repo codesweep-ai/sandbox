@@ -1,0 +1,16 @@
+{
+  "id": "SBX-012",
+  "title": "Agent sandboxes in one group can SSH into each other, and only --solo prevents it",
+  "type": "feature-idea",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "SPEC.md §14, first limitation",
+  "opened": "2026-08-15",
+  "resolved": null,
+  "stint": null,
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "SPEC.md §14 records the boundary honestly: agent sandboxes in a group share that group's agent tier key, so any agent sandbox can SSH into any other in the same group. Agents are walled off from you and from your user sandboxes, and not from each other.\n\nThat is the right default for the driving pattern the README shows in walkthrough 7, where one agent runs a session on another. It is the wrong default when two agents are running untrusted work side by side, because one compromised agent reaches every peer in its fleet, and the agent tools make reaching a peer a single command.\n\nThe two escapes each cost something. `--solo` removes a sandbox's outbound SSH entirely, so it can no longer drive anyone. `--group` separates whole fleets and shares no key across the boundary, so it also separates the fixtures you wanted to compare.\n\nWhat is missing is the middle: a way to say which peers a given agent sandbox may reach. Per-sandbox keys with an explicit allow list would give it, at the cost of a key per member rather than a key per tier.",
+  "notes": [],
+  "links": []
+}

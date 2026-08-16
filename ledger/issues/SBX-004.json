@@ -1,0 +1,16 @@
+{
+  "id": "SBX-004",
+  "title": "A microVM silently drops its fifteenth shared disk",
+  "type": "defect",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent, while reading image/guest/init",
+  "opened": "2026-08-15",
+  "resolved": null,
+  "stint": null,
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "The guest init walks its auxiliary disks with a fixed letter list, `_letters=(c d e f g h i j k l m n o p)` (`image/guest/init:236`). That covers `/dev/vdc` through `/dev/vdp`, which is fourteen devices, and `--repo`, `--snapshot` and `--image-store` all advance the same cursor.\n\nPast the fourteenth the index reads off the end of the array. The script does not run under `set -u`, so the expansion is empty, the device path becomes `/dev/vd`, the `[ -b ]` test fails, and the loop moves on without printing anything.\n\nNothing on the host side caps the count. `fcconfig.Build` sizes the drive list from the spec, and no caller validates it, so `create` attaches fifteen drives, reports success, and hands back a sandbox missing one of the directories you asked for. A repo you expected at `~/<name>` is simply absent.\n\nThe Podman engine bind-mounts each share and has no such limit, so the same command line means different things on the two engines. Either reject the fifteenth share in `create` with a clear message, or extend the guest past `vdp`.",
+  "notes": [],
+  "links": []
+}

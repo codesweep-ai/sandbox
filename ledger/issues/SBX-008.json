@@ -1,0 +1,16 @@
+{
+  "id": "SBX-008",
+  "title": "The in-use guard on rm-store cannot see a microVM that reads the store",
+  "type": "defect",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "session agent, while reading internal/store/store.go",
+  "opened": "2026-08-15",
+  "resolved": null,
+  "stint": null,
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "`Manager.Remove` refuses to delete a shared image store that is in use, and it establishes use with `podman ps -a --filter volume=cs-sandbox-shared-<name>`. That query finds container sandboxes and nothing else.\n\nA Firecracker sandbox reads a store as a read-only ext4 disk built from the volume, and holds no podman container against it. So `cs-sandbox rm-store big` succeeds while every microVM on the host is mounting `big`, and the error that would have named those sandboxes never appears.\n\nNothing breaks at that moment, because the cached disk under the artifact cache keeps running VMs and their restarts alive. The next `create --image-store big` fails with \"volume does not exist\", a long way from the command that caused it.\n\nThe check reads as a safety net, which is why the blind spot matters more than the immediate damage. Instance state already records the answer: `state.Instance.Shared` holds the store names a sandbox was created with.",
+  "notes": [],
+  "links": []
+}

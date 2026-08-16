@@ -1,0 +1,16 @@
+{
+  "id": "SBX-010",
+  "title": "Give a user a persistent way to choose the default engine",
+  "type": "feature-idea",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "SPEC.md §17, open question 1",
+  "opened": "2026-08-15",
+  "resolved": null,
+  "stint": null,
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "The engine default is derived from the host: Firecracker on x86_64 Linux with a usable `/dev/kvm`, and Podman everywhere else (`internal/cli/create.go:25`). Open question 1 in SPEC.md §17 asks whether a user-level default should override that, and where it would be configured.\n\nThere is a real reason to want one. A developer on a KVM host who is debugging a container-engine behaviour, or who wants the faster create path, currently repeats `--engine podman` on every command that creates something.\n\nHalf the mechanism already exists and is undocumented: `--engine` defaults from `CS_SANDBOX_ENGINE`. The open question is really whether that is the whole answer, or whether the tool should grow a config file for it.\n\nAn environment variable is the cheaper answer and fits a tool that keeps no host-wide config today. Documenting it and saying so in the spec would close the question without new code.",
+  "notes": [],
+  "links": ["SBX-006"]
+}

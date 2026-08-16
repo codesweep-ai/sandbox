@@ -1,0 +1,16 @@
+{
+  "id": "SBX-009",
+  "title": "The spec says a group's tap prefix is never reclaimed, and the code reclaims it",
+  "type": "defect",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "session agent, while checking SPEC.md §17's open questions against the code",
+  "opened": "2026-08-15",
+  "resolved": null,
+  "stint": null,
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "Open question 2 in SPEC.md §17 reads: \"A group's tap prefix is allocated and never reclaimed within a host's lifetime. Whether exhaustion is reachable in practice has not been measured.\"\n\n`App.allocTapPrefix` builds its taken set from the groups that exist right now (`internal/cli/group_commands.go:246`) and returns the lowest `fd%04x` not in it. A removed group is not in `state.ListGroups`, so its prefix is free again on the next allocation. Exhaustion needs 65536 groups alive at once, which answers the second sentence too.\n\nThe live hazard runs the other way, and the open question does not name it. A reissued prefix is only safe because `removeGroup` drops the host-route leg, takes the fabric down and reclaims the network before the group record goes. That ordering is what a reader should be warned about, rather than an exhaustion that cannot happen.\n\nRewrite the open question as a statement of what the allocator does, or close it.",
+  "notes": [],
+  "links": []
+}

@@ -1,0 +1,16 @@
+{
+  "id": "SBX-003",
+  "title": "Building a --snapshot disk changes the permissions of the caller's own files",
+  "type": "defect",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent, while reading internal/fcdisk/fcdisk.go",
+  "opened": "2026-08-15",
+  "resolved": null,
+  "stint": null,
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "`BuildExt4Dir` runs `find \"$FC_DIR\" ! -readable -exec chmod u+rX {} +` over its source directory before `mke2fs -d` reads it (`internal/fcdisk/fcdisk.go:143`). The pre-pass was added for image stores, which carry the mode-0000 `/etc/gshadow` that every distro base image ships, and which would otherwise stop the build dead.\n\n`buildSnapshotDisks` passes the user's own host path as that directory (`internal/engine/firecracker.go:601`). So `--snapshot`, documented as a read-only point-in-time copy of a host directory, edits the source it claims only to read.\n\nfakeroot does not contain the change. It records the intended mode in its own database and still issues a real `chmod`, which lands on disk. Measured directly: a file created 0000, passed through `fakeroot -- bash -c 'find <dir> ! -readable -exec chmod u+rX {} +'`, comes back 0600.\n\nReproduce it with `chmod 000 ~/keys/secret`, then `cs-sandbox create x --engine firecracker --snapshot ~/keys`, then `stat -c %a ~/keys/secret`. The image-store path already unpacks into a temp tree first (`internal/fcdisk/cache.go`), which is where the pre-pass belongs for a snapshot too.",
+  "notes": [],
+  "links": []
+}

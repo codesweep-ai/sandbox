@@ -1,0 +1,16 @@
+{
+  "id": "SBX-002",
+  "title": "A pid file that outlives a host reboot can make stop signal an unrelated process",
+  "type": "defect",
+  "severity": "high",
+  "status": "open",
+  "foundBy": "session agent, while reading internal/engine/firecracker_proc.go and internal/forward/forward.go",
+  "opened": "2026-08-15",
+  "resolved": null,
+  "stint": null,
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "Two places decide a tracked process is alive by sending signal 0 to a recorded pid, and neither checks that the process is the one they recorded. `fcRunning` reads `<instance>/fc.pid` for a microVM (`internal/engine/firecracker_proc.go:132`). `alive` reads the pid out of a forward record for a detached `ssh -N` child (`internal/forward/forward.go:244`).\n\nBoth records live under the instances directory, which survives a host reboot, and nothing sweeps them at boot. Linux issues pids from a counter that restarts low after a reboot and wraps, so a number recorded before the reboot can belong to something else after it.\n\nThe consequences follow from the check alone. `cs-sandbox ls` reports a dead microVM as running, `start` refuses it as already up, and `stop` sends SIGTERM and then SIGKILL to whatever now holds the number (`killFirecracker`). `unforward`, `rm` and `destroy` reach the same code for forwards. The victim is another process of yours, because a pid you can signal is one you own.\n\nReproduce it by creating a Firecracker sandbox, rebooting the host, and comparing `cat <instance>/fc.pid` against `ps -p <pid>`. Recording the process start time from field 22 of `/proc/<pid>/stat` beside the pid, and requiring both to match, closes it without a new dependency.",
+  "notes": [],
+  "links": []
+}
