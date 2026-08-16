@@ -37,7 +37,7 @@ Your agent logins aren't shared by default either, though a sandbox can inherit 
 ## Quickstart
 
 One-time host setup (the binary, Podman, `cs-sandbox build`, and a Claude, Codex, or OpenCode login
-if you want sandboxes to inherit it) is in **[INSTALL.md](INSTALL.md)** — then the whole loop is:
+if you want sandboxes to inherit it) is in [INSTALL.md](INSTALL.md) — then the whole loop is:
 
 ```bash
 # Create a sandbox named "feature": share the ~/projects/api repo into it, and
@@ -109,7 +109,7 @@ is how you log in once on the host so sandboxes can inherit that login.
 
 ## Before you start
 
-The walkthroughs assume the one-time host setup in **[INSTALL.md](INSTALL.md)**. Install the
+The walkthroughs assume the one-time host setup in [INSTALL.md](INSTALL.md). Install the
 `cs-sandbox` binary and its prerequisites, run `cs-sandbox build`, then log in once to Claude Code,
 Codex or OpenCode on the host. It is a handful of commands, and `cs-sandbox doctor` checks every
 prerequisite and prints the fix for anything missing.
@@ -420,7 +420,7 @@ independent of sandbox type. Lend deliberately, with two conditions in mind:
 
 ## Contributing
 
-Bug reports and pull requests are welcome. **[CONTRIBUTING.md](CONTRIBUTING.md)** has the rules on
+Bug reports and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the rules on
 test coverage, commit shape and writing, and applies to coding agents as much as to people. For a
 security-sensitive issue, please ask for a private contact rather than posting details in a public
 issue.
