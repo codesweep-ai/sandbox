@@ -973,6 +973,51 @@ func TestCLINestedRootlessPodmanLive(t *testing.T) {
 	}
 }
 
+// TestCLIImageStoreUseOnMicroVMLive: --image-store works on the microVM engine too —
+// the store arrives as a read-only ext4 disk and the guest's nested podman runs from it
+// without pulling.
+//
+// The podman-engine twin of this cannot cover it: the two engines register the store by
+// different routes (a mounted volume against a built disk) and only share the config the
+// guest init writes. Written to the wrong file that config is ignored in silence — the
+// disk still mounts, and `podman images` just comes back empty.
+func TestCLIImageStoreUseOnMicroVMLive(t *testing.T) {
+	_, host := liveSetup(t)
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		t.Skipf("/dev/kvm unavailable: %v", err)
+	}
+	if !fileExists(filepath.Join(paths.FCCache(), "vmlinux.elf")) {
+		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
+	}
+	fcInstancesDir(t, host)
+	store := fmt.Sprintf("csgofcstore%d%s", os.Getpid(), runID)
+	name := boxName(t, "fcstore")
+	t.Cleanup(func() {
+		_, _ = execRoot(t, "destroy", name, "-f")
+		_, _ = execRoot(t, "rm-store", store, "-f")
+	})
+
+	if out, err := execRoot(t, "create-store", store); err != nil {
+		t.Fatalf("create-store: %v (%s)", err, out)
+	}
+	if out, err := execRoot(t, "seed-store", store, "docker.io/library/busybox"); err != nil {
+		t.Fatalf("seed-store: %v (%s)", err, out)
+	}
+	if out, err := execRoot(t, "create", name, "--engine", "firecracker", "--image-store", store); err != nil {
+		t.Fatalf("create --image-store: %v (%s)", err, out)
+	}
+
+	// Over ssh, not `podman exec`: a microVM has no container to exec into.
+	if got := sshCapture(t, host, name, "podman images docker.io/library/busybox --format '{{.Repository}}'"); !strings.Contains(got, "busybox") {
+		t.Errorf("the guest's nested podman did not see busybox from the --image-store: %q", got)
+	}
+	// Registered is not the same as usable: the ids the store records have to be the ids
+	// this engine resolves, or the layers are there and the image still will not run.
+	if got := sshCapture(t, host, name, "podman run --rm --pull=never docker.io/library/busybox echo fc-store-ok 2>&1"); !strings.Contains(got, "fc-store-ok") {
+		t.Errorf("running from the --image-store in a microVM printed %q", got)
+	}
+}
+
 // from the seeded store via nested podman, without pulling — end to end.
 func TestCLIImageStoreUseLive(t *testing.T) {
 	r, host := liveSetup(t)

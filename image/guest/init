@@ -306,8 +306,14 @@ if [ -f "$SEED/imagestores" ]; then
     _ais="$_ais\"$_mp\","
   done < "$SEED/imagestores"
   if [ -n "$_ais" ]; then
-    mkdir -p /etc/containers
-    printf '[storage]\ndriver = "overlay"\n\n[storage.options]\nadditionalimagestores = [%s]\n' "${_ais%,}" > /etc/containers/storage.conf
+    # The USER's storage.conf, not /etc: the nested engine is rootless, and a rootless
+    # engine resolves its storage config to ~/.config/containers/storage.conf and does
+    # not inherit [storage.options] from the system file. Written to /etc the stores
+    # mount and are then ignored in silence — `podman images` simply comes back empty.
+    mkdir -p "$HOME_DIR/.config/containers"
+    printf '[storage]\ndriver = "overlay"\n\n[storage.options]\nadditionalimagestores = [%s]\n' "${_ais%,}" \
+      > "$HOME_DIR/.config/containers/storage.conf"
+    chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$HOME_DIR/.config" 2>/dev/null || true
   fi
 fi
 
