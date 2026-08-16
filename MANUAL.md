@@ -272,6 +272,7 @@ The second group changes what gets built or run.
 
 | Variable | Default | Effect |
 |---|---|---|
+| `CS_SANDBOX_ENGINE` | `podman` | The engine `create` uses when no `--engine` is given. |
 | `CS_SANDBOX_IMAGE` | `localhost/cs-sandbox:44` | The sandbox image to run. |
 | `CS_SANDBOX_ASSETS_DIR` | the embedded copy | An `image/` asset tree for `build` to use instead of the one embedded in the binary. |
 | `CS_SANDBOX_PRIVATE_REGISTRY` | none | A registry the image should trust, as a bare `host:port`. Read at `build` time. |

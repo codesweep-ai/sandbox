@@ -1048,7 +1048,9 @@ tier that CI runs on every host, against a slimmed image. Keep it short.
 1. **The engine default is host-derived**, meaning Firecracker on Linux with KVM and Podman
    elsewhere. Whether a user-level default should override that, and where it would be configured,
    is undecided.
-2. **A group's tap prefix is allocated and never reclaimed** within a host's lifetime. Whether
-   exhaustion is reachable in practice has not been measured.
+2. **A group's tap prefix is reused once its group is removed.** `allocTapPrefix` builds its
+   taken set from the groups that exist now, so a removed group's prefix returns to the pool.
+   A tap interface that outlives its group's record would therefore collide with the next
+   group to take that prefix, and nothing measures whether that happens.
 3. **Nothing garbage-collects `removed` data.** It is listed by `ls` until someone reuses or
    destroys it, deliberately, but there is no policy for a host that accumulates it.
