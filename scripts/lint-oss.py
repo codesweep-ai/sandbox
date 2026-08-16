@@ -529,6 +529,40 @@ def check_stray_docs(repo):
     return []
 
 
+# Language that invites a security report, and the shapes an answer takes.
+REPORTS_SECURITY = re.compile(
+    r"security[- ](?:issue|sensitive|bug|report|vulnerabilit)|vulnerabilit", re.I)
+NAMES_A_CHANNEL = re.compile(
+    r"https?://|mailto:|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+    r"|private vulnerability reporting|security advisor", re.I)
+
+
+@rule("OSS-212", ERROR, "A security report has somewhere to go",
+      "\"Ask for a private contact\" sends a reporter to the public tracker to "
+      "request the private channel they were trying to use. A promise with "
+      "nothing behind it is worse than saying nothing, because it reads as an "
+      "answer.")
+def check_security_contact(repo):
+    body = repo.read("CONTRIBUTING.md")
+    if body is None:
+        return [skipped("OSS-212", "no CONTRIBUTING.md")]
+    if repo.has("SECURITY.md"):
+        return []
+    # Flattened first: a wrapped paragraph puts a newline inside the very
+    # phrase that names the channel.
+    paras = [" ".join(p.split()) for p in body.split("\n\n")]
+    invites = [p for p in paras if REPORTS_SECURITY.search(p)]
+    if not invites:
+        return [warn("OSS-212", "nothing says where a security report goes, so it "
+                                "will arrive in the public tracker")]
+    named = [p for p in invites if NAMES_A_CHANNEL.search(p)]
+    if not named:
+        quote = " ".join(invites[0].split())[:110]
+        return [err("OSS-212", f"a security report is invited but no channel is "
+                               f"named — {quote}")]
+    return []
+
+
 # A repository-relative path with an extension. Anything with a scheme, a
 # glob, a variable or a leading slash is not one.
 PATHISH = re.compile(r"(?<![\w/@:.-])([\w.-]+/[\w./-]*[\w-]\."
@@ -1501,6 +1535,17 @@ def check_repo_metadata(repo, online=False):
     if not (data.get("repositoryTopics") or []):
         out.append(warn("OSS-801", "no topics, so the repository appears in no "
                                    "topic listing"))
+    # Offered on a public repository only, so this is a publication step rather
+    # than something that could have been done earlier.
+    if data.get("visibility") == "PUBLIC" and shutil.which("gh"):
+        run = subprocess.run(
+            ["gh", "api", f"repos/{repo.slug()}/private-vulnerability-reporting"],
+            capture_output=True, text=True)
+        if run.returncode == 0 and '"enabled":false' in run.stdout.replace(" ", ""):
+            out.append(err("OSS-801", "private vulnerability reporting is off, and "
+                                      "CONTRIBUTING.md points a reporter at it — "
+                                      "`gh api -X PUT repos/<owner>/<repo>/"
+                                      "private-vulnerability-reporting`"))
     return out
 
 
