@@ -3,8 +3,8 @@
 These rules apply to **humans and coding agents alike**. If you are an agent working in this repo,
 read this file before you change anything and follow it.
 
-Bug reports and pull requests are welcome. For a security-sensitive issue, please ask for a private
-contact rather than posting details in a public issue.
+Bug reports and pull requests are welcome. For a security issue, use GitHub's private
+vulnerability reporting on this repository's Security tab, rather than opening a public issue.
 
 ## Before you push
 
