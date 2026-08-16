@@ -417,8 +417,6 @@ independent of sandbox type. Lend deliberately, with two conditions in mind:
 - [`MANUAL.md`](MANUAL.md) · every command, flag, file, exit status and diagnostic.
 - [`SPEC.md`](SPEC.md) · what a sandbox guarantees and how it is built: types and trust, the seed,
   groups, networking, sharing, both engines, and the security model.
-`cs-sandbox help` prints the command list from the binary itself, and `cs-sandbox <command> --help`
-the flags for one.
 
 ## Contributing
 
