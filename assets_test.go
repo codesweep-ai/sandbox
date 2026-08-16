@@ -167,7 +167,7 @@ func TestGuestEnvIsDeclaredInOnePlace(t *testing.T) {
 	}
 
 	declared := map[string]bool{}
-	for _, line := range strings.Split(read("rootfs/etc/cs-sandbox/env"), "\n") {
+	for line := range strings.SplitSeq(read("rootfs/etc/cs-sandbox/env"), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -199,7 +199,7 @@ func TestGuestEnvIsDeclaredInOnePlace(t *testing.T) {
 			i++
 			stmt = strings.TrimSuffix(stmt, "\\") + " " + strings.TrimSpace(lines[i])
 		}
-		for _, tok := range strings.Fields(strings.TrimPrefix(stmt, "ENV ")) {
+		for tok := range strings.FieldsSeq(strings.TrimPrefix(stmt, "ENV ")) {
 			name, _, ok := strings.Cut(tok, "=")
 			if !ok || !envName.MatchString(name) {
 				continue

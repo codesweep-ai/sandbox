@@ -3,18 +3,21 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"text/tabwriter"
 	"time"
+
+	"path/filepath"
 
 	"github.com/codesweep-ai/sandbox/internal/fcnet"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/ports"
 	"github.com/codesweep-ai/sandbox/internal/state"
 	"github.com/spf13/cobra"
-	"path/filepath"
 )
 
 // A group owns an isolated network, its own SSH trust material and a gateway.
@@ -87,7 +90,7 @@ func newGroupLsCmd(app *App) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if quiet && asJSON {
-				return fmt.Errorf("--quiet and --json are mutually exclusive")
+				return errors.New("--quiet and --json are mutually exclusive")
 			}
 			groups, err := state.ListGroups(app.InstDir)
 			if err != nil {
@@ -125,7 +128,7 @@ func newGroupLsCmd(app *App) *cobra.Command {
 			for _, g := range groups {
 				gw := "-"
 				if g.GWPort != 0 {
-					gw = fmt.Sprintf("%d", g.GWPort)
+					gw = strconv.Itoa(g.GWPort)
 				}
 				fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n",
 					g.Name, members[g.Name], state.NetworkName(g.Name), gw, age(g.Created, time.Now()))
@@ -249,7 +252,7 @@ func (a *App) allocTapPrefix(group string) (string, error) {
 	for _, g := range groups {
 		taken[g.TapPrefix] = true
 	}
-	for i := 0; i < 0x10000; i++ {
+	for i := range 0x10000 {
 		p := fmt.Sprintf("fd%04x", i)
 		if !taken[p] {
 			return p, nil

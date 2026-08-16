@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
@@ -25,7 +26,7 @@ func KnownHostsFile(h hostenv.Host) string {
 func SSHOptions(h hostenv.Host, tierDir, name string, port int) []string {
 	return []string{
 		"-i", filepath.Join(tierDir, "id_cs-sandbox_user"),
-		"-p", fmt.Sprintf("%d", port),
+		"-p", strconv.Itoa(port),
 		"-o", "HostKeyAlias=" + name,
 		"-o", "UserKnownHostsFile=" + KnownHostsFile(h),
 		"-o", "StrictHostKeyChecking=accept-new",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -272,7 +273,7 @@ func (c Cache) ensureFirecrackerBin(ctx context.Context, r run.Runner, bc BuildC
 	// cp release-*/firecracker-*-<arch> -> bin/firecracker.
 	matches, _ := filepath.Glob(filepath.Join(c.Dir, "release-*", "firecracker-*-"+arch))
 	if len(matches) == 0 {
-		return fmt.Errorf("fc: firecracker binary not found in release tarball")
+		return errors.New("fc: firecracker binary not found in release tarball")
 	}
 	// Drop the stamp before replacing the binary so a failure mid-install leaves
 	// the cache "unknown version" (refetched next time) rather than a stamp that
@@ -328,7 +329,7 @@ func (c Cache) fcWantDigest(ctx context.Context, r run.Runner, bc BuildConfig, a
 		if d := fcDigests[arch]; d != "" {
 			return d, true, nil
 		}
-		why = fmt.Sprintf("no digest is pinned for %s", arch)
+		why = "no digest is pinned for " + arch
 	}
 	c.say("warning: %s — verifying against the checksum published with it, which is not a trust anchor", why)
 	res, err := r.Run(ctx, run.Opts{ReadOnly: true}, "curl", "-fsSL", base+"/"+tgz+".sha256.txt")
@@ -336,7 +337,7 @@ func (c Cache) fcWantDigest(ctx context.Context, r run.Runner, bc BuildConfig, a
 		return "", false, fmt.Errorf("fc: failed to fetch the published checksum for %s: %w", tgz, err)
 	}
 	// "<sha256>  <file>.tgz"
-	for _, line := range strings.Split(res.Stdout, "\n") {
+	for line := range strings.SplitSeq(res.Stdout, "\n") {
 		if f := strings.Fields(line); len(f) > 0 {
 			return f[0], false, nil
 		}
@@ -399,7 +400,7 @@ func (c Cache) ensureKernel(ctx context.Context, r run.Runner, bc BuildConfig) e
 		if exists(c.Kernel()) && exists(c.Initrd()) {
 			return nil
 		}
-		return fmt.Errorf("fc: missing host-kernel artifacts and CS_SANDBOX_FC_KERNEL=host build is unsupported; use the default fedora kernel")
+		return errors.New("fc: missing host-kernel artifacts and CS_SANDBOX_FC_KERNEL=host build is unsupported; use the default fedora kernel")
 	}
 	// Fedora mode: rebuild when the mode flipped, any artifact is missing, the
 	// pinned kernel NVR changed, or the initramfs source changed.
@@ -407,10 +408,10 @@ func (c Cache) ensureKernel(ctx context.Context, r run.Runner, bc BuildConfig) e
 		return nil
 	}
 	if bc.Image == "" {
-		return fmt.Errorf("fc: guest kernel artifacts missing/stale and no image available to build them")
+		return errors.New("fc: guest kernel artifacts missing/stale and no image available to build them")
 	}
 	if bc.InitramfsSrc == "" {
-		return fmt.Errorf("fc: guest kernel artifacts missing/stale and no initramfs source available to build them")
+		return errors.New("fc: guest kernel artifacts missing/stale and no initramfs source available to build them")
 	}
 	c.say("building the guest kernel (this can take a few minutes)…")
 	for _, f := range []string{"vmlinux.elf", "initrd.img", "modules.tar", "kver"} {
@@ -544,7 +545,7 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 		return nil
 	}
 	if bc.Image == "" || bc.InitPath == "" {
-		return fmt.Errorf("fc: base rootfs missing/stale and cannot build (need image + init path)")
+		return errors.New("fc: base rootfs missing/stale and cannot build (need image + init path)")
 	}
 	c.say("building the base sandbox filesystem…")
 	// Drop the stamp before deleting what it describes, so an interrupted build

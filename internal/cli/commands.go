@@ -3,6 +3,9 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strconv"
+
+	"path/filepath"
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/forward"
@@ -10,7 +13,6 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/state"
 	"github.com/spf13/cobra"
-	"path/filepath"
 )
 
 // engineFor returns the adapter matching an instance's recorded engine.
@@ -202,12 +204,12 @@ func newSSHCmd(app *App) *cobra.Command {
 			key := filepath.Join(paths.GroupKeys(in.Group), "id_cs-sandbox_user")
 			knownHosts := app.Host.SSHDir() + "/known_hosts.cs-sandbox"
 			sshArgs := []string{
-				"-i", key, "-p", fmt.Sprintf("%d", in.Port),
+				"-i", key, "-p", strconv.Itoa(in.Port),
 				"-o", "HostKeyAlias=" + args[0],
 				"-o", "UserKnownHostsFile=" + knownHosts,
 				"-o", "StrictHostKeyChecking=accept-new",
 				"-o", "IdentitiesOnly=yes",
-				fmt.Sprintf("%s@127.0.0.1", app.Host.User),
+				app.Host.User + "@127.0.0.1",
 			}
 			sshArgs = append(sshArgs, args[1:]...)
 			_, err = app.Runner.Run(cmd.Context(), run.Opts{Interactive: true}, append([]string{"ssh"}, sshArgs...)...)

@@ -70,9 +70,9 @@ func writeStub(t *testing.T, bin, name, body string) {
 
 // runScript runs a bundled script with HOME/PATH pointed at the fake home, returning its
 // combined output and exit code.
-func runScript(t *testing.T, home, bin string, extraEnv []string, name string, args ...string) (string, int) {
+func runScript(t *testing.T, home, bin string, name string, args ...string) (string, int) {
 	t.Helper()
-	return runScriptStdin(t, home, bin, extraEnv, "", name, args...)
+	return runScriptStdin(t, home, bin, nil, "", name, args...)
 }
 
 // runScriptStdin is runScript with a prompt piped in — the turn drivers read theirs there.
@@ -140,7 +140,7 @@ func TestRemoteOutputStatusContract(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				out, exit := runScript(t, home, bin, nil, tool.name, name, "-s")
+				out, exit := runScript(t, home, bin, tool.name, name, "-s")
 				got := strings.TrimSpace(strings.SplitN(out, "\n", 2)[0])
 				if got != tc.wantOut || exit != tc.wantExit {
 					t.Fatalf("-s = %q exit %d; want %q exit %d", got, exit, tc.wantOut, tc.wantExit)
@@ -224,7 +224,7 @@ func TestOpenCodeWrapperProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, exit := runScript(t, home, bin, nil, "cs-opencode")
+	out, exit := runScript(t, home, bin, "cs-opencode")
 	if exit != 0 {
 		t.Fatalf("cs-opencode exit %d: %s", exit, out)
 	}
@@ -257,7 +257,7 @@ func TestOpenCodeWrapperProfile(t *testing.T) {
 		{"serve", []string{"serve", "--port", "1234"}, "argv: serve --port 1234"},
 	} {
 		t.Run("yolo/"+tc.name, func(t *testing.T) {
-			out, exit := runScript(t, home, bin, nil, "cs-opencode", tc.args...)
+			out, exit := runScript(t, home, bin, "cs-opencode", tc.args...)
 			if exit != 0 {
 				t.Fatalf("cs-opencode %v exit %d: %s", tc.args, exit, out)
 			}
@@ -365,7 +365,7 @@ func TestOpenCodeRemoteSessionsUsesSupportedSurface(t *testing.T) {
 		"printf '%s\\n' \"$*\" >> "+sshLog+"\n"+
 		`printf '[{"id":"`+sid+`","title":"t","updated":1785605904757,"created":1,"projectId":"global","directory":"/home/dev/api"}]\n'`+"\n")
 
-	out, exit := runScript(t, home, bin, nil, "cs-opencode-remote-sessions", "-v")
+	out, exit := runScript(t, home, bin, "cs-opencode-remote-sessions", "-v")
 	if exit != 0 {
 		t.Fatalf("-v exit %d: %s", exit, out)
 	}
@@ -555,7 +555,7 @@ func TestRemoteKillStopsTheRunner(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if out, exit := runScript(t, home, bin, nil, "cs-"+fam.agent+"-remote", "--kill", name); exit != 0 {
+			if out, exit := runScript(t, home, bin, "cs-"+fam.agent+"-remote", "--kill", name); exit != 0 {
 				t.Fatalf("--kill exit %d: %s", exit, out)
 			}
 			done := make(chan error, 1)
@@ -570,7 +570,7 @@ func TestRemoteKillStopsTheRunner(t *testing.T) {
 				t.Errorf("PID file not cleaned: %v", err)
 			}
 			// A cancelled turn must report failed/3, not unknown/1.
-			out, exit := runScript(t, home, bin, nil, "cs-"+fam.agent+"-remote-output", name, "-s")
+			out, exit := runScript(t, home, bin, "cs-"+fam.agent+"-remote-output", name, "-s")
 			if got := strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]); got != "failed" || exit != 3 {
 				t.Errorf("after --kill, -s = %q exit %d; want failed exit 3", got, exit)
 			}
@@ -601,7 +601,7 @@ func TestRemoteKillLeavesUnrelatedPIDAlone(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if out, exit := runScript(t, home, bin, nil, "cs-"+fam.agent+"-remote", "--kill", name); exit != 0 {
+			if out, exit := runScript(t, home, bin, "cs-"+fam.agent+"-remote", "--kill", name); exit != 0 {
 				t.Fatalf("--kill exit %d: %s", exit, out)
 			}
 			if err := bystander.Process.Signal(syscall.Signal(0)); err != nil {
@@ -920,7 +920,7 @@ func TestRemoteBackgroundCarriesTurnTimeout(t *testing.T) {
 				[]byte(fam.mapValue+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if out, exit := runScript(t, home, bin, nil, "cs-"+fam.agent+"-remote",
+			if out, exit := runScript(t, home, bin, "cs-"+fam.agent+"-remote",
 				"--resume", name, "-H", "host", "--turn-timeout", "0", "-b", "hello"); exit != 0 {
 				t.Fatalf("background dispatch exit %d: %s", exit, out)
 			}
@@ -941,7 +941,7 @@ func TestRemoteBackgroundCarriesTurnTimeout(t *testing.T) {
 			// timeout, so a real regression still reaches the assertion below
 			// rather than quietly skipping.
 			var logged string
-			for i := 0; i < 60; i++ {
+			for range 60 {
 				if b, err := os.ReadFile(sshLog); err == nil && strings.Contains(string(b), "--format") {
 					logged = string(b)
 					break

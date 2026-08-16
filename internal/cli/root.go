@@ -5,10 +5,12 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"runtime"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -144,7 +146,7 @@ func newRootCmd(app *App) *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if quiet && verbose {
-				return fmt.Errorf("--quiet and --verbose are mutually exclusive")
+				return errors.New("--quiet and --verbose are mutually exclusive")
 			}
 			h, err := hostenv.Detect()
 			if err != nil {
@@ -155,7 +157,7 @@ func newRootCmd(app *App) *cobra.Command {
 			if app.Runner == nil {
 				ex := &run.Exec{DryRun: dryRun}
 				if dryRun || verbose {
-					ex.Printer = func(argv []string) { fmt.Fprintln(os.Stderr, "+ "+join(argv)) }
+					ex.Printer = func(argv []string) { fmt.Fprintln(os.Stderr, "+ "+strings.Join(argv, " ")) }
 				}
 				app.Exec = ex
 				app.Runner = ex
@@ -227,7 +229,7 @@ func newLsCmd(app *App) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if quiet && asJSON {
-				return fmt.Errorf("--quiet and --json are mutually exclusive")
+				return errors.New("--quiet and --json are mutually exclusive")
 			}
 			if asJSON {
 				return runLsJSON(cmd.Context(), app, cmd.OutOrStdout())
@@ -370,15 +372,4 @@ func yn(b bool) string {
 		return "yes"
 	}
 	return "-"
-}
-
-func join(argv []string) string {
-	s := ""
-	for i, a := range argv {
-		if i > 0 {
-			s += " "
-		}
-		s += a
-	}
-	return s
 }

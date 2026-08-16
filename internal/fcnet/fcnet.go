@@ -19,6 +19,7 @@ package fcnet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -218,7 +219,7 @@ func (f Fabric) keepaliveUp(ctx context.Context) error {
 	} else if err != nil {
 		return fmt.Errorf("fc: could not start the network keepalive container: %w", err)
 	}
-	return fmt.Errorf("fc: could not start the network keepalive container")
+	return errors.New("fc: could not start the network keepalive container")
 }
 
 // dnsProc is a live dnsmasq: the address it answers on and the hostsdir it
@@ -338,7 +339,7 @@ func (f Fabric) dnsUp(ctx context.Context) error {
 		return err
 	}
 	if _, err := exec.LookPath("dnsmasq"); err != nil {
-		return fmt.Errorf("fc: dnsmasq not found")
+		return errors.New("fc: dnsmasq not found")
 	}
 	if pid, err := f.dnsState(ctx); err != nil {
 		return err
@@ -367,7 +368,7 @@ func (f Fabric) dnsUp(ctx context.Context) error {
 		return err
 	}
 	_ = cmd.Process.Release()
-	for i := 0; i < 40; i++ {
+	for range 40 {
 		if pid, err := f.dnsState(ctx); err != nil {
 			return err
 		} else if pid > 0 {
@@ -463,7 +464,7 @@ func (f Fabric) GC(ctx context.Context, vmRunning func() bool) {
 	}
 	names := run.Output(ctx, f.Runner, "podman", "ps", "-a",
 		"--filter", "label=cs-sandbox.managed=1", "--format", "{{.Names}}")
-	for _, n := range strings.Split(names, "\n") {
+	for n := range strings.SplitSeq(names, "\n") {
 		n = strings.TrimSpace(n)
 		if n != "" && n != f.Keepalive() {
 			return // a sandbox container remains — keep the fabric
@@ -527,7 +528,7 @@ func TapName(ip string) string { return tapPrefix + lastOctet(ip) }
 // other's tap.
 func (f Fabric) TapOctets(ctx context.Context) map[string]bool {
 	out := map[string]bool{}
-	for _, line := range strings.Split(
+	for line := range strings.SplitSeq(
 		run.Output(ctx, f.Runner, "podman", "unshare", "--rootless-netns", "ip", "-br", "link", "show"), "\n") {
 		name, _, _ := strings.Cut(strings.TrimSpace(line), " ")
 		name, _, _ = strings.Cut(name, "@")
@@ -596,7 +597,7 @@ exec socat "UNIX-LISTEN:$2,fork,reuseaddr" "TCP:$3:$4"`
 	nsLog.Close()
 	_ = nsCmd.Process.Release()
 
-	for i := 0; i < 40; i++ {
+	for range 40 {
 		if fi, err := os.Stat(sock); err == nil && fi.Mode()&os.ModeSocket != 0 {
 			break
 		}

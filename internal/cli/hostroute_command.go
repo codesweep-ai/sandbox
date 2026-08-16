@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/codesweep-ai/sandbox/internal/fcnet"
@@ -63,7 +64,7 @@ func newHostRouteCmd(app *App) *cobra.Command {
 		ValidArgs: []string{"up", "down", "refresh", "status"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if app.Host.IsMacOS {
-				return fmt.Errorf("host-route is Linux-only (the rootless network fabric is Linux/firecracker)")
+				return errors.New("host-route is Linux-only (the rootless network fabric is Linux/firecracker)")
 			}
 			sub := "status"
 			if len(args) == 1 {
@@ -93,7 +94,7 @@ func newHostRouteCmd(app *App) *cobra.Command {
 			case "status":
 				fmt.Fprintln(out, hr.Status(cmd.Context()))
 			default:
-				return fmt.Errorf("usage: cs-sandbox host-route up|down|refresh|status")
+				return errors.New("usage: cs-sandbox host-route up|down|refresh|status")
 			}
 			return nil
 		},

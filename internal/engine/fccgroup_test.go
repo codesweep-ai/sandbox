@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -31,12 +32,7 @@ func itoaTest(n int) string {
 }
 
 func argvHas(argv []string, want string) bool {
-	for _, a := range argv {
-		if a == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(argv, want)
 }
 
 // TestCgroupWrapperDerivesCeiling: with no explicit override the ceiling comes

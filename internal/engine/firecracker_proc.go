@@ -150,7 +150,7 @@ func killFirecracker(idir string) {
 		return
 	}
 	_ = syscall.Kill(pid, syscall.SIGTERM)
-	for i := 0; i < 16; i++ {
+	for range 16 {
 		if syscall.Kill(pid, 0) != nil {
 			_ = os.Remove(pidFile)
 			return

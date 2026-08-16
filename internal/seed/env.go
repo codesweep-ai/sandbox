@@ -18,8 +18,7 @@ type Lookup func(string) (string, bool)
 // environment (docker --env-file style). Returns an error (to be logged as a
 // note and skipped) for an invalid name or an unset pass-through var.
 func EmitEnvKV(tok string, look Lookup) (string, error) {
-	if i := strings.IndexByte(tok, '='); i >= 0 {
-		k := tok[:i]
+	if k, _, ok := strings.Cut(tok, "="); ok {
 		if !envNameRe.MatchString(k) {
 			return "", fmt.Errorf("ignoring invalid env entry: %s", tok)
 		}

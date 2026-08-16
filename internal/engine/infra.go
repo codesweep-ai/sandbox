@@ -196,7 +196,7 @@ func (d Deps) healDefaultFabric(ctx context.Context, verr error) error {
 	var others []string
 	out := run.Output(ctx, d.Runner, "podman", "ps", "-a",
 		"--filter", "network="+d.Network, "--format", "{{.Names}}")
-	for _, n := range strings.Split(strings.TrimSpace(out), "\n") {
+	for n := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		if n = strings.TrimSpace(n); n != "" && n != keepalive {
 			others = append(others, n)
 		}

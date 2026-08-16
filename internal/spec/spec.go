@@ -5,6 +5,7 @@ package spec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -85,7 +86,7 @@ func ResolveRepoClones(specs []string, opt Options) ([]RepoClone, error) {
 			ref = s[i+1:]
 			s = s[:i]
 			if ref == "" {
-				return nil, fmt.Errorf("--repo: empty @REF")
+				return nil, errors.New("--repo: empty @REF")
 			}
 			if strings.ContainsAny(ref, "\r\n"+US) {
 				return nil, fmt.Errorf("--repo: invalid @REF %q: control characters are not allowed", ref)

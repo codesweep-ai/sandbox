@@ -309,25 +309,25 @@ func TestHostRouteGroupFlagsForwardingLegs(t *testing.T) {
 
 	g := hostRouteGroup(Deps{HostRouteOn: true, HostRouteLegs: []string{"cs-sandbox", "hr0001h"}})
 	var issues int
-	all := ""
+	var all strings.Builder
 	for _, c := range g.Checks {
-		all += c.Message + "\n"
+		all.WriteString(c.Message + "\n")
 		if c.Status == NO {
 			issues++
 		}
 	}
 	if issues != 1 {
-		t.Errorf("a forwarding leg must be one issue, got %d:\n%s", issues, all)
+		t.Errorf("a forwarding leg must be one issue, got %d:\n%s", issues, all.String())
 	}
-	if !strings.Contains(all, "hr0001h") {
-		t.Errorf("the offending leg should be named:\n%s", all)
+	if !strings.Contains(all.String(), "hr0001h") {
+		t.Errorf("the offending leg should be named:\n%s", all.String())
 	}
-	if strings.Contains(all, "cs-sandbox,") || strings.Contains(all, "on cs-sandbox ") {
-		t.Errorf("a leg with forwarding off must not be reported:\n%s", all)
+	if strings.Contains(all.String(), "cs-sandbox,") || strings.Contains(all.String(), "on cs-sandbox ") {
+		t.Errorf("a leg with forwarding off must not be reported:\n%s", all.String())
 	}
 	// ip_forward=1 above is not itself a finding: the per-veth values are.
-	if strings.Contains(all, "ip_forward") {
-		t.Errorf("the global setting is not a finding on its own:\n%s", all)
+	if strings.Contains(all.String(), "ip_forward") {
+		t.Errorf("the global setting is not a finding on its own:\n%s", all.String())
 	}
 }
 
@@ -356,12 +356,12 @@ func TestHostRouteGroupCleanWhenLegsAreClosed(t *testing.T) {
 // Saying so beats letting the user find it by hitting it.
 func TestHostRouteGroupNamesTheWSLRequirement(t *testing.T) {
 	g := hostRouteGroup(Deps{IsWSL: true})
-	all := ""
+	var all strings.Builder
 	for _, c := range g.Checks {
-		all += c.Message + "\n"
+		all.WriteString(c.Message + "\n")
 	}
-	if !strings.Contains(all, "systemd-resolved") || !strings.Contains(all, "wsl.conf") {
-		t.Errorf("WSL users should be told what host-route needs and where to set it:\n%s", all)
+	if !strings.Contains(all.String(), "systemd-resolved") || !strings.Contains(all.String(), "wsl.conf") {
+		t.Errorf("WSL users should be told what host-route needs and where to set it:\n%s", all.String())
 	}
 }
 

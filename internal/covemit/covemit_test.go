@@ -29,7 +29,7 @@ func readRecords(t *testing.T, path string) []record {
 		t.Fatalf("read buffer: %v", err)
 	}
 	var out []record
-	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(string(data), "\n"), "\n") {
 		if line == "" {
 			continue
 		}

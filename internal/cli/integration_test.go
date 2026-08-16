@@ -102,7 +102,7 @@ func shareDir(t *testing.T, host hostenv.Host) string {
 }
 
 // boxName is a unique, namespaced sandbox name for a subtest.
-func boxName(t *testing.T, tag string) string {
+func boxName(tag string) string {
 	return fmt.Sprintf("csgocli-%s-%d-%s", tag, os.Getpid(), runID)
 }
 
@@ -172,7 +172,7 @@ func inBox(ctx context.Context, r *run.Exec, host hostenv.Host, name, sh string)
 func TestCLICreateExecDestroyLive(t *testing.T) {
 	r, host := liveSetup(t)
 	ctx := context.Background()
-	name := boxName(t, "cxd")
+	name := boxName("cxd")
 
 	out, err := execRoot(t, "create", name, "--engine", "podman")
 	t.Cleanup(func() { _, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", objName(name)) })
@@ -203,7 +203,7 @@ func TestCLICreateExecDestroyLive(t *testing.T) {
 func TestCLIRmRecreateReusesDataLive(t *testing.T) {
 	r, host := liveSetup(t)
 	ctx := context.Background()
-	name := boxName(t, "reuse")
+	name := boxName("reuse")
 	t.Cleanup(func() {
 		_, _ = execRoot(t, "destroy", name, "-f")
 		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", objName(name))
@@ -244,7 +244,7 @@ func TestCLIRmRecreateReusesDataLive(t *testing.T) {
 func TestCLIAgentToolSetLive(t *testing.T) {
 	r, host := liveSetup(t)
 	ctx := context.Background()
-	name := boxName(t, "tools")
+	name := boxName("tools")
 	createBox(t, r, name)
 
 	for _, tool := range []string{
@@ -271,7 +271,7 @@ func TestCLIAgentLoginInheritedLive(t *testing.T) {
 	ctx := context.Background()
 	synthAgentHome(t, host)
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
-	name := boxName(t, "login")
+	name := boxName("login")
 	out := createBox(t, r, name, "--inherit-agent-login", "claude")
 
 	// create reports what the sandbox ended up with.
@@ -310,7 +310,7 @@ func TestCLIOpenCodeLoginInheritedLive(t *testing.T) {
 	ctx := context.Background()
 	synthAgentHome(t, host)
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
-	name := boxName(t, "oclogin")
+	name := boxName("oclogin")
 	out := createBox(t, r, name, "--inherit-agent-login", "opencode")
 
 	if !strings.Contains(out, "agent login: opencode") {
@@ -348,7 +348,7 @@ func TestCLIAgentLoginOptInLive(t *testing.T) {
 	synthAgentHome(t, host)
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
 
-	plain := boxName(t, "nologin")
+	plain := boxName("nologin")
 	out := createBox(t, r, plain)
 	if !strings.Contains(out, "agent login: none") || !strings.Contains(out, "--inherit-agent-login") {
 		t.Errorf("create should say no login was inherited and how to get one, got:\n%s", out)
@@ -368,7 +368,7 @@ func TestCLIAgentLoginOptInLive(t *testing.T) {
 		t.Errorf("sandbox should be login-free by default, got %q", got)
 	}
 
-	one := boxName(t, "onelogin")
+	one := boxName("onelogin")
 	createBox(t, r, one, "--inherit-agent-login", "claude")
 	for _, other := range []string{"codex", "opencode"} {
 		if fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, one), "seed", other, "auth.json")) {
@@ -384,7 +384,7 @@ func TestCLIProviderKeysNotCarriedLive(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "cs-test-fake-key")
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
 
-	name := boxName(t, "nokeys")
+	name := boxName("nokeys")
 	createBox(t, r, name, "--inherit-agent-login", "claude")
 
 	if _, err := os.Stat(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "claude", "env")); !os.IsNotExist(err) {
@@ -404,7 +404,7 @@ func TestCLIRepoShareLive(t *testing.T) {
 	if top == "" {
 		t.Skip("not in a git checkout")
 	}
-	name := boxName(t, "repo")
+	name := boxName("repo")
 	createBox(t, r, name, "--repo", top)
 
 	// A cloned repo dir with a .git shows up under the home, and git works in it.
@@ -424,7 +424,7 @@ func TestCLIYoloLive(t *testing.T) {
 	ctx := context.Background()
 
 	for _, typ := range []string{"agent", "user"} {
-		name := boxName(t, "yolo"+typ)
+		name := boxName("yolo" + typ)
 		createBox(t, r, name, "--type", typ, "--yolo")
 		// Every agent's wrapper keys off its own marker.
 		for _, profile := range []string{".cs-claude", ".cs-codex", ".cs-opencode"} {
@@ -442,7 +442,7 @@ func TestCLIUserTypeSeedLive(t *testing.T) {
 	r, _ := liveSetup(t)
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
 
-	uname := boxName(t, "user")
+	uname := boxName("user")
 	createBox(t, r, uname, "--type", "user")
 	userSeed := filepath.Join(state.Dir(instDir, state.DefaultGroup, uname), "seed")
 	if !fileExists(filepath.Join(userSeed, "id_cs-sandbox_user")) {
@@ -452,7 +452,7 @@ func TestCLIUserTypeSeedLive(t *testing.T) {
 		t.Errorf("user sandbox should not hold the agent tier key")
 	}
 
-	aname := boxName(t, "agent")
+	aname := boxName("agent")
 	createBox(t, r, aname, "--type", "agent")
 	if !fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, aname), "seed", "id_cs-sandbox_agent")) {
 		t.Errorf("agent sandbox missing agent tier key in seed")
@@ -464,7 +464,7 @@ func TestCLIUserTypeSeedLive(t *testing.T) {
 func TestCLIEnvInjectionLive(t *testing.T) {
 	r, _ := liveSetup(t)
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
-	name := boxName(t, "env")
+	name := boxName("env")
 	createBox(t, r, name, "-e", "CS_TEST_TOKEN=sekret123")
 
 	p := filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "inject-env")
@@ -485,7 +485,7 @@ func TestCLIEnvInjectionLive(t *testing.T) {
 func TestCLINetworkReachabilityLive(t *testing.T) {
 	r, host := liveSetup(t)
 	ctx := context.Background()
-	a, b := boxName(t, "neta"), boxName(t, "netb")
+	a, b := boxName("neta"), boxName("netb")
 	createBox(t, r, a)
 	createBox(t, r, b)
 
@@ -521,7 +521,7 @@ func sshArgv(t *testing.T, host hostenv.Host, name string) []string {
 		"-i", key, "-p", strings.TrimSpace(portStr),
 		"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
 		"-o", "IdentitiesOnly=yes", "-o", "LogLevel=ERROR",
-		fmt.Sprintf("%s@127.0.0.1", host.User),
+		host.User + "@127.0.0.1",
 	}
 }
 
@@ -577,7 +577,7 @@ func TestCLIHostByNameLive(t *testing.T) {
 	if len(host.Names) == 0 {
 		t.Skip("host exposes no name to map")
 	}
-	name := boxName(t, "hostname")
+	name := boxName("hostname")
 	createBox(t, r, name)
 	assertHostByName(t, host, name, func(sh string) string { return inBox(ctx, r, host, name, sh) })
 }
@@ -597,7 +597,7 @@ func TestCLIHostByNameFirecrackerLive(t *testing.T) {
 		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
 	}
 	fcInstancesDir(t, host)
-	name := boxName(t, "hostnamefc")
+	name := boxName("hostnamefc")
 	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
 	step(t, "booting firecracker microVM %s (takes ~30s)…", name)
 	start := time.Now()
@@ -642,7 +642,7 @@ func TestCLINestedSandboxInVMLive(t *testing.T) {
 
 	fcInstancesDir(t, host)
 	store := fmt.Sprintf("csgonest%d%s", os.Getpid(), runID)
-	outer := boxName(t, "nest")
+	outer := boxName("nest")
 	t.Cleanup(func() {
 		_, _ = execRoot(t, "destroy", outer, "-f")
 		_, _ = execRoot(t, "rm-store", store, "-f")
@@ -807,7 +807,7 @@ func buildCLI(t *testing.T) string {
 // TestCLIListShowsInstanceLive: `ls` reports a live instance with its engine.
 func TestCLIListShowsInstanceLive(t *testing.T) {
 	r, _ := liveSetup(t)
-	name := boxName(t, "ls")
+	name := boxName("ls")
 	createBox(t, r, name)
 
 	out, err := execRoot(t, "ls")
@@ -851,7 +851,7 @@ func TestCLIListShowsInstanceLive(t *testing.T) {
 func TestCLIPortForwardLive(t *testing.T) {
 	r, _ := liveSetup(t)
 	ctx := context.Background()
-	name := boxName(t, "fwd")
+	name := boxName("fwd")
 	createBox(t, r, name)
 
 	// Start a trivial HTTP server inside the sandbox on :8099 (detached).
@@ -867,7 +867,7 @@ func TestCLIPortForwardLive(t *testing.T) {
 
 	// Poll the host-side forwarded port (ssh -L + server both need a moment).
 	ok := false
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		if _, err := r.Run(ctx, run.Opts{}, "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:18099/"); err == nil {
 			ok = true
 			break
@@ -892,7 +892,7 @@ func TestCLIPortForwardLive(t *testing.T) {
 func TestCLISocksForwardLive(t *testing.T) {
 	r, _ := liveSetup(t)
 	ctx := context.Background()
-	name := boxName(t, "socks")
+	name := boxName("socks")
 	createBox(t, r, name)
 
 	if _, err := r.Run(ctx, run.Opts{}, "podman", "exec", "-d", objName(name),
@@ -908,7 +908,7 @@ func TestCLISocksForwardLive(t *testing.T) {
 
 	// Through the SOCKS proxy, localhost:8098 resolves from the sandbox's side.
 	ok := false
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		if _, err := r.Run(ctx, run.Opts{}, "curl", "-fsS", "-o", "/dev/null",
 			"--socks5-hostname", "127.0.0.1:11080", "http://localhost:8098/"); err == nil {
 			ok = true
@@ -937,7 +937,7 @@ func TestCLINestedRootlessPodmanLive(t *testing.T) {
 	ctx := context.Background()
 	const workload = "docker.io/library/busybox"
 	requireWorkloadImage(t, workload)
-	name := boxName(t, "rootless")
+	name := boxName("rootless")
 	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
 
 	if out, err := execRoot(t, "create", name, "--engine", "podman"); err != nil {
@@ -978,7 +978,7 @@ func TestCLIImageStoreUseOnMicroVMLive(t *testing.T) {
 	}
 	fcInstancesDir(t, host)
 	store := fmt.Sprintf("csgofcstore%d%s", os.Getpid(), runID)
-	name := boxName(t, "fcstore")
+	name := boxName("fcstore")
 	t.Cleanup(func() {
 		_, _ = execRoot(t, "destroy", name, "-f")
 		_, _ = execRoot(t, "rm-store", store, "-f")
@@ -1010,7 +1010,7 @@ func TestCLIImageStoreUseLive(t *testing.T) {
 	r, host := liveSetup(t)
 	ctx := context.Background()
 	store := fmt.Sprintf("csgostore%d%s", os.Getpid(), runID)
-	name := boxName(t, "store")
+	name := boxName("store")
 	t.Cleanup(func() {
 		_, _ = execRoot(t, "destroy", name, "-f")
 		_, _ = execRoot(t, "rm-store", store, "-f")
@@ -1077,7 +1077,7 @@ func TestCLIRepoPushLive(t *testing.T) {
 	src := filepath.Join(shareDir(t, host), "proj")
 	hostGitInit(t, r, src)
 
-	name := boxName(t, "push")
+	name := boxName("push")
 	createBox(t, r, name, "--repo", src)
 	waitInBox(t, r, host, name, "test -d ~/proj/.git", 90*time.Second)
 
@@ -1105,7 +1105,7 @@ func TestCLISnapshotShareLive(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(snap, "hello.txt"), []byte("frozen-hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	name := boxName(t, "snap")
+	name := boxName("snap")
 	createBox(t, r, name, "--snapshot", snap)
 	waitInBox(t, r, host, name, "test -f ~/snapdata/hello.txt", 90*time.Second)
 
@@ -1129,7 +1129,7 @@ func TestCLIFirecrackerCrossEngineLive(t *testing.T) {
 	}
 	instDir := fcInstancesDir(t, host)
 
-	fbox := boxName(t, "xfc")
+	fbox := boxName("xfc")
 	t.Cleanup(func() { _, _ = execRoot(t, "destroy", fbox, "-f") })
 	step(t, "booting firecracker microVM %s (takes ~30s)…", fbox)
 	start := time.Now()
@@ -1145,7 +1145,7 @@ func TestCLIFirecrackerCrossEngineLive(t *testing.T) {
 	}
 
 	// A podman container resolves the firecracker VM by name (cross-engine fabric).
-	pbox := boxName(t, "xpod")
+	pbox := boxName("xpod")
 	createBox(t, r, pbox)
 	got := strings.TrimSpace(inBox(ctx, r, host, pbox, "getent hosts "+fbox+" | awk '{print $1}'"))
 	if got == "" {
@@ -1164,7 +1164,7 @@ func TestCLIFirecrackerCrossEngineLive(t *testing.T) {
 func TestCLIGroupIsolationLive(t *testing.T) {
 	r, host := liveSetup(t)
 	ctx := context.Background()
-	ga, gb := boxName(t, "ga"), boxName(t, "gb")
+	ga, gb := boxName("ga"), boxName("gb")
 	t.Cleanup(func() {
 		for _, g := range []string{ga, gb} {
 			_, _ = execRoot(t, "group", "rm", g, "-f")
@@ -1206,17 +1206,17 @@ func TestCLIGroupIsolationLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ssh := func(keyGroup string) (string, error) {
+	ssh := func(keyGroup string) string {
 		key := filepath.Join(os.Getenv("CS_SANDBOX_TIER_DIR"), "groups", keyGroup, "id_cs-sandbox_user")
 		return run.Output(ctx, r, "ssh", "-i", key, "-p", strings.TrimSpace(portB),
 			"-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
 			"-o", "UserKnownHostsFile=/dev/null", "-o", "BatchMode=yes",
-			"-o", "ConnectTimeout=10", host.User+"@127.0.0.1", "echo AUTHOK"), nil
+			"-o", "ConnectTimeout=10", host.User+"@127.0.0.1", "echo AUTHOK")
 	}
-	if out, _ := ssh(ga); strings.Contains(out, "AUTHOK") {
+	if out := ssh(ga); strings.Contains(out, "AUTHOK") {
 		t.Errorf("group %s's key authenticated to a %s sandbox — the credential boundary is gone", ga, gb)
 	}
-	if out, _ := ssh(gb); !strings.Contains(out, "AUTHOK") {
+	if out := ssh(gb); !strings.Contains(out, "AUTHOK") {
 		t.Errorf("a group's own key must work against its own sandbox, got %q", out)
 	}
 }
@@ -1226,7 +1226,7 @@ func TestCLIGroupIsolationLive(t *testing.T) {
 func TestCLIGroupSameNameLive(t *testing.T) {
 	r, _ := liveSetup(t)
 	ctx := context.Background()
-	ga, gb := boxName(t, "sa"), boxName(t, "sb")
+	ga, gb := boxName("sa"), boxName("sb")
 	t.Cleanup(func() {
 		for _, g := range []string{ga, gb} {
 			_, _ = execRoot(t, "group", "rm", g, "-f")
@@ -1275,7 +1275,7 @@ var hostCredFile = map[string]string{
 //
 // XDG_CACHE_HOME stays pinned to the real cache: the firecracker artifacts and
 // the host-global network fabric live there, and a fresh HOME would hide both.
-func synthAgentHome(t *testing.T, host hostenv.Host) string {
+func synthAgentHome(t *testing.T, host hostenv.Host) {
 	t.Helper()
 	home, err := os.MkdirTemp(host.Home, ".cs-sandbox-agenthome-")
 	if err != nil {
@@ -1302,7 +1302,6 @@ func synthAgentHome(t *testing.T, host hostenv.Host) string {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(host.Home, ".local", "share"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(host.Home, ".config"))
 	t.Setenv("HOME", home)
-	return home
 }
 
 // TestCLIAgentLoginSeedsEveryAgentLive covers the contract shared by all three
@@ -1319,7 +1318,7 @@ func TestCLIAgentLoginSeedsEveryAgentLive(t *testing.T) {
 
 	for _, agent := range agents {
 		t.Run(agent, func(t *testing.T) {
-			name := boxName(t, "seed"+agent)
+			name := boxName("seed" + agent)
 			out := createBox(t, r, name, "--inherit-agent-login", agent)
 			if !strings.Contains(out, "agent login: "+agent) {
 				t.Errorf("create should report the inherited login, got:\n%s", out)
@@ -1357,7 +1356,7 @@ func TestCLIAgentLoginInheritedFirecrackerLive(t *testing.T) {
 	agents := seed.AgentNames()
 	instDir := fcInstancesDir(t, host)
 	synthAgentHome(t, host)
-	name := boxName(t, "fclogin")
+	name := boxName("fclogin")
 	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
 
 	step(t, "booting firecracker microVM %s with %s (takes ~30s)…", name, strings.Join(agents, ","))
@@ -1406,7 +1405,7 @@ func TestGatewayResolvesAMicroVMMemberLive(t *testing.T) {
 	// budget, and two full boxName()s overrun it — as ValidInstancePath will
 	// tell you, which is the check existing to stop that reaching a microVM.
 	group := "gwdns-" + runID
-	name := boxName(t, "m")
+	name := boxName("m")
 	ctx := context.Background()
 	t.Cleanup(func() { _, _ = execRoot(t, "group", "rm", group, "-f") })
 

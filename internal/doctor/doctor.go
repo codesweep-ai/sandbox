@@ -343,7 +343,7 @@ func hostRouteGroup(d Deps) Group {
 func managedBridges(ctx context.Context, r run.Runner) (checked int, bad []string) {
 	out := run.Output(ctx, r, "podman", "network", "ls",
 		"--filter", "label=cs-sandbox.managed=1", "--format", "{{.Name}} {{.NetworkInterface}}")
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		name, iface, ok := strings.Cut(strings.TrimSpace(line), " ")
 		if !ok || name == "" || iface == "" {
 			continue
@@ -436,7 +436,7 @@ func grepUserPrefix(path, user string) bool {
 		return false
 	}
 	prefix := user + ":"
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		if strings.HasPrefix(line, prefix) {
 			return true
 		}

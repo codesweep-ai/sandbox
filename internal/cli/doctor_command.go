@@ -26,7 +26,7 @@ func newDoctorCmd(app *App) *cobra.Command {
 			switch engine {
 			case "podman", "firecracker":
 			default:
-				return fmt.Errorf("--engine must be podman or firecracker")
+				return errors.New("--engine must be podman or firecracker")
 			}
 			fc := fcdisk.Cache{Dir: app.FCCache}
 			hr := app.hostRoute()

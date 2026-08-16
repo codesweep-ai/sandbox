@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -29,7 +30,7 @@ func newForwardCmd(app *App) *cobra.Command {
 				fmt.Fprintf(cmd.ErrOrStderr(), "cs-sandbox: warning: --bind %s exposes the forward beyond host loopback\n", bind)
 			}
 			if socks < 0 || socks > 65535 {
-				return fmt.Errorf("--socks port must be between 1 and 65535")
+				return errors.New("--socks port must be between 1 and 65535")
 			}
 			if socks > 0 {
 				r, err := forward.Start(app.Host, paths.GroupKeys(in.Group), app.InstDir, in.Group, in.Name, in.Port, "D", socks, "socks", bind)
@@ -40,7 +41,7 @@ func newForwardCmd(app *App) *cobra.Command {
 				return nil
 			}
 			if len(args) < 2 {
-				return fmt.Errorf("usage: cs-sandbox forward <name> [HOSTPORT:]VMPORT... | --socks [PORT]")
+				return errors.New("usage: cs-sandbox forward <name> [HOSTPORT:]VMPORT... | --socks [PORT]")
 			}
 			for _, spec := range args[1:] {
 				hp, vp, err := parsePortSpec(spec)
@@ -133,10 +134,10 @@ func newUnforwardCmd(app *App) *cobra.Command {
 }
 
 func parsePortSpec(spec string) (hostPort, vmPort int, err error) {
-	if i := strings.IndexByte(spec, ':'); i >= 0 {
-		hostPort, err = strconv.Atoi(spec[:i])
+	if before, after, ok := strings.Cut(spec, ":"); ok {
+		hostPort, err = strconv.Atoi(before)
 		if err == nil {
-			vmPort, err = strconv.Atoi(spec[i+1:])
+			vmPort, err = strconv.Atoi(after)
 		}
 	} else {
 		hostPort, err = strconv.Atoi(spec)

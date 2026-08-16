@@ -11,6 +11,7 @@ package hostroute
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -146,7 +147,7 @@ func (h HostRoute) Up(ctx context.Context) error {
 	}
 	// Cache sudo creds with a single prompt.
 	if _, err := h.Runner.Run(ctx, run.Opts{Interactive: true}, "sudo", "-v"); err != nil {
-		return fmt.Errorf("host-route: needs sudo to wire the host into the sandbox network")
+		return errors.New("host-route: needs sudo to wire the host into the sandbox network")
 	}
 	return h.wire(ctx)
 }
@@ -188,7 +189,7 @@ func (h HostRoute) Down(ctx context.Context) {
 // wire cleanly and then resolve nothing.
 func (h HostRoute) Refresh(ctx context.Context) error {
 	if !h.Active() {
-		return fmt.Errorf("host-route is not up (run: cs-sandbox host-route up)")
+		return errors.New("host-route is not up (run: cs-sandbox host-route up)")
 	}
 	if err := h.fabricsUp(ctx); err != nil {
 		return err
@@ -264,7 +265,7 @@ func (h HostRoute) Status(ctx context.Context) string {
 			l.Group, prefix, hostOctet, l.Fab.Bridge(ctx), l.hostVeth(),
 			l.domain(h.Suffix), l.Fab.DNSIP(ctx))
 		if data, err := os.ReadFile(l.dnsHostsFile()); err == nil && len(data) > 0 {
-			for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+			for line := range strings.SplitSeq(strings.TrimRight(string(data), "\n"), "\n") {
 				fmt.Fprintf(&b, "      %s\n", line)
 			}
 		}
@@ -450,7 +451,7 @@ func (h HostRoute) orphanLegs() []string {
 		return nil
 	}
 	var orphans []string
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		name, _, _ := strings.Cut(strings.TrimSpace(line), " ")
 		name, _, _ = strings.Cut(name, "@")
 		if legNameRe.MatchString(name) && !want[name] {
@@ -648,7 +649,7 @@ func (h HostRoute) parkInNetns() (int, func(), error) {
 		return 0, func() {}, err
 	}
 	var pid int
-	for i := 0; i < 60; i++ {
+	for range 60 {
 		data, _ := os.ReadFile(pfName)
 		if p, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && p > 0 {
 			pid = p
@@ -665,7 +666,7 @@ func (h HostRoute) parkInNetns() (int, func(), error) {
 	}
 	if pid == 0 || !alive(pid) {
 		cleanup()
-		return 0, func() {}, fmt.Errorf("could not obtain a live pid inside the rootless netns")
+		return 0, func() {}, errors.New("could not obtain a live pid inside the rootless netns")
 	}
 	return pid, cleanup, nil
 }

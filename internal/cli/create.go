@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -101,7 +102,7 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		return fmt.Errorf("--type must be agent or user, got %q", f.typ)
 	}
 	if f.solo && f.typ != "agent" {
-		return fmt.Errorf("--solo is only valid for agent sandboxes")
+		return errors.New("--solo is only valid for agent sandboxes")
 	}
 	if err := state.ValidGroup(f.group); err != nil {
 		return err
@@ -169,13 +170,13 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		eng = engine.NewPodman(d)
 	case "firecracker":
 		if f.cpus <= 0 {
-			return fmt.Errorf("--cpus must be greater than zero")
+			return errors.New("--cpus must be greater than zero")
 		}
 		if f.mem <= 0 {
-			return fmt.Errorf("--mem must be greater than zero")
+			return errors.New("--mem must be greater than zero")
 		}
 		if f.disk < 0 {
-			return fmt.Errorf("--disk must not be negative")
+			return errors.New("--disk must not be negative")
 		}
 		eng = engine.NewFirecracker(d)
 	default:

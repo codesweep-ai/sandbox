@@ -326,7 +326,13 @@ func TestSyncSSHConfigGroups(t *testing.T) {
 	}
 	// The gateway authorizes only its group's key; offering the host's other
 	// identities first would exhaust sshd's MaxAuthTries before it was tried.
-	gw := cfg[strings.Index(cfg, "Host cache-redis-gw"):]
+	// Locate the block before slicing: a missing alias is a real failure, and
+	// slicing on Index's -1 would report it as an opaque bounds panic.
+	start := strings.Index(cfg, "Host cache-redis-gw")
+	if start < 0 {
+		t.Fatalf("no gateway alias for cache-redis:\n%s", cfg)
+	}
+	gw := cfg[start:]
 	if end := strings.Index(gw[1:], "\nHost "); end >= 0 {
 		gw = gw[:end]
 	}

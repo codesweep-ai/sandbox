@@ -4,9 +4,9 @@ package engine
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -97,13 +97,13 @@ func gitInit(t *testing.T, d Deps, dir string) {
 func sshBase(d Deps, port int) []string {
 	key := filepath.Join(d.TierDir, "id_cs-sandbox_user")
 	return []string{"ssh",
-		"-i", key, "-p", fmt.Sprintf("%d", port),
+		"-i", key, "-p", strconv.Itoa(port),
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "IdentitiesOnly=yes",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
-		fmt.Sprintf("%s@127.0.0.1", d.Host.User),
+		d.Host.User + "@127.0.0.1",
 	}
 }
 

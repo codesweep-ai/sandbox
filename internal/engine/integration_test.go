@@ -10,9 +10,9 @@ package engine
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -204,13 +204,13 @@ func sshWhoami(ctx context.Context, d Deps, port int) string {
 	key := filepath.Join(d.TierDir, "id_cs-sandbox_user")
 	return run.Output(ctx, d.Runner, "ssh",
 		"-i", key,
-		"-p", fmt.Sprintf("%d", port),
+		"-p", strconv.Itoa(port),
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "IdentitiesOnly=yes",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
-		fmt.Sprintf("%s@127.0.0.1", d.Host.User),
+		d.Host.User+"@127.0.0.1",
 		"whoami")
 }
 

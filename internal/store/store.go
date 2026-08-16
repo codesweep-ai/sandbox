@@ -7,6 +7,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -71,7 +72,7 @@ func (m Manager) Seed(ctx context.Context, name string, images []string, fromHos
 		return err
 	}
 	if len(images) == 0 {
-		return fmt.Errorf("seed-store needs at least one image")
+		return errors.New("seed-store needs at least one image")
 	}
 	if !m.Exists(ctx, name) {
 		if _, err := m.Runner.Run(ctx, run.Opts{}, "podman", "volume", "create", vol(name)); err != nil {
@@ -83,7 +84,7 @@ func (m Manager) Seed(ctx context.Context, name string, images []string, fromHos
 	if fromHost {
 		hostStore := run.Output(ctx, m.Runner, "podman", "info", "--format", "{{.Store.GraphRoot}}")
 		if hostStore == "" {
-			return fmt.Errorf("cannot resolve host image store")
+			return errors.New("cannot resolve host image store")
 		}
 		for _, img := range images {
 			if _, err := m.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "image", "exists", img); err != nil {
@@ -128,10 +129,10 @@ func (m Manager) List(ctx context.Context) []string {
 	out := run.Output(ctx, m.Runner, "podman", "volume", "ls",
 		"--filter", "name="+volPrefix, "--format", "{{.Name}}")
 	var names []string
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, volPrefix) {
-			names = append(names, strings.TrimPrefix(line, volPrefix))
+		if after, ok := strings.CutPrefix(line, volPrefix); ok {
+			names = append(names, after)
 		}
 	}
 	return names

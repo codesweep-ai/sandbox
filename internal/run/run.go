@@ -10,6 +10,7 @@ package run
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -71,7 +72,7 @@ type Exec struct {
 // Run implements Runner.
 func (e *Exec) Run(ctx context.Context, opts Opts, argv ...string) (Result, error) {
 	if len(argv) == 0 {
-		return Result{}, fmt.Errorf("run: empty argv")
+		return Result{}, errors.New("run: empty argv")
 	}
 	// Read-only queries execute even under DryRun (they have no side effects and
 	// their output is needed to render the mutation that would follow).

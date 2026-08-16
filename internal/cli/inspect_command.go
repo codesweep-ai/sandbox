@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
@@ -126,10 +127,10 @@ func writeInspectTable(out io.Writer, item inspectItem) error {
 	row("YOLO", yn(item.Yolo))
 	row("SOLO", yn(item.Solo))
 	if len(item.AgentLogins) > 0 {
-		row("AGENT LOGINS", joinOr(item.AgentLogins))
+		row("AGENT LOGINS", strings.Join(item.AgentLogins, ", "))
 	}
 	if len(item.ImageStores) > 0 {
-		row("IMAGE STORES", joinOr(item.ImageStores))
+		row("IMAGE STORES", strings.Join(item.ImageStores, ", "))
 	}
 	for _, sn := range item.Snapshots {
 		row("SNAPSHOT", sn)
@@ -139,15 +140,4 @@ func writeInspectTable(out io.Writer, item inspectItem) error {
 		row("REPO", fmt.Sprintf("~/%s  branch=%s  source=%s", r.Dir, r.Branch, r.Source))
 	}
 	return tw.Flush()
-}
-
-func joinOr(v []string) string {
-	out := ""
-	for i, s := range v {
-		if i > 0 {
-			out += ", "
-		}
-		out += s
-	}
-	return out
 }

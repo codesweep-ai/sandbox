@@ -85,7 +85,7 @@ func (d Deps) Orphans(ctx context.Context) []Orphan {
 	res, err := d.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "volume", "ls",
 		"--format", "{{.Name}}|{{.CreatedAt}}")
 	if err == nil {
-		for _, line := range strings.Split(res.Stdout, "\n") {
+		for line := range strings.SplitSeq(res.Stdout, "\n") {
 			vol, created, _ := strings.Cut(strings.TrimSpace(line), "|")
 			name, ok := strings.CutPrefix(vol, homeVolumePrefix)
 			if !ok || name == "" || live[name] {

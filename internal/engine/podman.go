@@ -127,7 +127,7 @@ func buildRunArgs(p runParams) []string {
 		"--user", "0:0",
 		"-e", "TZ="+p.TZ,
 		"-e", "CS_SANDBOX_TYPE="+p.Type,
-		"-e", fmt.Sprintf("CS_SANDBOX_YOLO=%s", boolFlag(p.Yolo)),
+		"-e", "CS_SANDBOX_YOLO="+boolFlag(p.Yolo),
 		"-e", fmt.Sprintf("CS_SANDBOX_SSH_PORT=%d", p.IntPort),
 		"-e", "CS_SANDBOX_USER="+p.User,
 		"-e", fmt.Sprintf("CS_SANDBOX_UID=%d", p.UID),
@@ -229,7 +229,7 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 		Type: s.Type, Port: 0, SSHBind: d.SSHBind, IntPort: 22,
 		DNSPrimary: dnsPrimary, DNSGateway: gw, Privileged: s.Privileged,
 		Yolo: s.Yolo, Solo: s.Solo, User: d.Host.User, UID: d.Host.UID, GID: d.Host.GID,
-		Group: macOSGroup(d.Host), Home: fmt.Sprintf("/home/%s", d.Host.User), TZ: d.TZ,
+		Group: macOSGroup(d.Host), Home: "/home/" + d.Host.User, TZ: d.TZ,
 		HomeVol: "cs-sandbox-home-" + obj(p.d.group(), s.Name), ContVol: "cs-sandbox-containers-" + obj(p.d.group(), s.Name),
 		SeedDir: seedDir, Image: d.Image,
 		EnvFile: envFilePath(seedDir, s.InjectedEnv), Stores: storePaths, StoreVols: storeVols, Mounts: mounts,
@@ -503,7 +503,7 @@ func (d Deps) globalGitIdentity(ctx context.Context) seed.GitIdentity {
 // returning the extra -v mount specs.
 func (d Deps) materializeShares(ctx context.Context, idir, seedDir string, s CreateSpec) ([]string, error) {
 	var mounts []string
-	home := fmt.Sprintf("/home/%s", d.Host.User)
+	home := "/home/" + d.Host.User
 	if len(s.Snapshots) > 0 {
 		snapRoot := filepath.Join(idir, "snap")
 		_ = os.RemoveAll(snapRoot)

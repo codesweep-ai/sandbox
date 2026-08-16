@@ -71,7 +71,7 @@ echo "PROBE_SIZE=$(stat -c %s /artifacts/initrd.img)"`
 	// the probe line specifically — "static" appears in package names too, and a
 	// bare substring check over the whole log would pass vacuously.
 	var probe string
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.HasPrefix(line, "PROBE_INIT=") {
 			probe = line
 		}

@@ -55,6 +55,9 @@ func reflinkWorks(ctx context.Context, r run.Runner, srcDir, dstDir string) bool
 		if err != nil {
 			return false
 		}
+		// Deferred to function exit on purpose, and the loop runs twice: both
+		// directories have to stay until the probe below has used them.
+		//nolint:gocritic // deferInLoop: bounded at two, and that is the point
 		defer undo()
 	}
 	src, err := os.CreateTemp(srcDir, ".cs-reflink-probe-*")

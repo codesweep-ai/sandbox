@@ -115,7 +115,7 @@ func forwardArgs(h hostenv.Host, tierDir, group, name string, port int, kind str
 	} else {
 		args = append(args, "-L", fmt.Sprintf("%s:%d:%s", bind, hostPort, target))
 	}
-	return append(args, fmt.Sprintf("%s@127.0.0.1", h.User))
+	return append(args, h.User+"@127.0.0.1")
 }
 
 // List returns the live forwards for an instance, GC-ing dead ones.

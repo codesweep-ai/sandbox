@@ -29,7 +29,7 @@ func (d Deps) reservedPorts(ctx context.Context) map[int]bool {
 		"--filter", "label=cs-sandbox.managed=1",
 		"--format", `{{index .Labels "cs-sandbox.ssh_port"}}`)
 	out := res.Stdout
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if p, err := strconv.Atoi(strings.TrimSpace(line)); err == nil {
 			m[p] = true
 		}
@@ -97,7 +97,7 @@ func (d Deps) Statuses(ctx context.Context, insts []*state.Instance) map[string]
 	res, err := d.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "ps", "-a",
 		"--filter", "label=cs-sandbox.managed=1", "--format", "{{.Names}} {{.State}}")
 	seen := map[string]string{}
-	for _, line := range strings.Split(res.Stdout, "\n") {
+	for line := range strings.SplitSeq(res.Stdout, "\n") {
 		if name, st, ok := strings.Cut(strings.TrimSpace(line), " "); ok {
 			seen[name] = st
 		}

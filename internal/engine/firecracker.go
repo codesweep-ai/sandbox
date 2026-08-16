@@ -201,7 +201,7 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	if err != nil {
 		return nil, err
 	}
-	storeDisks, storesManifest, err = fe.buildStoreDisks(ctx, idir, s)
+	storeDisks, storesManifest, err = fe.buildStoreDisks(ctx, s)
 	if err != nil {
 		return nil, err
 	}
@@ -457,13 +457,13 @@ func (fe *Firecracker) sshArgs(name string, port int) []string {
 	key := filepath.Join(fe.d.TierDir, "id_cs-sandbox_user")
 	knownHosts := fe.d.Host.SSHDir() + "/known_hosts.cs-sandbox"
 	return []string{"ssh",
-		"-i", key, "-p", fmt.Sprintf("%d", port),
+		"-i", key, "-p", strconv.Itoa(port),
 		"-o", "HostKeyAlias=" + name,
 		"-o", "UserKnownHostsFile=" + knownHosts,
 		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "IdentitiesOnly=yes",
 		"-o", "BatchMode=yes",
-		fmt.Sprintf("%s@127.0.0.1", fe.d.Host.User),
+		fe.d.Host.User + "@127.0.0.1",
 	}
 }
 
@@ -612,7 +612,7 @@ func (fe *Firecracker) buildSnapshotDisks(ctx context.Context, idir string, s Cr
 // the artifact cache's store-disks/<name>-<key>.ext4 (key = sha256 of the store's
 // images.json+layers.json) and reflink-copied per instance. The guest init wires
 // the disk into nested podman's additionalimagestores.
-func (fe *Firecracker) buildStoreDisks(ctx context.Context, idir string, s CreateSpec) ([]string, string, error) {
+func (fe *Firecracker) buildStoreDisks(ctx context.Context, s CreateSpec) ([]string, string, error) {
 	if len(s.ImageStores) == 0 {
 		return nil, "", nil
 	}

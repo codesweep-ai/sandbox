@@ -87,7 +87,7 @@ func TestHostRouteBlocksCrossGroupForwardingLive(t *testing.T) {
 		t.Skip("host-route requires systemd-resolved")
 	}
 
-	ga, gb := boxName(t, "hra"), boxName(t, "hrb")
+	ga, gb := boxName("hra"), boxName("hrb")
 	// Leave host-route exactly as it was found.
 	wasUp := strings.Contains(mustRun(t, "host-route", "status"), "UP")
 	t.Cleanup(func() {

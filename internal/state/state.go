@@ -5,6 +5,7 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -191,7 +192,7 @@ func groupPath(instDir, group string) string {
 // SaveGroup writes the canonical group.json.
 func SaveGroup(instDir string, g *Group) error {
 	if g == nil {
-		return fmt.Errorf("cannot save nil group")
+		return errors.New("cannot save nil group")
 	}
 	if err := ValidGroup(g.Name); err != nil {
 		return err
@@ -302,7 +303,7 @@ func statePath(instDir, group, name string) string {
 // Save writes the canonical state.json.
 func Save(instDir string, in *Instance) error {
 	if in == nil {
-		return fmt.Errorf("cannot save nil instance")
+		return errors.New("cannot save nil instance")
 	}
 	if err := ValidName(in.Name); err != nil {
 		return err

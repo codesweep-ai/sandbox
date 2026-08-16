@@ -29,9 +29,9 @@ func TestHelperRunOrder(t *testing.T) {
 	if argv[len(argv)-1] != "img:1" {
 		t.Fatalf("image must be last pre-command arg: %v", argv)
 	}
-	joined := ""
+	var joined strings.Builder
 	for _, a := range argv {
-		joined += a + " "
+		joined.WriteString(a + " ")
 	}
 	if idxOf(argv, "--entrypoint") > idxOf(argv, "img:1") {
 		t.Errorf("--entrypoint must come before the image: %v", argv)
@@ -42,7 +42,7 @@ func TestHelperRunOrder(t *testing.T) {
 	// The seeding engine must be set up the way a sandbox's nested engine is, so the
 	// ids it writes into the store are the ids every reader resolves (see helperRun).
 	for _, want := range []string{"--userns=keep-id", "--cap-add=SYS_ADMIN", "--cap-add=SETFCAP", "unmask=ALL"} {
-		if !contains(joined, want) {
+		if !contains(joined.String(), want) {
 			t.Errorf("store helper must match a sandbox's nested-rootless setup, missing %s: %v", want, argv)
 		}
 	}
