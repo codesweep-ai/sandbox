@@ -14,6 +14,10 @@ make test-smoke       # the subset of the live tests that CI runs, on every host
 make test-integration # live engine tests; run when you touch create, engine or seed paths
 ```
 
+This repo keeps a **ledger** of open issues in `ledger/`. Read
+[`ledger/AGENTS.md`](ledger/AGENTS.md) before you start work, and follow it as you go. A commit
+that touches `ledger/` needs `cs-ledger render && cs-ledger check` to pass first.
+
 ## Tests are part of the change
 
 Every behavior change ships with test coverage. A change with no test is only acceptable when the
