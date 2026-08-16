@@ -9,10 +9,26 @@ vulnerability reporting on this repository's Security tab, rather than opening a
 ## Before you push
 
 ```bash
-make check            # gofmt, go vet, unit tests and both linters — must pass
+make check            # gofmt, go vet, unit tests and the linters — must pass
 make test-smoke       # the subset of the live tests that CI runs, on every host
 make test-integration # live engine tests; run when you touch create, engine or seed paths
 ```
+
+`make check` needs two tools that do not come with Go. Install them once:
+
+```bash
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+go install golang.org/x/tools/cmd/deadcode@latest
+```
+
+Pin `golangci-lint` to the version above, the one CI runs. A newer release gains checks, and you
+want to meet those when you upgrade the pin rather than on an unrelated pull request.
+
+[`.golangci.yml`](.golangci.yml) is the Go counterpart to the prose rules below, and it records why
+each check is on or off. Two of them are off because their advice is wrong in this codebase — read
+the reason before you turn one back on. When a check reports noise, fix the config rather than
+working around it. The prose linter earns its keep the same way: a linter that cries wolf gets
+ignored, and then it protects nothing.
 
 This repo keeps a **ledger** of open issues in `ledger/`. Read
 [`ledger/AGENTS.md`](ledger/AGENTS.md) before you start work, and follow it as you go. A commit

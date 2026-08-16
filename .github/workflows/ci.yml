@@ -185,6 +185,32 @@ jobs:
       - name: vet (smoke build tag)
         run: go vet -tags smoke ./...
 
+      # Once, on ubuntu: what .golangci.yml checks is platform-independent, and
+      # three copies of the same report is three times the log to read. Pinned
+      # for the same reason actionlint is — a clean run on a laptop has to mean
+      # a clean run here, and these linters gain checks between releases. All
+      # three tag sets, matching the vet steps above: a build tag hides a file
+      # from the linter as surely as from the compiler.
+      - name: golangci-lint
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          gcl="$(go env GOPATH)/bin/golangci-lint"
+          "$gcl" run
+          "$gcl" run --build-tags=integration
+          "$gcl" run --build-tags=smoke
+
+      # Whole-program reachability, which golangci-lint's `unused` cannot do:
+      # it reasons one package at a time, so a function whose only caller is in
+      # another package still looks used. See the deadcode target in the Makefile.
+      - name: deadcode
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          go install golang.org/x/tools/cmd/deadcode@latest
+          make deadcode
+
       - name: build
         run: go build ./... # compile-check every package
 

@@ -1,0 +1,104 @@
+version: "2"
+
+# The Go counterpart to scripts/lint-docs.py: the mechanical rules, so review
+# spends its attention on the rest. The default set (errcheck, govet,
+# ineffassign, staticcheck, unused) catches what is wrong. What is added below
+# catches what is redundant — a stdlib call written out by hand, a parameter
+# nothing reads, a loop the language now has a word for.
+#
+# Every check disabled here was disabled after reading what it reported on this
+# tree, and the reason is recorded beside it. A linter that cries wolf gets
+# ignored, and then it protects nothing.
+#
+# golangci-lint has no `deadcode`: `unused` reasons one package at a time, so a
+# function whose only caller is a test looks used to it. `make deadcode` runs
+# golang.org/x/tools/cmd/deadcode for that, and `make check` runs both.
+
+linters:
+  enable:
+    - dupl # copy-paste, the shape a helper was meant to prevent
+    - gocritic # a broad set of correctness and style checks
+    - modernize # stdlib and language features newer than the code
+    - perfsprint # Sprintf and += where a cheaper call says the same thing
+    - revive # structure rules, configured below
+    - unparam # parameters and results nothing reads
+    - usestdlibvars # literals the stdlib already names
+
+  settings:
+    dupl:
+      # Deliberately tighter than the 150 default. The tree is clone-free at 60,
+      # so anything reported here is new duplication, not a backlog.
+      threshold: 100
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - opinionated
+      disabled-checks:
+        # `err :=` inside an `if` would shadow the named return that Create's
+        # deferred rollback reads, so the rollback would see nil and skip
+        # cleanup, stranding a half-built sandbox. See engine.Firecracker.Create
+        # and engine.Podman.Create. The advice is wrong wherever this repo uses
+        # a named error return, which is everywhere it matters.
+        - sloppyReassign
+        # Wants filepath.Join("/", "home", user) over filepath.Join("/home",
+        # user). The second one reads like the path it builds.
+        - filepathJoin
+        - regexpSimplify # `[0-9]` beats `\d` in a regex a reader has to check
+        # Judgement calls this repo has already made, and would only
+        # re-litigate at every review.
+        - paramTypeCombine # grouping parameters can hide what each one is for
+        - unnamedResult # named results are noise on a two-value return
+        - importShadow # `path`, `url` and friends are good local names
+        - builtinShadow
+        - commentedOutCode # too eager on comments that carry a shell line
+        - whyNoLint
+
+    staticcheck:
+      checks:
+        - all
+        # ST1000/ST1003/ST1020-22 are golangci-lint's own defaults, kept because
+        # dropping them turns every doc comment and initialism into a finding.
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        # De Morgan's law. `!(r >= 'a' && r <= 'z' || ...)` states the rule once
+        # and negates it; the expanded form states it twice, inverted.
+        - -QF1001
+
+    revive:
+      # Naming down to capitalization is not configured here: `confusing-naming`
+      # reads NewRootCmd/newRootCmd and Acquire/acquire as mistakes, and those
+      # are the exported-wrapper idiom. perfsprint's concat-loop is what
+      # actually catches a helper rewritten under a second name.
+      rules:
+        - name: identical-branches
+        - name: duplicated-imports
+        - name: unnecessary-stmt
+        - name: redundant-import-alias
+        - name: unreachable-code
+        - name: waitgroup-by-value
+
+  exclusions:
+    # `generated` alone for the mode: the default `lax` also waives whole
+    # categories inside tests, which is where padding tends to collect.
+    generated: strict
+    presets:
+      # errcheck on Close, Flush, os.Remove and the fmt.Fprint* family. Every
+      # site in this tree is one of two shapes: a file opened only to read, or a
+      # log handed to a child that owns its own descriptor afterwards. Neither
+      # has anything buffered to lose, and a write to a terminal that has gone
+      # away leaves nothing to recover. Spelling each one `_ =` would add
+      # closures around a dozen defers to say what this says once.
+      - std-error-handling
+    rules:
+      # A table test and the function it drives read alike by design, and a
+      # fixture repeated across two cases is clearer than one hoisted into a
+      # helper the reader has to go find.
+      - path: _test\.go
+        linters:
+          - dupl

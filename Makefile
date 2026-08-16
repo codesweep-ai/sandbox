@@ -12,7 +12,7 @@ VERSION    := $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 LDFLAGS    := -s -w -X github.com/codesweep-ai/sandbox/internal/cli.Version=$(VERSION)
 GO_FILES   := $(shell git ls-files '*.go')
 
-.PHONY: help build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-smoke test-integration vet fmt fmt-check check docs oss ledger lint snapshot release release-check clean
+.PHONY: help build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-smoke test-integration vet fmt fmt-check check docs oss ledger lint deadcode snapshot release release-check clean
 
 .DEFAULT_GOAL := help
 
@@ -188,14 +188,34 @@ ledger:
 	}
 	cs-ledger check ledger
 
-## check: the full local gate — fmt-check, vet, unit tests, and both linters
-check: fmt-check vet test docs oss
+## check: the full local gate — fmt-check, vet, the linters, and unit tests
+check: fmt-check vet lint deadcode test docs oss
+
+## lint: the Go rules from .golangci.yml (see that file for what is on and why).
+## Three passes for the same reason vet takes three: a build tag hides a file
+## from the linter as surely as from the compiler, and the live tests are where
+## an unread helper survives longest.
 lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { \
 		echo "golangci-lint is not installed; see https://golangci-lint.run/welcome/install/" >&2; \
 		exit 2; \
 	}
 	golangci-lint run
+	golangci-lint run --build-tags=integration
+	golangci-lint run --build-tags=smoke
+
+## deadcode: functions no entry point reaches (golangci-lint's `unused` cannot
+## see this — it reasons one package at a time, so a function whose only caller
+## lives in another package looks used). Drop -test and it answers a second,
+## softer thing — what only a test keeps alive. That one wants a human, since a
+## test fake is meant to have no production caller.
+deadcode:
+	@command -v deadcode >/dev/null 2>&1 || { \
+		echo "deadcode is not installed: go install golang.org/x/tools/cmd/deadcode@latest" >&2; \
+		exit 2; \
+	}
+	@out="$$(deadcode -test ./...)"; \
+	if [ -n "$$out" ]; then echo "$$out"; exit 1; fi
 
 ## snapshot: local release dry-run into dist/ (all platforms, archives, checksums).
 ## Skips SBOM + cosign signing (those need cyclonedx-gomod + cosign; run in CI/release).
