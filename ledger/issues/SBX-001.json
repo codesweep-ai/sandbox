@@ -8,9 +8,18 @@
   "opened": "2026-08-15",
   "resolved": null,
   "stint": null,
-  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
   "resolution": null,
   "details": "`Cache.StoreDisk` tars a shared image store inside a helper container and captures the archive through the `run.Runner` seam (`internal/fcdisk/cache.go:140`). `run.Exec.Run` collects a command's stdout into a `bytes.Buffer` and returns it as a string, so the entire tar lands in memory. `os.WriteFile` at line 147 then converts that string to a byte slice, which copies it a second time.\n\nA shared store exists to hold container images, so its size is measured in gigabytes rather than megabytes. Seeding a store with this project's own image (9.3 GB, or 693 MB for the CI slim build) and creating a microVM against it asks the host for roughly twice the store's size in resident memory, at once.\n\nTo see it, run `cs-sandbox seed-store big <a large image>` and then `cs-sandbox create x --engine firecracker --image-store big`, watching the RSS of the `cs-sandbox` process. The miss path is the one that costs: a cache hit returns early at line 128 and never tars anything.\n\nThe smoke test that covers this path (`TestCLINestedSandboxInVMLive`) defaults to the slim image, so CI never reaches a size where the allocation hurts. Streaming the tar to the temp file, rather than through a captured `Result`, would keep the cost flat.",
-  "notes": [],
+  "notes": [
+    {
+      "date": "2026-08-16",
+      "text": "Unchanged, and the cost is still only paid on a cache miss: internal/fcdisk/cache.go returns early at line 128 on a hit and never tars anything. The CI smoke profile uses the 693 MB slim image, so the runner never reaches a size where the allocation hurts."
+    }
+  ],
   "links": []
 }

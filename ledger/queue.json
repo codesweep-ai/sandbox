@@ -1,6 +1,6 @@
 {
-  "recommendedBy": "session agent, from the 2026-08-15 repository review",
-  "updated": "2026-08-15",
+  "recommendedBy": "session agent, from the 2026-08-16 publication-readiness pass",
+  "updated": "2026-08-16",
   "items": [
     {
       "id": "SBX-002",
@@ -9,10 +9,6 @@
     {
       "id": "SBX-003",
       "why": "Creating a sandbox silently changes the permissions of files in the directory you shared."
-    },
-    {
-      "id": "SBX-007",
-      "why": "The first install path every new user takes points at a releases page with nothing on it."
     },
     {
       "id": "SBX-001",
@@ -25,10 +21,6 @@
     {
       "id": "SBX-004",
       "why": "Past fourteen shares a microVM drops one and still reports success."
-    },
-    {
-      "id": "SBX-006",
-      "why": "One MANUAL.md entry, and it is most of the answer to the engine-default question."
     }
   ]
 }
