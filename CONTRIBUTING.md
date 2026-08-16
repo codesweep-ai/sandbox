@@ -9,7 +9,7 @@ contact rather than posting details in a public issue.
 ## Before you push
 
 ```bash
-make check            # gofmt, go vet, unit tests and the prose linter — must pass
+make check            # gofmt, go vet, unit tests and both linters — must pass
 make test-smoke       # the subset of the live tests that CI runs, on every host
 make test-integration # live engine tests; run when you touch create, engine or seed paths
 ```
@@ -96,6 +96,9 @@ tools for the agent using them. Editing one changes what every sandbox ships.
 
 Docs drift into a style that reads as terse and knowing rather than clear. These rules push back.
 `scripts/lint-docs.py` enforces the mechanical ones, and `make check` runs it.
+`scripts/lint-oss.py` is its sibling, and `make oss` runs it. It checks what this repository has to
+satisfy as a published project, and `--explain` lists every rule it applies. Its knobs live beside
+it in `scripts/lint-oss.config.py`.
 
 1. **Write to the reader, in second person.** "Run `cs-sandbox doctor` first", not "the doctor
    command should be run first".

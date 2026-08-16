@@ -23,9 +23,9 @@ infer, the directories to skip, the project's own lower-case command name, and
 any verb the shared list does not carry. Tune there until every reported problem
 is a real one. A check that cries wolf is worse than no check.
 
-This file is vendored from claude-dev/prompts/assets/lint-docs.py and is meant
-to stay byte-identical across projects. Fix a check there, then copy it out
-again; the config file beside it is what carries the local differences.
+This file is vendored from a shared copy and is meant to stay byte-identical
+across projects. Fix a check there, then copy it out again; the config file
+beside it is what carries the local differences.
 """
 
 import pathlib

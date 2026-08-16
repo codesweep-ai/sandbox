@@ -67,7 +67,7 @@ func TestMissingHostPackagesDebian(t *testing.T) {
 // hand out a Linux-only remedy.
 func TestDiagnoseMacOSNoSubuidAdvice(t *testing.T) {
 	stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
-	rep := Diagnose(context.Background(), "podman", Deps{Runner: runningMachine(), User: "jsdelfino", IsMacOS: true})
+	rep := Diagnose(context.Background(), "podman", Deps{Runner: runningMachine(), User: "ada", IsMacOS: true})
 	all := reportText(rep)
 	for _, bad := range []string{"usermod", "subuid/subgid ranges for", "sudo dnf", "sudo apt"} {
 		if strings.Contains(all, bad) {
@@ -83,7 +83,7 @@ func TestDiagnoseMacOSNoSubuidAdvice(t *testing.T) {
 // once, not emit /dev/kvm and Linux-package advice.
 func TestDiagnoseMacOSFirecracker(t *testing.T) {
 	stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
-	rep := Diagnose(context.Background(), "firecracker", Deps{Runner: runningMachine(), User: "jsdelfino", IsMacOS: true})
+	rep := Diagnose(context.Background(), "firecracker", Deps{Runner: runningMachine(), User: "ada", IsMacOS: true})
 	all := reportText(rep)
 	if !strings.Contains(all, "--engine podman") {
 		t.Errorf("macOS firecracker report should point at --engine podman:\n%s", all)
@@ -121,7 +121,7 @@ func TestDiagnoseFirecrackerVersionReporting(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
 			rep := Diagnose(context.Background(), "firecracker", Deps{
-				Runner: run.NewFake(), User: "jsdelfino",
+				Runner: run.NewFake(), User: "ada",
 				FCBinPath: bin, FCVersionPin: "v1.16.0", FCVersionCache: tc.cached,
 			})
 			all := reportText(rep)
@@ -137,7 +137,7 @@ func TestDiagnoseFirecrackerVersionReporting(t *testing.T) {
 	// Nothing cached at all — the pin must not be presented as if it were.
 	stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
 	all := reportText(Diagnose(context.Background(), "firecracker", Deps{
-		Runner: run.NewFake(), User: "jsdelfino",
+		Runner: run.NewFake(), User: "ada",
 		FCBinPath: filepath.Join(t.TempDir(), "absent"), FCVersionPin: "v1.16.0",
 	}))
 	if !strings.Contains(all, "not downloaded yet") {
@@ -157,7 +157,7 @@ func TestDiagnoseAgentTooling(t *testing.T) {
 	diagnose := func(t *testing.T, present ...string) string {
 		t.Helper()
 		stubLookPath(t, append(append([]string{}, base...), present...)...)
-		return reportText(Diagnose(context.Background(), "podman", Deps{Runner: run.NewFake(), User: "jsdelfino"}))
+		return reportText(Diagnose(context.Background(), "podman", Deps{Runner: run.NewFake(), User: "ada"}))
 	}
 
 	all := diagnose(t, append(append([]string{}, wrappers...), clis...)...)
@@ -220,7 +220,7 @@ func runningMachine() *run.Fake {
 func TestDiagnoseMacOSMachineStopped(t *testing.T) {
 	stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
 	f := run.NewFake().OnStdout("machine inspect", "podman-machine-default stopped\n")
-	rep := Diagnose(context.Background(), "podman", Deps{Runner: f, User: "jsdelfino", IsMacOS: true})
+	rep := Diagnose(context.Background(), "podman", Deps{Runner: f, User: "ada", IsMacOS: true})
 	all := reportText(rep)
 	if !strings.Contains(all, "podman machine start podman-machine-default") {
 		t.Errorf("stopped machine should advise starting it:\n%s", all)
@@ -240,7 +240,7 @@ func TestDiagnoseMacOSMachineStopped(t *testing.T) {
 func TestDiagnoseMacOSNoMachine(t *testing.T) {
 	stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
 	f := run.NewFake().On("machine inspect", run.Result{ExitCode: 125}, errors.New("VM does not exist"))
-	all := reportText(Diagnose(context.Background(), "podman", Deps{Runner: f, User: "jsdelfino", IsMacOS: true}))
+	all := reportText(Diagnose(context.Background(), "podman", Deps{Runner: f, User: "ada", IsMacOS: true}))
 	if !strings.Contains(all, "podman machine init") {
 		t.Errorf("absent machine should advise init:\n%s", all)
 	}
@@ -253,7 +253,7 @@ func TestDiagnoseMacOSNoMachine(t *testing.T) {
 func TestDiagnoseLinuxSkipsMachineCheck(t *testing.T) {
 	stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
 	f := run.NewFake()
-	all := reportText(Diagnose(context.Background(), "podman", Deps{Runner: f, User: "jsdelfino"}))
+	all := reportText(Diagnose(context.Background(), "podman", Deps{Runner: f, User: "ada"}))
 	if strings.Contains(all, "podman machine") {
 		t.Errorf("Linux report should not mention the podman machine:\n%s", all)
 	}

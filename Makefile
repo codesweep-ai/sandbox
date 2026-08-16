@@ -12,7 +12,16 @@ VERSION    := $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 LDFLAGS    := -s -w -X github.com/codesweep-ai/sandbox/internal/cli.Version=$(VERSION)
 GO_FILES   := $(shell git ls-files '*.go')
 
-.PHONY: build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-smoke test-integration vet fmt fmt-check check docs lint snapshot release release-check clean
+.PHONY: help build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-smoke test-integration vet fmt fmt-check check docs oss ledger lint snapshot release release-check clean
+
+.DEFAULT_GOAL := help
+
+## help: list available targets (this menu)
+help:
+	@echo "cs-sandbox make targets:"
+	@grep -E '^## [a-z][a-z0-9-]*: ' $(MAKEFILE_LIST) | sed -E 's/^## ([^:]+): (.*)/  \1|\2/' | column -t -s '|'
+	@echo ""
+	@echo "  PREFIX=$(PREFIX) (install location; override with make install PREFIX=/usr/local)"
 
 ## build: host binary at bin/cs-sandbox via goreleaser (single target)
 build:
@@ -166,7 +175,21 @@ fmt-check:
 ## docs: the prose rules from CONTRIBUTING.md, over every doc in the set
 docs:
 	python3 scripts/lint-docs.py
-check: fmt-check vet test docs
+
+## oss: the rules this repo has to satisfy as a published project
+oss:
+	python3 scripts/lint-oss.py
+
+## ledger: validate the issue records and prove ledger.html is current
+ledger:
+	@command -v cs-ledger >/dev/null 2>&1 || { \
+		echo "cs-ledger is not installed: go install github.com/codesweep-ai/ledger/cmd/cs-ledger@latest" >&2; \
+		exit 2; \
+	}
+	cs-ledger check ledger
+
+## check: the full local gate — fmt-check, vet, unit tests, and both linters
+check: fmt-check vet test docs oss
 lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { \
 		echo "golangci-lint is not installed; see https://golangci-lint.run/welcome/install/" >&2; \

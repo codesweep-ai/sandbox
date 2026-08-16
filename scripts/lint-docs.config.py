@@ -23,7 +23,10 @@ SKIP_EXTRA = {"image"}
 # An empty list disables the most valuable check. Leave out any term that
 # collides with a common verb: the check cannot tell the noun "pin" from "pins"
 # and will fire on every ordinary use of the latter.
-GLOSSARY = []
+# "sandbox" is deliberately absent: it is the subject of every document, and the
+# manual's Name line is a man-page convention that cannot gloss it. The check
+# would fire on the one line whose form is fixed.
+GLOSSARY = ["engine", "group", "seed", "fabric"]
 
 # Words that legitimately start a sentence in lower case, which is nearly always
 # the project's own command name. Without them the splitter reads "Nothing

@@ -99,8 +99,8 @@ func TestPubKeysEmpty(t *testing.T) {
 }
 
 func TestSSHPaths(t *testing.T) {
-	h := Host{Home: "/home/u"}
-	if h.SSHConfigFile(paths.Instances()) != "/home/u/.ssh/config.d/cs-sandbox" {
+	h := Host{Home: "/home/user"}
+	if h.SSHConfigFile(paths.Instances()) != "/home/user/.ssh/config.d/cs-sandbox" {
 		t.Errorf("SSHConfigFile = %s", h.SSHConfigFile(paths.Instances()))
 	}
 }

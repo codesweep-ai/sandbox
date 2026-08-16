@@ -61,7 +61,7 @@ Every one of those fields is required, including the nulls. The filename must eq
 Four fields carry judgement, and they are the ones agents get wrong:
 
 - **`foundBy`** is real provenance. Quote the human when a human said it: `user report (host):
-  "the columns shift"`. Name the process when a process found it: `eval-003 holdout smoke`. Name
+  "the columns shift"`. Name the process when a process found it: `nightly smoke suite`. Name
   yourself when you noticed it. Never attribute your own observation to the human because one
   happens to be driving.
 - **`details`** is the original observation, in markdown, written for a reader with no context.

@@ -187,9 +187,9 @@ func TestGitIdentity(t *testing.T) {
 	// GitIdentity uses a Runner; verify the US separator joins the two values.
 	r := run.NewFake()
 	r.OnStdout("config user.name", "Ada Lovelace\n")
-	r.OnStdout("config user.email", "ada@x.io\n")
+	r.OnStdout("config user.email", "ada@example.com\n")
 	got := GitIdentity(context.Background(), r, "/repo")
-	want := "Ada Lovelace" + US + "ada@x.io"
+	want := "Ada Lovelace" + US + "ada@example.com"
 	if got != want {
 		t.Errorf("GitIdentity = %q, want %q", got, want)
 	}

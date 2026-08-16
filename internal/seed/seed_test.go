@@ -122,8 +122,8 @@ func TestGitIdentityFile(t *testing.T) {
 	if got := (GitIdentity{}).File(); got != "" {
 		t.Errorf("empty identity should render nothing, got %q", got)
 	}
-	got := GitIdentity{Name: "Ada", Email: "ada@x.io"}.File()
-	want := "name\tAda\nemail\tada@x.io\n"
+	got := GitIdentity{Name: "Ada", Email: "ada@example.com"}.File()
+	want := "name\tAda\nemail\tada@example.com\n"
 	if got != want {
 		t.Errorf("File() = %q, want %q", got, want)
 	}
