@@ -161,8 +161,13 @@ func (c Cache) StoreDisk(ctx context.Context, r run.Runner, image, name string) 
 		cleanup()
 		return "", err
 	}
-	script := fmt.Sprintf("mkdir -p %q && tar -C %q -xf %q && mke2fs -F -q -t ext4 -d %q %q",
-		tdir, tdir, ttar, tdir, td)
+	// The chmod pre-pass is not optional here: mke2fs reads the tree as the real user,
+	// and a store holds container image layers, so it holds the mode-0000 /etc/gshadow
+	// every distro base image ships. Without it the build dies on the first one.
+	script := fmt.Sprintf("mkdir -p %q && tar -C %q -xf %q && "+
+		"{ find %q ! -readable -exec chmod u+rX {} + 2>/dev/null || true; } && "+
+		"mke2fs -F -q -t ext4 -d %q %q",
+		tdir, tdir, ttar, tdir, tdir, td)
 	if _, err := r.Run(ctx, run.Opts{}, "fakeroot", "--", "bash", "-c", script); err != nil {
 		cleanup()
 		return "", fmt.Errorf("fc: image-store %q: mke2fs: %w", name, err)

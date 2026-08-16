@@ -124,6 +124,12 @@ func DiskMiB(dir string, margin int) (int, error) {
 
 // BuildExt4Dir packs a directory into a fresh ext4 image via fakeroot mke2fs -d
 // (truncate -s <mib>M <img>; fakeroot -- mke2fs -F -q -t ext4 -d <dir> <img>).
+//
+// mke2fs reads the tree as the real user, so one file the source ships unreadable
+// stops the build dead — and an image store holds container image layers, which means
+// a mode-0000 /etc/gshadow from every distro base image in it. The same pre-pass the
+// base rootfs uses clears that, inside the one fakeroot so the ownership recorded in
+// the image stays fakeroot's rather than the caller's.
 func BuildExt4Dir(ctx context.Context, r run.Runner, dir, img string, margin int) error {
 	mib, err := DiskMiB(dir, margin)
 	if err != nil {
@@ -133,7 +139,11 @@ func BuildExt4Dir(ctx context.Context, r run.Runner, dir, img string, margin int
 	if _, err := r.Run(ctx, run.Opts{}, "truncate", "-s", strconv.Itoa(mib)+"M", img); err != nil {
 		return err
 	}
-	if _, err := r.Run(ctx, run.Opts{}, "fakeroot", "--", "mke2fs", "-F", "-q", "-t", "ext4", "-d", dir, img); err != nil {
+	script := `set -e
+find "$FC_DIR" ! -readable -exec chmod u+rX {} + 2>/dev/null || true
+mke2fs -F -q -t ext4 -d "$FC_DIR" "$FC_IMG"`
+	env := []string{"FC_DIR=" + dir, "FC_IMG=" + img}
+	if _, err := r.Run(ctx, run.Opts{Env: env}, "fakeroot", "--", "bash", "-c", script); err != nil {
 		return err
 	}
 	return nil
