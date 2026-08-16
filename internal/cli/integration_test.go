@@ -21,7 +21,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -610,25 +609,25 @@ func TestCLIHostByNameFirecrackerLive(t *testing.T) {
 }
 
 // TestCLINestedSandboxInVMLive: cs-sandbox running *inside* one of its own
-// sandboxes. A Firecracker microVM is the outer sandbox; the CLI and the sandbox
-// image are shipped into it; it creates a podman sandbox of its own; it reaches
-// that inner sandbox by name over ssh; and the "workload" subtest then runs a
-// container inside THAT — the full microVM -> sandbox -> container stack, each
-// layer built by the code under test.
+// sandboxes. A Firecracker microVM is the outer sandbox; it gets the sandbox image
+// from a shared store and the CLI over ssh; it creates a podman sandbox of its own;
+// it reaches that inner sandbox by name over ssh; and the "workload" subtest then
+// runs a container inside THAT — the full microVM -> sandbox -> container stack,
+// each layer built by the code under test.
 //
 // What only this member covers: the guest's nested-podman setup as a whole —
 // rootless inner engine, the newuidmap/newgidmap file caps and /dev/net/tun
 // /sandbox/nested-rootless grants it — driven by the real create path (network
 // fabric, tier keys, ssh config fragment, sshd) rather than by a bare `podman
-// run`. Shipping the image with a plain `podman load` puts it in the user's own
-// rootless store, which is exactly the store the inner create then reads. The
+// run`. It covers the --image-store path the same way: the inner create finds its
+// image only if the store disk registered with the engine that reads it. The
 // subtest goes one layer deeper still: a container run by the inner sandbox's
 // own nested engine, under a hypervisor, where the podman-only tests exercise
 // the same engine on the host.
 //
-// Cost: the image goes over ssh into the guest, so it wants the slim CI image
-// (~700 MB, ~10s) and skips on the full one, which would not fit the guest disk.
-// The workload subtest adds a second, ~4 MB image on top of that.
+// Cost: the sandbox image is seeded into a shared store and reaches the guest as a
+// disk, so no image size bounds this test. The workload subtest ships a ~4 MB image
+// over ssh on top of that, into the inner sandbox, which no store disk reaches.
 // Skips without /dev/kvm or the cached FC artifacts, like the other VM members.
 func TestCLINestedSandboxInVMLive(t *testing.T) {
 	_, host := liveSetup(t)
@@ -639,16 +638,33 @@ func TestCLINestedSandboxInVMLive(t *testing.T) {
 		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
 	}
 	img := image()
-	requireShippableImage(t, img)
 	bin := buildCLI(t)
 
 	fcInstancesDir(t, host)
+	store := fmt.Sprintf("csgonest%d%s", os.Getpid(), runID)
 	outer := boxName(t, "nest")
-	t.Cleanup(func() { _, _ = execRoot(t, "destroy", outer, "-f") })
+	t.Cleanup(func() {
+		_, _ = execRoot(t, "destroy", outer, "-f")
+		_, _ = execRoot(t, "rm-store", store, "-f")
+	})
+
+	// The sandbox image reaches the guest as a read-only store disk rather than over
+	// ssh. `podman save | podman load` would move gigabytes through the vsock bridge
+	// for every run and bound this test to an image small enough to survive the trip;
+	// the disk is built once, content-addressed and reflink-attached.
+	step(t, "seeding %s into store %s…", img, store)
+	start := time.Now()
+	if out, err := execRoot(t, "create-store", store); err != nil {
+		t.Fatalf("create-store: %v (%s)", err, out)
+	}
+	if out, err := execRoot(t, "seed-store", "--from-host", store, img); err != nil {
+		t.Fatalf("seed-store --from-host %s: %v (%s)", img, err, out)
+	}
+	step(t, "store seeded (%s)", time.Since(start).Round(time.Second))
 
 	step(t, "booting outer microVM %s…", outer)
-	start := time.Now()
-	if out, err := execRoot(t, "create", outer, "--engine", "firecracker"); err != nil {
+	start = time.Now()
+	if out, err := execRoot(t, "create", outer, "--engine", "firecracker", "--image-store", store); err != nil {
 		t.Fatalf("create firecracker: %v (out=%q)", err, out)
 	}
 	step(t, "microVM %s booted (%s)", outer, time.Since(start).Round(time.Second))
@@ -665,24 +681,13 @@ func TestCLINestedSandboxInVMLive(t *testing.T) {
 		t.Fatalf("shipped CLI does not run in the guest: %q", got)
 	}
 
-	// Ship the image, streamed straight from `podman save` into `podman load`.
-	step(t, "shipping %s into %s…", img, outer)
-	start = time.Now()
-	save := exec.Command("podman", "save", img)
-	pipe, err := save.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
+	// Nothing was shipped: the guest's nested podman reads the image out of the store
+	// disk. Asserted before the create that depends on it, so a store that failed to
+	// register reads as itself rather than as a confusing create failure.
+	if got := sshCapture(t, host, outer,
+		fmt.Sprintf("podman images %s --format '{{.Repository}}:{{.Tag}}'", img)); !strings.Contains(got, img) {
+		t.Fatalf("the guest did not get %s from the --image-store: %q", img, got)
 	}
-	if err := save.Start(); err != nil {
-		t.Fatalf("podman save %s: %v", img, err)
-	}
-	if out := sshPipe(t, host, outer, "podman load", pipe); !strings.Contains(out, "Loaded image") {
-		t.Fatalf("podman load in the guest did not report a loaded image:\n%s", out)
-	}
-	if err := save.Wait(); err != nil {
-		t.Fatalf("podman save %s: %v", img, err)
-	}
-	step(t, "image shipped (%s)", time.Since(start).Round(time.Second))
 
 	// The nested create: a podman sandbox, by the shipped CLI, inside the VM.
 	step(t, "creating the inner sandbox…")
@@ -782,24 +787,6 @@ func requireWorkloadImage(t *testing.T, img string) {
 	step(t, "pulling %s (the innermost workload, ~4 MB)…", img)
 	if _, err := r.Run(ctx, run.Opts{}, "podman", "pull", img); err != nil {
 		t.Skipf("cannot pull %s: %v", img, err)
-	}
-}
-
-// requireShippableImage skips unless the sandbox image is small enough to stream
-// into a guest. The full image is ~9 GB against a ~14 GB guest disk; the slim CI
-// image the smoke profile is built around is ~700 MB.
-func requireShippableImage(t *testing.T, img string) {
-	t.Helper()
-	const maxShip = 3 << 30
-	raw := run.Output(context.Background(), &run.Exec{}, "podman", "image", "inspect", "--format", "{{.Size}}", img)
-	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-	if err != nil {
-		t.Skipf("cannot size image %s: %v (%q)", img, err, raw)
-	}
-	if n > maxShip {
-		t.Skipf("image %s is %.1f GiB, too big to ship into a microVM — build the slim one "+
-			"(make build-ci-image) and re-run with CS_SANDBOX_IMAGE=localhost/cs-sandbox:ci",
-			img, float64(n)/(1<<30))
 	}
 }
 

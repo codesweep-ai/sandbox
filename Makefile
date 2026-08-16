@@ -133,8 +133,12 @@ SMOKE_RUN := $(subst $(space),|,$(strip $(SMOKE_TESTS)))
 ## for minutes, and it is the only way a CI log shows WHICH members ran — the
 ## live ones skip themselves on a host with no engine, and a run that skipped
 ## everything looks exactly like a run that passed.
+## The image defaults to the slim one this profile is built around. Overriding it
+## is honoured, but a bare `make test-smoke` should not silently spend minutes
+## seeding the 9 GB image into a store disk for the microVM member.
 test-smoke:
-	go test -tags smoke -count=1 -p 1 -v -timeout 900s -run '$(SMOKE_RUN)' ./...
+	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
+	  go test -tags smoke -count=1 -p 1 -v -timeout 900s -run '$(SMOKE_RUN)' ./...
 
 ## test-integration: live tests (real podman/firecracker on a Linux/KVM host);
 ## each skips gracefully when podman or the sandbox image is unavailable.
