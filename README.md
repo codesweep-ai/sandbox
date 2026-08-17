@@ -421,9 +421,8 @@ independent of sandbox type. Lend deliberately, with two conditions in mind:
 ## Contributing
 
 Bug reports and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the rules on
-test coverage, commit shape and writing, and applies to coding agents as much as to people. For a
-security-sensitive issue, please ask for a private contact rather than posting details in a public
-issue.
+test coverage, commit shape and writing, and applies to coding agents as much as to people. It also
+covers how to report a security issue privately.
 
 **Testing.** `make check` must pass before you open a PR. It runs formatting, `go vet`, the unit
 tests and the prose linter. `make test-integration` runs the live tests against a real host, and each
