@@ -194,8 +194,15 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 	d := p.d
 	idir := d.InstanceDir(s.Name)
 	seedDir := filepath.Join(idir, "seed")
+	_, dirErr := os.Stat(idir)
 	if err := os.MkdirAll(seedDir, 0o700); err != nil {
 		return nil, err
+	}
+	// A dry run writes a seed here, which carries whatever agent login it was
+	// told to inherit, so take the directory away again. Only one this run
+	// created: a name `rm` kept the data of owns the directory that is there.
+	if d.DryRun && os.IsNotExist(dirErr) {
+		defer func() { _ = os.RemoveAll(idir) }()
 	}
 
 	gw := d.networkGateway(ctx)
@@ -285,7 +292,7 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 		}
 	}()
 
-	if err = state.Save(d.InstDir, inst); err != nil {
+	if err = d.save(inst); err != nil {
 		return nil, err
 	}
 	unlock() // the port is bound and claimed; let other creates proceed
@@ -407,6 +414,9 @@ func (d Deps) allocPodmanPort(ctx context.Context) (int, error) {
 }
 
 func (d Deps) waitReady(ctx context.Context, name string) error {
+	if d.DryRun {
+		return nil
+	}
 	d.say("waiting for the sandbox to be ready…")
 	budget := time.Duration(d.StartTimeout) * time.Second
 	deadline := time.Now().Add(budget)

@@ -98,8 +98,15 @@ func (fe *Firecracker) buildConfig() fcdisk.BuildConfig {
 func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.Instance, err error) {
 	d := fe.d
 	idir := d.InstanceDir(s.Name)
+	_, dirErr := os.Stat(idir)
 	if err := os.MkdirAll(idir, 0o700); err != nil {
 		return nil, err
+	}
+	// A dry run writes a seed here, which carries whatever agent login it was
+	// told to inherit, so take the directory away again. Only one this run
+	// created: a name `rm` kept the data of owns the directory that is there.
+	if d.DryRun && os.IsNotExist(dirErr) {
+		defer func() { _ = os.RemoveAll(idir) }()
 	}
 	// A prior `rm` keeps the home disk; if it's still here, reuse it (don't reflink
 	// a fresh one) so the sandbox comes back with its data. Only `destroy` deletes it.
@@ -155,7 +162,7 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 		})
 	}
 	// Claim ip+port by persisting state now, still under the lock.
-	if err := state.Save(d.InstDir, inst); err != nil {
+	if err := d.save(inst); err != nil {
 		return nil, err
 	}
 
@@ -184,7 +191,7 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	// The ip+port claim was persisted above; record the inherited logins too.
 	if len(agentLogins) > 0 {
 		inst.AgentLogins = agentLogins
-		if err = state.Save(d.InstDir, inst); err != nil {
+		if err = d.save(inst); err != nil {
 			return nil, err
 		}
 	}
@@ -292,6 +299,9 @@ func (fe *Firecracker) launch(ctx context.Context, name string, inst *state.Inst
 // waitReady polls serial.log for the guest's FC-VM-READY marker, giving up if
 // firecracker dies.
 func (fe *Firecracker) waitReady(ctx context.Context, name string) error {
+	if fe.d.DryRun {
+		return nil
+	}
 	fe.d.say("waiting for the sandbox to be ready…")
 	idir := fe.d.InstanceDir(name)
 	serial := filepath.Join(idir, "serial.log")

@@ -96,6 +96,7 @@ func (a *App) engineDepsBase() engine.Deps {
 		StartTimeout: a.Timeout,
 		Progress:     a.progress,
 		Note:         a.note,
+		DryRun:       a.Exec != nil && a.Exec.DryRun,
 	}
 }
 

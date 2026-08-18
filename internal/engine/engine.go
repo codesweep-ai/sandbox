@@ -84,6 +84,12 @@ type Deps struct {
 	// Note is an optional sink for always-shown advisories (e.g. "no host Claude
 	// auth — not seeding"). Unlike Progress it isn't verbosity-gated. nil = silent.
 	Note func(string)
+	// DryRun mirrors the CLI's --dry-run, which prints external commands instead
+	// of running them. An engine has to know: with nothing actually started,
+	// persisting the instance and then waiting for it to answer would leave a
+	// record for a sandbox that does not exist, and block until the readiness
+	// budget ran out.
+	DryRun bool
 }
 
 // say emits a progress line, or nothing when no reporter is wired (e.g. tests).
@@ -107,6 +113,16 @@ func (d Deps) group() string {
 		return state.DefaultGroup
 	}
 	return d.Group
+}
+
+// save persists an instance record, unless this is a dry run. A dry run starts
+// nothing, so a record it left behind would name a sandbox that does not exist,
+// hold that name and its allocated port, and answer `ls` with "stopped".
+func (d Deps) save(in *state.Instance) error {
+	if d.DryRun {
+		return nil
+	}
+	return state.Save(d.InstDir, in)
 }
 
 // InstanceDir returns <InstDir>/<group>/<name>.

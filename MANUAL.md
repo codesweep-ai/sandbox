@@ -222,7 +222,9 @@ login stays in that sandbox and goes when it does.
 | `-q`, `--quiet` | Silence all output, including build progress. |
 | `--dry-run` | Print the external commands instead of running them. |
 
-`--dry-run` is the way to show someone what a command would do before it does it.
+`--dry-run` is the way to show someone what a command would do before it does it. It changes
+nothing: a dry run of `create` prints the plan, reports the sandbox it would create, and leaves no
+record, no directory and no sandbox behind.
 
 ## SSH trust
 
@@ -332,7 +334,8 @@ fix. Add `--engine podman` or `--engine firecracker` to check a specific engine.
 - `ls --json` and `inspect --json` are the machine-readable surfaces, and their shape is stable.
   Everything else is line-oriented text.
 - `ls -q` prints refs one per line, which pipes into `xargs`.
-- `--dry-run` prints what would run. Use it to show a user the plan before acting.
+- `--dry-run` prints what would run and changes nothing, `create` included. Its summary line reads
+  `would create <name>` rather than `created <name>`.
 - **`destroy` is irreversible.** Confirm with the user first, and check for unfetched commits.
   Prefer `rm` when the data might still be wanted.
 - `cs-sandbox` does not exist inside a sandbox. If it is missing from PATH, use `ssh` and `git`.

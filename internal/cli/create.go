@@ -220,7 +220,12 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	app.refreshHostRoute(cmd) // republish names if host-route is on (rootless, best-effort)
 
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "created %s (type=%s, engine=%s, ssh port=%d)\n", name, f.typ, f.engine, inst.Port)
+	// A dry run created nothing, so it must not say it did.
+	verb := "created"
+	if app.Exec != nil && app.Exec.DryRun {
+		verb = "would create"
+	}
+	fmt.Fprintf(out, "%s %s (type=%s, engine=%s, ssh port=%d)\n", verb, name, f.typ, f.engine, inst.Port)
 	fmt.Fprintf(out, "  shell: ssh %s\n", name+"."+f.group)
 	if len(inst.AgentLogins) > 0 {
 		fmt.Fprintf(out, "  agent login: %s (inherited from your host)\n", strings.Join(inst.AgentLogins, " + "))
