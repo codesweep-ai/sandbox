@@ -9,6 +9,7 @@ import (
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/forward"
+	"github.com/codesweep-ai/sandbox/internal/hostcfg"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/state"
@@ -199,13 +200,15 @@ func newSSHCmd(app *App) *cobra.Command {
 				return err
 			}
 			// Reach the published port with the user-tier key. Key known-hosts by
-			// HostKeyAlias=<name> in a dedicated file so a recycled port never trips
-			// "host key changed" and the user's main known_hosts is untouched.
+			// the host-global object name in a dedicated file, so a recycled port
+			// never trips "host key changed", the user's main known_hosts is
+			// untouched, and the same fixture in two groups keys two entries
+			// rather than one the second connection fails on.
 			key := filepath.Join(paths.GroupKeys(in.Group), "id_cs-sandbox_user")
 			knownHosts := app.Host.SSHDir() + "/known_hosts.cs-sandbox"
 			sshArgs := []string{
 				"-i", key, "-p", strconv.Itoa(in.Port),
-				"-o", "HostKeyAlias=" + args[0],
+				"-o", "HostKeyAlias=" + hostcfg.Ref(in),
 				"-o", "UserKnownHostsFile=" + knownHosts,
 				"-o", "StrictHostKeyChecking=accept-new",
 				"-o", "IdentitiesOnly=yes",

@@ -206,10 +206,10 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		return err
 	}
 	// A recreated name gets fresh per-instance host keys. known_hosts is keyed by
-	// the HostKeyAlias the connection used, and that is <name>.<group> through the
-	// generated ssh config but the bare name when a command passes the reference as
-	// typed — so purge both, or accept-new never gets to relearn and ssh fails with
-	// "host key changed" when a name or freed port is reused.
+	// the HostKeyAlias the connection used, which is <name>.<group> everywhere
+	// now and was the bare name in releases before this one — so purge both, or
+	// accept-new never gets to relearn and ssh fails with "host key changed"
+	// when a name or a freed port is reused.
 	kh := filepath.Join(app.Host.SSHDir(), "known_hosts.cs-sandbox")
 	for _, alias := range []string{state.ObjectName(f.group, name), name} {
 		_, _ = app.Runner.Run(ctx, run.Opts{}, "ssh-keygen", "-R", alias, "-f", kh)

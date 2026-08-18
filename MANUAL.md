@@ -250,7 +250,7 @@ no key the other side would accept.
 | `$XDG_CACHE_HOME/cs-sandbox/` | The Firecracker kernel, rootfs and disk cache. Regenerable. macOS: `~/Library/Caches/`. |
 | `$XDG_CACHE_HOME/cs-sandbox/net/` | The fabric's working directory. Host-global, so it stays put when you relocate the rest. |
 | `~/.ssh/config.d/cs-sandbox` | The generated SSH config that makes `ssh <name>` work. Included from `~/.ssh/config`. |
-| `~/.ssh/known_hosts.cs-sandbox` | Sandbox host keys, kept out of your own `known_hosts` and keyed by name rather than by port. |
+| `~/.ssh/known_hosts.cs-sandbox` | Sandbox host keys, kept out of your own `known_hosts` and keyed by `<name>.<group>` rather than by port. |
 
 No sandbox state lives in the source tree.
 

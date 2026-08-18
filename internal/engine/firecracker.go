@@ -457,9 +457,12 @@ func (fe *Firecracker) Port(ctx context.Context, name string) (int, error) {
 func (fe *Firecracker) sshArgs(name string, port int) []string {
 	key := filepath.Join(fe.d.TierDir, "id_cs-sandbox_user")
 	knownHosts := fe.d.Host.SSHDir() + "/known_hosts.cs-sandbox"
+	// The host-global object name, not the bare one: two groups holding the same
+	// fixture present different host keys, and one alias for both fails the
+	// second with "host key changed" under BatchMode, with nobody to accept it.
 	return []string{"ssh",
 		"-i", key, "-p", strconv.Itoa(port),
-		"-o", "HostKeyAlias=" + name,
+		"-o", "HostKeyAlias=" + state.ObjectName(fe.d.group(), name),
 		"-o", "UserKnownHostsFile=" + knownHosts,
 		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "IdentitiesOnly=yes",
