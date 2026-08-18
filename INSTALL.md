@@ -67,6 +67,9 @@ make install          # installs bin/cs-sandbox into ~/.local/bin, plus CS_SANDB
                       # beside it (PREFIX=… to override)
 ```
 
+`CS_SANDBOX.md` is the brief an agent reads before driving the CLI. Every sandbox carries the same
+file, so an agent working inside one finds it there too.
+
 ## 2. Check the host
 
 ### Base packages

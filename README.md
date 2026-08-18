@@ -103,6 +103,9 @@ Every sandbox boots from the same image, so there is nothing to install inside o
   with `-status`, `-output`, `-sessions` and `-forget` companions. They start or resume an agent
   session on *another* sandbox over SSH, keep it warm, and hand back its output. That is how one
   agent gives a task to another ([walkthrough 7](#7-let-one-coding-agent-drive-another)).
+- **A brief for the agent**, at `~/.local/bin/CS_SANDBOX.md`. It is the short reference an agent
+  reads before driving `cs-sandbox`, and it says what to do from inside a sandbox, where the CLI is
+  deliberately absent.
 
 The same tools run on your host too: `cs-sandbox install-agent-tools` puts them on your PATH, which
 is how you log in once on the host so sandboxes can inherit that login.
