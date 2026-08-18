@@ -23,6 +23,10 @@
     {
       "date": "2026-08-17",
       "text": "CS_SANDBOX_GROUP and CS_SANDBOX_TZ were undocumented too, and SBX-017 has now added both. CS_SANDBOX_SSH_BIND is genuinely the only one left, and it stays undocumented until the decision this record asks for is made."
+    },
+    {
+      "date": "2026-08-17",
+      "text": "scripts/lint-walkthrough.py would report the variable as read and undocumented, which is what this record says. Its config waives it under ENV_INTERNAL, naming this record as the reason, so the waiver goes when the decision is made."
     }
   ],
   "links": [
