@@ -120,6 +120,13 @@ Docs drift into a style that reads as terse and knowing rather than clear. These
 `scripts/lint-oss.py` is its sibling, and `make oss` runs it. It checks what this repository has to
 satisfy as a published project, and `--explain` lists every rule it applies. Its knobs live beside
 it in `scripts/lint-oss.config.py`.
+`scripts/lint-walkthrough.py` is the third, and `make walkthrough` runs it. It checks the claims
+rather than the prose. Every command the docs name goes against the binary's help tree, every
+setting against the code that reads it, and every sample output against the command re-run now.
+Its knobs live beside it in `scripts/lint-walkthrough.config.py`: `SAFE_VERBS` says which commands
+it may run, and `SAMPLE_SKIP` says which samples belong to another machine. `--run` lists every
+command the documents tell a reader to run, in reading order, and `--review` prints the half that
+needs a reader.
 
 1. **Write to the reader, in second person.** "Run `cs-sandbox doctor` first", not "the doctor
    command should be run first".

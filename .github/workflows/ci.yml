@@ -271,6 +271,22 @@ jobs:
           fetch-depth: 0
       - run: make oss
 
+  # The documents against the software: every command they name exists, every
+  # command the binary carries is named, the settings the code reads are the
+  # settings they list, and a sample output is still what the command prints.
+  # It builds the binary first, because half the checks ask the binary itself.
+  walkthrough:
+    name: docs walkthrough
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - run: make walkthrough
+
   # The ledger's freshness gate. CONTRIBUTING.md asks for a render and a check
   # before every commit that touches ledger/, and nothing enforced it until
   # this job did.
