@@ -1,0 +1,22 @@
+{
+  "id": "SBX-016",
+  "title": "A dry-run create allocated a port, wrote a record, and waited two minutes for nothing",
+  "type": "defect",
+  "severity": "med",
+  "status": "closed",
+  "foundBy": "session agent, walking README.md and INSTALL.md as a first-time reader",
+  "opened": "2026-08-17",
+  "resolved": "2026-08-17",
+  "stint": "2026-08-17 documentation walkthrough",
+  "evidence": {
+    "commits": [
+      "5ed0617"
+    ],
+    "integrated": [],
+    "verified": "Before: `cs-sandbox --dry-run create drytest` left drytest in `cs-sandbox ls` holding port 2301 and 10.89.4.201, and `cs-sandbox start drytest` had to be killed at 60s. After: the same command prints the plan, reports `would create drydemo2`, exits 0 in seconds, and leaves neither a record nor an instance directory. TestSaveSkipsUnderDryRun and TestWaitReadyReturnsAtOnceUnderDryRun cover both halves, the second with a negative case that still fails a sandbox that never answers."
+  },
+  "resolution": null,
+  "details": "MANUAL.md offers `--dry-run` as \"print the external commands instead of running them\", and its notes for agents say to use it to show a user the plan before acting.\n\n`cs-sandbox --dry-run create <name>` did more than print. It allocated an IP and a host port, persisted the instance record, wrote the per-instance seed (which carries an inherited agent login), and then polled for a microVM that a dry run never booted until the 120-second readiness budget ran out, failing with exit 1.\n\nInterrupt it before that and the record survives: the name appears in `ls` as \"stopped\", holding a port and an address, with no sandbox behind it. `cs-sandbox start` on that record then waits the same two minutes.\n\nOnly `run.Exec` honoured the flag, so anything the CLI wrote itself was written for real.",
+  "notes": [],
+  "links": []
+}

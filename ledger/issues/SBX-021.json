@@ -1,0 +1,22 @@
+{
+  "id": "SBX-021",
+  "title": "A brief written for agents ships in every sandbox and no document introduces it",
+  "type": "improvement",
+  "severity": "low",
+  "status": "closed",
+  "foundBy": "session agent, walking README.md and INSTALL.md as a first-time reader",
+  "opened": "2026-08-17",
+  "resolved": "2026-08-17",
+  "stint": "2026-08-17 documentation walkthrough",
+  "evidence": {
+    "commits": [
+      "c660901"
+    ],
+    "integrated": [],
+    "verified": "`grep -rn CS_SANDBOX.md *.md` returned one hit, inside a code block comment. The README's \"What's in a sandbox\" list and INSTALL.md's install step now both introduce it."
+  },
+  "resolution": null,
+  "details": "`image/rootfs/home/.local/bin/CS_SANDBOX.md` is a reference written for an agent driving cs-sandbox: what the tool is, the create-work-fetch-destroy loop, and what to do from inside a sandbox, where the CLI is deliberately absent. `make install` puts it on the host beside the binary, and the image bakes it into every sandbox.\n\nThe document set mentioned it once, in a comment on the `make install` line in INSTALL.md, and never said what it was. The reader it was written for could not find it.",
+  "notes": [],
+  "links": []
+}

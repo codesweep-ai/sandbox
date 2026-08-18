@@ -1,0 +1,22 @@
+{
+  "id": "SBX-018",
+  "title": "The manual told agents every command was non-interactive, and two wait for a human",
+  "type": "defect",
+  "severity": "med",
+  "status": "closed",
+  "foundBy": "session agent, walking README.md and INSTALL.md as a first-time reader",
+  "opened": "2026-08-17",
+  "resolved": "2026-08-17",
+  "stint": "2026-08-17 documentation walkthrough",
+  "evidence": {
+    "commits": [
+      "29b8321"
+    ],
+    "integrated": [],
+    "verified": "Read against internal/cli/misc_commands.go, where agent-login passes engine.ExecIO{Interactive: true}, and against MANUAL.md's own host-route paragraph, which says `up` asks for sudo once."
+  },
+  "resolution": null,
+  "details": "MANUAL.md's notes for agents opened with \"Every command is non-interactive. Nothing waits on an answer, so nothing hangs unattended.\" That section exists so an automated caller can trust the surface.\n\n`agent-login` runs the agent inside the sandbox with `Interactive: true` and prints \"follow the prompts, then exit\" (`internal/cli/misc_commands.go`). `host-route up` asks for `sudo`, as the same manual says two sections earlier. An agent that trusts the note calls either one unattended and hangs.",
+  "notes": [],
+  "links": []
+}

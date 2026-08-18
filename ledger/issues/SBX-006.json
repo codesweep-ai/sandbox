@@ -17,7 +17,12 @@
   },
   "resolution": null,
   "details": "`internal/cli/create.go:65` defaults the `--engine` flag from `CS_SANDBOX_ENGINE`. Grepping the markdown for that name returns nothing, in MANUAL.md or anywhere else.\n\nSo a user on a Linux host with KVM who wants Podman has to pass `--engine podman` on every create, or read the source to learn that one export would do it. The variable is the closest thing the tool has to a user-level engine default, and it is invisible.\n\nMANUAL.md is where a flag's meaning lives, by the table in CONTRIBUTING.md, so the entry belongs beside `--engine` there.",
-  "notes": [],
+  "notes": [
+    {
+      "date": "2026-08-17",
+      "text": "The closing evidence said the Environment table carries \"the podman default the flag parser applies\". The parser applies no default: internal/cli/create.go reads envOr with an empty fallback, and the effective engine is firecracker on Linux with KVM. SBX-017 corrects the table."
+    }
+  ],
   "links": [
     "SBX-010"
   ]

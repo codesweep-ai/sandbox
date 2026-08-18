@@ -1,0 +1,22 @@
+{
+  "id": "SBX-020",
+  "title": "The ledger doctrine an agent is routed to needs a binary no document offers",
+  "type": "improvement",
+  "severity": "low",
+  "status": "closed",
+  "foundBy": "session agent, walking README.md and INSTALL.md as a first-time reader",
+  "opened": "2026-08-17",
+  "resolved": "2026-08-17",
+  "stint": "2026-08-17 documentation walkthrough",
+  "evidence": {
+    "commits": [
+      "ce318d3"
+    ],
+    "integrated": [],
+    "verified": "`grep -rn cs-ledger *.md ledger/AGENTS.md` returned only the two lines telling a contributor to run it. CONTRIBUTING.md now carries the go install line the Makefile prints."
+  },
+  "resolution": null,
+  "details": "`AGENTS.md` sends an agent to `ledger/AGENTS.md` before it starts work, and that file says to run `cs-ledger render && cs-ledger check` before any commit touching the directory. Nothing in the document set says where `cs-ledger` comes from.\n\nThe answer existed only inside the Makefile's `ledger` target, in the error message printed when the binary is missing. An agent that has not yet failed the command cannot find it.\n\nThe same gap is in the tracer and vcr repositories, which carry the same router and the same doctrine.",
+  "notes": [],
+  "links": []
+}

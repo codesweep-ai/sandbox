@@ -14,11 +14,15 @@
     "verified": null
   },
   "resolution": null,
-  "details": "R142 in SPEC.md §13 states that SSH ports must bind `127.0.0.1` only. `internal/cli/root.go:174` reads `CS_SANDBOX_SSH_BIND`, defaulting it to `127.0.0.1`, and passes the value through unvalidated. It reaches podman's publish flag at `internal/engine/podman.go:95` and the microVM's host forwarder at `internal/engine/firecracker.go:285`, and a group's gateway takes the same value.\n\nSo `CS_SANDBOX_SSH_BIND=0.0.0.0 cs-sandbox create web` puts that sandbox's SSH port on every interface of the host, on both engines. Confirm it with `ss -ltnp | grep <port>` after the create.\n\nNo document mentions the variable. Sandboxes accept key authentication only, so this is not an open door, but it moves a boundary the spec states as a requirement, and it does so through a name a reader can only find in the source.\n\nDecide which one is true. Either the spec should describe the override and what it costs, following the rule that a flag with a cost says so where the reader meets it, or `create` should reject a non-loopback value.",
+  "details": "R142 in SPEC.md \u00a713 states that SSH ports must bind `127.0.0.1` only. `internal/cli/root.go:174` reads `CS_SANDBOX_SSH_BIND`, defaulting it to `127.0.0.1`, and passes the value through unvalidated. It reaches podman's publish flag at `internal/engine/podman.go:95` and the microVM's host forwarder at `internal/engine/firecracker.go:285`, and a group's gateway takes the same value.\n\nSo `CS_SANDBOX_SSH_BIND=0.0.0.0 cs-sandbox create web` puts that sandbox's SSH port on every interface of the host, on both engines. Confirm it with `ss -ltnp | grep <port>` after the create.\n\nNo document mentions the variable. Sandboxes accept key authentication only, so this is not an open door, but it moves a boundary the spec states as a requirement, and it does so through a name a reader can only find in the source.\n\nDecide which one is true. Either the spec should describe the override and what it costs, following the rule that a flag with a cost says so where the reader meets it, or `create` should reject a non-loopback value.",
   "notes": [
     {
       "date": "2026-08-16",
       "text": "CS_SANDBOX_SSH_BIND is still undocumented, and is now the only environment variable that is: the Environment tables in MANUAL.md gained CS_SANDBOX_ENGINE on this date and cover every other one. Documenting it without validating it would publish the override rather than fix R142."
+    },
+    {
+      "date": "2026-08-17",
+      "text": "CS_SANDBOX_GROUP and CS_SANDBOX_TZ were undocumented too, and SBX-017 has now added both. CS_SANDBOX_SSH_BIND is genuinely the only one left, and it stays undocumented until the decision this record asks for is made."
     }
   ],
   "links": [

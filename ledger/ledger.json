@@ -1,5 +1,5 @@
 {
-  "project": ".",
+  "project": "sandbox",
   "idPrefix": "SBX",
   "schemaVersion": "issue.v1",
   "staleAfterDays": 14,

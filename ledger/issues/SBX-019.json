@@ -1,0 +1,22 @@
+{
+  "id": "SBX-019",
+  "title": "The walkthroughs promise to run end to end and open on a repo the reader does not have",
+  "type": "improvement",
+  "severity": "low",
+  "status": "closed",
+  "foundBy": "session agent, walking README.md and INSTALL.md as a first-time reader",
+  "opened": "2026-08-17",
+  "resolved": "2026-08-17",
+  "stint": "2026-08-17 documentation walkthrough",
+  "evidence": {
+    "commits": [
+      "8d3951e"
+    ],
+    "integrated": [],
+    "verified": "Read against the eight walkthrough blocks: five name a path under ~/projects, and nothing before them creates or introduces one."
+  },
+  "resolution": null,
+  "details": "The README introduces its walkthroughs with \"Each block is runnable end to end\". Every block that shares a repo names `~/projects/api`, `~/projects/web` or `~/projects/bench`, which are the reader's to supply and are described nowhere. A reader who copies the first block gets a path error on their first command.\n\nThe writing rules ask that every example be runnable as written, and that a reader never meet a file they were not given. One sentence in the introduction resolves it without turning the walkthroughs into a setup guide.",
+  "notes": [],
+  "links": []
+}

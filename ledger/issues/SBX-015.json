@@ -1,0 +1,22 @@
+{
+  "id": "SBX-015",
+  "title": "exec addressed a sandbox's host key by its bare name, so a second group's copy failed",
+  "type": "defect",
+  "severity": "high",
+  "status": "closed",
+  "foundBy": "session agent, walking README.md and INSTALL.md as a first-time reader",
+  "opened": "2026-08-17",
+  "resolved": "2026-08-17",
+  "stint": "2026-08-17 documentation walkthrough",
+  "evidence": {
+    "commits": [
+      "e0cfea4"
+    ],
+    "integrated": [],
+    "verified": "Reproduced on this host with README walkthrough 8: exec of api.cache-redis then api.cache-memory, the second exiting 255 on Host key verification failed. After the change, TestSSHArgsKeysHostKeyOnTheObjectName asserts the alias for three groups and the unset one, and fails on the previous code with `HostKeyAlias \"api\", want \"api.default\"`."
+  },
+  "resolution": null,
+  "details": "README walkthrough 8 creates `api` and `bench` in two groups, then runs:\n\n```\ncs-sandbox exec api.cache-redis  pwd\ncs-sandbox exec api.cache-memory pwd\n```\n\nThe second command exits 255 with \"REMOTE HOST IDENTIFICATION HAS CHANGED\". `internal/engine/firecracker.go` passed `HostKeyAlias=<name>` to ssh, dropping the group, so both sandboxes shared the entry `api` in `~/.ssh/known_hosts.cs-sandbox` and the second presented a different key for it. Under `BatchMode=yes` there is nobody to accept it.\n\n`hostcfg.Ref` already documents the invariant: the object name is \"a sandbox's canonical, always-unambiguous ssh alias\". The generated ssh config and `forward` both honoured it. `exec`, `cs-sandbox ssh` and the `fetch`/`push` transport did not.\n\nThe podman engine was never affected: `podman.Exec` addresses the container as `<name>.<group>` and says why.",
+  "notes": [],
+  "links": []
+}

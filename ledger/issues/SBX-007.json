@@ -14,11 +14,15 @@
     "verified": null
   },
   "resolution": null,
-  "details": "INSTALL.md §1 offers two ways to get the binary, and leads with \"Download a release\": grab `cs-sandbox_<version>_<os>_<arch>.tar.gz` and `checksums.txt`, verify the checksum, then verify the cosign signature.\n\nNothing is published behind that. `git ls-remote --tags origin` returns no output, so the repository has never been tagged, and `.github/workflows/release.yml` fires on a tag. The releases page is empty.\n\nA first-time reader takes the first path offered, finds nothing to download, and has to work out that the second half of the section is the only one that works today. That is the worst moment in the documentation to lose someone.\n\nCutting a first tag closes it and makes the whole section true at once. Until then, lead the section with the source build and say plainly that no release is published yet.",
+  "details": "INSTALL.md \u00a71 offers two ways to get the binary, and leads with \"Download a release\": grab `cs-sandbox_<version>_<os>_<arch>.tar.gz` and `checksums.txt`, verify the checksum, then verify the cosign signature.\n\nNothing is published behind that. `git ls-remote --tags origin` returns no output, so the repository has never been tagged, and `.github/workflows/release.yml` fires on a tag. The releases page is empty.\n\nA first-time reader takes the first path offered, finds nothing to download, and has to work out that the second half of the section is the only one that works today. That is the worst moment in the documentation to lose someone.\n\nCutting a first tag closes it and makes the whole section true at once. Until then, lead the section with the source build and say plainly that no release is published yet.",
   "notes": [
     {
       "date": "2026-08-16",
       "text": "Still open because no v* tag exists. The release path itself was verified this week: `make release-check` validates the manifest and `make snapshot` builds every target, so what is missing is the tag rather than the machinery. Closes when the first release is published."
+    },
+    {
+      "date": "2026-08-17",
+      "text": "INSTALL.md now says plainly that no version has been tagged and the releases page is empty, which is the sentence the tracer repository already carries. The section still leads with the release route rather than the source build, matching the sibling projects. This record stays open until a tag exists."
     }
   ],
   "links": []

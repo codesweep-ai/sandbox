@@ -1,0 +1,20 @@
+{
+  "id": "SBX-022",
+  "title": "The ledger's own page is titled \".\" because the project name was never set",
+  "type": "defect",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "session agent, walking README.md and INSTALL.md as a first-time reader",
+  "opened": "2026-08-17",
+  "resolved": null,
+  "stint": "2026-08-17 documentation walkthrough",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`ledger/ledger.json` carries `\"project\": \".\"`, so every render titles the page `. \u00b7 ledger` and the masthead names the project `.`. The sibling repositories carry `ledger`, `tracer` and `vcr`.\n\nThe page is published, so the name is the first thing a reader sees.",
+  "notes": [],
+  "links": []
+}

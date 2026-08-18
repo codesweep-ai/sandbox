@@ -1,0 +1,25 @@
+{
+  "id": "SBX-017",
+  "title": "The manual gave CS_SANDBOX_ENGINE a default it does not have, and missed two variables",
+  "type": "defect",
+  "severity": "low",
+  "status": "closed",
+  "foundBy": "session agent, walking README.md and INSTALL.md as a first-time reader",
+  "opened": "2026-08-17",
+  "resolved": "2026-08-17",
+  "stint": "2026-08-17 documentation walkthrough",
+  "evidence": {
+    "commits": [
+      "0f0025a"
+    ],
+    "integrated": [],
+    "verified": "`grep -rhoE '\"CS_SANDBOX_[A-Z_]+\"' internal/ cmd/` lists 25 names. Every one a user can set is now in MANUAL.md's Environment section; the two left out are CS_SANDBOX_COVERAGE_LOG and CS_SANDBOX_IT_HOSTROUTE, which are test instrumentation, and CS_SANDBOX_SSH_BIND, which SBX-005 holds open on purpose."
+  },
+  "resolution": null,
+  "details": "MANUAL.md's Environment section listed `CS_SANDBOX_ENGINE` with a default of `podman`. `internal/cli/create.go` reads it as `envOr(\"CS_SANDBOX_ENGINE\", \"\")`, and the flag's own help says \"default: firecracker on Linux/KVM, else podman\". A reader on a Linux host with KVM would expect Podman and get Firecracker.\n\nTwo more variables the code reads were absent from the same tables: `CS_SANDBOX_GROUP`, which is `create`'s default group, and `CS_SANDBOX_TZ`, which sets the timezone a sandbox boots with and defaults to America/Los_Angeles.\n\n`-f` also has a long form, `--force`, which appeared only in `--help`.",
+  "notes": [],
+  "links": [
+    "SBX-006",
+    "SBX-005"
+  ]
+}
