@@ -362,6 +362,22 @@ def _is_test(path):
     )
 
 
+def _matches(recorded, actual):
+    """Whether a recorded line still matches what the command printed.
+
+    An elision stands for whatever the command prints there, which is how a
+    document keeps a sample true across a number that moves: a byte count, a
+    duration, a path under a temporary directory. Everything either side of it
+    still has to match, so the elision buys drift in one place rather than
+    turning the whole line off.
+    """
+    if "…" not in recorded and "..." not in recorded:
+        return recorded == actual
+    parts = re.split(r"…|\.\.\.", recorded)
+    pattern = ".*".join(re.escape(p) for p in parts)
+    return re.fullmatch(pattern, actual, re.S) is not None
+
+
 def _verb_of(words):
     """The verb path in an argv, with flags and the values they take removed.
 
@@ -601,6 +617,66 @@ def check_placeholder_paths(repo):
     return unique
 
 
+@rule("WALK-302", ERROR, "Every repository path a document names exists",
+      "A file that moves leaves the documents pointing at where it was, and "
+      "nothing fails. The reference is then wrong until somebody happens to "
+      "read that line.")
+def check_paths_exist(repo):
+    roots = {p.split("/")[0] for p in repo.tracked}
+    problems, seen = [], set()
+    for name, body in repo.docs().items():
+        for token in re.findall(r"[`\[(]([\w.@-]+/[\w./@-]+)[`\])]", body):
+            token = token.rstrip(".,;:")
+            head = token.split("/")[0]
+            if head not in roots or token.startswith("http"):
+                continue
+            if (ROOT / token).exists() or token in repo.tracked:
+                continue
+            # A path under a generated or ignored tree is not a claim about a
+            # tracked file, and a trailing wildcard names a family.
+            if "*" in token or token.endswith("/"):
+                continue
+            # package/file.Symbol is a citation of code, not of a path. An
+            # extension is short and lower case; a camelCase tail is a symbol.
+            tail = token.split("/")[-1]
+            if "." in tail:
+                ext = tail.rsplit(".", 1)[1]
+                if not re.fullmatch(r"[a-z0-9]{1,6}", ext):
+                    continue
+            key = (name, token)
+            if key in seen:
+                continue
+            seen.add(key)
+            problems.append(err("WALK-302",
+                                f"{token} is named here and does not exist",
+                                name))
+    return problems
+
+
+@rule("WALK-303", ERROR, "Every section citation resolves",
+      "A citation like SPEC.md §7.2 is useful only while §7.2 says what it "
+      "said. Renumbering breaks every one at once, and a stale citation sends "
+      "a reader to a rule that now means something else.")
+def check_citations_resolve(repo):
+    problems, seen = [], set()
+    for name, body in repo.docs().items():
+        for m in re.finditer(r"(\w+\.md)\s*(?:§|section\s+)([\d.]+)", body):
+            target, section = m.group(1), m.group(2).rstrip(".")
+            text = repo.text.get(target)
+            if text is None:
+                continue
+            if re.search(r"^#{1,6}\s+" + re.escape(section) + r"[.\s]", text, re.M):
+                continue
+            key = (name, target, section)
+            if key in seen:
+                continue
+            seen.add(key)
+            problems.append(err(
+                "WALK-303", f"{target} has no section {section}",
+                f"{name}:{line_of(body, m.start())}"))
+    return problems
+
+
 # ---------------------------------------------------------------------------
 # 4xx — The samples
 # ---------------------------------------------------------------------------
@@ -643,11 +719,9 @@ def check_samples_reproduce(repo):
             recorded = [l.rstrip() for l in output if l.strip()]
             actual = [l.rstrip() for l in text.splitlines() if l.strip()]
             for i, line in enumerate(recorded):
-                if "…" in line or "..." in line:
+                if _matches(line, actual[i] if i < len(actual) else ""):
                     continue
-                if i < len(actual) and actual[i] == line:
-                    continue
-                if line in actual:
+                if any(_matches(line, a) for a in actual):
                     continue
                 got = next((a for a in actual if a.strip()), "(nothing)")
                 problems.append(err(
