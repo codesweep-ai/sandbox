@@ -273,6 +273,12 @@ class Repo:
             if status is None:
                 continue
             tree[path] = text
+            # A tool with no per-verb help answers `<tool> <verb> --help` with
+            # the page its parent gave, listing the same verbs again. Reading
+            # those as children multiplies the tree by itself at every level, so
+            # an identical page means this verb has no subcommands.
+            if path and tree.get(path[:-1]) == text:
+                continue
             for child in _verbs_in(text):
                 pending.append(path + (child,))
         self._help = tree
@@ -403,13 +409,20 @@ def _verbs_in(help_text):
     verbs = []
     listing = False
     for raw in help_text.splitlines():
-        if re.match(r"^\s*(available )?commands:\s*$", raw, re.I):
+        # "Commands:", "Available Commands:" and "verbs:" all head the same
+        # list. A hand-rolled help page picks its own word, and a parser that
+        # knows only cobra's finds nothing and reports nothing.
+        if re.match(r"^\s*(available )?(commands|verbs):\s*$", raw, re.I):
             listing = True
             continue
         if listing:
             if not raw.strip():
                 break
-            m = re.match(r"^\s{1,6}([a-z][a-z0-9-]*)\s{2,}\S", raw)
+            # A row is a name, optionally the argument it takes, then the
+            # description: `normalize <path>    write the JSON tree`. Without
+            # the argument the row falls through and the verb goes undiscovered.
+            m = re.match(r"^\s{1,6}([a-z][a-z0-9-]*)"
+                         r"(?:\s+<[^>]+>|\s+\[[^\]]+\])?\s{2,}\S", raw)
             if m:
                 verbs.append(m.group(1))
             elif raw.strip().startswith("-"):
