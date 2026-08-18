@@ -131,8 +131,8 @@ cs-sandbox destroy <name> [-f]      # delete the sandbox AND its data
 ```
 
 `rm` leaves the data listed by `ls` with status `removed`, so nothing sits on disk unnoticed.
-`destroy` is irreversible, and `-f` is the confirmation rather than a way past one. Without it,
-`destroy` names what it would delete, deletes nothing and exits 0.
+`destroy` is irreversible, and `-f` (spelled `--force` in full) is the confirmation rather than a
+way past one. Without it, `destroy` names what it would delete, deletes nothing and exits 0.
 
 `ls -q` prints refs one per line for scripting. `--json` output is stable and meant to be parsed.
 
@@ -274,12 +274,14 @@ The second group changes what gets built or run.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `CS_SANDBOX_ENGINE` | `podman` | The engine `create` uses when no `--engine` is given. |
+| `CS_SANDBOX_ENGINE` | unset | The engine `create` uses when no `--engine` is given. Unset, it picks Firecracker on Linux with KVM and Podman otherwise. |
 | `CS_SANDBOX_IMAGE` | `localhost/cs-sandbox:44` | The sandbox image to run. |
 | `CS_SANDBOX_ASSETS_DIR` | the embedded copy | An `image/` asset tree for `build` to use instead of the one embedded in the binary. |
 | `CS_SANDBOX_PRIVATE_REGISTRY` | none | A registry the image should trust, as a bare `host:port`. Read at `build` time. |
 | `CS_SANDBOX_PRIVATE_REGISTRY_INSECURE` | `0` | `1`, `true`, `yes` or `on` lets that registry use plain HTTP. |
 | `CS_SANDBOX_DNS_SUFFIX` | `cs.sandbox` | The domain `host-route` resolves sandbox names under. |
+| `CS_SANDBOX_GROUP` | `default` | The group `create` puts a sandbox in when no `--group` is given. |
+| `CS_SANDBOX_TZ` | `America/Los_Angeles` | The timezone a sandbox boots with. |
 
 The third group tunes the Firecracker engine. Leave these alone unless `doctor` or this manual sends
 you to one.
