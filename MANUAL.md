@@ -330,7 +330,9 @@ fix. Add `--engine podman` or `--engine firecracker` to check a specific engine.
 
 ## Notes for agents
 
-- Every command is non-interactive. Nothing waits on an answer, so nothing hangs unattended.
+- Every command is non-interactive except two. `agent-login` launches an agent inside a sandbox and
+  waits for you to complete its sign-in, and `host-route up` asks for `sudo`. Do not call either
+  unattended.
 - `destroy <name>` without `-f` deletes nothing. It prints what it would delete and exits 0, so it
   is safe to run to find out, and it is not a dialog to answer.
 - `ls --json` and `inspect --json` are the machine-readable surfaces, and their shape is stable.
