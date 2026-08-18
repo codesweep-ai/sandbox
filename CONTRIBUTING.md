@@ -32,7 +32,12 @@ ignored, and then it protects nothing.
 
 This repo keeps a **ledger** of open issues in `ledger/`. Read
 [`ledger/AGENTS.md`](ledger/AGENTS.md) before you start work, and follow it as you go. A commit
-that touches `ledger/` needs `cs-ledger render && cs-ledger check` to pass first.
+that touches `ledger/` needs `cs-ledger render && cs-ledger check` to pass first. That tool is a
+sibling project, and `make ledger` runs it:
+
+```bash
+go install github.com/codesweep-ai/ledger/cmd/cs-ledger@latest
+```
 
 ## Tests are part of the change
 
