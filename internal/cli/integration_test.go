@@ -48,6 +48,34 @@ func image() string {
 	return "localhost/cs-sandbox:44"
 }
 
+// storeImage is the image a member seeds into a shared store, and it prefers the
+// slimmed CI image (image/ci-slim.sh) to the shipped one. What a store member
+// costs is dominated by turning the image into an ext4 disk, and none of them
+// asserts anything a toolchain provides: the nested-VM member takes 599s against
+// the 9.3 GB image and 75s against the 693 MB one, for the same assertions.
+// `make test-smoke` already runs it this way.
+//
+// The microVM's own rootfs is unaffected — it is built from the shipped image by
+// `cs-sandbox build --engine firecracker` either way, so the guest is still the
+// real environment. Only the image the INNER sandbox is created from is slimmed,
+// and that needs podman, sshd and the dev user, all of which ci-slim.sh keeps.
+//
+// An explicit CS_SANDBOX_IMAGE still wins, which is how to put the store path
+// under the shipped image when that is the point. A host without the slim image
+// falls back to the shipped one rather than skipping: slow beats not run.
+func storeImage(t *testing.T) string {
+	t.Helper()
+	if v := os.Getenv("CS_SANDBOX_IMAGE"); v != "" {
+		return v
+	}
+	const slim = "localhost/cs-sandbox:ci"
+	r := &run.Exec{}
+	if _, err := r.Run(context.Background(), run.Opts{ReadOnly: true}, "podman", "image", "exists", slim); err == nil {
+		return slim
+	}
+	return image()
+}
+
 // liveSetup skips unless podman + the image are present, redirects instance/tier
 // state to temp dirs, and returns a real runner + host identity.
 func liveSetup(t *testing.T) (*run.Exec, hostenv.Host) {
@@ -626,8 +654,10 @@ func TestCLIHostByNameFirecrackerLive(t *testing.T) {
 // the same engine on the host.
 //
 // Cost: the sandbox image is seeded into a shared store and reaches the guest as a
-// disk, so no image size bounds this test. The workload subtest ships a ~4 MB image
-// over ssh on top of that, into the inner sandbox, which no store disk reaches.
+// disk. Building that disk is most of the runtime, which is why the store is
+// seeded with the slim image (see storeImage) — it does not change what any
+// assertion below proves. The workload subtest ships a ~4 MB image over ssh on
+// top of that, into the inner sandbox, which no store disk reaches.
 // Skips without /dev/kvm or the cached FC artifacts, like the other VM members.
 func TestCLINestedSandboxInVMLive(t *testing.T) {
 	_, host := liveSetup(t)
@@ -637,7 +667,7 @@ func TestCLINestedSandboxInVMLive(t *testing.T) {
 	if !fileExists(filepath.Join(paths.FCCache(), "vmlinux.elf")) {
 		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
 	}
-	img := image()
+	img := storeImage(t)
 	bin := buildCLI(t)
 
 	fcInstancesDir(t, host)
