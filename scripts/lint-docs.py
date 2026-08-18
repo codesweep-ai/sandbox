@@ -37,7 +37,7 @@ import sys
 # renaming it would hide the pairing the two files have. A project with nothing
 # to tune can leave the file out entirely.
 CONFIG = dict(SKIP_EXTRA=set(), GLOSSARY=[], LOWERCASE_STARTERS=[],
-              PROJECT_VERBS=[])
+              PROJECT_VERBS=[], TERMS={}, TERMS_PROSE={})
 _config_file = pathlib.Path(__file__).with_name("lint-docs.config.py")
 if _config_file.exists():
     exec(compile(_config_file.read_text(), str(_config_file), "exec"), CONFIG)
@@ -59,6 +59,70 @@ LOWERCASE_STARTERS = CONFIG["LOWERCASE_STARTERS"]
 # or vendored trees are skipped: they are not this project's prose. The config
 # file adds any directory holding fixtures, corpora or generated Markdown, and
 # any root file that is data rather than documentation.
+# Adjectives that end in -ly and do take a hyphen in a compound. An adverb
+# never does: it already modifies what follows it.
+LY_ADJECTIVES = {"costly", "early", "friendly", "likely", "lively", "lonely",
+                 "only", "daily", "weekly", "monthly", "yearly", "deadly",
+                 "silly", "ugly", "holy", "orderly", "timely", "unlikely"}
+
+# Words this house has decided against, and what to write instead. Every entry
+# is a pattern matched case-insensitively, so a name that has to be checked for
+# its capitals turns the flag off for itself with (?-i:…).
+#
+# The table is deliberately short. A rule earns a place here by catching
+# something a writer would fix on being shown it, in a document this set
+# actually contains; a rule that mostly reports a preference trains everyone to
+# read past the whole linter.
+SHARED_TERMS = {
+    # Plain English.
+    r"utili[sz]e": "Use 'use'.",
+    r"leverage": "Use 'use'.",
+    r"in order to": "Use 'to'.",
+    r"allows you to": "Use 'lets you'.",
+    # Preferred spellings.
+    r"e-mail": "Use 'email'.",
+    r"and/or": "Write 'and', or 'or'.",
+    # Inclusive language.
+    r"white-?list": "Use 'allowlist'.",
+    r"black-?list": "Use 'denylist'.",
+    r"master branch": "Use 'main branch'.",
+    r"sanity check": "Use 'quick check'.",
+    r"\bdummy\b": "Use 'placeholder'.",
+    r"\bhe or she\b": "Use 'they'.",
+    # Empty intensifiers.
+    r"\bsimply\b": "Delete it: if it were simple the reader would not be reading.",
+    r"\beasily\b": "Delete it.",
+    # Names, checked for their capitals.
+    r"(?-i:Github|GitHUB)": "Write 'GitHub'.",
+    r"(?-i:Javascript)": "Write 'JavaScript'.",
+    r"(?-i:Mac OS|MacOS)": "Write 'macOS'.",
+    # Latin.
+    r"\be\.g\.": "Write 'for example'.",
+    r"\bi\.e\.": "Write 'that is'.",
+    # A word that dates the page.
+    r"\b(?:currently|for now|at present|nowadays)\b":
+        "Say what is true, not when: a time-bound word dates the page.",
+    # Typography.
+    r"\bfrom \d+-\d+": "Write a range as 'from N to M', or as N-M without 'from'.",
+    r"\w+\(s\)": "Write the plural, or rewrite the sentence.",
+    r"\w![ \n]": "Drop the exclamation mark.",
+    r"[.!?]  +[A-Z]": "One space after a full stop.",
+    # Accessibility: a colour naming something the reader has to find. "The
+    # tests report green" is a metaphor for passing and is left alone; "the
+    # green button" is an instruction nobody can follow in monochrome.
+    r"\b(?:green|red|amber|blue|yellow)\s+(?:button|icon|light|badge|dot|bar|"
+    r"marker|arrow|box|highlight|link|tab|banner)\b":
+        "Name the control as well as its colour: a reader in monochrome has to find it too.",
+}
+
+# Terms that apply to prose but not to a spec, whose register is different.
+SHARED_TERMS_PROSE = {
+    # Rule 6 says to address the reader as "you". Nothing checked the other
+    # half. A spec's rationale legitimately says "our own address" about the
+    # project's own artifacts, so this is checked where a reader is addressed.
+    r"\b(?:we|our|ours)\b": "Address the reader as 'you'; the docs have no 'we'.",
+}
+
 SKIP = {"node_modules", "vendor", "dist", "bin", "target", "build", ".git",
         "third_party", "testdata", "CHANGELOG.md"} | set(CONFIG["SKIP_EXTRA"])
 
@@ -209,6 +273,64 @@ def units(paragraph):
     return [u for u in out if u.strip()]
 
 
+def doc_class(raw):
+    """Which kind of document this is.
+
+    A spec is not a README with more detail. It states obligations in the
+    passive, numbers them, and is written for a reader who already has the
+    vocabulary, so a rule written for prose can fire constantly there and mean
+    nothing. A document that numbers requirements in bold is a spec, which is
+    the convention the document set is written to and needs no configuration.
+    """
+    return "spec" if len(re.findall(r"^\*\*R\d+[a-z]?\.\*\*", raw, re.M)) >= 3 else "prose"
+
+
+def declined_terms(text, kind):
+    """Words this project has decided against, and what to write instead."""
+    out = []
+    terms = dict(SHARED_TERMS, **CONFIG["TERMS"])
+    if kind != "spec":
+        terms.update(SHARED_TERMS_PROSE)
+        terms.update(CONFIG["TERMS_PROSE"])
+    for pattern, advice in terms.items():
+        for m in re.finditer(pattern, text, re.I):
+            if quoted(text, m.start()):
+                continue    # naming a word is not using it
+            line = " ".join(text[max(0, m.start() - 60): m.start() + 90].split())
+            out.append((f"{advice} (found '{m.group(0).strip()}')", line))
+    return out
+
+
+def repeated_words(text):
+    """A word written twice, which the eye reads as one."""
+    out = []
+    for m in re.finditer(r"\b(\w+)[ \t]+\1\b", text, re.I):
+        if m.group(1).lower() in ("that", "had", "is", "code"):
+            continue    # "that that" is grammatical, and CODE is what the
+                        # scrubber above leaves where an inline code span was
+        line = " ".join(text[max(0, m.start() - 60): m.start() + 90].split())
+        out.append((f"'{m.group(1)}' is written twice", line))
+    return out
+
+
+def ly_hyphens(text):
+    """An adverb ending in -ly never takes a hyphen."""
+    out = []
+    for m in re.finditer(r"(?<![-\w])(\w+ly)-(\w+)", text):
+        if m.group(1).lower() in LY_ADJECTIVES:
+            continue
+        line = " ".join(text[max(0, m.start() - 60): m.start() + 90].split())
+        out.append((f"'{m.group(0)}' takes no hyphen: an -ly adverb already "
+                    f"modifies what follows it", line))
+    return out
+
+
+def conflict_markers(raw):
+    """A merge left half-resolved, committed, and read by nobody since."""
+    return [("a merge conflict marker is still in the text", m.group(0).strip())
+            for m in re.finditer(r"^(?:<{7}|={7}|>{7})(?:\s.*)?$", raw, re.M)]
+
+
 def check(path):
     raw = pathlib.Path(path).read_text()
     text = prose(raw)
@@ -244,6 +366,11 @@ def check(path):
             if 3 <= len(words) <= MAX_EPIGRAM_WORDS and not VERB_RE.search(s):
                 problems.append(("no verb — an epigram, not a sentence", s))
 
+    kind = doc_class(raw)
+    problems += declined_terms(text, kind)
+    problems += repeated_words(text)
+    problems += ly_hyphens(text)
+    problems += conflict_markers(raw)
     problems += undefined_terms(raw)
     problems += throat_clearing(text)
     problems += echoes(text)

@@ -260,8 +260,8 @@ and a microVM therefore reach each other exactly as two containers would.
 **R41.** Every sandbox's sshd **MUST** listen on 22 internally, and the host **MUST** publish it on
 `127.0.0.1:<PORT>`.
 
-**R42.** Ports **MUST** be drawn from distinct ranges so an ingress cannot collide with a sandbox:
-containers from 2200-2299, microVMs from 2300-2399, and group gateways from 2400-2499.
+**R42.** Ports **MUST** be drawn from distinct ranges, so an ingress cannot collide with a sandbox.
+Containers take 2200 to 2299, microVMs 2300 to 2399, and group gateways 2400 to 2499.
 
 **R43.** A port **MUST** be treated as free only when it is both unrecorded and unanswered. Allocation **MUST**
 probe loopback.
@@ -507,7 +507,7 @@ writable store.
 **R85.** Image stores **MUST** work on both engines.
 
 The inner engine is rootless on both engines, so a sandbox runs Podman the way any normal machine
-does. In a microVM you are real root on your own kernel and it simply works; in a container it needs
+does. In a microVM you are real root on your own kernel and it works; in a container it needs
 a scaled-down capability set and the bootstrap specified in §11.2.
 
 **R85a.** Every entry path **MUST** give its nested engine the same subuid/subgid ranges, so one store
@@ -525,7 +525,7 @@ the sandbox user's `~/.config/containers/storage.conf`, never the system file.
 
 A rootless engine resolves its storage config under the user's home, and does not inherit
 `[storage.options]` from `/etc`. Written to the system file, the disks still mount and the stores
-are then ignored in silence: `podman images` simply comes back empty. That silence is why each
+are then ignored in silence: `podman images` comes back empty. That silence is why each
 engine's path carries its own live test.
 
 A read-only shared base with a per-sandbox writable primary is the only supported way to share,

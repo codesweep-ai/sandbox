@@ -182,9 +182,9 @@ cs-sandbox destroy worker -f && cs-sandbox destroy dev -f
 ### 3. Run a throwaway experiment (`--yolo --solo`)
 
 A disposable playground: the agent builds and runs a small HTTP API that you then hit from inside the
-sandbox. It is an experiment, so we let the agent work without stopping for approvals (**`--yolo`**) and
-keep it away from our other sandboxes (**`--solo`**). The sandbox itself is the boundary. We also
-skip `--inherit-agent-login` here, so this one needs its own Claude login rather than sharing
+sandbox. It is an experiment, so the agent works without stopping for approvals (**`--yolo`**) and
+stays away from your other sandboxes (**`--solo`**). The sandbox itself is the boundary. This block
+also skips `--inherit-agent-login`, so this one needs its own Claude login rather than sharing
 yours.
 
 ```bash
