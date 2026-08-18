@@ -122,8 +122,9 @@ account, and log in there with `cs-sandbox agent-login claude <name>`. See
 
 ## Walkthroughs
 
-Each block is runnable end to end (5 and 6 continue from 4; 8 stands alone). Skim the comments to
-get the gist; run them when you want to play.
+Each block is runnable end to end (5 and 6 continue from 4; 8 stands alone). Substitute your own
+checkout for `~/projects/api` and the other repo paths, which stand in for repos you already have.
+Skim the comments to get the gist; run them when you want to play.
 
 ### 1. Share two repos, let an agent edit one, pull the changes out
 
