@@ -1,0 +1,67 @@
+# Packages each test tier is known to reach, as "<tier> <package>".
+# Regenerate with `make coverage-baseline` after running the tiers you
+# want recorded; `make coverage-check` fails when a listed package stops
+# being reached. Percentages are deliberately not recorded.
+#
+# Only the tiers CI actually runs belong here. Restrict what a run
+# records with, for example:
+#   make coverage-baseline BASELINE_TIERS="unit race smoke"
+unit github.com/codesweep-ai/sandbox
+unit github.com/codesweep-ai/sandbox/internal/cli
+unit github.com/codesweep-ai/sandbox/internal/covemit
+unit github.com/codesweep-ai/sandbox/internal/doctor
+unit github.com/codesweep-ai/sandbox/internal/engine
+unit github.com/codesweep-ai/sandbox/internal/fcconfig
+unit github.com/codesweep-ai/sandbox/internal/fcdisk
+unit github.com/codesweep-ai/sandbox/internal/fcnet
+unit github.com/codesweep-ai/sandbox/internal/forward
+unit github.com/codesweep-ai/sandbox/internal/hostcfg
+unit github.com/codesweep-ai/sandbox/internal/hostenv
+unit github.com/codesweep-ai/sandbox/internal/hostroute
+unit github.com/codesweep-ai/sandbox/internal/lock
+unit github.com/codesweep-ai/sandbox/internal/paths
+unit github.com/codesweep-ai/sandbox/internal/ports
+unit github.com/codesweep-ai/sandbox/internal/repo
+unit github.com/codesweep-ai/sandbox/internal/run
+unit github.com/codesweep-ai/sandbox/internal/seed
+unit github.com/codesweep-ai/sandbox/internal/spec
+unit github.com/codesweep-ai/sandbox/internal/state
+unit github.com/codesweep-ai/sandbox/internal/store
+race github.com/codesweep-ai/sandbox
+race github.com/codesweep-ai/sandbox/internal/cli
+race github.com/codesweep-ai/sandbox/internal/covemit
+race github.com/codesweep-ai/sandbox/internal/doctor
+race github.com/codesweep-ai/sandbox/internal/engine
+race github.com/codesweep-ai/sandbox/internal/fcconfig
+race github.com/codesweep-ai/sandbox/internal/fcdisk
+race github.com/codesweep-ai/sandbox/internal/fcnet
+race github.com/codesweep-ai/sandbox/internal/forward
+race github.com/codesweep-ai/sandbox/internal/hostcfg
+race github.com/codesweep-ai/sandbox/internal/hostenv
+race github.com/codesweep-ai/sandbox/internal/hostroute
+race github.com/codesweep-ai/sandbox/internal/lock
+race github.com/codesweep-ai/sandbox/internal/paths
+race github.com/codesweep-ai/sandbox/internal/ports
+race github.com/codesweep-ai/sandbox/internal/repo
+race github.com/codesweep-ai/sandbox/internal/run
+race github.com/codesweep-ai/sandbox/internal/seed
+race github.com/codesweep-ai/sandbox/internal/spec
+race github.com/codesweep-ai/sandbox/internal/state
+race github.com/codesweep-ai/sandbox/internal/store
+smoke github.com/codesweep-ai/sandbox/internal/cli
+smoke github.com/codesweep-ai/sandbox/internal/engine
+smoke github.com/codesweep-ai/sandbox/internal/fcconfig
+smoke github.com/codesweep-ai/sandbox/internal/fcdisk
+smoke github.com/codesweep-ai/sandbox/internal/fcnet
+smoke github.com/codesweep-ai/sandbox/internal/forward
+smoke github.com/codesweep-ai/sandbox/internal/hostcfg
+smoke github.com/codesweep-ai/sandbox/internal/hostenv
+smoke github.com/codesweep-ai/sandbox/internal/hostroute
+smoke github.com/codesweep-ai/sandbox/internal/lock
+smoke github.com/codesweep-ai/sandbox/internal/paths
+smoke github.com/codesweep-ai/sandbox/internal/ports
+smoke github.com/codesweep-ai/sandbox/internal/run
+smoke github.com/codesweep-ai/sandbox/internal/seed
+smoke github.com/codesweep-ai/sandbox/internal/spec
+smoke github.com/codesweep-ai/sandbox/internal/state
+smoke github.com/codesweep-ai/sandbox/internal/store

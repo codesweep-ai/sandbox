@@ -12,7 +12,24 @@ VERSION    := $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 LDFLAGS    := -s -w -X github.com/codesweep-ai/sandbox/internal/cli.Version=$(VERSION)
 GO_FILES   := $(shell git ls-files '*.go')
 
-.PHONY: help build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-smoke test-integration vet fmt fmt-check check docs oss ledger lint deadcode snapshot release release-check clean
+# Coverage is not a separate mode: every test target below writes Go binary
+# coverage data into its own tier directory under $(COVERDIR), and `make
+# coverage` merges whichever tiers are present. That is what lets
+# `make test test-integration` report one aggregate number instead of the last
+# tier overwriting the one before it, and it is how CI merges tiers that ran on
+# different machines. scripts/coverage.sh documents the layout.
+# -test.gocoverdir must be absolute: `go test` runs each package's test binary
+# with that package's directory as its working directory, so a relative path
+# would scatter the data one directory per package.
+# CS_COVERDIR, passed per tier below, tells a test that builds and execs the
+# real binary where the instrumented child should write. It is not GOCOVERDIR
+# because `go test` overwrites that one in the test process with a directory of
+# its own, and does not fold what lands there back into the profile.
+COVERDIR   ?= .coverage
+COVER_ABS  := $(abspath $(COVERDIR))
+COVERFLAGS := -covermode=atomic -coverpkg=./...
+
+.PHONY: help build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-race test-smoke test-integration coverage coverage-check coverage-baseline vet fmt fmt-check check docs oss ledger lint deadcode snapshot release release-check clean
 
 .DEFAULT_GOAL := help
 
@@ -94,7 +111,15 @@ uninstall:
 
 ## test: unit tests
 test:
-	go test ./...
+	@scripts/coverage.sh reset unit
+	CS_COVERDIR=$(COVER_ABS)/unit go test $(COVERFLAGS) ./... -args -test.gocoverdir=$(COVER_ABS)/unit
+
+## test-race: the unit tier under the race detector. This is what CI runs on
+## Linux; it is a separate coverage tier so that running both aggregates rather
+## than the second overwriting the first.
+test-race:
+	@scripts/coverage.sh reset race
+	CS_COVERDIR=$(COVER_ABS)/race go test -race $(COVERFLAGS) ./... -args -test.gocoverdir=$(COVER_ABS)/race
 
 ## test-smoke: the smoke profile — the subset of the live tests below that CI
 ## runs, on Linux, macOS and Windows/WSL2. Same command on every host: where an
@@ -151,8 +176,10 @@ SMOKE_RUN := $(subst $(space),|,$(strip $(SMOKE_TESTS)))
 ## every goroutine; the job timeout above it kills the runner and reports only
 ## that time ran out. Raise the job first if this ever has to grow.
 test-smoke:
-	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
-	  go test -tags smoke -count=1 -p 1 -v -timeout 1200s -run '$(SMOKE_RUN)' ./...
+	@scripts/coverage.sh reset smoke
+	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
+	  go test -tags smoke $(COVERFLAGS) -count=1 -p 1 -v -timeout 1200s -run '$(SMOKE_RUN)' ./... \
+	  -args -test.gocoverdir=$(COVER_ABS)/smoke
 
 ## test-integration: live tests (real podman/firecracker on a Linux/KVM host);
 ## each skips gracefully when podman or the sandbox image is unavailable.
@@ -170,7 +197,27 @@ test-smoke:
 ## alone runs half an hour when nothing is cached, since seeding the image store
 ## for the nested-microVM tests costs minutes before a VM even boots.
 test-integration:
-	go test -tags integration -p 1 -v -timeout 3600s ./...
+	@scripts/coverage.sh reset integration
+	CS_COVERDIR=$(COVER_ABS)/integration \
+	  go test -tags integration $(COVERFLAGS) -p 1 -v -timeout 3600s ./... \
+	  -args -test.gocoverdir=$(COVER_ABS)/integration
+
+## coverage: merge every tier present under $(COVERDIR) and print the report
+coverage:
+	@scripts/coverage.sh report
+
+## coverage-check: report, then fail if a package .coverage-baseline records as
+## covered has stopped being reached. It checks presence, never a percentage:
+## what it exists to catch is a suite that quietly stopped running.
+coverage-check: coverage
+	@scripts/coverage.sh check
+
+## coverage-baseline: re-record .coverage-baseline. Records every tier present
+## by default; pass BASELINE_TIERS to restrict it to the tiers CI actually runs,
+## e.g. `make coverage-baseline BASELINE_TIERS="unit race smoke"`. Recording a
+## tier CI never runs commits a promise nothing keeps.
+coverage-baseline:
+	@scripts/coverage.sh baseline $(BASELINE_TIERS)
 
 ## vet / fmt / lint
 vet:
@@ -205,7 +252,7 @@ ledger:
 	cs-ledger check ledger
 
 ## check: the full local gate — fmt-check, vet, the linters, and unit tests
-check: fmt-check vet lint deadcode test docs oss walkthrough
+check: fmt-check vet lint deadcode test coverage-check docs oss walkthrough
 
 ## lint: the Go rules from .golangci.yml (see that file for what is on and why).
 ## Three passes for the same reason vet takes three: a build tag hides a file
@@ -249,4 +296,4 @@ release-check:
 
 ## clean: remove build output
 clean:
-	rm -rf bin dist
+	rm -rf bin dist $(COVERDIR)

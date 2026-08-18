@@ -57,6 +57,19 @@ behavior genuinely cannot be observed in a test — say so in the PR.
 - Test the contract, not the implementation: the exit code, the file mode, the thing another tool
   parses. Say *why* the case matters in a comment when it isn't obvious.
 
+### Coverage
+
+Every test target writes coverage into its own tier under `.coverage/`, so running several
+aggregates rather than overwrites. `make coverage` merges what is there and prints the report.
+
+`make coverage-check` runs inside `make check` and in CI. It fails when a package
+`.coverage-baseline` lists stops being reached — presence, not a percentage. What it catches is a
+suite that stopped running while the tests still report green. When a package is meant to lose its
+coverage, rerun `make coverage-baseline` and commit the result.
+
+In CI each job uploads its tier and one job merges them. Record a baseline only for the tiers CI
+runs: `make coverage-baseline BASELINE_TIERS="unit race smoke"`.
+
 ## Commits
 
 Keep one idea per commit. If a change will not fit that shape, it is doing more than one thing, so

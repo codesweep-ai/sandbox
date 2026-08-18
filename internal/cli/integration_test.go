@@ -793,6 +793,16 @@ func requireWorkloadImage(t *testing.T, img string) {
 // buildCLI builds cmd/cs-sandbox for the host and returns the binary path. The
 // guest is x86_64 Linux and so is any host that got past the /dev/kvm check, so
 // a plain build is already the right target.
+//
+// Deliberately NOT built with -cover, unlike the equivalent helpers in cs-vcr
+// and cs-ledger. This binary is also piped into the guest and run there, where
+// no GOCOVERDIR exists and none could be collected. An instrumented binary that
+// cannot write its counters is not silent about it: it prints "warning:
+// GOCOVERDIR not set" to stderr on every exit, or two "error:" lines when the
+// directory is set but unreachable. The tests here read the CLI's output, so
+// that noise would fail them for a reason having nothing to do with the change
+// under test. The tier still gets coverage -- the test binaries themselves are
+// instrumented through COVERFLAGS -- it just does not extend into the guest.
 func buildCLI(t *testing.T) string {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "cs-sandbox")

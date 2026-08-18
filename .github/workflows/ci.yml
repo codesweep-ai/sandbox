@@ -70,6 +70,9 @@ jobs:
         include:
           - os: ubuntu-latest
             label: ubuntu-latest
+            # Artifact names take neither "/" nor a space, both of which
+            # matrix.label carries, so the coverage artifact is named with this.
+            covlabel: ubuntu-latest
             shell: bash
           # An array, not a label string: self-hosted runners are selected by
           # ANDing labels, and these three are the ones the runner registers
@@ -77,9 +80,11 @@ jobs:
           # self-hosted runner on the repo — add one before there is a second.
           - os: [self-hosted, macOS, ARM64]
             label: macos-arm64 / self-hosted
+            covlabel: macos-arm64-self-hosted
             shell: bash
           - os: windows-2025
             label: windows-2025 / WSL2
+            covlabel: windows-2025-wsl2
             shell: wsl-bash {0}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
@@ -232,7 +237,19 @@ jobs:
           retention-days: 14
 
       - name: test
-        run: go test -race ./...
+        run: make test-race
+
+      # The tier this leg produced, for the coverage job to merge. Uploaded
+      # rather than judged here: this leg runs the unit tier alone, and the
+      # packages only a live engine reaches would read as lost against a
+      # baseline that records every tier.
+      - name: keep this leg's coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-race-${{ matrix.covlabel }}
+          path: .coverage/
+          if-no-files-found: error
+          retention-days: 7
 
   # Both build products, from ONE image build. The microVM's rootfs is derived
   # from the image, and `cs-sandbox build --engine firecracker` builds the image
@@ -401,6 +418,14 @@ jobs:
 
       - name: smoke
         run: make test-smoke
+
+      - name: keep this job's coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-smoke-linux
+          path: .coverage/
+          if-no-files-found: error
+          retention-days: 7
   # Firecracker boots a real microVM — its own kernel, its own rootfs, sshd
   # reached over a vsock bridge — so none of the podman jobs says anything about
   # it. Linux only: macOS has no KVM at all, and WSL2's /dev/kvm is nested virt
@@ -466,6 +491,14 @@ jobs:
       # slim CI image this job already loads.
       - name: smoke (firecracker)
         run: make test-smoke SMOKE_TESTS="TestFirecrackerCreateLive TestCLINestedSandboxInVMLive"
+
+      - name: keep this job's coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-smoke-firecracker
+          path: .coverage/
+          if-no-files-found: error
+          retention-days: 7
   # Windows is supported through WSL2 — the CLI is a Linux binary inside the
   # distro, so everything happens in wsl-bash.
   #
@@ -628,6 +661,23 @@ jobs:
         shell: wsl-bash {0}
         run: su - dev -c '/home/dev/run.sh make test-smoke'
 
+      # The suite ran from the copy on the distro's ext4, so its coverage is
+      # there and not in the checkout on /mnt/c that upload-artifact can see.
+      - name: bring the coverage back to the checkout
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          rm -rf "$PWD/.coverage"
+          cp -r /home/dev/src/.coverage "$PWD/.coverage"
+
+      - name: keep this job's coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-smoke-wsl
+          path: .coverage/
+          if-no-files-found: error
+          retention-days: 7
+
 
   # Intel macOS, because arm64 macOS cannot run a container engine at all. This
   # is the only job that exercises the macOS host paths against a real engine:
@@ -692,6 +742,14 @@ jobs:
 
       - name: smoke
         run: make test-smoke
+
+      - name: keep this job's coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-smoke-macos-intel
+          path: .coverage/
+          if-no-files-found: error
+          retention-days: 7
 
       - name: tear the machine down
         if: always()
@@ -766,6 +824,14 @@ jobs:
       - name: smoke
         run: make test-smoke
 
+      - name: keep this job's coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-smoke-macos-arm64
+          path: .coverage/
+          if-no-files-found: error
+          retention-days: 7
+
       # The runner is not ephemeral, so this is the equivalent of the Intel job
       # throwing its whole machine away. Containers and networks only: images are
       # left alone deliberately, since the next run reloads the CI image anyway
@@ -779,3 +845,58 @@ jobs:
           podman network prune -f || true
           echo "--- surviving containers (expect none) ---"
           podman ps -a || true
+
+  # One number for the whole run, and the gate that keeps it honest.
+  #
+  # Every tier above uploads its coverage rather than judging it, because no job
+  # sees more than the slice it ran: build-test never boots an engine, and a
+  # smoke leg never runs the unit tier. The smoke tier alone arrives from five
+  # machines and three operating systems — merged here they are one picture,
+  # which is the only one worth reporting or gating on.
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    needs:
+      - build-test
+      - smoke-linux
+      - smoke-firecracker
+      - smoke-wsl
+      - smoke-macos-intel
+      - smoke-macos-arm64
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: collect every tier
+        uses: actions/download-artifact@v7
+        with:
+          pattern: coverage-*
+          path: .coverage-artifacts
+
+      # Unpacked side by side as <tier>@<job> rather than merged into one
+      # directory per tier: covdata data files are named after a build hash, so
+      # two machines' files collide on name while differing in content.
+      # scripts/coverage.sh treats every <tier>@* directory as that tier.
+      - name: assemble the tiers
+        run: |
+          set -euo pipefail
+          mkdir -p .coverage
+          shopt -s nullglob
+          for art in .coverage-artifacts/*/; do
+            job=$(basename "$art"); job=${job#coverage-}
+            for tier in unit race integration smoke cli; do
+              [ -d "$art$tier" ] || continue
+              cp -a "$art$tier" ".coverage/$tier@$job"
+            done
+          done
+          echo "tier directories assembled:"
+          find .coverage -mindepth 1 -maxdepth 1 -type d -printf '  %f\n' | sort
+
+      # Prints the aggregate to the job summary and fails if a package the
+      # baseline records has stopped being reached by the tier that reached it.
+      - name: report and gate
+        run: make coverage-check
