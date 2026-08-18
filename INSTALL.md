@@ -32,6 +32,10 @@ cosign verify-blob checksums.txt \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
+**No version has been tagged yet, so there is nothing on the releases page today.** This route
+starts working at the first tag, which is what cuts the archives, the checksum file and the
+signature. Until then, build from source below.
+
 ### Or build from source
 
 Needs **Go 1.26+**, **git**, and **goreleaser** (which produces the version-stamped static binary):
