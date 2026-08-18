@@ -623,8 +623,8 @@ func (fe *Firecracker) buildSnapshotDisks(ctx context.Context, idir string, s Cr
 // buildStoreDisks builds one RO ext4 disk per --image-store and the imagestores
 // manifest (one store name per line). Each disk is content-addressed: it is
 // built once from the shared podman volume cs-sandbox-shared-<name> under
-// the artifact cache's store-disks/<name>-<key>.ext4 (key = sha256 of the store's
-// images.json+layers.json) and reflink-copied per instance. The guest init wires
+// the artifact cache's store-disks/<key>.ext4 (key = the store's content, with
+// podman's per-seeding timestamps left out) and reflink-copied per instance. The guest init wires
 // the disk into nested podman's additionalimagestores.
 func (fe *Firecracker) buildStoreDisks(ctx context.Context, s CreateSpec) ([]string, string, error) {
 	if len(s.ImageStores) == 0 {

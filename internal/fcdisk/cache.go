@@ -1,10 +1,14 @@
 package fcdisk
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -105,7 +109,8 @@ func (c Cache) RepoCacheGC(ttlDays int, inUse map[string]bool) {
 // StoreDisk returns the path to a cached RO image-store ext4 built from the
 // shared podman volume cs-sandbox-shared-<name>, building it on a miss and
 // reusing it on a hit. image is the runner image used to read/tar the store as
-// the keep-id root.
+// the keep-id root. The cache is keyed on the store's content, so seeding the
+// same image into a differently-named store reuses the disk already built.
 func (c Cache) StoreDisk(ctx context.Context, r run.Runner, image, name string) (string, error) {
 	vol := "cs-sandbox-shared-" + name
 	if _, err := r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "volume", "exists", vol); err != nil {
@@ -119,7 +124,9 @@ func (c Cache) StoreDisk(ctx context.Context, r run.Runner, image, name string) 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	cachePath := filepath.Join(dir, name+"-"+key+".ext4")
+	// Named by content alone. The store name used to prefix this, which meant
+	// two stores holding the same image built and kept a disk each.
+	cachePath := filepath.Join(dir, key+".ext4")
 	if _, err := os.Stat(cachePath); err == nil {
 		now := time.Now()
 		_ = os.Chtimes(cachePath, now, now)
@@ -189,7 +196,69 @@ func storeKey(ctx context.Context, r run.Runner, image, vol string) string {
 	if err != nil {
 		return ""
 	}
-	return sha40([]byte(res.Stdout))
+	return storeStateKey([]byte(res.Stdout))
+}
+
+// volatileStoreFields are the metadata fields that move when the same image is
+// seeded again, and so must not reach the key. Measured on two seedings of one
+// image: images.json was byte-identical and layers.json differed in nothing but
+// each layer's "created" stamp — the time THIS store received the layer, not
+// anything about its content. Hashing it made every seeding a miss, so the disk
+// was rebuilt per run and the cache only ever grew.
+var volatileStoreFields = map[string]bool{"created": true}
+
+// storeStateKey reduces podman's store metadata to a 40-hex key that depends on
+// the content and nothing else. Falls back to hashing the raw bytes when the
+// JSON does not parse, so an unfamiliar podman layout yields a working (if
+// per-seeding) key rather than none at all.
+func storeStateKey(meta []byte) string {
+	canon, err := canonicalStoreMeta(meta)
+	if err != nil {
+		return sha40(meta)
+	}
+	return sha40(canon)
+}
+
+// canonicalStoreMeta parses the concatenated JSON values in meta, drops the
+// volatile fields at every depth, and re-encodes. encoding/json sorts map keys,
+// so the result does not depend on the order podman wrote them in.
+func canonicalStoreMeta(meta []byte) ([]byte, error) {
+	dec := json.NewDecoder(bytes.NewReader(meta))
+	var vals []any
+	for {
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
+		vals = append(vals, stripVolatile(v))
+	}
+	if len(vals) == 0 {
+		return nil, errors.New("store metadata holds no JSON value")
+	}
+	return json.Marshal(vals)
+}
+
+func stripVolatile(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, vv := range t {
+			if volatileStoreFields[k] {
+				continue
+			}
+			out[k] = stripVolatile(vv)
+		}
+		return out
+	case []any:
+		for i := range t {
+			t[i] = stripVolatile(t[i])
+		}
+		return t
+	}
+	return v
 }
 
 // StoreCacheGC drops cached store disks (and orphaned build temps) not touched

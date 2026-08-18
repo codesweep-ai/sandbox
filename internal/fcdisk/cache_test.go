@@ -138,3 +138,42 @@ func TestStoreKeyHash(t *testing.T) {
 		t.Fatalf("storeKey = %q", got)
 	}
 }
+
+// TestStoreKeyIgnoresSeedTimestamps: seeding one image into two stores rewrites
+// each layer's "created" stamp and nothing else, so the key must not move.
+// While it did, every run missed the cache and rebuilt a disk it already had —
+// 10 GB per run of the nested-VM test, kept for the TTL.
+func TestStoreKeyIgnoresSeedTimestamps(t *testing.T) {
+	const images = `[{"id":"img1","names":["localhost/cs-sandbox:ci"]}]`
+	first := images + `[{"id":"l1","created":"2026-08-18T10:00:00Z"},
+	                    {"id":"l2","created":"2026-08-18T10:00:01Z","parent":"l1"}]`
+	again := images + `[{"id":"l1","created":"2026-08-19T22:31:04Z"},
+	                    {"id":"l2","created":"2026-08-19T22:31:09Z","parent":"l1"}]`
+	if storeStateKey([]byte(first)) != storeStateKey([]byte(again)) {
+		t.Errorf("key moved when only the seed timestamps did")
+	}
+	if got := storeStateKey([]byte(first)); len(got) != 40 {
+		t.Errorf("key length = %d, want 40", len(got))
+	}
+	// The other half: a key that ignored too much would be worse than one that
+	// moves too often, because the wrong disk would mount and pass.
+	moved := images + `[{"id":"l1","created":"2026-08-18T10:00:00Z"},
+	                    {"id":"l2-rebuilt","created":"2026-08-18T10:00:01Z","parent":"l1"}]`
+	if storeStateKey([]byte(first)) == storeStateKey([]byte(moved)) {
+		t.Errorf("key held still when a layer id changed")
+	}
+	if storeStateKey([]byte(images)) == storeStateKey([]byte(first)) {
+		t.Errorf("key held still when a whole layer set was dropped")
+	}
+}
+
+// TestStoreKeyNonJSONFallsBack: an unfamiliar podman layout must still yield a
+// usable key. It degrades to hashing the raw bytes — per-seeding, so it rebuilds
+// more than it needs to, which is the safe direction to fail in.
+func TestStoreKeyNonJSONFallsBack(t *testing.T) {
+	raw := []byte("not json at all")
+	want := sha256.Sum256(raw)
+	if got := storeStateKey(raw); got != hex.EncodeToString(want[:])[:40] {
+		t.Fatalf("storeStateKey = %q, want the raw-bytes hash", got)
+	}
+}
