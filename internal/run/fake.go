@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 )
@@ -44,18 +45,29 @@ func (f *Fake) OnStdout(match, out string) *Fake {
 }
 
 // Run implements Runner.
-func (f *Fake) Run(_ context.Context, _ Opts, argv ...string) (Result, error) {
+func (f *Fake) Run(_ context.Context, opts Opts, argv ...string) (Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cp := append([]string(nil), argv...)
 	f.Calls = append(f.Calls, cp)
 	line := strings.Join(argv, " ")
+	res, err := f.Default, error(nil)
 	for _, r := range f.responses {
 		if strings.Contains(line, r.match) {
-			return r.result, r.err
+			res, err = r.result, r.err
+			break
 		}
 	}
-	return f.Default, nil
+	// Honour StdoutFile as Exec does, or a caller that streams its output to a
+	// file is untestable here: it would see the canned bytes as Result.Stdout,
+	// which is exactly what the real runner does not do.
+	if opts.StdoutFile != "" && err == nil {
+		if werr := os.WriteFile(opts.StdoutFile, []byte(res.Stdout), 0o600); werr != nil {
+			return Result{}, werr
+		}
+		res.Stdout = ""
+	}
+	return res, err
 }
 
 // Rendered returns every recorded call as a joined command line, for golden

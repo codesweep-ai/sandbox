@@ -46,6 +46,16 @@ type Opts struct {
 	// mutating command can resolve real values and reach the mutation it would
 	// print, while the mutation itself is printed-and-skipped.
 	ReadOnly bool
+	// StdoutFile, when set, writes the process's stdout straight to that path
+	// instead of capturing it, and leaves Result.Stdout empty. For output that
+	// does not belong in memory: the image-store tar is the whole sandbox image,
+	// gigabytes of it, and capturing that cost twice its size in RAM — once in
+	// the buffer and again in the string copied out of it.
+	//
+	// The file is created (truncating an existing one) before the process starts
+	// and handed over as its stdout fd, so the bytes never pass through this
+	// process at all. Ignored when Interactive is set, which owns stdio.
+	StdoutFile string
 }
 
 // ExitError reports a non-zero exit from a command.
@@ -101,9 +111,27 @@ func (e *Exec) Run(ctx context.Context, opts Opts, argv ...string) (Result, erro
 		return interactiveResult(err, argv)
 	}
 	var out, errb bytes.Buffer
-	cmd.Stdout = &out
 	cmd.Stderr = &errb
+	cmd.Stdout = &out
+	var sink *os.File
+	if opts.StdoutFile != "" {
+		f, ferr := os.Create(opts.StdoutFile)
+		if ferr != nil {
+			return Result{}, fmt.Errorf("run %s: stdout file: %w", argv[0], ferr)
+		}
+		sink = f
+		cmd.Stdout = f
+	}
 	err := cmd.Run()
+	if sink != nil {
+		// Closed before the error is reported, and its failure preferred to a
+		// clean exit: a full disk shows up here and nowhere else, and a
+		// truncated tar would otherwise be built into a disk that mounts and is
+		// quietly missing layers.
+		if cerr := sink.Close(); cerr != nil && err == nil {
+			return Result{Stderr: errb.String()}, fmt.Errorf("run %s: stdout file: %w", argv[0], cerr)
+		}
+	}
 	res := Result{Stdout: out.String(), Stderr: errb.String()}
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {

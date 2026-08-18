@@ -3,6 +3,8 @@ package run
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -149,5 +151,73 @@ func TestExecDryRun(t *testing.T) {
 	}
 	if len(printed) != 2 {
 		t.Errorf("both calls should be printed, got %d", len(printed))
+	}
+}
+
+// TestExecStdoutFile: StdoutFile hands the child the file as its stdout, so the
+// output never passes through this process — Result.Stdout stays empty and the
+// bytes land on disk. What needs this is the image-store tar, which is the whole
+// sandbox image and does not belong in memory. Stderr is still captured, because
+// that is what an error has to report.
+func TestExecStdoutFile(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "out.bin")
+	res, err := (&Exec{}).Run(context.Background(), Opts{StdoutFile: dst},
+		"sh", "-c", "printf payload; printf oops >&2")
+	if err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if res.Stdout != "" {
+		t.Errorf("Result.Stdout = %q, want empty when it went to a file", res.Stdout)
+	}
+	if res.Stderr != "oops" {
+		t.Errorf("Result.Stderr = %q, want %q", res.Stderr, "oops")
+	}
+	b, err := os.ReadFile(dst)
+	if err != nil || string(b) != "payload" {
+		t.Fatalf("file = (%q, %v), want (\"payload\", nil)", b, err)
+	}
+}
+
+// TestExecStdoutFileTruncates: the file is replaced, never appended to. A build
+// that reran over a stale temp would otherwise tar a valid archive onto the end
+// of an old one and hand the result to mke2fs.
+func TestExecStdoutFileTruncates(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "out.bin")
+	if err := os.WriteFile(dst, []byte("stale-and-longer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Exec{}).Run(context.Background(), Opts{StdoutFile: dst}, "printf", "new"); err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if b, err := os.ReadFile(dst); err != nil || string(b) != "new" {
+		t.Fatalf("file = (%q, %v), want (\"new\", nil)", b, err)
+	}
+}
+
+// TestExecStdoutFileUnwritable: a path that cannot be created fails before the
+// command runs, rather than running it and dropping the output.
+func TestExecStdoutFileUnwritable(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "no-such-dir", "out.bin")
+	if _, err := (&Exec{}).Run(context.Background(), Opts{StdoutFile: dst}, "printf", "x"); err == nil {
+		t.Fatal("Run = nil, want an error for an uncreatable stdout file")
+	}
+}
+
+// TestFakeStdoutFile: the fake honours StdoutFile the way Exec does. Without it
+// a caller that streams its output is untestable through the seam — the canned
+// bytes would arrive as Result.Stdout, which is the one thing the real runner
+// does not do.
+func TestFakeStdoutFile(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "out.bin")
+	f := NewFake().OnStdout("tar", "archive-bytes")
+	res, err := f.Run(context.Background(), Opts{StdoutFile: dst}, "tar", "-cf", "-", ".")
+	if err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if res.Stdout != "" {
+		t.Errorf("Result.Stdout = %q, want empty", res.Stdout)
+	}
+	if b, rerr := os.ReadFile(dst); rerr != nil || string(b) != "archive-bytes" {
+		t.Fatalf("file = (%q, %v), want (\"archive-bytes\", nil)", b, rerr)
 	}
 }

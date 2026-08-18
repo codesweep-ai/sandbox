@@ -137,16 +137,14 @@ func (c Cache) StoreDisk(ctx context.Context, r run.Runner, image, name string) 
 	cleanup := func() { _ = os.RemoveAll(ttar); _ = os.RemoveAll(tdir); _ = os.RemoveAll(td) }
 	cleanup()
 
-	tarRes, err := r.Run(ctx, run.Opts{}, "podman", "run", "--rm", "--userns=keep-id",
+	// Streamed to the file rather than captured: this tar is the whole sandbox
+	// image, so capturing it held gigabytes in a buffer and again in the string
+	// copied out of it. The shipped image is 9.3 GB.
+	if _, err := r.Run(ctx, run.Opts{StdoutFile: ttar}, "podman", "run", "--rm", "--userns=keep-id",
 		"--user", "0:0", "--security-opt", "label=disable", "-v", vol+":/store:ro",
-		"--entrypoint", "tar", image, "-C", "/store", "-cf", "-", ".")
-	if err != nil {
+		"--entrypoint", "tar", image, "-C", "/store", "-cf", "-", "."); err != nil {
 		cleanup()
 		return "", fmt.Errorf("fc: image-store %q: tar: %w", name, err)
-	}
-	if err := os.WriteFile(ttar, []byte(tarRes.Stdout), 0o600); err != nil {
-		cleanup()
-		return "", err
 	}
 	// Size the ext4 to the tar's content plus overhead, then unpack + mke2fs -d
 	// under one fakeroot so the extracted ownership survives into the image.
