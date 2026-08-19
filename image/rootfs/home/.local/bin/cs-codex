@@ -31,6 +31,39 @@ if ! grep -qF "[projects.\"$root\"]" "$cfg" 2>/dev/null; then
   printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$root" >> "$cfg"
 fi
 
+# Point codex at an alternative OpenAI-compatible endpoint, the way every other
+# OpenAI client is pointed at one. codex reads no base-URL variable of its own —
+# it takes a whole provider block — so this translates OPENAI_BASE_URL into the
+# `-c` overrides that declare one. `-c` sets the same keys config.toml would,
+# per invocation and with nothing written, so switching endpoints leaves no state
+# behind and an unset variable changes nothing at all.
+#
+# Its reason for existing is a record/replay proxy in front of the model, which
+# is how a fleet's traffic is captured and replayed for $0. cs-claude and
+# cs-opencode need no such block: claude and opencode read ANTHROPIC_BASE_URL and
+# OPENAI_BASE_URL themselves.
+#
+# The auth mode has to follow the endpoint. An API key travels in a header, so
+# the provider names the variable holding it. A ChatGPT subscription travels as
+# codex's own OAuth, which is what requires_openai_auth turns on — and that path
+# has no /v1 on the base URL, so a caller pointing at a proxy for a subscription
+# member gives the URL its provider expects.
+#
+# A key present wins, which is the useful default and also the trap: a sandbox
+# meant to run on its ChatGPT subscription, but carrying an OPENAI_API_KEY for
+# something else, is put on the key path here. Give a subscription sandbox no
+# OPENAI_API_KEY.
+if [ -n "${OPENAI_BASE_URL:-}" ]; then
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    cs_auth='env_key="OPENAI_API_KEY"'
+  else
+    cs_auth='requires_openai_auth=true'
+  fi
+  set -- -c 'model_provider="cs-proxy"' \
+         -c "model_providers.cs-proxy={name=\"cs-proxy\", base_url=\"$OPENAI_BASE_URL\", $cs_auth, wire_api=\"responses\"}" \
+         "$@"
+fi
+
 if [ -n "${CS_CODEX_YOLO:-}" ] || [ -f "$CODEX_DIR/.yolo" ]; then
   exec codex --dangerously-bypass-approvals-and-sandbox "$@"
 fi

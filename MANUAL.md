@@ -214,6 +214,31 @@ prints the remedy for anything missing.
 `agent-login` launches the agent inside the named sandbox so you can complete its login there. The
 login stays in that sandbox and goes when it does.
 
+### Pointing an agent somewhere else
+
+`cs-claude`, `cs-codex` and `cs-opencode` launch their agent under a profile of its own. Each
+respects the base URL its agent already reads, so pointing one at an endpoint of your own needs
+nothing but the variable. A gateway, a proxy and a traffic recorder are all reached this way:
+
+| Wrapper | Variable |
+|---|---|
+| `cs-claude` | `ANTHROPIC_BASE_URL` |
+| `cs-opencode` | `OPENAI_BASE_URL` |
+| `cs-codex` | `OPENAI_BASE_URL` |
+
+Claude and OpenCode read theirs directly. Codex reads none: it takes a whole provider declaration
+instead, so `cs-codex` builds one from `OPENAI_BASE_URL` and passes it as `-c` overrides. Nothing
+is written to any configuration file, so the endpoint applies to that invocation alone and an
+unset variable changes nothing.
+
+Codex authenticates two ways, and the wrapper follows what it finds. With `OPENAI_API_KEY` set, the
+provider names that variable. Without one it asks for Codex's own sign-in, which is the ChatGPT
+subscription path and takes a base URL with no `/v1` on the end. A key present wins, so a sandbox
+meant to run on its subscription should carry no `OPENAI_API_KEY`.
+
+Set any of these per sandbox with `create --env`, or write them into the agent's own profile
+env file inside the sandbox.
+
 ## Global options
 
 | Option | Meaning |

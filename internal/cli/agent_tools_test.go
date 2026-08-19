@@ -293,6 +293,75 @@ exit 0
 `)
 }
 
+// TestCodexWrapperForwardsABaseURL: OPENAI_BASE_URL points codex at an alternative
+// OpenAI-compatible endpoint, the way it points every other client at one.
+//
+// codex reads no base-URL variable of its own — it takes a provider block — so the
+// wrapper translates the variable into the `-c` overrides that declare one. Without
+// this, codex is the only agent a caller cannot put behind a record/replay proxy, and
+// the only one whose traffic cannot be captured and replayed for $0.
+//
+// The auth mode has to follow the endpoint, which is the half worth pinning: an API key
+// travels in a header and the provider names the variable holding it, while a ChatGPT
+// subscription travels as codex's own OAuth and needs requires_openai_auth instead.
+// Getting that branch wrong fails at the first turn with an authentication error that
+// says nothing about the endpoint.
+func TestCodexWrapperForwardsABaseURL(t *testing.T) {
+	skipUnlessLinux(t)
+	home := t.TempDir()
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeStub(t, bin, "codex", "#!/bin/sh\necho \"argv: $*\"\n")
+
+	for _, tc := range []struct {
+		name        string
+		env         []string
+		wantArgv    string
+		notWantArgv string
+	}{
+		{
+			// The variable is the whole switch: unset, the wrapper is what it was.
+			name:        "unset leaves the invocation alone",
+			env:         nil,
+			wantArgv:    "argv: exec do it",
+			notWantArgv: "model_provider",
+		},
+		{
+			name: "an API key names the variable holding it",
+			env:  []string{"OPENAI_BASE_URL=http://vcr:8080/c/demo/v1", "OPENAI_API_KEY=sk-not-a-real-key"},
+			wantArgv: `argv: -c model_provider="cs-proxy" -c model_providers.cs-proxy=` +
+				`{name="cs-proxy", base_url="http://vcr:8080/c/demo/v1", env_key="OPENAI_API_KEY", wire_api="responses"} exec do it`,
+		},
+		{
+			// No key means the subscription path, which authenticates as codex
+			// itself rather than with a header. The empty assignment is not
+			// decoration: the test inherits the developer's environment, and a
+			// key there would otherwise decide this case for it.
+			name: "a subscription asks for codex's own auth",
+			env:  []string{"OPENAI_BASE_URL=http://vcr:8080/c/demo", "OPENAI_API_KEY="},
+			wantArgv: `argv: -c model_provider="cs-proxy" -c model_providers.cs-proxy=` +
+				`{name="cs-proxy", base_url="http://vcr:8080/c/demo", requires_openai_auth=true, wire_api="responses"} exec do it`,
+			notWantArgv: "env_key",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, exit := runScriptStdin(t, home, bin, tc.env, "", "cs-codex", "exec", "do it")
+			if exit != 0 {
+				t.Fatalf("cs-codex exit %d: %s", exit, out)
+			}
+			if !strings.Contains(out, tc.wantArgv) {
+				t.Errorf("want %q:\n%s", tc.wantArgv, out)
+			}
+			if tc.notWantArgv != "" && strings.Contains(out, tc.notWantArgv) {
+				t.Errorf("argv must not carry %q:\n%s", tc.notWantArgv, out)
+			}
+			covemit.Prove(t, "auth-provisioning", "codex", "", "scripts")
+		})
+	}
+}
+
 func TestOpenCodeTurnCompletionSemantics(t *testing.T) {
 	skipUnlessLinux(t)
 	okMessage := `[{"info":{"role":"user","time":{"created":1}}},` +
