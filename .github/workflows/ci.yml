@@ -249,6 +249,7 @@ jobs:
           name: coverage-race-${{ matrix.covlabel }}
           path: .coverage/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 7
 
   # Both build products, from ONE image build. The microVM's rootfs is derived
@@ -425,6 +426,7 @@ jobs:
           name: coverage-smoke-linux
           path: .coverage/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 7
   # Firecracker boots a real microVM — its own kernel, its own rootfs, sshd
   # reached over a vsock bridge — so none of the podman jobs says anything about
@@ -498,6 +500,7 @@ jobs:
           name: coverage-smoke-firecracker
           path: .coverage/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 7
   # Windows is supported through WSL2 — the CLI is a Linux binary inside the
   # distro, so everything happens in wsl-bash.
@@ -676,6 +679,7 @@ jobs:
           name: coverage-smoke-wsl
           path: .coverage/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 7
 
 
@@ -749,6 +753,7 @@ jobs:
           name: coverage-smoke-macos-intel
           path: .coverage/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 7
 
       - name: tear the machine down
@@ -830,6 +835,7 @@ jobs:
           name: coverage-smoke-macos-arm64
           path: .coverage/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 7
 
       # The runner is not ephemeral, so this is the equivalent of the Intel job
