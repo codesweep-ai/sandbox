@@ -1121,3 +1121,131 @@ func TestRemoteBackgroundCarriesTurnTimeout(t *testing.T) {
 		})
 	}
 }
+
+// TestClaudeWrapperAnswersTheFirstRunDialogs pins the three dialogs a fresh
+// profile would otherwise stop on. Each blocks Claude Code's TUI until someone
+// picks an option, so on an unattended member each one hangs the turn until its
+// deadline — the failure this test exists to keep from coming back.
+//
+// The API-key case is the one that is easy to get wrong: an inherited profile
+// can carry a `rejected` entry for the very key the member was handed, so
+// approving is not enough on its own.
+//
+// Onboarding is the opposite trap. Answering it on a sandbox with nothing to
+// sign in with hides the screen offering the sign-in choices, and claude comes
+// up as "API Usage Billing", so it is answered only when a login exists.
+func TestClaudeWrapperAnswersTheFirstRunDialogs(t *testing.T) {
+	skipUnlessLinux(t)
+
+	const key = "sk-ant-0000000000000000000000000000-TAIL20CHARSHEREOK"
+	id := key[len(key)-20:]
+
+	for _, tc := range []struct {
+		name          string
+		env           []string
+		seed          string
+		wantTheme     string
+		wantOnboarded bool
+		wantApp       []string
+		wantReject    []string
+	}{
+		{
+			// The virgin profile a member boots with: no .claude.json at all.
+			name:          "a fresh profile gets every answer",
+			env:           []string{"ANTHROPIC_API_KEY=" + key},
+			wantTheme:     "dark",
+			wantOnboarded: true,
+			wantApp:       []string{id},
+		},
+		{
+			// A theme the operator picked is theirs, not ours to overwrite.
+			name:          "an existing theme survives",
+			env:           []string{"ANTHROPIC_API_KEY=" + key},
+			seed:          `{"theme":"light"}`,
+			wantTheme:     "light",
+			wantOnboarded: true,
+			wantApp:       []string{id},
+		},
+		{
+			// Inheriting a host profile that declined this key must not carry
+			// the refusal into the member.
+			name:          "a rejection inherited for this key is cleared",
+			env:           []string{"ANTHROPIC_API_KEY=" + key},
+			seed:          fmt.Sprintf(`{"customApiKeyResponses":{"approved":[],"rejected":[%q,"another-key-tail-xx"]}}`, id),
+			wantTheme:     "dark",
+			wantOnboarded: true,
+			wantApp:       []string{id},
+			// Somebody else's declined key is none of our business.
+			wantReject: []string{"another-key-tail-xx"},
+		},
+		{
+			// No key means no dialog to answer, and nothing to record. Onboarding
+			// stays unanswered too: a sandbox with nothing to sign in with must
+			// keep the screen that offers the sign-in choices, or claude comes up
+			// as "API Usage Billing" with no way to log in.
+			name:      "no key leaves a login-free profile unonboarded",
+			env:       []string{"ANTHROPIC_API_KEY="},
+			wantTheme: "dark",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-claude")
+			writeStub(t, bin, "claude", "#!/bin/sh\nexit 0\n")
+			writeStub(t, bin, "jq", "#!/bin/sh\nexec /usr/bin/jq \"$@\"\n")
+			ccDir := filepath.Join(home, ".cs-claude")
+			if err := os.MkdirAll(ccDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cfgPath := filepath.Join(ccDir, ".claude.json")
+			if tc.seed != "" {
+				if err := os.WriteFile(cfgPath, []byte(tc.seed), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if out, exit := runScriptStdin(t, home, bin, tc.env, "", "cs-claude"); exit != 0 {
+				t.Fatalf("cs-claude exit %d: %s", exit, out)
+			}
+
+			raw, err := os.ReadFile(cfgPath)
+			if err != nil {
+				t.Fatalf("the wrapper must leave a config behind: %v", err)
+			}
+			var cfg struct {
+				Theme                  string `json:"theme"`
+				HasCompletedOnboarding bool   `json:"hasCompletedOnboarding"`
+				CustomAPIKeyResponses  struct {
+					Approved []string `json:"approved"`
+					Rejected []string `json:"rejected"`
+				} `json:"customApiKeyResponses"`
+				Projects map[string]struct {
+					HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+				} `json:"projects"`
+			}
+			if err := json.Unmarshal(raw, &cfg); err != nil {
+				t.Fatalf("config is not JSON: %v: %s", err, raw)
+			}
+
+			if cfg.Theme != tc.wantTheme {
+				t.Errorf("theme = %q, want %q", cfg.Theme, tc.wantTheme)
+			}
+			if cfg.HasCompletedOnboarding != tc.wantOnboarded {
+				t.Errorf("hasCompletedOnboarding = %v, want %v", cfg.HasCompletedOnboarding, tc.wantOnboarded)
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !cfg.Projects[cwd].HasTrustDialogAccepted {
+				t.Errorf("the launch dir %s must be trusted; got %+v", cwd, cfg.Projects)
+			}
+			if got := cfg.CustomAPIKeyResponses.Approved; !slices.Equal(got, tc.wantApp) {
+				t.Errorf("approved = %v, want %v", got, tc.wantApp)
+			}
+			if got := cfg.CustomAPIKeyResponses.Rejected; !slices.Equal(got, tc.wantReject) {
+				t.Errorf("rejected = %v, want %v", got, tc.wantReject)
+			}
+			covemit.Prove(t, "auth-provisioning", "claude", "", "scripts")
+		})
+	}
+}

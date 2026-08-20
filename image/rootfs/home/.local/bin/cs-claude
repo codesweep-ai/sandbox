@@ -11,8 +11,9 @@
 # confirmations every time):
 #   * bypass-permissions warning — auto-accepted via "skipDangerousModePermissionPrompt"
 #     in this profile's settings.json (exactly what accepting the dialog would persist).
-#   * per-folder "do you trust the files in this folder?" prompt — it's keyed by directory
-#     in .claude.json (no global switch), so we mark the launch dir ($PWD) trusted below.
+#   * the three dialogs keyed in .claude.json — the first-run theme picker, the per-folder
+#     "do you trust the files in this folder?" prompt, and "detected a custom API key ·
+#     use it?" — answered below, where each one is described.
 #   * "claude command at ~/.local/bin/claude missing or broken · run claude install to
 #     repair" — claude is a pinned single binary in read-only /opt (externally managed),
 #     which matches none of claude's known installMethods, so its install-health check
@@ -46,14 +47,48 @@ mkdir -p "$CC_DIR" 2>/dev/null || true   # ensure the profile dir exists (first 
 # or use `cs-sandbox create --env` to inject vars sandbox-wide instead.
 [ -f "$CC_DIR/env" ] && { set -a; . "$CC_DIR/env"; set +a; }
 
-# Auto-trust the current directory so launching claude in any repo never stops to ask.
+# Answer Claude Code's first-run dialogs up front. Each blocks the TUI until a
+# human picks an option, so on an unattended sandbox each one hangs the session
+# for as long as you let it. All three are keyed in .claude.json, and writing
+# the answer here is exactly what accepting the dialog would have persisted.
+#
+#   * "Let's get started · choose the text style" — a profile with no theme opens
+#     on the picker. Written only when absent, so a chosen theme survives.
+#   * "Is this a project you created or one you trust?" — keyed by directory
+#     (there is no global switch), so we mark the launch dir ($PWD) trusted.
+#   * "Detected a custom API key in your environment · do you want to use it?" —
+#     raised whenever ANTHROPIC_API_KEY is set and unanswered, and keyed under
+#     customApiKeyResponses by the key's last 20 characters. We approve the key
+#     we were handed, and clear it from `rejected` so a profile inherited from a
+#     host that declined this same key does not carry the refusal in.
+
+# hasCompletedOnboarding is answered ONLY when this sandbox has something to sign
+# in with. Marking it complete on a login-free sandbox skips the screen offering
+# the sign-in choices, and claude comes up as "API Usage Billing" instead of
+# letting you log in. The entrypoint applies the same rule at boot; here we can
+# check the key itself rather than guess from the env file's existence.
+cc_onboarded=
+if [ -f "$CC_DIR/.credentials.json" ] || [ -n "${ANTHROPIC_API_KEY:-}" ] \
+   || [ -n "${CLAUDE_CODE_USE_BEDROCK:-}" ] || [ -n "${CLAUDE_CODE_USE_VERTEX:-}" ]; then
+  cc_onboarded=1
+fi
+
 if command -v jq >/dev/null 2>&1; then
   cfg="$CC_DIR/.claude.json"
   [ -f "$cfg" ] || echo '{}' > "$cfg"
   if tmp="$(mktemp "$CC_DIR/.claude.json.XXXXXX" 2>/dev/null)"; then
-    jq --arg d "$PWD" \
-       '.projects[$d] = ((.projects[$d] // {}) + {hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true})' \
-       "$cfg" > "$tmp" 2>/dev/null && mv "$tmp" "$cfg" || rm -f "$tmp"
+    jq --arg d "$PWD" --arg key "${ANTHROPIC_API_KEY:-}" \
+       --arg onboarded "$cc_onboarded" '
+        .theme = (.theme // "dark")
+      | (if $onboarded == "" then . else .hasCompletedOnboarding = true end)
+      | .projects[$d] = ((.projects[$d] // {}) + {hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true})
+      | if ($key | length) >= 20 then
+          ($key[-20:]) as $id
+          | .customApiKeyResponses = ((.customApiKeyResponses // {})
+              | .approved = (((.approved // []) + [$id]) | unique)
+              | .rejected = ((.rejected // []) - [$id]))
+        else . end
+    ' "$cfg" > "$tmp" 2>/dev/null && mv "$tmp" "$cfg" || rm -f "$tmp"
     chmod 600 "$cfg" 2>/dev/null || true
   fi
 fi
