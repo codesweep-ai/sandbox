@@ -156,6 +156,14 @@ mkdir -p "$CC_DIR"; chmod 700 "$CC_DIR" 2>/dev/null || true
 if [ -f "$SEED/claude/.credentials.json" ] && [ ! -f "$CC_DIR/.credentials.json" ]; then
   install -m 600 "$SEED/claude/.credentials.json" "$CC_DIR/.credentials.json"
 fi
+# The host's Claude Code theme, carried at create so the sandbox comes up looking
+# like the claude the user already runs instead of stopping on the picker. The
+# cs-claude wrapper reads this as its default; a theme chosen inside the sandbox
+# lands in .claude.json and wins over it.
+if [ -f "$SEED/claude_theme" ]; then
+  install -m 644 "$SEED/claude_theme" "$CC_DIR/theme"
+fi
+
 # Skip the first-run onboarding wizard for this profile — but ONLY when the sandbox
 # actually has something to log in with. Marking onboarding complete on a sandbox with
 # no credentials skips the screen that offers the sign-in choices, and claude then presents

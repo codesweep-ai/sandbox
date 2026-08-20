@@ -1,6 +1,7 @@
 package seed
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -122,4 +123,26 @@ func capitalize(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// HostClaudeTheme reads the colour theme out of the host user's own Claude Code
+// config. Unreadable, unparseable or unset all yield "", which carries nothing
+// and leaves the in-sandbox default in charge.
+//
+// Only the theme is taken. The rest of that file is the host's project history
+// and account state, which has no business in a sandbox. This is config rather
+// than a credential, so it rides along with every create instead of waiting for
+// --inherit-agent-login.
+func HostClaudeTheme(home string) ClaudeTheme {
+	data, err := os.ReadFile(filepath.Join(home, ".claude.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Theme string `json:"theme"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	return ClaudeTheme(cfg.Theme)
 }

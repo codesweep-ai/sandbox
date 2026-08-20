@@ -7,6 +7,7 @@ package seed
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -147,4 +148,32 @@ func writeLines(b *strings.Builder, s string) {
 	if s[len(s)-1] != '\n' {
 		b.WriteByte('\n')
 	}
+}
+
+// ClaudeTheme is the colour theme the host's own Claude Code runs, carried so a
+// sandbox comes up looking like the claude the user already uses rather than
+// stopping on the first-run picker. Serialized as the seed claude_theme file.
+//
+// Claude Code has no follow-the-system setting: the theme is one of six fixed
+// values, and a sandbox has no desktop to read a preference from anyway. The
+// host's choice is the closest thing to "match my system" available.
+type ClaudeTheme string
+
+// claudeThemes is what Claude Code accepts. A value outside this set is dropped
+// rather than carried: the picker rejects it and we would be back to the modal
+// this exists to avoid.
+var claudeThemes = []string{
+	"dark", "light",
+	"dark-ansi", "light-ansi",
+	"dark-daltonized", "light-daltonized",
+}
+
+// File renders the claude_theme seed file, or "" (write nothing) when the host
+// names no theme or one this build does not know.
+func (t ClaudeTheme) File() string {
+	v := strings.TrimSpace(string(t))
+	if !slices.Contains(claudeThemes, v) {
+		return ""
+	}
+	return v + "\n"
 }

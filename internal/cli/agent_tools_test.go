@@ -1144,6 +1144,7 @@ func TestClaudeWrapperAnswersTheFirstRunDialogs(t *testing.T) {
 		name          string
 		env           []string
 		seed          string
+		theme         string // ~/.cs-claude/theme, as create carried it from the host
 		wantTheme     string
 		wantOnboarded bool
 		wantApp       []string
@@ -1187,6 +1188,26 @@ func TestClaudeWrapperAnswersTheFirstRunDialogs(t *testing.T) {
 			env:       []string{"ANTHROPIC_API_KEY="},
 			wantTheme: "dark",
 		},
+		{
+			// The theme create carried off the host, so the sandbox looks like
+			// the claude the operator already runs.
+			name:          "the host theme carried at create is used",
+			env:           []string{"ANTHROPIC_API_KEY=" + key},
+			theme:         "light-daltonized",
+			wantTheme:     "light-daltonized",
+			wantOnboarded: true,
+			wantApp:       []string{id},
+		},
+		{
+			// A value claude does not know would reopen the picker, so it is
+			// dropped rather than written through.
+			name:          "a theme claude does not know falls back",
+			env:           []string{"ANTHROPIC_API_KEY=" + key},
+			theme:         "neon",
+			wantTheme:     "dark",
+			wantOnboarded: true,
+			wantApp:       []string{id},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, bin := agentHome(t, ".cs-claude")
@@ -1195,6 +1216,11 @@ func TestClaudeWrapperAnswersTheFirstRunDialogs(t *testing.T) {
 			ccDir := filepath.Join(home, ".cs-claude")
 			if err := os.MkdirAll(ccDir, 0o700); err != nil {
 				t.Fatal(err)
+			}
+			if tc.theme != "" {
+				if err := os.WriteFile(filepath.Join(ccDir, "theme"), []byte(tc.theme+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
 			cfgPath := filepath.Join(ccDir, ".claude.json")
 			if tc.seed != "" {

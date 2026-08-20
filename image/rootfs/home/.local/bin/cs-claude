@@ -53,7 +53,9 @@ mkdir -p "$CC_DIR" 2>/dev/null || true   # ensure the profile dir exists (first 
 # the answer here is exactly what accepting the dialog would have persisted.
 #
 #   * "Let's get started · choose the text style" — a profile with no theme opens
-#     on the picker. Written only when absent, so a chosen theme survives.
+#     on the picker. We default to the host's own theme when create carried one
+#     (~/.cs-claude/theme), else dark. Written only when absent, so a theme
+#     chosen in here survives.
 #   * "Is this a project you created or one you trust?" — keyed by directory
 #     (there is no global switch), so we mark the launch dir ($PWD) trusted.
 #   * "Detected a custom API key in your environment · do you want to use it?" —
@@ -61,6 +63,17 @@ mkdir -p "$CC_DIR" 2>/dev/null || true   # ensure the profile dir exists (first 
 #     customApiKeyResponses by the key's last 20 characters. We approve the key
 #     we were handed, and clear it from `rejected` so a profile inherited from a
 #     host that declined this same key does not carry the refusal in.
+
+# The theme create carried from the host, if it carried one; dark otherwise.
+# Validated here too: a value claude does not know would reopen the picker.
+cc_theme="dark"
+if [ -r "$CC_DIR/theme" ]; then
+  _t="$(tr -d '[:space:]' < "$CC_DIR/theme" 2>/dev/null || true)"
+  case "$_t" in
+    dark|light|dark-ansi|light-ansi|dark-daltonized|light-daltonized) cc_theme="$_t" ;;
+  esac
+  unset _t
+fi
 
 # hasCompletedOnboarding is answered ONLY when this sandbox has something to sign
 # in with. Marking it complete on a login-free sandbox skips the screen offering
@@ -78,8 +91,8 @@ if command -v jq >/dev/null 2>&1; then
   [ -f "$cfg" ] || echo '{}' > "$cfg"
   if tmp="$(mktemp "$CC_DIR/.claude.json.XXXXXX" 2>/dev/null)"; then
     jq --arg d "$PWD" --arg key "${ANTHROPIC_API_KEY:-}" \
-       --arg onboarded "$cc_onboarded" '
-        .theme = (.theme // "dark")
+       --arg theme "$cc_theme" --arg onboarded "$cc_onboarded" '
+        .theme = (.theme // $theme)
       | (if $onboarded == "" then . else .hasCompletedOnboarding = true end)
       | .projects[$d] = ((.projects[$d] // {}) + {hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true})
       | if ($key | length) >= 20 then

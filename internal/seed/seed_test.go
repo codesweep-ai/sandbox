@@ -1,6 +1,8 @@
 package seed
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -138,5 +140,48 @@ func mustContain(t *testing.T, s, sub string) {
 	t.Helper()
 	if !strings.Contains(s, sub) {
 		t.Fatalf("expected config to contain %q:\n%s", sub, s)
+	}
+}
+
+func TestClaudeThemeFile(t *testing.T) {
+	for _, v := range claudeThemes {
+		if got, want := ClaudeTheme(v).File(), v+"\n"; got != want {
+			t.Errorf("ClaudeTheme(%q).File() = %q, want %q", v, got, want)
+		}
+	}
+	// Whitespace off a hand-edited config is trimmed, not carried through.
+	if got, want := ClaudeTheme(" light \n").File(), "light\n"; got != want {
+		t.Errorf("File() = %q, want %q", got, want)
+	}
+	// A theme claude does not know would reopen the picker the carry exists to
+	// avoid, so it is dropped rather than written.
+	for _, v := range []string{"", "  ", "neon", "Dark", "dark; rm -rf /"} {
+		if got := ClaudeTheme(v).File(); got != "" {
+			t.Errorf("ClaudeTheme(%q) should render nothing, got %q", v, got)
+		}
+	}
+}
+
+func TestHostClaudeTheme(t *testing.T) {
+	for _, tc := range []struct {
+		name, config string // config is "" to write no file at all
+		want         ClaudeTheme
+	}{
+		{"a theme is read", `{"theme":"light","projects":{}}`, "light"},
+		{"no theme key", `{"projects":{}}`, ""},
+		{"unparseable config", `{not json`, ""},
+		{"no host config at all", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			if tc.config != "" {
+				if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(tc.config), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := HostClaudeTheme(home); got != tc.want {
+				t.Errorf("HostClaudeTheme() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

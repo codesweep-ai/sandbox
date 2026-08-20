@@ -91,6 +91,9 @@ where the host has KVM, and to Podman otherwise.
 `create` prints which agent logins the sandbox ended up with, so an inherited login is never a
 silent assumption.
 
+`create` also carries your Claude Code theme in, so `cs-claude` opens looking the way claude does on
+your host. Pick a different theme inside the sandbox and that choice wins from then on.
+
 Recreating with the name of a sandbox that `rm` kept data for reuses that data.
 
 ### Working in a sandbox

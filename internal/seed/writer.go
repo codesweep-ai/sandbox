@@ -31,6 +31,7 @@ type Input struct {
 	HostHosts   string // "ip name1 name2" line for the guest /etc/hosts (or "")
 	InjectedEnv string // resolved KEY=VALUE block (or "")
 	GitIdent    GitIdentity
+	ClaudeTheme ClaudeTheme
 }
 
 // Write materializes the seed at <seedDir>, creating host_keys via ssh-keygen
@@ -102,6 +103,15 @@ func Write(ctx context.Context, r run.Runner, seedDir string, in Input) error {
 		}
 	} else {
 		_ = os.Remove(filepath.Join(seedDir, "git_identity"))
+	}
+
+	// claude theme (non-secret).
+	if ct := in.ClaudeTheme.File(); ct != "" {
+		if err := writeFile(seedDir, "claude_theme", []byte(ct), 0o644); err != nil {
+			return err
+		}
+	} else {
+		_ = os.Remove(filepath.Join(seedDir, "claude_theme"))
 	}
 	return nil
 }

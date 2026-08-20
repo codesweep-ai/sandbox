@@ -205,6 +205,7 @@ func (c Cache) BuildSeedExt4(ctx context.Context, r run.Runner, in SeedInput, se
 		{"host_hosts", "host_hosts", 0o644},
 		{"inject-env", "inject-env", 0o600},
 		{"git_identity", "git_identity", 0o600},
+		{"claude_theme", "claude_theme", 0o644},
 	} {
 		if err := copyIf(f.rel, f.dst, f.mode); err != nil {
 			return err

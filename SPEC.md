@@ -98,6 +98,7 @@ in the guest at `/run/cs-sandbox-seed`.
 - the `host_hosts` map, for reaching the host by name;
 - the resolved `inject-env` block;
 - the host's git identity;
+- the host's Claude Code theme;
 - the credential of each agent named by `--inherit-agent-login`.
 
 **R13.** The guest init **MUST** split its work by a sentinel. First boot, when `~/.cs-sandbox-initialized`
@@ -583,6 +584,12 @@ For a key scoped to the agent rather than the whole sandbox, write it to `~/.cs-
 the sandbox, or to the equivalent for the other two. The wrappers read it at launch. An API key
 overrides a subscription login, so there is rarely a reason to inherit a login and inject a key into
 the same sandbox.
+
+The wrappers answer the agents' first-run dialogs, so an unattended turn never waits on one. For
+`cs-claude` that covers the theme, the per-directory trust prompt and the custom-API-key prompt. The
+theme defaults to the one your host runs, which `create` carries in. Onboarding is the exception. A
+sandbox with no login has to keep the screen offering the sign-in choices, so the wrapper answers
+onboarding only once a credential or a key exists.
 
 ## 11. The Podman container engine
 

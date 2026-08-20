@@ -495,6 +495,7 @@ func (d Deps) writeSeed(ctx context.Context, seedDir string, s CreateSpec, gw st
 		in.TierPubPath = filepath.Join(d.TierDir, tierName+".pub")
 	}
 	in.GitIdent = d.globalGitIdentity(ctx)
+	in.ClaudeTheme = seed.HostClaudeTheme(d.Host.Home)
 	if err := seed.Write(ctx, d.Runner, seedDir, in); err != nil {
 		return nil, err
 	}

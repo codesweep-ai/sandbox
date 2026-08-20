@@ -186,6 +186,10 @@ CC_DIR="$HOME_DIR/.cs-claude"; mkdir -p "$CC_DIR"; chmod 700 "$CC_DIR" 2>/dev/nu
 if [ -f "$SEED/claude/.credentials.json" ] && [ ! -f "$CC_DIR/.credentials.json" ]; then
   install -m600 "$SEED/claude/.credentials.json" "$CC_DIR/.credentials.json"
 fi
+# The host's Claude Code theme, carried at create; the cs-claude wrapper reads it
+# as its default. A theme chosen inside the sandbox wins over it.
+[ -f "$SEED/claude_theme" ] && install -m644 "$SEED/claude_theme" "$CC_DIR/theme"
+
 # Skip the first-run onboarding wizard only when this sandbox has credentials: doing it
 # on a login-free sandbox hides the sign-in choices and claude comes up as
 # "API Usage Billing" instead.
