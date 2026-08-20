@@ -152,8 +152,12 @@ jobs:
           # none. With no gcc at all Go sets CGO_ENABLED=0 and everything builds;
           # with gcc present it enables cgo, then dies on `fatal error:
           # stdlib.h: No such file or directory` — in `go vet`, not just -race.
+          # jq comes with the hosted ubuntu and macOS images but not with this
+          # bare distro. The cs-claude wrapper skips its whole config edit when
+          # jq is missing, so without it the first-run dialog tests fail here
+          # and only here.
           apt-get install -y -qq --no-install-recommends \
-            ca-certificates curl git make gcc libc6-dev
+            ca-certificates curl git make gcc libc6-dev jq
           ver="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1)"
           curl -fsSL "https://go.dev/dl/${ver}.linux-amd64.tar.gz" | tar -C /usr/local -xz
           ln -sf /usr/local/go/bin/go /usr/bin/go
