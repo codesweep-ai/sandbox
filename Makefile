@@ -45,7 +45,7 @@ help:
 build:
 	@mkdir -p $(dir $(BIN))
 	@if command -v $(GORELEASER) >/dev/null 2>&1; then \
-		$(GORELEASER) build --single-target --snapshot --clean --output $(BIN); \
+		VERSION='$(VERSION)' $(GORELEASER) build --single-target --snapshot --clean --output $(BIN); \
 	else \
 		echo "goreleaser not found; using go build (run 'make build-go' explicitly to force)"; \
 		$(MAKE) build-go; \
@@ -293,7 +293,7 @@ deadcode:
 ## snapshot: local release dry-run into dist/ (all platforms, archives, checksums).
 ## Skips SBOM + cosign signing (those need cyclonedx-gomod + cosign; run in CI/release).
 snapshot:
-	$(GORELEASER) release --snapshot --clean --skip=sbom,sign
+	VERSION='$(VERSION)' $(GORELEASER) release --snapshot --clean --skip=sbom,sign
 
 ## release: tagged release (needs a pushed git tag + credentials). For a full
 ## signed+SBOM release install: go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest and cosign.

@@ -83,7 +83,7 @@ signs:
     output: true
 
 snapshot:
-  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
+  version_template: '{{ with index .Env "VERSION" }}{{ . }}{{ else }}{{ .ShortCommit }}{{ end }}'
 
 changelog:
   sort: asc
