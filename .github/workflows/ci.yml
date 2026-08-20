@@ -240,6 +240,16 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # Schema only: this validates the manifest, and does not prove a release
+      # can be cut. The manifest is platform-independent, so check it once —
+      # without this nothing reads .goreleaser.yaml until a release is cut.
+      - name: goreleaser check
+        if: matrix.os == 'ubuntu-latest'
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: check
+
       - name: test
         run: make test-race
 
