@@ -293,6 +293,101 @@ exit 0
 `)
 }
 
+// TestOpenCodeWrapperForwardsABaseURL: OPENCODE_BASE_URL points opencode's
+// active provider at another endpoint.
+//
+// It cannot be OPENAI_BASE_URL. opencode's base URL belongs to the provider, and
+// that variable already means its openai provider — so a model on any other
+// provider ignores it, and repointing one with it would surprise whoever set it.
+// The route that works for every provider is a baseURL in the config, supplied
+// inline so nothing is written and an unset variable changes nothing.
+//
+// The provider comes from the pinned model's own slug, which is the one this
+// session will use. Pinned here because getting it wrong is silent: the agent
+// talks to the real provider, the proxy records nothing, and the run looks like
+// a success.
+func TestOpenCodeWrapperForwardsABaseURL(t *testing.T) {
+	skipUnlessLinux(t)
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("the wrapper composes the provider block with jq")
+	}
+	home := t.TempDir()
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeStub(t, bin, "opencode", "#!/bin/sh\necho \"config: $OPENCODE_CONFIG_CONTENT\"\n")
+	ocDir := filepath.Join(home, ".cs-opencode")
+	if err := os.MkdirAll(ocDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeConfig := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(ocDir, "opencode.json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const url = "http://vcr:8080/c/demo/v1"
+
+	t.Run("unset leaves the invocation alone", func(t *testing.T) {
+		writeConfig(`{"model":"fireworks-ai/accounts/fireworks/models/kimi-k3"}`)
+		out, exit := runScript(t, home, bin, "cs-opencode", "run", "x")
+		if exit != 0 {
+			t.Fatalf("cs-opencode exit %d: %s", exit, out)
+		}
+		if !strings.Contains(out, "config: \n") && strings.TrimSpace(out) != "config:" {
+			t.Errorf("no variable set, so no config content should be composed:\n%s", out)
+		}
+	})
+
+	// The provider is whichever the pinned model names, not a fixed one: that is
+	// the whole reason an environment variable cannot do this job.
+	for _, tc := range []struct{ name, model, wantProvider string }{
+		{"a fireworks model points the fireworks provider", "fireworks-ai/accounts/fireworks/models/kimi-k3", "fireworks-ai"},
+		{"an openai model points the openai provider", "openai/gpt-5", "openai"},
+		{"an anthropic model points the anthropic provider", "anthropic/claude-sonnet-5", "anthropic"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeConfig(`{"model":"` + tc.model + `"}`)
+			out, exit := runScriptStdin(t, home, bin, []string{"OPENCODE_BASE_URL=" + url}, "", "cs-opencode", "run", "x")
+			if exit != 0 {
+				t.Fatalf("cs-opencode exit %d: %s", exit, out)
+			}
+			want := `{"provider":{"` + tc.wantProvider + `":{"options":{"baseURL":"` + url + `"}}}}`
+			if !strings.Contains(out, want) {
+				t.Errorf("want %s:\n%s", want, out)
+			}
+			covemit.Prove(t, "auth-provisioning", "opencode", "", "scripts")
+		})
+	}
+
+	// A config content the caller composed themselves is theirs.
+	t.Run("a caller's own config content is kept", func(t *testing.T) {
+		writeConfig(`{"model":"fireworks-ai/accounts/fireworks/models/kimi-k3"}`)
+		out, exit := runScriptStdin(t, home, bin,
+			[]string{"OPENCODE_BASE_URL=" + url, `OPENCODE_CONFIG_CONTENT={"mine":true}`}, "", "cs-opencode", "run", "x")
+		if exit != 0 {
+			t.Fatalf("cs-opencode exit %d: %s", exit, out)
+		}
+		if !strings.Contains(out, `{"mine":true}`) {
+			t.Errorf("the caller's own content must survive:\n%s", out)
+		}
+	})
+
+	// No model means no provider to name, and saying so beats composing a block
+	// keyed on an empty string.
+	t.Run("no pinned model says so", func(t *testing.T) {
+		writeConfig(`{}`)
+		out, exit := runScriptStdin(t, home, bin, []string{"OPENCODE_BASE_URL=" + url}, "", "cs-opencode", "run", "x")
+		if exit != 0 {
+			t.Fatalf("cs-opencode exit %d: %s", exit, out)
+		}
+		if !strings.Contains(out, "names no model") {
+			t.Errorf("want a diagnostic naming the gap:\n%s", out)
+		}
+	})
+}
+
 // TestCodexWrapperForwardsABaseURL: OPENAI_BASE_URL points codex at an alternative
 // OpenAI-compatible endpoint, the way it points every other client at one.
 //

@@ -34,6 +34,41 @@ if [ -f "$OC_DIR/auth.json" ] && [ -z "${OPENCODE_AUTH_CONTENT:-}" ]; then
   export OPENCODE_AUTH_CONTENT
 fi
 
+# Point opencode's active provider at another endpoint — a gateway, a proxy, a
+# traffic recorder.
+#
+# opencode's base URL belongs to the PROVIDER, not the client: it reads
+# OPENAI_BASE_URL and ANTHROPIC_BASE_URL and nothing else, so a model on any
+# other provider (fireworks, say) cannot be redirected by environment alone. The
+# route that works for every provider is a baseURL in the config, and
+# OPENCODE_CONFIG_CONTENT supplies one inline. It MERGES over this profile's
+# opencode.json rather than replacing it, so the pinned model, the permissions
+# and disabled_providers all survive — checked, not assumed.
+#
+# The provider is taken from the pinned model's own slug, because that is the
+# provider this session will actually use. Nothing is written to disk, so an
+# unset variable changes nothing and switching endpoints leaves no state behind.
+#
+# Deliberately not OPENAI_BASE_URL: opencode already gives that one a narrower
+# meaning, its openai provider, and quietly repointing a fireworks model with it
+# would surprise anyone who set it for the reason it exists. A caller who has
+# already composed OPENCODE_CONFIG_CONTENT keeps theirs.
+if [ -n "${OPENCODE_BASE_URL:-}" ] && [ -z "${OPENCODE_CONFIG_CONTENT:-}" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    _prov="$(jq -r '(.model // "") | split("/")[0]' "$OC_DIR/opencode.json" 2>/dev/null || true)"
+    if [ -n "${_prov:-}" ] && [ "$_prov" != "null" ]; then
+      OPENCODE_CONFIG_CONTENT="$(jq -nc --arg p "$_prov" --arg u "$OPENCODE_BASE_URL" \
+        '{provider: {($p): {options: {baseURL: $u}}}}')"
+      export OPENCODE_CONFIG_CONTENT
+    else
+      echo "cs-opencode: OPENCODE_BASE_URL is set but $OC_DIR/opencode.json names no model, so no provider to point" >&2
+    fi
+    unset _prov
+  else
+    echo "cs-opencode: OPENCODE_BASE_URL is set but jq is missing, so the provider base URL was not applied" >&2
+  fi
+fi
+
 if [ -n "${CS_OPENCODE_YOLO:-}" ] || [ -f "$OC_DIR/.yolo" ]; then
   # --auto exists on the TUI (default command) and `run` only; injecting it into other
   # subcommands (serve, export, session, db, ...) would be an unknown-flag error.

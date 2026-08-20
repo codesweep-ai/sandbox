@@ -220,16 +220,25 @@ login stays in that sandbox and goes when it does.
 respects the base URL its agent already reads, so pointing one at an endpoint of your own needs
 nothing but the variable. A gateway, a proxy and a traffic recorder are all reached this way:
 
-| Wrapper | Variable |
-|---|---|
-| `cs-claude` | `ANTHROPIC_BASE_URL` |
-| `cs-opencode` | `OPENAI_BASE_URL` |
-| `cs-codex` | `OPENAI_BASE_URL` |
+| Wrapper | Variable | What it points |
+|---|---|---|
+| `cs-claude` | `ANTHROPIC_BASE_URL` | Claude Code, however it is signed in |
+| `cs-codex` | `OPENAI_BASE_URL` | Codex |
+| `cs-opencode` | `OPENCODE_BASE_URL` | the provider the pinned model names |
+| `cs-opencode` | `OPENAI_BASE_URL` | OpenCode's openai provider alone |
 
-Claude and OpenCode read theirs directly. Codex reads none: it takes a whole provider declaration
-instead, so `cs-codex` builds one from `OPENAI_BASE_URL` and passes it as `-c` overrides. Nothing
-is written to any configuration file, so the endpoint applies to that invocation alone and an
-unset variable changes nothing.
+Claude reads its own, and one variable covers it whatever serves it. Codex reads none: it takes a
+whole provider declaration instead, so `cs-codex` builds one from `OPENAI_BASE_URL` and passes it as
+`-c` overrides. Nothing is written to any configuration file, so the endpoint applies to that
+invocation alone and an unset variable changes nothing.
+
+OpenCode is the awkward one. Its base URL belongs to the *provider*, and only the openai and
+anthropic providers have a variable. A model on any other one ignores `OPENAI_BASE_URL` completely:
+the agent reaches the real endpoint while whatever you pointed it at sits idle.
+
+Use `OPENCODE_BASE_URL` for those. `cs-opencode` reads the provider from the pinned model in the
+profile's `opencode.json`, and supplies a base URL for it inline. Nothing is written, and the pinned
+model, the permissions and the disabled providers all survive.
 
 Codex authenticates two ways, and the wrapper follows what it finds. With `OPENAI_API_KEY` set, the
 provider names that variable. Without one it asks for Codex's own sign-in, which is the ChatGPT
