@@ -1,8 +1,8 @@
-# cs-sandbox(1) — manual
+# The cs-sandbox manual
 
 ## Name
 
-**cs-sandbox** — create and manage disposable Linux dev sandboxes for AI coding agents.
+`cs-sandbox`: create and manage disposable Linux dev sandboxes for AI coding agents.
 
 ## Synopsis
 
@@ -359,25 +359,35 @@ you to one.
 
 ## Diagnostics
 
-**A name that exists in several groups** — the error names every candidate. Address the sandbox in
-full as `<name>.<group>`. A bare name only ever means the `default` group.
+**A name that exists in several groups**
 
-**`ssh <name>` does not resolve** — the SSH config fragment is stale or the include is missing. Run
-`cs-sandbox sync-ssh-config`.
+The error names every candidate. Address the sandbox in full as `<name>.<group>`. A bare name only
+ever means the `default` group.
 
-**A sandbox cannot reach another** — check they are in the same group, and check the type matrix
-above. An agent sandbox cannot reach a user sandbox by design, and `--solo` denies outbound SSH
-entirely.
+**`ssh <name>` does not resolve**
 
-**`create` rejects a path on macOS** — everything runs in one podman-machine VM there, so `--repo`
-and `--snapshot` sources must live under `$HOME`.
+The SSH config fragment is stale, or the include is missing. Run `cs-sandbox sync-ssh-config`.
 
-**`no systemd user session; running without a memory cgroup`** — a microVM is starting outside the
-cgroup that would cap it. The sandbox runs, but a runaway one is charged to the shell that launched
-it. Under WSL2, enable systemd as [INSTALL.md](INSTALL.md#windows-wsl2) describes.
+**A sandbox cannot reach another**
 
-**Anything about a missing prerequisite** — run `cs-sandbox doctor`, which names the gap and the
-fix. Add `--engine podman` or `--engine firecracker` to check a specific engine.
+Check they are in the same group, and check the type matrix above. An agent sandbox cannot reach a
+user sandbox by design, and `--solo` denies outbound SSH entirely.
+
+**`create` rejects a path on macOS**
+
+Everything runs in one podman-machine VM there, so `--repo` and `--snapshot` sources must live under
+`$HOME`.
+
+**`no systemd user session; running without a memory cgroup`**
+
+A microVM is starting outside the cgroup that would cap it. The sandbox runs, but a runaway one is
+charged to the shell that launched it. Under WSL2, enable systemd as
+[INSTALL.md](INSTALL.md#windows-wsl2) describes.
+
+**Anything about a missing prerequisite**
+
+Run `cs-sandbox doctor`, which names the gap and the fix. Add `--engine podman` or `--engine
+firecracker` to check a specific engine.
 
 ## Notes for agents
 

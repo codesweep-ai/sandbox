@@ -11,9 +11,6 @@
 # Local credentials and env config
 /.env
 
-# Python bytecode, written when anything imports scripts/lint-docs.py
-__pycache__/
-
 # Coverage data. Every test target writes a tier directory here; the merged
 # profile and report are derived from them. The baseline (.coverage-baseline)
 # is committed on purpose — it is what makes a lost suite reviewable.

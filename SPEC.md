@@ -1,4 +1,4 @@
-# sandbox — specification
+# The cs-sandbox specification
 
 This document specifies what a `cs-sandbox` sandbox is, what it guarantees, and how it is built. It
 is the contract between the CLI, the image, the guest init and the network fabric.
@@ -654,8 +654,8 @@ comes from a `net.ipv4.ping_group_range` sysctl rather than a capability. Becaus
 rootless the capabilities are namespaced, so this is strictly safer than `--privileged`, which turns
 seccomp off and unmasks everything.
 
-**R104.** The inner Podman **MUST** run rootless, as the sandbox user, with no wrapper and no `sudo` — plain
-`podman` **MUST** be the real binary on both engines.
+**R104.** The inner Podman **MUST** run rootless, as the sandbox user, with no wrapper and no `sudo`.
+Plain `podman` **MUST** be the real binary on both engines.
 
 **R105.** The container **MUST** unmask the paths the engine masks by default, with `unmask=ALL`. A nested
 user namespace cannot mount a fresh `procfs` while any of the container's `/proc` is masked, and the
@@ -684,7 +684,7 @@ what an inner container writes to a bind mount is already theirs.
 
 Both halves of the bootstrap live in one script, `image/rootfs/nested-rootless`, which every entry
 path runs: the container entrypoint, the microVM's guest init, and the shared-store seeder. That is
-what satisfies R85a — the ranges are derived the same way and capped the same way, so a store seeded
+what satisfies R85a: the ranges are derived the same way and capped the same way, so a store seeded
 once is readable on either engine.
 
 Supporting that, the image carries `crun`, `slirp4netns` and `passt`, plus a `storage.conf`

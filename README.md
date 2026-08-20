@@ -37,14 +37,14 @@ Your agent logins aren't shared by default either, though a sandbox can inherit 
 ## Quickstart
 
 One-time host setup (the binary, Podman, `cs-sandbox build`, and a Claude, Codex, or OpenCode login
-if you want sandboxes to inherit it) is in [INSTALL.md](INSTALL.md) — then the whole loop is:
+if you want sandboxes to inherit it) is in [INSTALL.md](INSTALL.md). Then the whole loop is:
 
 ```bash
 # Create a sandbox named "feature": share the ~/projects/api repo into it, and
 # carry your host Claude login in so the agent inside is already logged in.
 cs-sandbox create feature --repo ~/projects/api --inherit-agent-login claude
 ssh feature                                        # shell in by name
-[feature]$ cd ~/api && cs-claude                   # run the agent — logged in; then exit
+[feature]$ cd ~/api && cs-claude                   # run the agent, logged in; then exit
 cs-sandbox fetch feature                           # pull the agent's commits back to the host
 cs-sandbox destroy feature -f                      # throw the whole sandbox away
 ```
@@ -77,29 +77,29 @@ host on top, the shared network holding the sandboxes, and how data moves in and
    host data in:  --repo · --snapshot        commits out:  fetch
 ```
 
-Every sandbox runs from one generic image, with no identity baked in — your user is created at
+Every sandbox runs from one generic image, with no identity baked in: your user is created at
 first boot. A shared rootless network joins them, so any sandbox reaches any other **by name**,
 across engines. The host reaches a sandbox by name over SSH, and a port inside one via `forward` or
 the optional `host-route`.
 
-That network belongs to a **group**, and without `--group` every sandbox joins one called `default` —
-which is why they all see each other above. If you ever need two efforts on one host that must *not*
-interfere, [walkthrough 8](#8-run-two-isolated-experiments-with---group) shows how.
+That network belongs to a **group**, and without `--group` every sandbox joins one called
+`default`, which is why they all see each other above. If you ever need two efforts on one host that
+must *not* interfere, [walkthrough 8](#8-run-two-isolated-experiments-with---group) shows how.
 Until then you can ignore groups entirely.
 
 ## What's in a sandbox
 
 Every sandbox boots from the same image, so there is nothing to install inside one:
 
-- **A broad dev toolchain** — git, Podman, Node, Python, Go, Java, Neovim, tmux, and the usual CLI
+- **A broad dev toolchain**: git, Podman, Node, Python, Go, Java, Neovim, tmux, and the usual CLI
   helpers (ripgrep, fd, fzf, bat, jq/yq, gh, uv). Full list in
   [`image/Containerfile`](image/Containerfile).
 - **The Claude Code, Codex, and OpenCode agents**, with **`cs-claude` / `cs-codex` /
-  `cs-opencode`** — wrappers that launch each on a sandbox-local profile (never your personal
+  `cs-opencode`**, wrappers that launch each on a sandbox-local profile (never your personal
   `~/.claude` / `~/.codex` / `~/.config/opencode`), with sane permission defaults and the working
   directory pre-trusted. Run `cs-claude` rather than `claude` and it starts working instead of
   asking setup questions.
-- **Remote agent tools** — `cs-claude-remote`, `cs-codex-remote` and `cs-opencode-remote`, each
+- **Remote agent tools**: `cs-claude-remote`, `cs-codex-remote` and `cs-opencode-remote`, each
   with `-status`, `-output`, `-sessions` and `-forget` companions. They start or resume an agent
   session on *another* sandbox over SSH, keep it warm, and hand back its output. That is how one
   agent gives a task to another ([walkthrough 7](#7-let-one-coding-agent-drive-another)).
@@ -118,8 +118,8 @@ Codex or OpenCode on the host. It is a handful of commands, and `cs-sandbox doct
 prerequisite and prints the fix for anything missing.
 
 **About the agent login.** Several walkthroughs pass `--inherit-agent-login claude` (or
-`codex`/`opencode`), which copies that host login in as the sandbox is created — the convenient
-choice, since it saves logging in inside every one. Leave the flag off to keep a sandbox on its own
+`codex`/`opencode`), which copies that host login in as the sandbox is created. That is the
+convenient choice, since it saves logging in inside every one. Leave the flag off to keep a sandbox on its own
 account, and log in there with `cs-sandbox agent-login claude <name>`. See
 [SPEC.md](SPEC.md#101-login).
 
@@ -158,7 +158,7 @@ cs-sandbox destroy feature -f
 
 Same idea as walkthrough 1, but the destination is a **user sandbox** you drive rather than the host.
 A user sandbox sits a layer above and can `ssh` into agent sandboxes, so it fetches a peer's branch
-with plain git — no host round-trip.
+with plain git, and no host round-trip.
 
 ```bash
 # An agent sandbox does the work (its branch: cs-sandbox/worker).
@@ -167,7 +167,7 @@ ssh worker
 [worker]$ cd ~/api && cs-claude    # "add a /health endpoint and commit when done", then exit
 [worker]$ exit
 
-# A user sandbox with the same repo — your workspace to review the agent's work.
+# A user sandbox with the same repo: your workspace to review the agent's work.
 cs-sandbox create dev --type user --repo ~/projects/api
 ssh dev
 [dev]$ cd ~/api
@@ -211,7 +211,7 @@ cs-sandbox destroy lab -f                # the login goes with it
 
 ### 4. Run an app in a container, inside the sandbox
 
-A sandbox can run Podman containers of its own, and it just works — nothing to set up, no flags.
+A sandbox can run Podman containers of its own, and it just works: nothing to set up, no flags.
 
 ```bash
 cs-sandbox create web
@@ -267,7 +267,8 @@ cs-sandbox destroy web -f                # done with the walkthrough-4 sandbox
 Every sandbox carries `cs-claude-remote`, `cs-codex-remote` and `cs-opencode-remote`, part of the
 [agent tools](#whats-in-a-sandbox). Each starts or resumes an agent session on another sandbox over
 SSH, keeps it warm, and hands back its output. That's how you orchestrate several agent tasks
-running in different sandboxes — one agent driving the others, which is what this walkthrough does.
+running in different sandboxes, with one agent driving the others. That is what this walkthrough
+does.
 
 ```bash
 # Two agent sandboxes. Agents can SSH to each other
@@ -304,23 +305,23 @@ approaches need the same set of sandboxes each, or the comparison is not fair.
 
 ```bash
 # Two experiments comparing caching strategies. Each --group gets its own network,
-# SSH keys and gateway, created on demand — and each holds the SAME two names, so
+# SSH keys and gateway, created on demand. Each holds the SAME two names, so
 # the fixture is identical and only the approach differs.
 cs-sandbox create api   --group cache-redis  --repo ~/projects/api --inherit-agent-login claude
 cs-sandbox create bench --group cache-redis  --repo ~/projects/bench
 cs-sandbox create api   --group cache-memory --repo ~/projects/api --inherit-agent-login claude
 cs-sandbox create bench --group cache-memory --repo ~/projects/bench
 
-# Identity is (group, name), and a bare name always means the default group —
+# Identity is (group, name), and a bare name always means the default group,
 # never "whichever group has it", so a reference can't change meaning later.
 cs-sandbox exec api.cache-redis  pwd
 cs-sandbox exec api.cache-memory pwd     # same name, a different sandbox
 cs-sandbox exec api pwd                  # error, and it names both candidates
 
-# Inside a group, members still reach each other by bare name — and bench always
+# Inside a group, members still reach each other by bare name, and bench always
 # reaches its OWN api, which is the whole point: neither run taints the other.
 ssh bench.cache-redis
-[bench]$ ssh api hostname                # prints "api" — cache-redis's, not the other one
+[bench]$ ssh api hostname                # prints "api": cache-redis's, not the other one
 [bench]$ ssh api.cache-memory            # ssh: Could not resolve hostname
 [bench]$ exit
 
@@ -367,10 +368,10 @@ depends on its **type**, set with `--type` and independent of engine. There are 
 | **user** sandbox | ✓ | ✓ |
 | **agent** sandbox | ✗ | ✓ |
 
-Aside from that SSH direction the two are identical — same image, same capabilities. Typically you
+Aside from that SSH direction the two are identical: same image, same capabilities. Typically you
 spawn one user sandbox and oversee the work running across several agent sandboxes from there.
 
-The matrix describes reach **within a group**. Sandboxes in different groups cannot connect at all —
+The matrix describes reach **within a group**. Sandboxes in different groups cannot connect at all:
 no DNS for one another, no route, and no key the other would accept. Without `--group` everything is
 in one group, and the matrix is the whole story.
 
@@ -396,12 +397,12 @@ independent of sandbox type. Lend deliberately, with two conditions in mind:
   or `--snapshot` (a frozen read-only copy). Results come back out with `cs-sandbox fetch`.
 - **Your agent logins are not shared either**, unless you name one: `create
   --inherit-agent-login claude` copies that login in, and `create` prints what the sandbox ended up
-  with. Without it the sandbox has no agent login — log in inside it, on its own account if you
+  with. Without it the sandbox has no agent login, so log in inside it, on its own account if you
   prefer. Provider API keys are never copied at all; pass one with `--env` when a sandbox needs it.
 - **No host SSH keys in any sandbox.** Neither type receives a copy of your host keys; sandboxes
   reach each other with generated per-group tier keys. If a sandbox ever needs your own keys, you can lend
-  a specific set for a session ([`ssh -A`](#lending-a-sandbox-specific-ssh-keys-with-ssh--a)) — they
-  stay on the host.
+  a specific set for a session ([`ssh -A`](#lending-a-sandbox-specific-ssh-keys-with-ssh--a)), and
+  they stay on the host.
 - **Agent/user SSH isolation.** The per-type [SSH trust](#ssh-trust) matrix is enforced by the keys
   themselves, so an agent can't pivot through SSH into your workspace.
 - **`--yolo`** drops the agents' approval prompts, safe because the sandbox itself is the isolation

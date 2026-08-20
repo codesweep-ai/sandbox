@@ -1,0 +1,100 @@
+# The knobs cs-lint reads for this repository.
+#
+# The linters carry no project knowledge. Everything that differs between
+# repositories lives here, so a fix to a check reaches every project without
+# carrying one project's exceptions into the next.
+#
+# Run `cs-lint <linter> --explain` to read what each rule wants. Tune until
+# every reported problem is a real one: a check that cries wolf is worse than
+# no check.
+
+docs:
+  # Directories holding fixtures, corpora or generated Markdown, added to the
+  # linter's own list. image/ is embedded in the binary (assets.go) and shipped
+  # into the sandbox, so it is payload rather than this project's prose.
+  skipExtra:
+    - image
+
+  # The domain terms a reader of this project cannot infer. Each must be
+  # introduced where a document first uses it: glossed on the spot, defined in a
+  # glossary table, or linked to the page that defines it.
+  #
+  # Leave out any term that collides with a common verb: the check cannot tell
+  # the noun "pin" from "pins" and would fire on every ordinary use of the
+  # latter. "sandbox" is deliberately absent too — it is the subject of every
+  # document, and the manual's Name line is a man-page convention that cannot
+  # gloss it.
+  glossary:
+    - engine
+    - group
+    - seed
+    - fabric
+
+  # The project's own command name, which starts sentences in lower case.
+  # Without it the splitter reads "Nothing prompts. cs-sandbox exits 1." as one
+  # six-word sentence and reports a length that is not real.
+  lowercaseStarters:
+    - cs-sandbox
+
+  # Verbs the shared list does not carry. Only what is this project's own
+  # belongs here; an ordinary English verb belongs in the shared list, where
+  # every project gets it. runuser is the command, used as a verb in
+  # INSTALL.md; not English.
+  projectVerbs:
+    - runuser
+
+oss:
+  project: cs-sandbox
+  githubRepo: codesweep-ai/sandbox
+
+  # True once the repository is public. Published history cannot be rewritten,
+  # so the history rules report as warnings from that point on.
+  published: true
+
+  # This repository ships a binary, so it carries the whole set.
+  docSet:
+    - README.md
+    - INSTALL.md
+    - MANUAL.md
+    - SPEC.md
+    - CONTRIBUTING.md
+    - AGENTS.md
+
+  # Home names that are a placeholder or a shipped account rather than a person.
+  # dev is the account inside every sandbox image; seeder is the helper account
+  # the store builder runs as; tester is the placeholder a paths test sets HOME
+  # to. Every name added here is one the check stops catching, so never add a
+  # name that is somebody's.
+  homeAllow: ["user", "you", "name", "runner", "dev", "seeder", "tester"]
+
+  # Microsoft.com appears inside a verbatim kernel banner — "Linux version
+  # 4.4.0-19041-Microsoft (Microsoft@Microsoft.com)" — which the WSL detection
+  # test matches character for character. It is a string Microsoft ships, not an
+  # address anybody reads.
+  emailAllow: ["Microsoft.com"]
+
+  requiredTargets: ["build", "test", "check", "lint", "docs", "oss", "clean"]
+  expectedTargets: ["help", "install", "uninstall", "fmt", "fmt-check", "vet", "deadcode"]
+
+walkthrough:
+  tool: cs-sandbox
+  toolPath: bin/cs-sandbox
+
+  envPrefix: CS_SANDBOX_
+
+  envInternal:
+    CS_SANDBOX_COVERAGE_LOG: "test instrumentation: the coverage emitter writes a record only when the suite sets it"
+    CS_SANDBOX_IT_HOSTROUTE: "test instrumentation: opts the live host-route test in"
+    CS_SANDBOX_SSH_BIND: "SBX-005 holds it open. Documenting the override before validating it would publish a way around R142 rather than close it"
+
+  # The guest's own scripts read the settings the seed hands them. They are an
+  # internal protocol between the CLI and the image, not something a user sets.
+  sourceSkip:
+    "image/": "the sandbox image's own scripts, read inside a guest"
+
+  # No document shows a captured sample, so there is nothing to reproduce yet.
+  # Adding one means adding the verb here.
+  safeVerbs: []
+
+  # The walkthroughs say plainly that these paths are the reader's to supply.
+  placeholderOK: ["~/projects/"]

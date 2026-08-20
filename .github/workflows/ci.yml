@@ -262,16 +262,26 @@ jobs:
   # One cache key covers both, deliberately: a change under internal/fcdisk (the
   # firecracker release and guest-kernel pins live there) rebuilds the image too,
   # which costs ~70s on a rare path and keeps the pair honest.
-  # The prose rules from CONTRIBUTING.md. Its own job because it needs no Go
-  # toolchain and no matrix, so it answers in seconds and answers even when the
-  # tests are failing. `make check` runs it too, for the contributor who runs
-  # one command before pushing.
+  # The prose rules from CONTRIBUTING.md, checked by cs-lint. Its own job because
+  # it needs no matrix and builds nothing of this repository, so it answers in a
+  # minute and answers even when the tests are failing.
+  # `make check` runs it too, for the contributor who runs one command before
+  # pushing. cs-lint is installed from source in each of the three jobs below
+  # rather than pinned: it is this family's own linter, and a check it gains has
+  # to reach here on the day it lands.
   docs:
     name: docs prose
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: cs-lint
+        run: |
+          go install github.com/codesweep-ai/lint/cmd/cs-lint@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make docs
 
   # The rules this repository has to satisfy as a published project: the
@@ -287,6 +297,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: cs-lint
+        run: |
+          go install github.com/codesweep-ai/lint/cmd/cs-lint@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make oss
 
   # The documents against the software: every command they name exists, every
@@ -303,6 +320,10 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: true
+      - name: cs-lint
+        run: |
+          go install github.com/codesweep-ai/lint/cmd/cs-lint@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make walkthrough
 
   # The ledger's freshness gate. CONTRIBUTING.md asks for a render and a check

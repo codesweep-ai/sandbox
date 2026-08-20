@@ -9,7 +9,7 @@ it on your PATH, then set the host up once with the steps below. After that, hea
 
 ## 1. Install the binary
 
-`cs-sandbox` is a **single self-contained binary** — the image build assets are embedded, so it can
+`cs-sandbox` is a **single self-contained binary**. The image build assets are embedded, so it can
 build the sandbox image and boot microVMs with no source checkout. Two ways to get it:
 
 ### Download a release
@@ -44,7 +44,7 @@ Needs **Go 1.26+**, **git**, and **goreleaser** (which produces the version-stam
 # --- Go (1.26 or newer) ---
 brew install go                     # macOS
 sudo dnf install golang             # Fedora
-# Debian/Ubuntu package Go well behind 1.26 — install the current release instead
+# Debian/Ubuntu package Go well behind 1.26, so install the current release instead
 # (or pick your arch's tarball by hand from https://go.dev/dl/):
 ver="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1)"
 curl -LO "https://go.dev/dl/${ver}.linux-amd64.tar.gz"
@@ -84,7 +84,7 @@ sudo apt install podman openssh-client git                           # Ubuntu / 
 brew install podman                                                  # macOS (ssh + git built in)
 podman machine init --cpus 4 --memory 8192 --disk-size 60 --now      # macOS (--now also starts it)
 
-# Windows (WSL2) — run this INSIDE the distro. The extras are podman's rootless
+# Windows (WSL2): run this INSIDE the distro. The extras are podman's rootless
 # network stack; apt pulls in none of them, and a missing iptables shows up only
 # as an unnamed netavark error once a container starts, never at install time.
 sudo apt install podman openssh-client git \
@@ -100,14 +100,14 @@ if you want several sandboxes at once. To resize it later, stop it first:
 podman machine stop && podman machine set --cpus 4 --memory 8192 --disk-size 60   # disk can only grow
 ```
 
-The machine shares your home directory into the VM, and only that — so a `--repo` or `--snapshot`
+The machine shares your home directory into the VM, and only that, so a `--repo` or `--snapshot`
 source has to live under `$HOME`. `cs-sandbox create` rejects one that doesn't, rather than handing
 the sandbox a path the VM can't see (macOS temp dirs like `/var/folders/…` are outside the share).
 
 ### Windows (WSL2)
 
 Windows is supported **through WSL2**: `cs-sandbox` is a Linux binary that runs inside the distro,
-so install the `linux_amd64` release there — not on Windows. There is no Windows build, and nothing
+so install the `linux_amd64` release there, not on Windows. There is no Windows build, and nothing
 runs on the Windows side. CI validates this on Ubuntu 24.04; another distro needs the equivalent
 packages.
 
@@ -214,7 +214,7 @@ You can skip all of this and log in inside each sandbox instead, with `cs-sandbo
 [SPEC.md](SPEC.md#101-login).
 
 **Using an API key or a cloud provider** (a direct Anthropic/OpenAI key, Amazon Bedrock, Google
-Vertex, …) instead of a subscription? Keys are never copied from your host — pass the ones a sandbox
+Vertex, …) instead of a subscription? Keys are never copied from your host. Pass the ones a sandbox
 needs explicitly at create time:
 
 ```bash
@@ -241,7 +241,7 @@ PowerShell, with **live** completion of sandbox names, store names, and flag val
 `destroy <TAB>`, `--engine <TAB>`, …):
 
 ```bash
-# bash (per-user, no sudo — needs the bash-completion package, which lazy-loads this on demand):
+# bash (per-user, no sudo; needs the bash-completion package, which lazy-loads this on demand):
 mkdir -p ~/.local/share/bash-completion/completions
 cs-sandbox completion bash > ~/.local/share/bash-completion/completions/cs-sandbox
 cs-sandbox completion zsh  > "${fpath[1]}/_cs-sandbox"                     # zsh

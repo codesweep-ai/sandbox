@@ -9,11 +9,11 @@ issues:
   max-issues-per-linter: 0
   max-same-issues: 0
 
-# The Go counterpart to scripts/lint-docs.py, and vendored the same way: this
-# file stays byte-identical across the family, so a change to a check goes back
-# into the shared copy and is copied out again. A project's own exception does
-# not belong here — it goes in a `//nolint:<linter> // <reason>` at the site,
-# where the reason sits beside the code that earned it.
+# The Go counterpart to `cs-lint docs`, and shared the same way: this file stays
+# byte-identical across the family, so a change to a check goes back into the
+# shared copy and is copied out again. A project's own exception does not belong
+# here. It goes in a `//nolint:<linter> // <reason>` at the site, where the
+# reason sits beside the code that earned it.
 #
 # The default set (errcheck, govet, ineffassign, staticcheck, unused) catches
 # what is wrong. Everything added below catches what is redundant: a stdlib call
