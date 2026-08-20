@@ -1,4 +1,4 @@
-# Contributing
+# Contributing to cs-sandbox
 
 These rules apply to **humans and coding agents alike**. If you are an agent working in this repo,
 read this file before you change anything and follow it.
@@ -42,6 +42,32 @@ sibling project, and `make ledger` runs it:
 ```bash
 go install github.com/codesweep-ai/ledger/cmd/cs-ledger@latest
 ```
+
+## What this project will not trade away
+
+**Nothing of yours reaches a sandbox unless a flag names it.** No implicit `$PWD` mount, no implicit
+credential, no copy of your host SSH keys. That is R3 in [`SPEC.md`](SPEC.md#2-the-model), and
+`TestWriteAgentLoginsIsOptIn` holds it: a login the caller did not name never lands in the seed.
+
+**The two engines stay interchangeable.** One image, one trust model, one network fabric, the same
+sharing flags and the same agent tools (R2). A feature that works under Podman and not under
+Firecracker is unfinished, not shipped. The live tests run the same members against both.
+
+**The image bakes in no identity.** No user name, uid, gid or per-user home (R6). Your user is
+created at first boot, so one build serves every developer and every machine, and you never rebuild
+the image to match your laptop.
+
+**The trust matrix is the keys, not a check.** An agent sandbox cannot reach a user sandbox because
+it holds no key that would open one (R19). `TestTrustMatrix` asserts the agent tier key never lands
+in a user sandbox's `authorized_keys`, and it fails loudly when it does.
+
+**A sandbox binds `127.0.0.1` and stays unprivileged.** SSH ports are loopback-only (R142) and
+`--privileged` is opt-in (R143). `TestBuildRunArgsScaledDownCaps` and `TestBuildRunArgsPrivileged`
+hold the capability set and the flag.
+
+**No secret ever appears in an argv.** Injected values go through the seed's env file, because the
+host's process table publishes a command line to every user on the machine.
+`TestBuildRunArgsNoSecretsInArgv` greps the argv for an injected value and fails when it finds one.
 
 ## Tests are part of the change
 
@@ -197,6 +223,30 @@ cs-lint oss --explain
 14. **Describe what the software does, not how it came to do it.** Leave out what the project used
     to do, what was tried and dropped, and numbers from a run someone did once. The reason a rule
     exists belongs beside the rule in `SPEC.md`; the investigation that found it belongs in the PR.
+
+15. **State the point first, then qualify it.** Opening with the qualifier makes the reader decode
+    the sentence backwards. "Rootless and per-user, so two developers on one host never collide"
+    names its subject last. Start with the sandbox, and let the consequence follow it.
+
+16. **Do not explain a design by contrast with a worse one.** "A directory, so a change reads as a
+    diff rather than as one unreadable line" asks the reader to picture a format nobody proposed.
+    Say what it is and what you get.
+
+17. **A walkthrough is steps that work.** Put the reasons somewhere else. A reader working through
+    one wants commands that run, not an account of which flag the engine used to spell differently.
+
+18. **Do not make the reader hold two halves of a sentence apart.** "What the host shares may
+    change; what the guest may reach may not" is a puzzle. Name the subject in each clause.
+
+19. **Do not write in the register a model defaults to.** Untouched model output has a signature
+    readers now recognise and discount. `cs-lint docs --explain` lists the words this house
+    declines and what to write instead, so the table lives in one place rather than here. Two
+    shapes matter as much as the words. Negative parallelism sets up a contrast nobody asked for.
+    The rule of three is a rhythm rather than an argument, and a reader stops counting the third
+    item as information.
+
+These rules are about mechanics, and this project's voice is a strength: concrete, opinionated, and
+free of padding. Where a rule fights the voice, the voice wins. Say so in the PR when it does.
 
 Run the linter on its own while you write:
 

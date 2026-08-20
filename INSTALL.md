@@ -1,4 +1,4 @@
-# sandbox - installation
+# Installing cs-sandbox
 
 `cs-sandbox` is a single, self-contained Go binary. Download a release or build it from a clone, put
 it on your PATH, then set the host up once with the steps below. After that, head for the
