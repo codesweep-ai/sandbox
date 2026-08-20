@@ -241,7 +241,7 @@ oss: cs-lint-installed
 	$(CS_LINT) oss
 
 ## walkthrough: check the docs against the binary, the code and the build
-walkthrough: build-go cs-lint-installed
+walkthrough: build cs-lint-installed
 	$(CS_LINT) walkthrough
 
 # The three targets above are one shared tool: github.com/codesweep-ai/lint.
