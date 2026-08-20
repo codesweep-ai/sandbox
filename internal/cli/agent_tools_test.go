@@ -1249,3 +1249,48 @@ func TestClaudeWrapperAnswersTheFirstRunDialogs(t *testing.T) {
 		})
 	}
 }
+
+// TestClaudeWrapperRefusesForeignMCPServers pins that a sandbox loads no MCP
+// server it did not ask for.
+//
+// An inherited Claude subscription carries the account's claude.ai connectors,
+// so without this an agent working unattended in a disposable machine is handed
+// the creator's Gmail, Calendar and Drive. It also keeps a session
+// reproducible: the connectors attach on their own schedule, so the tool list
+// differs between two runs of the same task, and a recorded session matches on
+// the tool list.
+func TestClaudeWrapperRefusesForeignMCPServers(t *testing.T) {
+	skipUnlessLinux(t)
+
+	for _, tc := range []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{
+			name: "the ordinary branch",
+			env:  []string{"CS_CLAUDE_YOLO="},
+			want: "--permission-mode auto --strict-mcp-config",
+		},
+		{
+			// The flag has to survive the other branch too, which takes a
+			// different exec line.
+			name: "the yolo branch",
+			env:  []string{"CS_CLAUDE_YOLO=1"},
+			want: "--dangerously-skip-permissions --strict-mcp-config",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-claude")
+			writeStub(t, bin, "claude", "#!/bin/sh\necho \"argv: $*\"\n")
+			out, exit := runScriptStdin(t, home, bin, tc.env, "", "cs-claude")
+			if exit != 0 {
+				t.Fatalf("cs-claude exit %d: %s", exit, out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("want %q:\n%s", tc.want, out)
+			}
+			covemit.Prove(t, "auth-provisioning", "claude", "", "scripts")
+		})
+	}
+}

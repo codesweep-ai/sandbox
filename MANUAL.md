@@ -248,6 +248,20 @@ meant to run on its subscription should carry no `OPENAI_API_KEY`.
 Set any of these per sandbox with `create --env`, or write them into the agent's own profile
 env file inside the sandbox.
 
+### Connectors an account carries
+
+An inherited Claude subscription carries more than the credential. The account's claude.ai
+connectors (Gmail, Calendar, Drive) would otherwise attach inside the sandbox as MCP tools, and an
+agent working there could reach the mailbox of whoever created it.
+
+`cs-claude` loads only the MCP servers the invocation names, which is none unless you pass
+`--mcp-config` yourself. Nothing about creating a sandbox implies handing it your mail, so nothing
+here does.
+
+This also makes a session reproducible. Connectors attach on their own schedule, so the tool list an
+agent is offered differs between two runs of the same task. That alone is enough to stop a recorded
+session replaying.
+
 ## Global options
 
 | Option | Meaning |

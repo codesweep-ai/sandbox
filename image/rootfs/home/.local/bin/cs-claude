@@ -93,7 +93,21 @@ if command -v jq >/dev/null 2>&1; then
   fi
 fi
 
+# No MCP server this invocation did not ask for.
+#
+# An inherited subscription carries the account's claude.ai connectors with it.
+# Gmail, Calendar and Drive attach inside the sandbox and are offered to
+# whatever is running there, which for an agent working unattended means the
+# creator's mailbox. Nothing about a sandbox implies that, so it does not
+# happen here.
+#
+# It also makes a session reproducible. The connectors attach on their own
+# schedule, so the tool list an agent is offered differs between two runs of the
+# same task, and that alone is enough to stop a recorded session replaying.
+#
+# --strict-mcp-config means "only the servers --mcp-config names". This wrapper
+# passes none, so unless the caller passes their own, that is no servers at all.
 if [ -n "${CS_CLAUDE_YOLO:-}" ] || [ -f "$CC_DIR/.yolo" ]; then
-  exec env CLAUDE_CONFIG_DIR="$CC_DIR" claude --dangerously-skip-permissions "$@"
+  exec env CLAUDE_CONFIG_DIR="$CC_DIR" claude --dangerously-skip-permissions --strict-mcp-config "$@"
 fi
-exec env CLAUDE_CONFIG_DIR="$CC_DIR" claude --permission-mode auto "$@"
+exec env CLAUDE_CONFIG_DIR="$CC_DIR" claude --permission-mode auto --strict-mcp-config "$@"
