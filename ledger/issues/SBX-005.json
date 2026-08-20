@@ -26,7 +26,7 @@
     },
     {
       "date": "2026-08-17",
-      "text": "scripts/lint-walkthrough.py would report the variable as read and undocumented, which is what this record says. Its config waives it under ENV_INTERNAL, naming this record as the reason, so the waiver goes when the decision is made."
+      "text": "`cs-lint walkthrough` would report the variable as read and undocumented, which is what this record says. .cs-lint.yaml waives it under walkthrough.envInternal, naming this record as the reason, so the waiver goes when the decision is made."
     }
   ],
   "links": [
