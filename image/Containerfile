@@ -293,7 +293,7 @@ RUN base=https://downloads.claude.ai/claude-code-releases \
 # --no-same-owner because the archive carries a build-machine uid: preserving it would leave the
 # agent binaries owned by whichever sandbox user happens to share that uid, and writable by them.
 # Bump CODEX_VERSION (or pass --build-arg) to upgrade.
-ARG CODEX_VERSION=0.145.0
+ARG CODEX_VERSION=0.148.0
 RUN case "$(uname -m)" in x86_64|amd64) tgt=x86_64-unknown-linux-musl ;; arm64|aarch64) tgt=aarch64-unknown-linux-musl ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
   && base="https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}" \
   && asset="codex-package-${tgt}.tar.gz" \
