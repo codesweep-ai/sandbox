@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,7 +38,7 @@ func newBuildCmd(app *App) *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if withAgents && !slim {
-				return fmt.Errorf("--with-agents applies to --slim only: the full image already has the agent CLIs")
+				return errors.New("--with-agents applies to --slim only: the full image already has the agent CLIs")
 			}
 			return runBuild(cmd, app, engines, slim, withAgents)
 		},

@@ -209,18 +209,19 @@ Firecracker-capable host whose Firecracker packages are missing. Restrict it wit
 for the image alone. The flag is repeatable, so `--engine podman --engine firecracker` names both.
 
 `--slim` builds the CI image instead of the shipped one: the same Containerfile with the developer
-toolchains — Go, Node, Python, the JDK, Maven, Neovim and its language servers, Chromium — removed.
-About 700 MB against 9.3 GB, and minutes against tens of them. That difference is what lets a job
-boot real sandboxes on a hosted runner, where the full image does not fit on the disk at all. The
-derivation lives in `image/ci-slim.sh` and is applied to the real Containerfile, so the slim image
-can lag the shipped one in weight but never diverge from it in content.
+toolchains removed. That drops Go, Node, Python, the JDK, Maven, Neovim and its language servers,
+and Chromium. The image weighs about 700 MB against 9.3 GB, and it builds in minutes against tens
+of them. That difference is what lets a job boot real sandboxes on a hosted runner, where the full
+image does not fit on the disk at all. The derivation lives in `image/ci-slim.sh` and is applied to
+the real Containerfile, so the slim image can lag the shipped one in weight but never diverge from
+it in content.
 
 Add `--with-agents` when the tests being run drive `claude`, `codex` or `opencode` **inside** the
-sandbox: those three CLIs are dropped with everything else otherwise, and a member without them
+sandbox. Those three CLIs are dropped with everything else otherwise, and a member without them
 fails its readback at `command -v`. They cost about 730 MB.
 
 A slim build is tagged `localhost/cs-sandbox:ci`, or `localhost/cs-sandbox:ci-agents` with
-`--with-agents`, unless `CS_SANDBOX_IMAGE` says otherwise — none of the three images is
+`--with-agents`, unless `CS_SANDBOX_IMAGE` says otherwise. None of the three images is
 interchangeable with another, and the tag is all a later `create` has to tell them apart. Point the
 same variable at that tag when running the tests:
 
