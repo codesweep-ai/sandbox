@@ -93,31 +93,19 @@ host's process table publishes a command line to every user on the machine.
 Ship a test with your change. Where a behaviour genuinely cannot be observed in a test, say so in
 the pull request.
 
-- Put it in the **unit** tier (`make test`) if it can be: pure logic, or a real script/CLI driven
-  with stubs. That tier is where the costly-if-silently-wrong things live: credential
-  inheritance, seed trust material, instance state, the cobra tree with a fake `Runner`.
-- Use the **integration** tier (`//go:build integration`) only for what needs a real engine, and
-  make it skip gracefully when podman or the image is missing.
-- The **smoke profile** is not a third tier: it is the subset of the integration tier that CI runs
-  on every host, listed in the Makefile as `SMOKE_TESTS`. Keep it short, and add to it only for
-  something the tiers above cannot reach.
-- When a feature exists for all three agents (Claude, Codex, OpenCode), test all three. Usually
-  one table, so a contract that drifts in one of them fails loudly.
-- Test the contract, not the implementation: the exit code, the file mode, the thing another tool
-  parses. Say *why* the case matters in a comment when it isn't obvious.
+Put it in the unit tier (`make test`) if it can go there. That is where the
+costly-if-silently-wrong things live: credential inheritance, seed trust material, instance state,
+and the cobra tree with a fake `Runner`. Use the integration tier only for what needs a real engine,
+and make it skip gracefully when podman or the image is missing.
 
-### Coverage
+When a feature exists for all three agents (Claude, Codex, OpenCode), test all three. Usually one
+table, so a contract that drifts in one of them fails loudly.
 
-Every test target writes coverage into its own tier under `.coverage/`, so running several
-aggregates rather than overwrites. `make coverage` merges what is there and prints the report.
+Test the contract, not the implementation: the exit code, the file mode, the thing another tool
+parses. Say why the case matters in a comment when it is not obvious.
 
-`make coverage-check` runs inside `make check` and in CI. It fails when a package
-`.coverage-baseline` lists stops being reached: presence, not a percentage. What it catches is a
-suite that stopped running while the tests still report green. When a package is meant to lose its
-coverage, rerun `make coverage-baseline` and commit the result.
-
-In CI each job uploads its tier and one job merges them. Record a baseline only for the tiers CI
-runs: `make coverage-baseline BASELINE_TIERS="unit race smoke"`.
+Never lower a coverage baseline to make a run green. [`SPEC.md`](SPEC.md#16-conformance-and-testing)
+holds the tiers, what each one proves, the smoke profile, and how coverage is measured and gated.
 
 ## Commits
 
