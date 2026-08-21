@@ -25,6 +25,24 @@ set -eu
 src="${1:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/Containerfile}"
 test -f "$src" || { echo "ci-slim: no Containerfile at $src" >&2; exit 1; }
 
+# CI_SLIM_KEEP_AGENTS=1 keeps the three agent CLIs — claude, codex, opencode —
+# that the default output drops with the rest of /opt.
+#
+# They are dropped by default because THIS repository's live tests only need a
+# sandbox that boots; they never run an agent. A consumer whose tests drive one
+# does need them: the campaign repository's smoke tier replays a whole campaign,
+# and its readback asks `command -v <cli>` inside every member before anything
+# else runs. Without the binaries that check fails and the run stops there.
+#
+# Measured: 693 MB without them, 2.22 GB with. The three binaries are ~730 MB
+# and the `chmod -R a+rX /opt` layer duplicates them, which is where the rest
+# goes. Against 9.3 GB for the real image that is still small enough to build on
+# a hosted runner, which is the whole point of this script.
+keep_agents=0
+case "${CI_SLIM_KEEP_AGENTS:-0}" in
+  1|true|yes|on) keep_agents=1 ;;
+esac
+
 # Each DROP entry is a string unique to the one stanza it removes. A stanza is a
 # blank-line-separated block, which is how the Containerfile is already written,
 # so ARG lines stay attached to the RUN they configure and comments stay with
@@ -70,7 +88,19 @@ test -f "$src" || { echo "ci-slim: no Containerfile at $src" >&2; exit 1; }
 # a Firecracker job. Every other command image/guest/init runs is present.
 BASE_PACKAGES='openssh-server openssh-clients sudo shadow-utils git jq curl socat python3 procps-ng hostname iproute iputils findutils tar podman fuse-overlayfs slirp4netns passt containers-common'
 
-out=$(awk -v base="$BASE_PACKAGES" '
+# Keeping the agents means keeping what runs them. The agent tools are shell
+# wrappers, and every one of them drives its agent inside a tmux session — 63
+# references across the family. Without tmux a member comes up healthy, passes
+# its readback, accepts a dispatch, and then every turn dies at
+# `tmux: command not found` with exit 3 and nothing else to go on; the campaign
+# re-dispatches on a timer and gets the same nothing until its ceiling.
+# ncurses-term comes along for tmux's own terminfo entry, the way the shipped
+# base layer installs the two together.
+if [ "$keep_agents" = 1 ]; then
+  BASE_PACKAGES="$BASE_PACKAGES tmux ncurses-term"
+fi
+
+out=$(awk -v base="$BASE_PACKAGES" -v keep_agents="$keep_agents" '
 BEGIN {
   RS = ""; ORS = ""
   DROP["chromium"]                        # browser + its X/mesa font stack
@@ -81,12 +111,22 @@ BEGIN {
   DROP["temurin25-binaries"]              # jdk
   DROP["archive.apache.org/dist/maven"]   # maven
   DROP["go.dev/dl/go${GO_VERSION}"]       # go toolchain
-  DROP["downloads.claude.ai"]             # claude code
-  DROP["openai/codex/releases"]           # codex
-  DROP["anomalyco/opencode/releases"]     # opencode
   DROP["python3 -m venv /opt/py-tools"]   # python CLI tools venv
   DROP["+Lazy! install"]                  # the nvim plugin/LSP pre-build
-  DROP["ENV JAVA_HOME"]                   # PATH additions for all of the above
+  want_dropped = 10
+  # The agents, and the PATH stanza that is mostly about them. Kept together or
+  # dropped together: keeping the binaries without putting them on PATH would
+  # pass every check here and still fail `command -v claude` in the sandbox.
+  if (keep_agents) {
+    want_path = 1
+  } else {
+    DROP["downloads.claude.ai"]           # claude code
+    DROP["openai/codex/releases"]         # codex
+    DROP["anomalyco/opencode/releases"]   # opencode
+    DROP["ENV JAVA_HOME"]                 # PATH additions for all of the above
+    want_dropped = 14
+    want_path = 0
+  }
 }
 {
   for (m in DROP)
@@ -98,11 +138,21 @@ BEGIN {
     printf "RUN dnf update -y && dnf install -y \\\n  %s && \\\n  dnf clean all\n\n", base
     next
   }
+  # Keeping the agents: the shipped PATH names eight toolchain directories that
+  # are no longer in the image. Harmless but misleading, so it is replaced by
+  # the three that are — the agents have to be found by bare name.
+  if (keep_agents && index($0, "ENV JAVA_HOME")) {
+    pathed++
+    printf "# CI: PATH reduced to the agent CLIs. See image/ci-slim.sh.\n"
+    printf "ENV PATH=/opt/claude/bin:/opt/codex/bin:/opt/opencode/bin:${PATH}\n\n"
+    next
+  }
   printf "%s\n\n", $0
 }
 END {
-  if (dropped < 10) { print "ci-slim: only " dropped " stanzas dropped — markers have gone stale" > "/dev/stderr"; exit 1 }
+  if (dropped < want_dropped) { print "ci-slim: only " dropped " of " want_dropped " stanzas dropped — markers have gone stale" > "/dev/stderr"; exit 1 }
   if (replaced != 1) { print "ci-slim: matched " replaced " base install layers, want exactly 1" > "/dev/stderr"; exit 1 }
+  if (pathed != want_path) { print "ci-slim: matched " pathed " PATH stanzas, want " want_path > "/dev/stderr"; exit 1 }
 }
 ' "$src")
 

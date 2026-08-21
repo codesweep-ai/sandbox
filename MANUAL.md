@@ -196,6 +196,7 @@ cs-sandbox rm-store [-f] <name>
 
 ```
 cs-sandbox build [--engine ENGINE]...     # the image, and the Firecracker artifacts
+cs-sandbox build --slim [--with-agents]   # the CI image instead: no developer toolchains
 cs-sandbox doctor [--engine ENGINE]       # check prerequisites, print the fix for each gap
 cs-sandbox install-agent-tools [dir]      # the agent tools onto your PATH
 cs-sandbox agent-login <agent> <name>     # log an agent in inside a sandbox
@@ -206,6 +207,27 @@ cs-sandbox completion <shell>             # a completion script for bash, zsh, f
 With no `--engine`, `build` sets up every engine the host supports, and fails on a
 Firecracker-capable host whose Firecracker packages are missing. Restrict it with `--engine podman`
 for the image alone. The flag is repeatable, so `--engine podman --engine firecracker` names both.
+
+`--slim` builds the CI image instead of the shipped one: the same Containerfile with the developer
+toolchains — Go, Node, Python, the JDK, Maven, Neovim and its language servers, Chromium — removed.
+About 700 MB against 9.3 GB, and minutes against tens of them. That difference is what lets a job
+boot real sandboxes on a hosted runner, where the full image does not fit on the disk at all. The
+derivation lives in `image/ci-slim.sh` and is applied to the real Containerfile, so the slim image
+can lag the shipped one in weight but never diverge from it in content.
+
+Add `--with-agents` when the tests being run drive `claude`, `codex` or `opencode` **inside** the
+sandbox: those three CLIs are dropped with everything else otherwise, and a member without them
+fails its readback at `command -v`. They cost about 730 MB.
+
+A slim build is tagged `localhost/cs-sandbox:ci`, or `localhost/cs-sandbox:ci-agents` with
+`--with-agents`, unless `CS_SANDBOX_IMAGE` says otherwise — none of the three images is
+interchangeable with another, and the tag is all a later `create` has to tell them apart. Point the
+same variable at that tag when running the tests:
+
+```
+cs-sandbox build --engine firecracker --slim --with-agents
+CS_SANDBOX_IMAGE=localhost/cs-sandbox:ci-agents make test-smoke
+```
 
 `completion` writes a script to stdout. It completes sandbox names, store names and flag values
 live, by asking the binary. [INSTALL.md](INSTALL.md#optional-shell-completion) has the per-shell

@@ -121,6 +121,78 @@ func TestBuildPodmanQuietFlag(t *testing.T) {
 	}
 }
 
+// TestBuildSlim: --slim derives a Containerfile with ci-slim.sh and builds from
+// that one, under a tag of its own; the default build is untouched. The tag
+// matters as much as the file — three images that are not interchangeable, and
+// only the tag tells a later `create` which one it got.
+func TestBuildSlim(t *testing.T) {
+	cases := []struct {
+		name          string
+		flags         []string
+		env           string
+		wantImage     string
+		wantSlimFile  bool
+		wantKeepAgent bool
+	}{
+		{"default", nil, "", "localhost/cs-sandbox:44", false, false},
+		{"slim", []string{"--slim"}, "", "localhost/cs-sandbox:ci", true, false},
+		{"slim with agents", []string{"--slim", "--with-agents"}, "", "localhost/cs-sandbox:ci-agents", true, true},
+		// An explicit tag wins: it is how CI pins the build and the test run to one.
+		{"slim honours CS_SANDBOX_IMAGE", []string{"--slim"}, "localhost/pinned:7", "localhost/pinned:7", true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.env != "" {
+				t.Setenv("CS_SANDBOX_IMAGE", c.env)
+			} else {
+				t.Setenv("CS_SANDBOX_IMAGE", "")
+			}
+			args := append([]string{"build", "--engine", "podman"}, c.flags...)
+			f, err := runRoot(t, &App{}, args...)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			var build, slim []string
+			for _, call := range f.Calls {
+				switch {
+				case len(call) >= 2 && call[0] == "podman" && call[1] == "build":
+					build = call
+				case len(call) >= 2 && call[0] == "sh" && strings.HasSuffix(call[1], "ci-slim.sh"):
+					slim = call
+				}
+			}
+			if build == nil {
+				t.Fatalf("no podman build call; calls=%s", f)
+			}
+			if !slices.Contains(build, c.wantImage) {
+				t.Errorf("built tag: want %s in %v", c.wantImage, build)
+			}
+			if (slim != nil) != c.wantSlimFile {
+				t.Errorf("ci-slim.sh invoked=%v, want %v", slim != nil, c.wantSlimFile)
+			}
+			// The -f argument names the derived file only for a slim build.
+			i := slices.Index(build, "-f")
+			if i < 0 || i+1 >= len(build) {
+				t.Fatalf("no -f in %v", build)
+			}
+			gotSlimFile := strings.HasSuffix(build[i+1], "Containerfile.ci")
+			if gotSlimFile != c.wantSlimFile {
+				t.Errorf("-f %s: slim=%v, want %v", build[i+1], gotSlimFile, c.wantSlimFile)
+			}
+		})
+	}
+}
+
+// TestBuildWithAgentsNeedsSlim: --with-agents alone is refused rather than
+// quietly ignored — the full image has the agents already, so a run that meant
+// --slim and lost it would otherwise build 9.3 GB and say nothing.
+func TestBuildWithAgentsNeedsSlim(t *testing.T) {
+	_, err := runRoot(t, &App{}, "build", "--engine", "podman", "--with-agents")
+	if err == nil || !strings.Contains(err.Error(), "--slim") {
+		t.Fatalf("err = %v, want a --slim-only error", err)
+	}
+}
+
 // TestInstallAgentToolsCopies: the command copies the tool set into the target
 // dir with the right modes (scripts 0755, docs 0644).
 func TestInstallAgentToolsCopies(t *testing.T) {

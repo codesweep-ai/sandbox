@@ -25,6 +25,9 @@ func TestImageDirFromEmbed(t *testing.T) {
 	// those in, and dropping the `all:` would silently ship an image without them.
 	for _, f := range []string{
 		"Containerfile", "rootfs/entrypoint", "rootfs/nested-rootless", "guest/init",
+		// `cs-sandbox build --slim` shells out to this one, from the extracted
+		// tree, so a downloaded binary can derive the CI image with no checkout.
+		"ci-slim.sh",
 		"rootfs/home/.bashrc",
 		"rootfs/home/.cs-claude/CLAUDE.md",
 		"rootfs/home/.cs-codex/config.toml",

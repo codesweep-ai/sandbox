@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +16,7 @@ import (
 
 func newBuildCmd(app *App) *cobra.Command {
 	var engines []string
+	var slim, withAgents bool
 	cmd := &cobra.Command{
 		Use:   "build",
 		Short: "Set up the sandbox image and, on capable hosts, the Firecracker artifacts",
@@ -21,22 +24,69 @@ func newBuildCmd(app *App) *cobra.Command {
 			"With no flags it sets up every engine the host supports: the podman image always,\n" +
 			"plus the Firecracker binary/kernel/rootfs on a Firecracker-capable host (and it fails\n" +
 			"if the Firecracker host packages are missing). Restrict with --engine, e.g.\n" +
-			"`--engine podman` for the image only, or `--engine firecracker` to force the FC set.",
+			"`--engine podman` for the image only, or `--engine firecracker` to force the FC set.\n\n" +
+			"--slim builds the CI image instead: the same Containerfile with the developer\n" +
+			"toolchains removed, ~700 MB against 9.3 GB and minutes against tens of them. It is\n" +
+			"what makes booting real sandboxes on a hosted runner affordable — the full image\n" +
+			"does not fit on one. Add --with-agents when the tests being run drive claude, codex\n" +
+			"or opencode inside the sandbox; without it those three CLIs are absent.\n\n" +
+			"A slim build is tagged " + slimImage + " (or " + slimAgentsImage + " with\n" +
+			"--with-agents) unless CS_SANDBOX_IMAGE says otherwise, so it can never be mistaken\n" +
+			"for the shipped image, nor the two slim ones for each other. Point the same\n" +
+			"variable at that tag when running the tests.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runBuild(cmd, app, engines)
+			if withAgents && !slim {
+				return fmt.Errorf("--with-agents applies to --slim only: the full image already has the agent CLIs")
+			}
+			return runBuild(cmd, app, engines, slim, withAgents)
 		},
 	}
 	cmd.Flags().StringArrayVar(&engines, "engine", nil,
 		"engine to set up: podman | firecracker (repeatable; default: every engine the host supports)")
+	cmd.Flags().BoolVar(&slim, "slim", false,
+		"build the slimmed CI image (no developer toolchains) instead of the shipped one")
+	cmd.Flags().BoolVar(&withAgents, "with-agents", false,
+		"with --slim: keep the claude/codex/opencode CLIs, for tests that drive an agent")
 	_ = cmd.RegisterFlagCompletionFunc("engine", fixedComp("podman", "firecracker"))
 	return cmd
 }
 
-func runBuild(cmd *cobra.Command, app *App, engines []string) error {
+// slimImage and slimAgentsImage are what a --slim build is tagged when
+// CS_SANDBOX_IMAGE does not say otherwise.
+//
+// Separate tags rather than the default one because none of the three images is
+// interchangeable with another: a sandbox created from a slim one has no
+// toolchains, and letting it answer to localhost/cs-sandbox:44 would hand that to
+// a developer who asked for the real thing and leave them to work out why go had
+// vanished. --with-agents earns a tag of its own for the same reason one step
+// down — it is ~730 MB larger and it is the only one of the two that can run an
+// agent, so a run that got the wrong one fails at `command -v claude` rather than
+// anywhere near the flag that chose it.
+const (
+	slimImage       = "localhost/cs-sandbox:ci"
+	slimAgentsImage = "localhost/cs-sandbox:ci-agents"
+)
+
+func runBuild(cmd *cobra.Command, app *App, engines []string, slim, withAgents bool) error {
 	wantFC, err := buildWantsFirecracker(app, engines)
 	if err != nil {
 		return err
+	}
+
+	// Retag before anything reads app.Image: the phase line below, and the
+	// Firecracker artifacts, which are exported from whatever this tag names.
+	//
+	// An explicit CS_SANDBOX_IMAGE wins — that is how CI pins the build and the
+	// test run to one tag. Empty counts as unset, which is how envOr read the
+	// variable when it set app.Image in the first place; testing for presence
+	// instead would let `CS_SANDBOX_IMAGE= cs-sandbox build --slim` tag a slim
+	// image :44.
+	if slim && os.Getenv("CS_SANDBOX_IMAGE") == "" {
+		app.Image = slimImage
+		if withAgents {
+			app.Image = slimAgentsImage
+		}
 	}
 
 	// The shared image first — both engines are built from it.
@@ -47,6 +97,12 @@ func runBuild(cmd *cobra.Command, app *App, engines []string) error {
 		return err
 	}
 	defer cleanup()
+	containerfile := filepath.Join(imgDir, "Containerfile")
+	if slim {
+		if containerfile, err = slimContainerfile(cmd.Context(), app, imgDir, withAgents); err != nil {
+			return err
+		}
+	}
 	app.phase(fmt.Sprintf("building image %s (this can take several minutes)…", app.Image))
 	// Generic image — no identity baked in.
 	args := []string{"podman", "build"}
@@ -64,7 +120,7 @@ func runBuild(cmd *cobra.Command, app *App, engines []string) error {
 	}
 	args = append(args,
 		"-t", app.Image,
-		"-f", filepath.Join(imgDir, "Containerfile"),
+		"-f", containerfile,
 		"--build-arg", "BUILD_VERBOSE="+buildVerbose,
 		"--build-arg", "CS_SANDBOX_PRIVATE_REGISTRY="+envOr("CS_SANDBOX_PRIVATE_REGISTRY", ""),
 		"--build-arg", "CS_SANDBOX_PRIVATE_REGISTRY_INSECURE="+normalizeInsecure(envOr("CS_SANDBOX_PRIVATE_REGISTRY_INSECURE", "0")),
@@ -89,6 +145,34 @@ func runBuild(cmd *cobra.Command, app *App, engines []string) error {
 		}
 	}
 	return nil
+}
+
+// slimContainerfile derives the CI image's Containerfile from the real one and
+// returns the path to write into. The derivation lives in image/ci-slim.sh —
+// extracted alongside the Containerfile it reads — rather than being
+// reimplemented here, so there is one description of what the slim image drops.
+// A marker in that script going stale can then cost CI a slower image; it can
+// never produce one that diverges from what the shipped Containerfile builds.
+//
+// Run through sh rather than executed: the extractor normalizes modes, and a
+// temp dir can be mounted noexec. ReadOnly because the only thing written is
+// this build's own temp tree, so a --dry-run still derives the file and prints
+// a `podman build -f` naming one that exists.
+func slimContainerfile(ctx context.Context, app *App, imgDir string, withAgents bool) (string, error) {
+	script := filepath.Join(imgDir, "ci-slim.sh")
+	if _, err := os.Stat(script); err != nil {
+		return "", fmt.Errorf("--slim: the build assets carry no ci-slim.sh: %w", err)
+	}
+	keep := "0"
+	if withAgents {
+		keep = "1"
+	}
+	out := filepath.Join(imgDir, "Containerfile.ci")
+	if _, err := app.Runner.Run(ctx, run.Opts{ReadOnly: true, StdoutFile: out, Env: []string{"CI_SLIM_KEEP_AGENTS=" + keep}},
+		"sh", script, filepath.Join(imgDir, "Containerfile")); err != nil {
+		return "", fmt.Errorf("--slim: deriving the slim Containerfile: %w", err)
+	}
+	return out, nil
 }
 
 // buildWantsFirecracker decides whether `build` should also set up Firecracker.
