@@ -175,6 +175,17 @@ cs-sandbox build --engine podman       # image only (skip Firecracker)
 cs-sandbox build --engine firecracker  # force the Firecracker set (implies the image)
 ```
 
+The shipped image is 9.3 GB and takes tens of minutes, which does not fit a hosted CI runner. For a
+suite that boots real sandboxes there, build the slimmed one instead:
+
+```bash
+cs-sandbox build --slim                # no developer toolchains: ~700 MB, minutes
+cs-sandbox build --slim --with-agents  # and keep claude, codex and opencode
+```
+
+Each is tagged apart from the shipped image, so neither can be mistaken for it. See
+[MANUAL.md](MANUAL.md#host-setup).
+
 `cs-sandbox create` assumes `build` has run: it **does not** build under the covers, and fails with a
 "run: cs-sandbox build" message if the image or Firecracker artifacts are missing.
 

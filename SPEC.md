@@ -564,9 +564,17 @@ protects is a host, and there is no host here to protect.
 **R92.** `create` **MUST** snapshot the named agent's host credential into the seed, and the guest **MUST**
 install it at mode 600 on first boot only.
 
+**R92a.** The tree a login is read from **MUST** be overridable, and the override **MUST** move
+nothing else.
+
 **R93.** `create` **MUST** report which logins the sandbox ended up with.
 
 **R94.** Provider API keys **MUST NOT** be carried. A caller **MUST** pass one explicitly with `--env`.
+
+R92a is `CS_SANDBOX_AGENT_HOME`, and it exists for a caller that has to supply a login it never
+signed in for. A replay suite is one: its members need a credential the agent will start with, and a
+cassette serves the traffic. Pointing `HOME` at a fabricated profile tree would do it too, and would
+take the instance directory and every cache along with it.
 
 R92's first-boot-only rule means a token the sandbox later refreshes is never clobbered. R93 exists
 because copying a credential into a sandbox an autonomous agent drives is a decision. So it is
@@ -1049,6 +1057,11 @@ because packages share one rootless network namespace and one host SSH port pool
 
 The **smoke profile** (`make test-smoke`) is not a third tier. It is the subset of the integration
 tier that CI runs on every host, against a slimmed image. Keep it short.
+
+That image is `cs-sandbox build --slim`, derived from the shipped Containerfile rather than written
+twice. It drops the developer toolchains, which is most of the 9.3 GB and nearly all of the build
+time. `--with-agents` keeps the three agent CLIs, for a suite whose tests drive one inside the
+sandbox. A downloaded binary can build either, so a consumer needs no checkout of this repository.
 
 ### Coverage
 
