@@ -132,6 +132,9 @@ produced the record, and they may be reading it months later. Every field you wr
 by someone deciding what to do next. A record they have to decode is a record that does not help
 them.
 
+- **Say it once, in as few words as do the job.** A `title` is one sentence. `details` is usually
+  a short paragraph and `notes` a sentence or two. Stop when the reader can act. A record nobody
+  finishes reading is a record that did not help.
 - **Write sentences, not labels.** `Retry handling: the loop and its backoff` names a topic and
   stops. `The retry loop drops the last error before giving up` says what is wrong.
 - **Put the point first, then qualify it.** A reader who meets the qualifier first has to decode
@@ -141,8 +144,7 @@ them.
 - **Expand the shorthand.** A term you coined this session means nothing next quarter, so introduce
   it where you first use it. A bare ID is not a reference: write `the queue warning added in
   MYS-009` rather than `MYS-009`.
-- **Use at most one em-dash per paragraph.** Where a second one appears, a full stop usually works
-  better.
+- **Do not use em-dashes.** The aside one introduces is a full stop, a comma, or a cut.
 - **Say what is, not what was tried.** The approach you abandoned belongs in a note if it belongs
   anywhere.
 - **Delete the frame.** `It is worth noting that` and `put simply` comment on your writing instead
