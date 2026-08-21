@@ -204,6 +204,15 @@ cs-sandbox sync-ssh-config                # regenerate the SSH config fragment
 cs-sandbox completion <shell>             # a completion script for bash, zsh, fish or powershell
 ```
 
+`--inherit-agent-login` reads each login from `~/.cs-<agent>`. `CS_SANDBOX_AGENT_HOME` points that
+lookup at a different tree, and nothing else moves. The instance, its seed and the caches stay where
+they were.
+
+It is for a caller that has to supply a login it never signed in for. A replay suite is one. Its
+members need a credential the agent will start with, and a cassette serves the traffic. Pointing
+`HOME` at a fake profile tree would do it too, and would take the instance directory and every
+cache along with it.
+
 With no `--engine`, `build` sets up every engine the host supports, and fails on a
 Firecracker-capable host whose Firecracker packages are missing. Restrict it with `--engine podman`
 for the image alone. The flag is repeatable, so `--engine podman --engine firecracker` names both.
@@ -343,6 +352,7 @@ without disturbing your real one, which is what the test suite does.
 | `CS_SANDBOX_FC_CACHE` | The Firecracker artifact cache. |
 | `CS_SANDBOX_FC_NET` | The fabric working directory, which `CS_SANDBOX_HOME` deliberately leaves alone. |
 | `XDG_DATA_HOME`, `XDG_CACHE_HOME` | The defaults the paths above derive from. |
+| `CS_SANDBOX_AGENT_HOME` | Where `--inherit-agent-login` reads a login from. Your home, unless this names another profile tree. |
 
 The second group changes what gets built or run.
 

@@ -132,3 +132,29 @@ func TestFCNetIsHostGlobal(t *testing.T) {
 		t.Errorf("CS_SANDBOX_FC_NET ignored: %q", got)
 	}
 }
+
+// TestAgentLoginHomeRedirects: the profile tree a login is inherited from can be
+// moved without moving this tool's state.
+//
+// A replay suite hands its members a login it never signed in for, and the only
+// other way to do that is to point HOME at a fake tree — which takes the
+// instance directory and the caches along with it.
+func TestAgentLoginHomeRedirects(t *testing.T) {
+	t.Setenv("CS_SANDBOX_AGENT_HOME", "")
+	if got := AgentLoginHome("/home/dev"); got != "/home/dev" {
+		t.Errorf("unset: AgentLoginHome = %q, want the home it was given", got)
+	}
+	t.Setenv("CS_SANDBOX_AGENT_HOME", "/tmp/fabricated")
+	if got := AgentLoginHome("/home/dev"); got != "/tmp/fabricated" {
+		t.Errorf("set: AgentLoginHome = %q, want /tmp/fabricated", got)
+	}
+	// It moves only where a login is read from: the instance directory is the
+	// state this must not disturb.
+	t.Setenv("CS_SANDBOX_HOME", "")
+	t.Setenv("CS_SANDBOX_INSTANCES_DIR", "")
+	before := Instances()
+	t.Setenv("CS_SANDBOX_AGENT_HOME", "/tmp/somewhere-else")
+	if after := Instances(); after != before {
+		t.Errorf("CS_SANDBOX_AGENT_HOME moved the instance dir: %q -> %q", before, after)
+	}
+}

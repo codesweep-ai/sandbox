@@ -83,6 +83,24 @@ func FCCache() string {
 	return filepath.Join(cacheHome(), app)
 }
 
+// AgentLoginHome is the directory holding the .cs-<agent> profiles that
+// --inherit-agent-login copies a login out of. The developer's own home, unless
+// CS_SANDBOX_AGENT_HOME names another.
+//
+// It is separate from CS_SANDBOX_HOME, which moves this tool's state. This moves
+// only where a login is READ from, and it exists for a caller that has to supply
+// one it did not sign in for: a replay suite hands its members a fabricated
+// login, and pointing HOME at a fake profile tree would move the instance
+// directory and the caches with it.
+//
+// Nothing is written here. The seed is still written under the instance.
+func AgentLoginHome(home string) string {
+	if d := os.Getenv("CS_SANDBOX_AGENT_HOME"); d != "" {
+		return d
+	}
+	return home
+}
+
 // FCNet is the fabric's working dir: the dnsmasq hostsdir + log and the
 // host-route marker.
 //

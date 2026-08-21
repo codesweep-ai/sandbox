@@ -10,6 +10,7 @@ import (
 
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/lock"
+	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/ports"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/seed"
@@ -500,7 +501,9 @@ func (d Deps) writeSeed(ctx context.Context, seedDir string, s CreateSpec, gw st
 		return nil, err
 	}
 	// Carry the host login of each agent the user asked to inherit (opt-in).
-	return seed.WriteAgentLogins(seedDir, d.Host.Home, s.InheritAgentLogin, d.note)
+	// Read from the developer's home unless CS_SANDBOX_AGENT_HOME names another
+	// profile tree, which is how a caller supplies a login it did not sign in for.
+	return seed.WriteAgentLogins(seedDir, paths.AgentLoginHome(d.Host.Home), s.InheritAgentLogin, d.note)
 }
 
 func (d Deps) globalGitIdentity(ctx context.Context) seed.GitIdentity {
