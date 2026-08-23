@@ -345,17 +345,23 @@ client would try the unreachable address first and hang.
 
 ### 6.4 Port forwarding and host-route
 
-**R54.** `forward` **MUST** tunnel a host port to a sandbox port over SSH, and **MUST NOT** require
-elevated privilege on any platform.
+**R54.** `forward` **MUST** tunnel over SSH, and **MUST NOT** require elevated privilege on any platform. A
+local forward **MUST** carry one host port to one sandbox port. A dynamic forward **MUST** publish a SOCKS5
+proxy on a host port.
 
 **R55.** `host-route` **MUST** be optional, Linux-only, and **MUST** be the only feature that uses `sudo`. It
-**MUST** use it for `up` and `down` alone, never in the create or exec path.
+**MUST** use it for `up`, `down` and `refresh` alone, never in the create or exec path.
 
 **R56.** `host-route` **MUST** wire one leg per group, and **MUST** keep each group's names in its own resolver
 scope.
 
-**R57.** Forwarding **MUST** be disabled on every leg, and `status` **MUST** report `DEGRADED` rather than `UP`
-if that drifts.
+**R57.** Forwarding **MUST** be disabled on every leg, and `status` **MUST** lead with `DEGRADED`, and name
+the fix, if that drifts.
+
+A local forward names its destination, so it reaches the one sandbox port you asked for. A dynamic
+forward resolves and connects from inside the sandbox, so it reaches whatever the sandbox reaches.
+That covers a group peer by bare name, the sandbox's own loopback, and the internet through its
+NAT. Both are tracked the same way, so `forwards` lists either and `unforward` tears either down.
 
 By default the host cannot `ping <name>` the way a peer sandbox can, because the fabric lives in
 Podman's rootless network namespace. `host-route up` opts in: it wires the host onto the sandbox
@@ -546,7 +552,7 @@ its agent on a sandbox-local profile.
 
 | Wrapper | Profile | Launch defaults |
 |---|---|---|
-| `cs-claude` | `CLAUDE_CONFIG_DIR=~/.cs-claude` | `--permission-mode auto` |
+| `cs-claude` | `CLAUDE_CONFIG_DIR=~/.cs-claude` | `--permission-mode auto`, `--strict-mcp-config` |
 | `cs-codex` | `CODEX_HOME=~/.cs-codex` | `approval_policy=on-request`, `sandbox_mode=workspace-write` |
 | `cs-opencode` | `OPENCODE_CONFIG_DIR=~/.cs-opencode` | pinned model, blanket-allow permissions, profile-scoped session database |
 
@@ -559,8 +565,17 @@ prompts.
 **R90.** Each settings hub **MUST** describe all three toolsets, so an agent of one kind can drive the
 others.
 
+**R90a.** `cs-claude` **MUST** load only the MCP servers its invocation names, which is none unless the
+caller passes their own.
+
 The sandbox is the isolation boundary, which is what makes R89 safe: the thing an approval prompt
 protects is a host, and there is no host here to protect.
+
+R90a is R3 applied to a connector. An inherited Claude subscription carries the account's claude.ai
+connectors with it. Gmail, Calendar and Drive would otherwise attach inside the sandbox as tools,
+and offer an agent working there the mailbox of whoever created it. R90a also makes a session
+reproducible. Connectors attach on their own schedule, so the tool list an agent is offered differs
+between two runs of one task, and that alone stops a recorded session replaying.
 
 ### 10.1 Login
 
@@ -1047,8 +1062,8 @@ key out, so scope what you load.
 
 ## 16. Conformance and testing
 
-An implementation conforms when it satisfies R1–R143, R18a, R85a and R85b included. The test suite is the
-reference, and it has two tiers, split by whether they touch a real engine.
+An implementation conforms when it satisfies R1–R143, R18a, R85a, R85b, R90a and R92a included. The
+test suite is the reference, and it has two tiers, split by whether they touch a real engine.
 
 **Unit tests** (`make test`) are pure and fast, with no external processes. They cover the logic
 where a silent bug would be costly: the seed trust material, agent-login inheritance, spec parsing,
