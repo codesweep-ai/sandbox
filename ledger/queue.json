@@ -1,6 +1,6 @@
 {
-  "recommendedBy": "session agent, from the 2026-08-16 publication-readiness pass",
-  "updated": "2026-08-16",
+  "recommendedBy": "session agent, from the 2026-08-22 spec/code alignment pass",
+  "updated": "2026-08-22",
   "items": [
     {
       "id": "SBX-002",
@@ -13,10 +13,6 @@
     {
       "id": "SBX-001",
       "why": "A store holding real images needs twice its size in host memory to build a microVM disk."
-    },
-    {
-      "id": "SBX-005",
-      "why": "An undocumented variable moves the loopback-only SSH bind that R142 requires."
     },
     {
       "id": "SBX-004",
