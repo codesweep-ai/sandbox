@@ -417,11 +417,12 @@ independent of sandbox type. Lend deliberately, with two conditions in mind:
 
 ## Docs
 
-- [`INSTALL.md`](INSTALL.md) · one-time host setup: Podman, the Firecracker prerequisites, building
-  the image, the agent tools, and the agent login.
-- [`MANUAL.md`](MANUAL.md) · every command, flag, file, exit status and diagnostic.
-- [`SPEC.md`](SPEC.md) · what a sandbox guarantees and how it is built: types and trust, the seed,
-  groups, networking, sharing, both engines, and the security model.
+- [INSTALL.md](INSTALL.md) · one-time host setup: Podman, the Firecracker prerequisites, building
+  the image, the agent tools, and the agent login
+- [MANUAL.md](MANUAL.md) · every command, flag, file, exit status and diagnostic
+- [SPEC.md](SPEC.md) · what a sandbox guarantees and how it is built: types and trust, the seed,
+  groups, networking, sharing, both engines, and the security model
+- [CONTRIBUTING.md](CONTRIBUTING.md) · working on the tool: coverage, commit shape and writing
 
 ## Contributing
 
