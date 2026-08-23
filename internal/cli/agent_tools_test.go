@@ -1541,3 +1541,84 @@ exit 0
 	}
 	covemit.Prove(t, "turn-driver-semantics", "opencode", "", "scripts")
 }
+
+// TestRemoteLearnsTheSessionIdBeforeTheNextTurn: a turn dispatched while the previous one is
+// still running resumes that session rather than minting a new one.
+//
+// A campaign dispatches the next turn as soon as the previous turn's REPLY lands, and the
+// reply is written before the driver that produced it exits, so the two overlap. The id is
+// learned from the first turn's trailing sentinel. Reading it when the process started read
+// nothing, and storing it after releasing the turn lock published it too late for the turn
+// already blocked on that lock — so the second turn passed no --uuid and the remote minted a
+// fresh session.
+//
+// Measured on CI: an opencode orchestrator ran its two turns on two sessions, and the second
+// generated a title. That is a model call the cassette has no recording of at that point, so
+// the replay missed and the turn died 11s in while the campaign waited out its ladder.
+//
+// The overlap is the test. Sequential turns pass either way, which is why this failure
+// reached CI at all. cs-claude-remote is absent on purpose: it mints the id locally and has
+// nothing to learn.
+func TestRemoteLearnsTheSessionIdBeforeTheNextTurn(t *testing.T) {
+	skipUnlessLinux(t)
+	for _, tc := range []struct{ tool, prefix, id string }{
+		{"cs-opencode-remote", ".cs-opencode-remote", openCodeTestSessionID},
+		{"cs-codex-remote", ".cs-codex-remote", "01998c4a-0000-7000-8000-000000000000"},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			home, bin := agentHome(t, tc.prefix)
+			trace := filepath.Join(home, "trace")
+			// ssh stands in for the remote driver. A driven turn (the call carrying --tmux)
+			// records its argv, holds long enough for the next turn to start behind it, and
+			// then emits the sentinel the caller learns the id from.
+			writeStub(t, bin, "ssh", `#!/bin/sh
+case "$*" in
+  *--tmux*)
+    echo "$@" >> `+trace+`
+    cat >/dev/null
+    sleep 1
+    echo '__CS_OPENCODE_SESSION_ID__ `+tc.id+`'
+    echo '__CS_CODEX_SESSION_ID__ `+tc.id+`'
+    ;;
+  *) exit 0 ;;
+esac
+`)
+			writeStub(t, bin, "uuidgen", "#!/bin/sh\necho 11111111-2222-3333-4444-555555555555\n")
+
+			first := make(chan string, 1)
+			go func() {
+				out, _ := runScript(t, home, bin, tc.tool, "--new", "--name", "s1", "first turn")
+				first <- out
+			}()
+			// Long enough that the first turn holds the lock, short enough to be inside its
+			// hold. The second turn then blocks where a campaign's next dispatch would.
+			time.Sleep(300 * time.Millisecond)
+			if out, exit := runScript(t, home, bin, tc.tool, "--resume", "s1", "second turn"); exit != 0 {
+				t.Fatalf("second turn: exit %d: %s", exit, out)
+			}
+			<-first
+
+			b, err := os.ReadFile(trace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var turns []string
+			for line := range strings.SplitSeq(strings.TrimSpace(string(b)), "\n") {
+				if strings.Contains(line, "--tmux") {
+					turns = append(turns, line)
+				}
+			}
+			if len(turns) != 2 {
+				t.Fatalf("want two driven turns, got %d:\n%s", len(turns), b)
+			}
+			if strings.Contains(turns[0], "--uuid") {
+				t.Errorf("the first turn has no id to resume yet:\n%s", turns[0])
+			}
+			if !strings.Contains(turns[1], "--uuid "+tc.id) {
+				t.Errorf("a turn that started behind another must resume the session that one\n"+
+					"learned; without the id the remote mints a new session, whose bookkeeping\n"+
+					"calls no cassette recorded:\n%s", turns[1])
+			}
+		})
+	}
+}

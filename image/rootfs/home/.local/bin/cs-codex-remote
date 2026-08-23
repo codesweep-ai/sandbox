@@ -191,7 +191,6 @@ else
     if [[ -z "$TOKEN" ]]; then TOKEN="$(uuidgen | tr 'A-Z' 'a-z' | tr -d '-')"; echo "$TOKEN" > "$TOKEN_FILE"; fi
 fi
 
-UUID="$(cat "$UUID_FILE" 2>/dev/null || true)"
 [[ -z "$WORKDIR" && -f "$WORKDIR_FILE" ]] && WORKDIR="$(cat "$WORKDIR_FILE")"
 [[ -n "$WORKDIR" ]] && echo "$WORKDIR" > "$WORKDIR_FILE"
 
@@ -219,7 +218,6 @@ deploy_driver
 
 DRIVER_FMT="text"; $JSON && DRIVER_FMT="json"
 REMOTE_CMD="$REMOTE_DRIVER --tmux $TOKEN --format $DRIVER_FMT --name \"$SESSION_NAME\""
-[[ -n "$UUID" ]] && REMOTE_CMD="$REMOTE_CMD --uuid $UUID"
 [[ -n "$WORKDIR" ]] && REMOTE_CMD="$REMOTE_CMD --workdir \"$WORKDIR\""
 [[ -n "$TURN_TIMEOUT" ]] && REMOTE_CMD="$REMOTE_CMD --timeout $TURN_TIMEOUT"
 
@@ -263,11 +261,21 @@ ssh_turn() {
         echo "    rm -f '$LOCK_FILE'" >&2
         exec 200>&-; return 4
     fi
-    local rc
-    echo "$PROMPT" | ssh "$REMOTE_HOST" "$REMOTE_CMD" | filter_sentinel
+    local rc cmd
+    # The codex session id is read HERE, holding the lock, rather than when this process
+    # started. A turn is dispatched as soon as the previous one's REPLY lands, and the reply
+    # is written before that turn's driver exits, so a second turn starts while the first is
+    # still finishing. Reading at startup meant it read the id before the first turn had
+    # learned one, and a turn with no id mints a NEW session on the remote.
+    UUID="$(cat "$UUID_FILE" 2>/dev/null || true)"
+    cmd="$REMOTE_CMD"
+    [[ -n "$UUID" ]] && cmd="$cmd --uuid $UUID"
+    echo "$PROMPT" | ssh "$REMOTE_HOST" "$cmd" | filter_sentinel
     rc=${PIPESTATUS[1]}
-    flock -u 200; exec 200>&-
+    # Stored BEFORE the lock is released, so the next turn — which is blocked on that lock —
+    # cannot start before the id it needs is on disk.
     store_uuid
+    flock -u 200; exec 200>&-
     return $rc
 }
 
