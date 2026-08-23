@@ -18,6 +18,11 @@ Nothing is ever scraped from the screen. opencode assigns its own session id (`s
 tmux session is named by a stable local token and the opencode session id is learned from the
 first turn and stored for later `--resume`.
 
+The TUI is the only server on that port. Its port is derived from the session token, so a server
+holding it with no tmux session behind it is a turn that died before it could clean up: the driver
+says which port and which process, ends it, and starts the turn. Nothing else would, because
+`--kill` ends a tmux session and that process is not in one.
+
 Run `cs-opencode-remote` from Bash. **A session name is MANDATORY on every call** — either start
 a new session with `--new --name <name>` or resume one with `--resume <name>`. Bare calls are
 rejected. `~/.cs-opencode-remote-session` records the last name used, for reference only (never

@@ -1320,3 +1320,224 @@ func TestClaudeWrapperRefusesForeignMCPServers(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenCodeTurnStartsOneServerForANewSession: a new session is minted on the warm TUI's
+// own API, and no second server is ever started.
+//
+// The driver used to boot a transient `opencode serve` on the same derived port purely to
+// mint a session id, kill it, and wait for the port before launching the TUI. A turn that
+// died inside that window left the transient server running, and nothing cleared it: a
+// restart kills the tmux session, and that process is not in one. It then answered every
+// health check while the TUI it shadowed rendered nothing, so the next turn attached to it
+// and ran in the directory it had been started in.
+//
+// The contract is therefore stated as an absence — no `serve` — plus the two calls that
+// replace it: the session is minted with the caller's directory, and the TUI is navigated
+// to it so a human attaching sees the driven turn.
+func TestOpenCodeTurnStartsOneServerForANewSession(t *testing.T) {
+	skipUnlessLinux(t)
+	home, bin := agentHome(t, ".cs-opencode-remote")
+	stubDir := t.TempDir()
+	installOpenCodeTurnStubs(t, bin)
+	// Record every cs-opencode invocation, then behave as the shared stub does.
+	writeStub(t, bin, "cs-opencode", "#!/bin/sh\necho \"cs-opencode $*\" >> \"$STUB_DIR/invocations\"\n"+
+		"echo \"stub-response\"\nexit \"${STUB_RUN_EXIT:-0}\"\n")
+	// Stateful, so the port reads as free before the TUI is launched and as served after:
+	// a health probe that always succeeded would look like a squatter to reclaim_port.
+	writeStub(t, bin, "tmux", `#!/bin/sh
+echo "tmux $*" >> "$STUB_DIR/invocations"
+case "$1" in
+  has-session) [ -f "$STUB_DIR/.tui_up" ] || exit 1 ;;
+  new-session) touch "$STUB_DIR/.tui_up" ;;
+esac
+exit 0
+`)
+	// A curl that logs the request line it was given, so the mint and the navigation are
+	// observable. The final argument is the URL for every call the driver makes.
+	writeStub(t, bin, "curl", `#!/bin/sh
+for last; do :; done
+echo "curl $*" >> "$STUB_DIR/invocations"
+case "$last" in
+  */global/health) [ -f "$STUB_DIR/.tui_up" ] || exit 7; exit 0 ;;
+  */session/status) echo '{}'; exit 0 ;;
+  */session/*/message)
+    if [ ! -f "$STUB_DIR/.msg_called" ]; then touch "$STUB_DIR/.msg_called"; cat "$STUB_DIR/pre.json"; else cat "$STUB_DIR/message.json"; fi
+    exit 0 ;;
+esac
+printf '{"id":"%s"}\n' "`+openCodeTestSessionID+`"
+exit 0
+`)
+	writeSnapshots(t, stubDir, "[]",
+		`[{"info":{"role":"assistant","time":{"created":2,"completed":3}},"parts":[{"type":"text","text":"stub-response"}]}]`)
+
+	// No --uuid: this is the new-session path, the only one that used to mint. The workdir has
+	// to exist, because a session is bound to it.
+	workdir := t.TempDir()
+	out, exit := runScriptStdin(t, home, bin, []string{"STUB_DIR=" + stubDir}, "do the thing\n",
+		"cs-opencode-turn", "--tmux", "stubtoken", "--workdir", workdir)
+	if exit != 0 {
+		t.Fatalf("exit = %d; want 0: %s", exit, out)
+	}
+	logged, err := os.ReadFile(filepath.Join(stubDir, "invocations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := string(logged)
+
+	// The absence that is the fix: no second server, on any port.
+	for line := range strings.SplitSeq(calls, "\n") {
+		if strings.HasPrefix(line, "cs-opencode ") && strings.Contains(line, " serve") {
+			t.Errorf("the driver started a second server, which is what strands one:\n  %s", line)
+		}
+	}
+	if got := strings.Count(calls, "tmux new-session"); got != 1 {
+		t.Errorf("tmux new-session called %d times; the TUI is the only server, so exactly one", got)
+	}
+	// Minted on the TUI's own API, bound to the directory the caller named rather than to
+	// whatever the TUI's cwd happened to be.
+	if !strings.Contains(calls, "/session?directory="+workdir) {
+		t.Errorf("the session was not minted for the caller's workdir:\n%s", calls)
+	}
+	// Navigated, so the warm TUI shows the driven session instead of the home screen.
+	if !strings.Contains(calls, "/tui/select-session") {
+		t.Errorf("the TUI was never navigated to the new session:\n%s", calls)
+	}
+	covemit.Prove(t, "turn-driver-semantics", "opencode", "", "scripts")
+}
+
+// TestOpenCodeTurnReclaimsAStrandedServer: a server holding the derived port with no tmux
+// session behind it is taken back, rather than driven.
+//
+// The port is a hash of the session token, so anything listening on it belongs to this
+// session. One that no tmux session stands behind is a turn that died before it could clean
+// up. It answers every health check, so without this the driver attaches to it and the turn
+// runs against a server nobody can see; and nothing else clears it, because a restart kills
+// a tmux session and this process is not in one.
+//
+// The squatter is a real process, because `kill` is a shell builtin and a stub on PATH would
+// never run. The test asserts the driver signalled the pid that ss named, by watching that
+// process exit.
+func TestOpenCodeTurnReclaimsAStrandedServer(t *testing.T) {
+	skipUnlessLinux(t)
+	home, bin := agentHome(t, ".cs-opencode-remote")
+	stubDir := t.TempDir()
+	installOpenCodeTurnStubs(t, bin)
+	writeStub(t, bin, "cs-opencode", "#!/bin/sh\necho \"stub-response\"\nexit 0\n")
+
+	squatter := exec.Command("sleep", "120")
+	if err := squatter.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// Reaped as it dies, in a goroutine. A killed child this process has not waited for is a
+	// zombie, and `kill -0` on a zombie still succeeds — so without this the stubs below would
+	// go on reporting a squatter the driver had already killed.
+	died := make(chan struct{})
+	go func() { _ = squatter.Wait(); close(died) }()
+	t.Cleanup(func() { _ = squatter.Process.Kill() })
+	pid := squatter.Process.Pid
+
+	writeStub(t, bin, "tmux", `#!/bin/sh
+case "$1" in
+  has-session) [ -f "$STUB_DIR/.tui_up" ] || exit 1 ;;
+  new-session) touch "$STUB_DIR/.tui_up" ;;
+  list-sessions) exit 0 ;;
+esac
+exit 0
+`)
+	// ss names the squatter while it lives, and reports nothing once it is gone.
+	writeStub(t, bin, "ss", fmt.Sprintf(`#!/bin/sh
+kill -0 %d 2>/dev/null || exit 0
+echo 'LISTEN 0 512 127.0.0.1:21453 0.0.0.0:* users:(("opencode",pid=%d,fd=22))'
+`, pid, pid))
+	// The port answers while the squatter lives, and again once the TUI is up, which is what
+	// a real reclaim looks like from the driver's side.
+	writeStub(t, bin, "curl", fmt.Sprintf(`#!/bin/sh
+for last; do :; done
+case "$last" in
+  */global/health)
+    [ -f "$STUB_DIR/.tui_up" ] && exit 0
+    kill -0 %d 2>/dev/null && exit 0
+    exit 7 ;;
+  */session/status) echo '{}'; exit 0 ;;
+  */session/*/message)
+    if [ ! -f "$STUB_DIR/.msg_called" ]; then touch "$STUB_DIR/.msg_called"; cat "$STUB_DIR/pre.json"; else cat "$STUB_DIR/message.json"; fi
+    exit 0 ;;
+esac
+printf '{"id":"%%s"}\n' "%s"
+exit 0
+`, pid, openCodeTestSessionID))
+	writeSnapshots(t, stubDir, "[]",
+		`[{"info":{"role":"assistant","time":{"created":2,"completed":3}},"parts":[{"type":"text","text":"stub-response"}]}]`)
+
+	out, exit := runScriptStdin(t, home, bin, []string{"STUB_DIR=" + stubDir}, "do the thing\n",
+		"cs-opencode-turn", "--tmux", "stubtoken", "--workdir", t.TempDir())
+	if exit != 0 {
+		t.Fatalf("a stranded server must be reclaimed, not fatal; exit = %d: %s", exit, out)
+	}
+	if !strings.Contains(out, "reclaiming port") {
+		t.Errorf("the reclaim is never silent, so the log says which port and which pid:\n%s", out)
+	}
+	select {
+	case <-died:
+	case <-time.After(10 * time.Second):
+		t.Errorf("the squatter on the derived port is still running, so it was never reclaimed")
+	}
+	covemit.Prove(t, "turn-driver-semantics", "opencode", "", "scripts")
+}
+
+// TestOpenCodeTurnFallsBackFromAMissingWorkdir: a `--workdir` that does not exist runs in
+// $HOME, and says so.
+//
+// opencode binds a session to the directory it is given, so a path that is not there fails
+// every prompt on that session with `FileSystem.realPath (…) ENOENT` rather than at launch.
+// The caller is not always in a position to know: cs-campaign asks every turn to run in
+// `/workspace`, which a Firecracker member does not have.
+func TestOpenCodeTurnFallsBackFromAMissingWorkdir(t *testing.T) {
+	skipUnlessLinux(t)
+	home, bin := agentHome(t, ".cs-opencode-remote")
+	stubDir := t.TempDir()
+	installOpenCodeTurnStubs(t, bin)
+	writeStub(t, bin, "cs-opencode", "#!/bin/sh\necho \"stub-response\"\nexit 0\n")
+	writeStub(t, bin, "tmux", `#!/bin/sh
+case "$1" in
+  has-session) [ -f "$STUB_DIR/.tui_up" ] || exit 1 ;;
+  new-session) touch "$STUB_DIR/.tui_up" ;;
+  list-sessions) exit 0 ;;
+esac
+exit 0
+`)
+	writeStub(t, bin, "curl", `#!/bin/sh
+for last; do :; done
+echo "curl $*" >> "$STUB_DIR/invocations"
+case "$last" in
+  */global/health) [ -f "$STUB_DIR/.tui_up" ] || exit 7; exit 0 ;;
+  */session/status) echo '{}'; exit 0 ;;
+  */session/*/message)
+    if [ ! -f "$STUB_DIR/.msg_called" ]; then touch "$STUB_DIR/.msg_called"; cat "$STUB_DIR/pre.json"; else cat "$STUB_DIR/message.json"; fi
+    exit 0 ;;
+esac
+printf '{"id":"%s"}\n' "`+openCodeTestSessionID+`"
+exit 0
+`)
+	writeSnapshots(t, stubDir, "[]",
+		`[{"info":{"role":"assistant","time":{"created":2,"completed":3}},"parts":[{"type":"text","text":"stub-response"}]}]`)
+
+	out, exit := runScriptStdin(t, home, bin, []string{"STUB_DIR=" + stubDir}, "do the thing\n",
+		"cs-opencode-turn", "--tmux", "stubtoken", "--workdir", "/workspace")
+	if exit != 0 {
+		t.Fatalf("a missing workdir is a fallback, not a failure; exit = %d: %s", exit, out)
+	}
+	if !strings.Contains(out, "does not exist") {
+		t.Errorf("the fallback is never silent, because the turn then runs somewhere else:\n%s", out)
+	}
+	logged, err := os.ReadFile(filepath.Join(stubDir, "invocations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The session must not be bound to the directory that is not there: opencode accepts it
+	// and then fails every prompt on that session.
+	if strings.Contains(string(logged), "directory=/workspace") {
+		t.Errorf("the session was bound to a directory that does not exist:\n%s", logged)
+	}
+	covemit.Prove(t, "turn-driver-semantics", "opencode", "", "scripts")
+}

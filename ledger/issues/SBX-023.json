@@ -1,0 +1,25 @@
+{
+  "id": "SBX-023",
+  "title": "A turn that dies while minting an opencode session strands a server on its port",
+  "type": "defect",
+  "severity": "high",
+  "status": "in-progress",
+  "foundBy": "session agent, investigating why the campaign project's opencode-fireworks smoke scenario is excluded from CI",
+  "opened": "2026-08-23",
+  "resolved": null,
+  "stint": "2026-08-23 opencode turn driver",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`cs-opencode-turn` booted a second opencode server to mint a session id. `mint_session` started `cs-opencode serve` on the derived port, waited for it, posted `/session`, killed it, then launched the TUI on the same port. Its only EXIT trap removed temp files, so a turn that died in that window left the transient server running.\n\nNothing cleared it afterwards. `cs-opencode-remote --kill` runs `tmux kill-session`, and the stranded server is not in a tmux session, so every later turn met it again.\n\nEvery guard then passed against the wrong server. Reproduced in a microVM: the stranded server answered `wait_healthy`, so the session was minted on it and bound to its own working directory, the sandbox user's home, rather than the one the turn asked for; `kill` reached only the driver's own unbound server; the 10s port-free loop fell through silently; the TUI then could not bind, yet `wait_healthy` and `session_known` both answered from the stranded server, so `ensure_session` returned 0 and the turn ran against a server no one could see. An agent whose file tools run in the wrong directory produces no reply, which reads from the host as a member that never started its turn.\n\nA second opencode server also costs about 1 GiB. A member is given 2048 MiB, so a stranded server leaves little for the one doing the work.",
+  "notes": [
+    {
+      "date": "2026-08-23",
+      "text": "Removing the transient server exposed a second defect it had been hiding. The old mint ran `cd \"$dir\" 2>/dev/null || cd \"$HOME\"`, so a working directory that does not exist fell back silently. Binding the session to the directory explicitly made opencode honour it, and every prompt then failed with `FileSystem.realPath (/workspace) ENOENT`. cs-campaign asks every turn to run in /workspace, which a Firecracker member does not have. The driver now checks the directory and says which one it used."
+    }
+  ],
+  "links": []
+}

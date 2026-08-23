@@ -6,10 +6,9 @@
 # localized and unstable; the API is deterministic).
 #
 # One turn =
-#   1. ensure the warm TUI exists: the opencode session id is created/known BEFORE the TUI
-#      launches (a session minted via a transient `cs-opencode serve` + POST /session when new),
-#      and the TUI is always launched `cs-opencode --port <p> -s <id>` so a human attaching sees
-#      the driven session render live;
+#   1. ensure the warm TUI exists: it is the only server on the derived port, and a new session is
+#      minted on its own API (POST /session) and then selected in it (POST /tui/select-session), so
+#      a human attaching sees the driven session render live;
 #   2. readiness = GET /global/health on the TUI's port (no pane scraping);
 #   3. drive the turn with a blocking `cs-opencode run --attach http://127.0.0.1:<p> -s <id>
 #      --auto "<prompt>"`, watching GET /session/status for stalls (absent key = idle);
@@ -70,6 +69,14 @@ for bin in opencode cs-opencode tmux curl python3; do
     command -v "$bin" >/dev/null 2>&1 || { err "$bin not found on remote PATH"; exit 3; }
 done
 
+# A working directory that does not exist is not one to run in. opencode binds a session to the
+# directory it is given and then fails on every prompt with a path error, so the fallback is chosen
+# here and said out loud rather than left to whichever component noticed first.
+if [[ -n "$WORKDIR" && ! -d "$WORKDIR" ]]; then
+    err "working directory '$WORKDIR' does not exist; running in $HOME instead"
+    WORKDIR=""
+fi
+
 TMUX_SESSION="cs-opencode-$TOKEN"
 # Deterministic per-token port in 21000-25095: both the TUI and later resumes of the same token
 # derive the same value, so nothing needs to be persisted.
@@ -104,29 +111,58 @@ session_busy() {
 # TUI): our session id must be resolvable on this server.
 session_known() { curl -fsS -m 5 "$BASE/session/$SES_ID" >/dev/null 2>&1; }
 
-# Mint a new opencode session bound to the working directory, using a transient headless server
-# on the same derived port (freed again before the TUI launches with -s <id>).
-mint_session() {
-    local serve_pid dir="${WORKDIR:-$PWD}"
-    # The session is bound to the server's cwd, so never fall through to an arbitrary one.
-    ( cd "$dir" 2>/dev/null || cd "$HOME" || exit 3; exec cs-opencode serve --port "$PORT" ) >/dev/null 2>&1 &
-    serve_pid=$!
-    if ! wait_healthy 90; then
-        kill "$serve_pid" 2>/dev/null
-        err "transient opencode server never became healthy on port $PORT"; return 3
-    fi
-    SES_ID="$(curl -fsS -m 10 -X POST "$BASE/session" -H 'content-type: application/json' -d '{}' 2>/dev/null \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null)"
-    kill "$serve_pid" 2>/dev/null; wait "$serve_pid" 2>/dev/null
-    # Wait for the port to actually free before the TUI binds it.
-    for _ in $(seq 1 40); do healthy || break; sleep 0.25; done
-    [[ "$SES_ID" =~ ^ses_[A-Za-z0-9]{20,40}$ ]] || { err "could not create an opencode session (got '$SES_ID')"; return 3; }
-    return 0
+# The pid listening on the derived port, or empty. ss names the socket's owner, which is the one
+# process a kill has to reach; matching the command line instead would also match the tmux process
+# whose argv carries the same port.
+port_pid() { ss -lptnH "sport = :$PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2; }
+
+# Whether a DIFFERENT live token derives this same port. The port is a hash of the token, so two
+# sessions in one sandbox can collide; that server belongs to its own session and reclaiming it
+# would kill somebody else's warm TUI.
+port_owned_by_other_token() {
+    local session token
+    while read -r session; do
+        [[ -z "$session" || "$session" == "$TMUX_SESSION" ]] && continue
+        token="${session#cs-opencode-}"
+        (( 21000 + 16#$(printf '%s' "$token" | md5sum | cut -c1-3) == PORT )) && return 0
+    done < <(tmux list-sessions -F '#S' 2>/dev/null | grep '^cs-opencode-')
+    return 1
 }
 
-# Ensure the warm TUI is up, healthy, and rendering OUR session. The session id always exists
-# before the TUI launches; a TUI launched bare would sit on the home screen and never show
-# externally driven turns.
+# Take the derived port back from a server that no tmux session stands behind.
+#
+# Such a server is a turn that died before it could clean up. It answers every health check below
+# while the TUI it shadows renders nothing, so the driver would attach to it, run the turn in
+# whatever directory it was started in, and leave the human attaching to a blank pane. Nothing else
+# clears it either: a restart kills the tmux session, and this process is not in one.
+#
+# The port belongs to this token, so anything else holding it is stale by construction — except a
+# colliding token, which is checked first. The effect is what is verified, not the signal: the
+# health check is the test, and SIGKILL follows SIGTERM.
+reclaim_port() {
+    healthy || return 0
+    session_alive && return 0
+    if port_owned_by_other_token; then
+        err "port $PORT is held by another cs-opencode session whose token hashes to it"
+        err "  rename this session so its token derives a different port"
+        return 3
+    fi
+    local pid; pid="$(port_pid)"
+    err "reclaiming port $PORT from a leftover opencode server (pid ${pid:-unknown})"
+    if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null; else pkill -f "opencode serve --port $PORT" 2>/dev/null; fi
+    for _ in $(seq 1 40); do healthy || return 0; sleep 0.25; done
+    [[ -n "$pid" ]] && kill -9 "$pid" 2>/dev/null
+    for _ in $(seq 1 20); do healthy || return 0; sleep 0.25; done
+    err "port $PORT is still answering after SIGKILL; cannot start a turn on it"
+    return 3
+}
+
+# Ensure the warm TUI is up, healthy, and rendering OUR session.
+#
+# One server, and the TUI is it. A new session is minted on the TUI's own API and the TUI is then
+# navigated to it, so nothing else ever binds this port: a second server would have to be started,
+# killed and waited for, and a turn that died in that window left it running to shadow every turn
+# after it.
 ensure_session() {
     if session_alive; then
         if ! wait_healthy 30; then
@@ -142,16 +178,33 @@ ensure_session() {
         # TUI is bound to the id we are about to drive.
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
     fi
-    if [[ -z "$SES_ID" ]]; then
-        mint_session || return $?
-    fi
+    reclaim_port || return 3
     local newargs=(new-session -d -s "$TMUX_SESSION" -x 220 -y 50)
     [[ -n "$WORKDIR" ]] && newargs+=(-c "$WORKDIR")
-    newargs+=("cs-opencode --port $PORT -s $SES_ID")
+    # -s only when the id is known. A bare launch is the new-session case, where the session does
+    # not exist yet and there is nothing for the TUI to render until it is selected below.
+    if [[ -n "$SES_ID" ]]; then
+        newargs+=("cs-opencode --port $PORT -s $SES_ID")
+    else
+        newargs+=("cs-opencode --port $PORT")
+    fi
     tmux "${newargs[@]}" || { err "failed to start tmux session"; return 3; }
     if ! wait_healthy 90; then
         session_alive || { err "opencode TUI exited during startup (port $PORT in use, or launch failure)"; return 3; }
         err "opencode TUI never became healthy on port $PORT"; return 3
+    fi
+    if [[ -z "$SES_ID" ]]; then
+        # The session is bound to the directory named here rather than to the server's cwd, so the
+        # turn runs where the caller asked even if the TUI was started somewhere else.
+        SES_ID="$(curl -fsS -m 10 -X POST "$BASE/session?directory=${WORKDIR:-$PWD}" \
+            -H 'content-type: application/json' -d '{}' 2>/dev/null \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null)"
+        [[ "$SES_ID" =~ ^ses_[A-Za-z0-9]{20,40}$ ]] || { err "could not create an opencode session (got '$SES_ID')"; return 3; }
+        # Navigate the TUI to it, so a human attaching sees the driven turn rather than the home
+        # screen. The turn itself is driven over the API and does not depend on this.
+        curl -fsS -m 10 -X POST "$BASE/tui/select-session" -H 'content-type: application/json' \
+            -d "{\"sessionID\":\"$SES_ID\"}" >/dev/null 2>&1 \
+            || err "note: the TUI did not navigate to $SES_ID; the turn still runs"
     fi
     session_known || { err "TUI server does not know session $SES_ID"; return 3; }
     return 0
