@@ -123,6 +123,11 @@ leaving dotted hosts on ssh's defaults.
 **R18.** The config **MUST** set `IdentitiesOnly yes` for fabric peers only, resolved by a `Match exec` that
 checks the target lands on the fabric subnet.
 
+**R18a.** The config **MUST** bound the connect to a peer. *A peer that does not answer leaves
+`connect()` in the kernel's retry window, measured at 136 seconds. Every caller that reaches a peer
+sits under something that gives up sooner. The failure then arrives as a kill with no output instead
+of an unreachable machine, and a campaign judged a teammate's branch it had never fetched.*
+
 R17 exists because an agent offering an unaccepted key would otherwise fall through to a password
 prompt and hang on a TTY nobody is watching. A user sandbox omits it because it may legitimately
 password-authenticate to a dotless machine on the LAN.
@@ -1042,7 +1047,7 @@ key out, so scope what you load.
 
 ## 16. Conformance and testing
 
-An implementation conforms when it satisfies R1–R143, R85a and R85b included. The test suite is the
+An implementation conforms when it satisfies R1–R143, R18a, R85a and R85b included. The test suite is the
 reference, and it has two tiers, split by whether they touch a real engine.
 
 **Unit tests** (`make test`) are pure and fast, with no external processes. They cover the logic

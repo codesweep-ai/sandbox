@@ -72,6 +72,12 @@ func AuthorizedKeys(hostPubs, userTierPub, agentTierPub string, typ Type) []byte
 //     external hosts.
 //   - Agents additionally pin PreferredAuthentications=publickey so a rejected key
 //     fails fast instead of hanging on a host password prompt.
+//   - ConnectTimeout bounds the reach itself. A peer that does not answer leaves
+//     connect() in the kernel's SYN retry window, measured at 136s here, and
+//     every caller that reaches a peer is under something that gives up sooner:
+//     an agent's shell tool at 120s kills the command with no output at all. The
+//     campaign that found this judged a teammate's branch it had never fetched,
+//     because the fetch had been killed rather than failed.
 //
 // fabricGW is the podman network gateway (e.g. 10.89.0.1). For any non-solo
 // sandbox (tierKey != "") a valid IPv4 gateway is REQUIRED — otherwise we return
@@ -92,6 +98,9 @@ func SSHClientConfig(typ Type, tierKey, fabricGW string) (string, error) {
 		b.WriteString("    IdentitiesOnly yes\n")
 	}
 	b.WriteString("Host * !*.*\n")
+	// Only for peers. A dotted host is somebody else's network and keeps ssh's
+	// defaults, where a long connect may be the right answer.
+	b.WriteString("    ConnectTimeout 10\n")
 	if tierKey != "" {
 		fmt.Fprintf(&b, "    IdentityFile ~/.ssh/%s\n", tierKey)
 	}

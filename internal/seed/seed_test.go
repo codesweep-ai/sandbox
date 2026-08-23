@@ -74,6 +74,38 @@ func TestSSHClientConfig(t *testing.T) {
 		mustContain(t, cfg, "IdentityFile ~/.ssh/"+TierAgentKey)
 		mustContain(t, cfg, "PreferredAuthentications publickey")
 		mustContain(t, cfg, "StrictHostKeyChecking accept-new")
+		mustContain(t, cfg, "ConnectTimeout 10")
+	})
+
+	// A peer that does not answer must fail rather than sit in the kernel's SYN
+	// retry window, which outlasts every caller that reaches one: an agent's
+	// shell tool gives up at 120s and reports a kill with no output, so what
+	// reaches the model is silence rather than a machine that was unreachable.
+	t.Run("every type bounds the reach to a peer", func(t *testing.T) {
+		for _, tc := range []struct {
+			typ Type
+			key string
+		}{{Agent, TierAgentKey}, {User, TierUserKey}, {Agent, ""}} {
+			cfg, err := SSHClientConfig(tc.typ, tc.key, "10.89.0.1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustContain(t, cfg, "ConnectTimeout 10")
+		}
+	})
+
+	// Only peers. A dotted host belongs to somebody else's network, where ssh's
+	// own default may well be the right answer.
+	t.Run("the bound sits under the dotless peer block", func(t *testing.T) {
+		cfg, err := SSHClientConfig(Agent, TierAgentKey, "10.89.0.1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		peers := strings.Index(cfg, "Host * !*.*")
+		bound := strings.Index(cfg, "ConnectTimeout 10")
+		if peers < 0 || bound < peers {
+			t.Fatalf("ConnectTimeout is not inside the peer block:\n%s", cfg)
+		}
 	})
 
 	t.Run("user omits publickey pin", func(t *testing.T) {
