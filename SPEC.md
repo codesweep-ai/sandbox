@@ -347,7 +347,7 @@ client would try the unreachable address first and hang.
 
 **R54.** `forward` **MUST** tunnel over SSH, and **MUST NOT** require elevated privilege on any platform. A
 local forward **MUST** carry one host port to one sandbox port. A dynamic forward **MUST** publish a SOCKS5
-proxy on a host port.
+proxy on a host port. Either **MUST** bind `127.0.0.1`, and any other bind **MUST** be opt-in.
 
 **R55.** `host-route` **MUST** be optional, Linux-only, and **MUST** be the only feature that uses `sudo`. It
 **MUST** use it for `up`, `down` and `refresh` alone, never in the create or exec path.
@@ -362,6 +362,12 @@ A local forward names its destination, so it reaches the one sandbox port you as
 forward resolves and connects from inside the sandbox, so it reaches whatever the sandbox reaches.
 That covers a group peer by bare name, the sandbox's own loopback, and the internet through its
 NAT. Both are tracked the same way, so `forwards` lists either and `unforward` tears either down.
+
+`--bind` is R54's opt-in, and `forward` warns on stderr when its value is not loopback. What it
+costs is not what R142's costs. A published SSH port is still key-gated, while a forwarded port
+carries whatever authentication the sandbox service behind it has, which is often none. A dynamic
+forward is the sharpest case, because bound beyond loopback it is an open proxy onto the group's
+fabric.
 
 By default the host cannot `ping <name>` the way a peer sandbox can, because the fabric lives in
 Podman's rootless network namespace. `host-route up` opts in: it wires the host onto the sandbox
@@ -1010,7 +1016,7 @@ Firecracker is a deliberately lean VMM, which trades features for a small surfac
 **R141.** Sandboxes **MUST** run rootless, with a scaled-down capability set, seccomp on, and no host
 device beyond `/dev/net/tun`.
 
-**R142.** SSH ports **MUST** bind `127.0.0.1` only.
+**R142.** SSH ports **MUST** bind `127.0.0.1`, and any other bind **MUST** be opt-in.
 
 **R143.** `--privileged` **MUST** be opt-in.
 
@@ -1018,6 +1024,12 @@ The engine is the trust boundary, and everything else follows from that. There i
 absent a kernel bug: the engine and the container are bounded by your unprivileged host user through
 keep-id. The microVM engine removes the shared-kernel attack surface entirely. `--privileged` trades
 that defence in depth for breadth, which is why it is a flag rather than a default.
+
+`CS_SANDBOX_SSH_BIND` is R142's opt-in. It sets the host address a sandbox's published SSH port
+binds, and a group gateway's with it. The cost is reach: any value other than loopback publishes
+that port on an interface the rest of the network can route to. Key authentication still holds,
+because sshd takes no password and authorizes only the keys §4 gives it. R142 does not, so scope the
+variable to one command rather than exporting it.
 
 R105 unmasks the container's `/proc`, which is why R141 no longer names `/proc/kcore`. The masking
 was the outer of two defences, and not the load-bearing one. The container's root is an unprivileged

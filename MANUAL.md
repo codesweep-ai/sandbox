@@ -366,6 +366,7 @@ The second group changes what gets built or run.
 | `CS_SANDBOX_DNS_SUFFIX` | `cs.sandbox` | The domain `host-route` resolves sandbox names under. |
 | `CS_SANDBOX_GROUP` | `default` | The group `create` puts a sandbox in when no `--group` is given. |
 | `CS_SANDBOX_TZ` | `America/Los_Angeles` | The timezone a sandbox boots with. |
+| `CS_SANDBOX_SSH_BIND` | `127.0.0.1` | The host address a sandbox's SSH port, and its group gateway's, binds. Any other value publishes it beyond loopback: see [SPEC.md §13](SPEC.md#13-security-model). |
 
 The third group tunes the Firecracker engine. Leave these alone unless `doctor` or this manual sends
 you to one.
