@@ -450,22 +450,25 @@ func dnsmasqIP(gw string) string {
 	return gw
 }
 
-// hostReachableIP is the address at which the host itself is reachable from
+// HostReachableIP is the address at which the host itself is reachable from
 // inside a sandbox on the rootless network: pasta's host-loopback mapping, the
 // same address Podman exposes as host.containers.internal. It is reachable from
 // both Podman containers and Firecracker taps, which share the one rootless
 // network namespace — so a single mapping serves both engines.
-const hostReachableIP = "169.254.1.2"
+//
+// Exported because it is also where a sandbox reaches a service the host runs
+// for it: the credential lender's base URL is this address and its port.
+const HostReachableIP = "169.254.1.2"
 
 // hostHostsLine builds the "<ip> <name…>" line that pins the host's own
-// name(s) to hostReachableIP in the guest's /etc/hosts, so `ssh <hostname>` /
+// name(s) to HostReachableIP in the guest's /etc/hosts, so `ssh <hostname>` /
 // `curl <hostname>:PORT` from a sandbox reach the host. Returns "" when the host
 // exposes no usable name.
 func hostHostsLine(names []string) string {
 	if len(names) == 0 {
 		return ""
 	}
-	return hostReachableIP + " " + strings.Join(names, " ")
+	return HostReachableIP + " " + strings.Join(names, " ")
 }
 
 // envFilePath returns the seed's inject-env path when there is injected env to
@@ -503,7 +506,13 @@ func (d Deps) writeSeed(ctx context.Context, seedDir string, s CreateSpec, gw st
 	// Carry the host login of each agent the user asked to inherit (opt-in).
 	// Read from the developer's home unless CS_SANDBOX_AGENT_HOME names another
 	// profile tree, which is how a caller supplies a login it did not sign in for.
-	return seed.WriteAgentLogins(seedDir, paths.AgentLoginHome(d.Host.Home), s.InheritAgentLogin, d.note)
+	carried, err := seed.WriteAgentLogins(seedDir, paths.AgentLoginHome(d.Host.Home), s.InheritAgentLogin, d.note)
+	if err != nil {
+		return nil, err
+	}
+	// After the inherited ones, because WriteAgentLogins clears each agent's
+	// seed directory before it carries anything in.
+	return carried, seed.WriteLentCredentials(seedDir, s.LentCredentials)
 }
 
 func (d Deps) globalGitIdentity(ctx context.Context) seed.GitIdentity {

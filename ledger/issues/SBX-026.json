@@ -1,0 +1,16 @@
+{
+  "id": "SBX-026",
+  "title": "A lent sandbox loses all HTTPS egress if the lender stops",
+  "type": "improvement",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent, while building credential lending (SPEC 10.2)",
+  "opened": "2026-08-24",
+  "resolved": null,
+  "stint": null,
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "A sandbox created with a loan gets HTTPS_PROXY pointing at the lender, so the lender can refuse the hosts it fronts (R153). That variable governs every https client in the sandbox, not just the agent, so a lender that is not running takes git, curl and every package manager with it. The model calls fail either way; the rest of the sandbox need not.\n\nThe failure is quiet from inside: a tool reports a proxy it cannot reach, and nothing says which process was supposed to be listening.\n\nOptions: have the guest fall back to a direct route when the proxy refuses to connect (which weakens R153 exactly when it matters least), or keep a lender running for the life of any sandbox that holds a loan and have `doctor` and `ls` say plainly when one is missing. The second keeps the property and needs supervision the forward package already models.",
+  "notes": [],
+  "links": ["SBX-002"]
+}

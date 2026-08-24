@@ -91,6 +91,10 @@ func newDestroyCmd(app *App) *cobra.Command {
 			if err := e.Remove(cmd.Context(), in.Name, true); err != nil {
 				return err
 			}
+			// The loan record went with the instance directory, so the lender
+			// stops honouring this sandbox's token. Stop the lender too once no
+			// sandbox on this host holds one.
+			app.stopLenderIfIdle()
 			app.refreshHostRoute(cmd) // unpublish the destroyed name if host-route is on
 			if err := app.syncSSHConfig(); err != nil {
 				return err
@@ -145,6 +149,7 @@ func newRmCmd(app *App) *cobra.Command {
 			if err := e.Remove(cmd.Context(), in.Name, false); err != nil {
 				return err
 			}
+			app.stopLenderIfIdle()
 			app.refreshHostRoute(cmd) // unpublish the name if host-route is on
 			if err := app.syncSSHConfig(); err != nil {
 				return err

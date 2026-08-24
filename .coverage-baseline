@@ -18,6 +18,7 @@ unit github.com/codesweep-ai/sandbox/internal/forward
 unit github.com/codesweep-ai/sandbox/internal/hostcfg
 unit github.com/codesweep-ai/sandbox/internal/hostenv
 unit github.com/codesweep-ai/sandbox/internal/hostroute
+unit github.com/codesweep-ai/sandbox/internal/lend
 unit github.com/codesweep-ai/sandbox/internal/lock
 unit github.com/codesweep-ai/sandbox/internal/paths
 unit github.com/codesweep-ai/sandbox/internal/ports
@@ -57,6 +58,7 @@ smoke github.com/codesweep-ai/sandbox/internal/forward
 smoke github.com/codesweep-ai/sandbox/internal/hostcfg
 smoke github.com/codesweep-ai/sandbox/internal/hostenv
 smoke github.com/codesweep-ai/sandbox/internal/hostroute
+smoke github.com/codesweep-ai/sandbox/internal/lend
 smoke github.com/codesweep-ai/sandbox/internal/lock
 smoke github.com/codesweep-ai/sandbox/internal/paths
 smoke github.com/codesweep-ai/sandbox/internal/ports

@@ -80,8 +80,14 @@ fi
 # the sign-in choices, and claude comes up as "API Usage Billing" instead of
 # letting you log in. The entrypoint applies the same rule at boot; here we can
 # check the key itself rather than guess from the env file's existence.
+#
+# ANTHROPIC_AUTH_TOKEN counts too. It is how any gateway is reached, and a
+# sandbox holding one has something to sign in with even with no credentials
+# file beside it. (A lent sandbox is not this case: `--lend-agent-login` seeds
+# the credentials file itself, so the first branch already covers it.)
 cc_onboarded=
 if [ -f "$CC_DIR/.credentials.json" ] || [ -n "${ANTHROPIC_API_KEY:-}" ] \
+   || [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
    || [ -n "${CLAUDE_CODE_USE_BEDROCK:-}" ] || [ -n "${CLAUDE_CODE_USE_VERTEX:-}" ]; then
   cc_onboarded=1
 fi

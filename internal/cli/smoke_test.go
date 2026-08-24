@@ -1,4 +1,4 @@
-//go:build integration || smoke
+//go:build integration || smoke || live_agents
 
 // The smoke profile: the subset of the live tests small enough to run in CI on
 // every host cs-sandbox is driven from — Linux, macOS, and Windows under WSL2.

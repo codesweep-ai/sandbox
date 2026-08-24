@@ -9,7 +9,9 @@
 ```
 cs-sandbox create <name> [--repo PATH] [--snapshot PATH] [--type agent|user]
                          [--engine podman|firecracker] [--group NAME]
-                         [--inherit-agent-login AGENT] [--yolo] [--solo] …
+                         [--inherit-agent-login AGENT] [--lend-agent-login AGENT]
+                         [--inherit-api-key PROVIDER] [--lend-api-key PROVIDER]
+                         [--cassette NAME] [--yolo] [--solo] …
 cs-sandbox ls [--json] [-q]            cs-sandbox inspect <name> [--json]
 cs-sandbox ssh <name> [args...]        cs-sandbox exec <name> [cmd...]
 cs-sandbox fetch <name> [dir]          cs-sandbox push <name> [dir]
@@ -27,6 +29,7 @@ cs-sandbox stores                      cs-sandbox rm-store [-f] <name>
 
 cs-sandbox build [--engine ENGINE]...  cs-sandbox doctor [--engine ENGINE]
 cs-sandbox agent-login <agent> <name>  cs-sandbox install-agent-tools [dir]
+cs-sandbox lender [--addr ADDR]
 cs-sandbox completion bash|zsh|fish|powershell
 cs-sandbox version
 
@@ -67,8 +70,8 @@ cs-sandbox create <name> [flags]
 ```
 
 Creates a sandbox and starts it. The defaults suit the common case: an agent sandbox in the
-`default` group, sharing nothing and inheriting no agent login. The engine defaults to Firecracker
-where the host has KVM, and to Podman otherwise.
+`default` group, sharing nothing and holding no credential of yours. The engine defaults to
+Firecracker where the host has KVM, and to Podman otherwise.
 
 | Flag | Meaning |
 |---|---|
@@ -77,7 +80,13 @@ where the host has KVM, and to Podman otherwise.
 | `--type agent\|user` | What this sandbox may reach over SSH. Default `agent`. See [SSH trust](#ssh-trust). |
 | `--engine podman\|firecracker` | Which engine backs it. Default: Firecracker on Linux with KVM, Podman otherwise. |
 | `--group NAME` | The group whose network, keys and gateway it joins. Default `default`. |
-| `--inherit-agent-login AGENT` | Carry a host agent login in: `claude`, `codex` or `opencode`. Repeatable and comma-separated. Default: inherit nothing. |
+| `--lend-agent-login AGENT` | **Lend** a host agent login: `claude` or `codex`. The sandbox gets a fabricated credential; yours never enters it. Repeatable and comma-separated. |
+| `--lend-api-key PROVIDER` | **Lend** an LLM API key from `~/.cs-keys/<provider>`: `anthropic`, `openai` or `fireworks`. Same trade. Repeatable and comma-separated. |
+| `--inherit-agent-login AGENT` | Copy a host agent login in: `claude`, `codex` or `opencode`. The sandbox then holds the real credential. Repeatable and comma-separated. |
+| `--inherit-api-key PROVIDER` | Copy an LLM API key in from `~/.cs-keys/<provider>`: `anthropic`, `openai` or `fireworks`. Repeatable and comma-separated. |
+| `--cassette NAME` | Send this sandbox's model calls through a cs-vcr cassette of this name. |
+| `--vcr HOST:PORT` | Where that cs-vcr listens. Default: this host at port 8080. |
+| `--block-side-calls` | Refuse the sandbox a direct route to the hosts the lender fronts. Default true, and only meaningful with a loan. |
 | `--yolo` | Drop the agents' approval prompts. The sandbox is the boundary. |
 | `--solo` | Withhold the group's SSH key, so this agent sandbox can reach no peer while staying reachable itself. Agent type only. |
 | `-e`, `--env KEY=VALUE` | Inject an environment variable, or `KEY` alone to pass the host's value. Repeatable. |
@@ -88,8 +97,9 @@ where the host has KVM, and to Podman otherwise.
 | `--disk GiB` | Firecracker disk size, grow-only. Default: the base rootfs size, 32. |
 | `--privileged` | Podman: use `--privileged` instead of the scaled-down capability set. |
 
-`create` prints which agent logins the sandbox ended up with, so an inherited login is never a
-silent assumption.
+`create` prints what the sandbox ended up with, borrowed or held, so neither is ever a silent
+assumption. Prefer the `--lend-…` pair: they give an agent everything it needs while your credential
+stays on the host. [Lending a credential](#lending-a-credential) is the whole of that story.
 
 `create` also carries your Claude Code theme in, so `cs-claude` opens looking the way claude does on
 your host. Pick a different theme inside the sandbox and that choice wins from then on.
@@ -125,7 +135,7 @@ sandbox shares several.
 ### Lifecycle
 
 ```
-cs-sandbox ls [--json] [-q]         # GROUP NAME STATUS AGE TYPE ENGINE YOLO SOLO
+cs-sandbox ls [--json] [-q]         # GROUP NAME STATUS AGE TYPE ENGINE YOLO SOLO CREDS
 cs-sandbox inspect <name> [--json]  # everything recorded about one
 cs-sandbox stop <name>              # shut it down, keep everything
 cs-sandbox start <name>             # bring it back
@@ -200,13 +210,14 @@ cs-sandbox build --slim [--with-agents]   # the CI image instead: no developer t
 cs-sandbox doctor [--engine ENGINE]       # check prerequisites, print the fix for each gap
 cs-sandbox install-agent-tools [dir]      # the agent tools onto your PATH
 cs-sandbox agent-login <agent> <name>     # log an agent in inside a sandbox
+cs-sandbox lender [--addr ADDR]           # run the credential lender in the foreground
 cs-sandbox sync-ssh-config                # regenerate the SSH config fragment
 cs-sandbox completion <shell>             # a completion script for bash, zsh, fish or powershell
 ```
 
-`--inherit-agent-login` reads each login from `~/.cs-<agent>`. `CS_SANDBOX_AGENT_HOME` points that
-lookup at a different tree, and nothing else moves. The instance, its seed and the caches stay where
-they were.
+The credential flags read from `~/.cs-<agent>` and `~/.cs-keys`, whether they lend or copy.
+`CS_SANDBOX_AGENT_HOME` points that lookup at a different tree, and nothing else moves. The
+instance, its seed and the caches stay where they were.
 
 It is for a caller that has to supply a login it never signed in for. A replay suite is one. Its
 members need a credential the agent will start with, and a cassette serves the traffic. Pointing
@@ -283,6 +294,135 @@ meant to run on its subscription should carry no `OPENAI_API_KEY`.
 Set any of these per sandbox with `create --env`, or write them into the agent's own profile
 env file inside the sandbox.
 
+### Lending a credential
+
+A sandbox can call an LLM API without holding the credential that pays for it, and this is the
+recommended way to give one an agent. Lend a credential instead of copying it, and what lands inside
+is a **loan token**: an unguessable string worth nothing anywhere but this host. Your login and your
+keys stay where they are.
+
+```bash
+# The sandbox's Claude Code works. Your login never enters it.
+cs-sandbox create feature --repo ~/projects/api --lend-agent-login claude
+
+# It works the same for an LLM API key you keep on the host.
+cs-sandbox create feature --lend-api-key anthropic
+```
+
+Behind it is the **lender**, a proxy this tool runs on your host. The sandbox's agent is pointed at
+it by the base URL the agent already reads. Each call arrives carrying the loan token, and the
+lender swaps that token for your real credential before passing the call to the provider. Only the
+lender knows which credential a token names.
+
+Lending comes in two kinds. A **token loan** lends an agent's login, and arrives as the credential
+file that agent's own sign-in would have written, holding fabricated values. The agent therefore
+runs exactly as it does when signed in, rather than on the separate path a gateway variable would
+put it on. A **key loan** lends an LLM API key, and arrives in the variables its clients read, which
+is already the shape that credential has.
+
+`create` starts the lender the first time a sandbox needs one, the way `forward` starts its `ssh`
+child. `destroy` stops it once no sandbox is borrowing anything.
+
+| What you lend | Flag | Read from |
+|---|---|---|
+| A Claude Code login | `--lend-agent-login claude` | `~/.cs-claude/.credentials.json` |
+| A Codex login | `--lend-agent-login codex` | `~/.cs-codex/auth.json` |
+| An Anthropic API key | `--lend-api-key anthropic` | `~/.cs-keys/anthropic` |
+| An OpenAI API key | `--lend-api-key openai` | `~/.cs-keys/openai` |
+| A Fireworks API key | `--lend-api-key fireworks` | `~/.cs-keys/fireworks` |
+
+Which agent can spend which:
+
+| Agent | Its own login | Keys it can spend |
+|---|---|---|
+| Claude Code | `--lend-agent-login claude` | `anthropic` |
+| Codex | `--lend-agent-login codex` | `openai` |
+| OpenCode | none: lend it a key | `anthropic`, `openai`, `fireworks` |
+
+To lend a key, save it first. The file holds the key and nothing else:
+
+```bash
+mkdir -p ~/.cs-keys
+printf %s "$ANTHROPIC_API_KEY" > ~/.cs-keys/anthropic
+chmod 600 ~/.cs-keys/anthropic
+```
+
+A key lands in every variable its clients read. An OpenAI key becomes both `OPENAI_API_KEY` and
+`CODEX_API_KEY`, because Codex reads only the second and attaches no credential at all when it sees
+only the first.
+
+`--inherit-api-key anthropic` copies that same key into the sandbox instead. It is the key
+counterpart of `--inherit-agent-login`, and the opposite trade: convenience inside, and a credential
+you have to assume is spent if the sandbox leaks.
+
+**What a lent sandbox cannot do.** It cannot read the credential, because the credential is never
+there, and it cannot keep spending one after the sandbox is destroyed.
+
+**Side calls.** Agents sometimes call their provider directly, outside the base URL: analytics, news
+about what the agent can do, and whatever else a vendor adds. A lent sandbox holds no credential for
+those. Rather than let them go out and fail, and unsettle the agent in the process, the calls are
+refused locally. Everything else it reaches as usual, and `--block-side-calls=false` turns the
+refusal off.
+
+**OpenCode follows its model.** A lent key reaches it only when the model it is running belongs to
+that provider, because its base URL belongs to the provider rather than to the client. The image
+pins a Fireworks model, so `--lend-api-key fireworks` works with no further arguments. For the other
+two, name a model on that provider: `cs-opencode run -m anthropic/<model>`. See
+[Pointing an agent somewhere else](#pointing-an-agent-somewhere-else) for the whole picture.
+
+OpenCode has no login to lend. Lend it a key, or lend a subscription to the agent that owns it.
+
+**A loan looks like a credential, deliberately.** Each fabricated value takes the form that provider
+issues, prefix and length included, so the client stays on the code path it takes when signed in.
+Scanning a sandbox for a vendor prefix therefore matches. What says a value is a loan is the word
+`loan` just after that prefix, and `cs-sandbox-loan` where an account would be.
+
+**Revoking a loan** is destroying the sandbox. The record lives in the instance directory and goes
+when that does, and the lender stops honouring the token within seconds.
+
+**Two sandboxes, one seat.** A lent login is still your seat, so sandboxes sharing it share a
+rate-limit pool. The difference from `--inherit-agent-login` is that nothing in the sandbox can
+refresh, revoke or copy the login itself.
+
+**When a login goes stale.** The lender reads your credential fresh on every call and never
+refreshes it. If nothing has used your host login for long enough that it expires, calls start
+failing with a message saying so. Run `cs-claude` once on the host to renew it.
+
+### Recording a lent sandbox with cs-vcr
+
+`--cassette NAME` sends a sandbox's model calls through [cs-vcr](https://github.com/codesweep-ai/vcr)
+on the way to the lender, so a session can be recorded and replayed later.
+
+```bash
+cs-sandbox create feature --lend-agent-login claude --cassette build-auth --vcr 169.254.1.2:8080
+```
+
+`create` prints the configuration that cs-vcr needs, with this host's own addresses filled in. Two
+things have to be true of that cs-vcr: it must listen on `0.0.0.0` so a sandbox can reach it, and
+its provider must point back at the lender.
+
+The sandbox's own environment is identical either way. That is what makes a cassette free to add or
+drop, and it means a recording made against a lent credential replays without any credential at all.
+
+### The lender
+
+```
+cs-sandbox lender [--addr ADDR] [--origin SLOT=URL]
+```
+
+Runs the lender in the foreground. Most people never type it, because `create` starts one when a
+sandbox needs it. Use it on a host that keeps a lender up on purpose, under a service manager, or
+when you want to watch what it is doing.
+
+| Flag | Meaning |
+|---|---|
+| `--addr ADDR` | Listen address. Default `0.0.0.0:2500`. It must not be loopback: a sandbox arrives on this host's ordinary side, where a loopback socket refuses the connection. |
+| `--origin SLOT=URL` | Send one slot's traffic somewhere else, such as a gateway or a recorder in front of the provider. Repeatable. |
+
+The port is open to the network the host is on, and the lender refuses every caller that is not this
+host. `cs-sandbox doctor` reports which address it bound and says so if that address is one no
+sandbox can reach.
+
 ### Connectors an account carries
 
 An inherited Claude subscription carries more than the credential. The account's claude.ai
@@ -336,6 +476,9 @@ no key the other side would accept.
 | `$XDG_CACHE_HOME/cs-sandbox/net/` | The fabric's working directory. Host-global, so it stays put when you relocate the rest. |
 | `~/.ssh/config.d/cs-sandbox` | The generated SSH config that makes `ssh <name>` work. Included from `~/.ssh/config`. |
 | `~/.ssh/known_hosts.cs-sandbox` | Sandbox host keys, kept out of your own `known_hosts` and keyed by `<name>.<group>` rather than by port. |
+| `~/.cs-keys/<provider>` | An LLM API key this host will lend or copy in. One file per provider, holding the key alone. Secret. |
+| `$XDG_DATA_HOME/cs-sandbox/instances/<group>/<name>/loans.json` | What one sandbox borrows, and the token it borrows with. Secret, and removed with the sandbox. |
+| `$XDG_DATA_HOME/cs-sandbox/instances/lender` | The running lender's process id and address. |
 
 No sandbox state lives in the source tree.
 
@@ -352,7 +495,8 @@ without disturbing your real one, which is what the test suite does.
 | `CS_SANDBOX_FC_CACHE` | The Firecracker artifact cache. |
 | `CS_SANDBOX_FC_NET` | The fabric working directory, which `CS_SANDBOX_HOME` deliberately leaves alone. |
 | `XDG_DATA_HOME`, `XDG_CACHE_HOME` | The defaults the paths above derive from. |
-| `CS_SANDBOX_AGENT_HOME` | Where `--inherit-agent-login` reads a login from. Your home, unless this names another profile tree. |
+| `CS_SANDBOX_AGENT_HOME` | Where a login or a key is read from, by `--inherit-agent-login` and by the lender alike. Your home, unless this names another profile tree. |
+| `CS_SANDBOX_LEND_ADDR` | The address the lender listens on. Default `0.0.0.0:2500`. |
 
 The second group changes what gets built or run.
 
@@ -412,6 +556,23 @@ user sandbox by design, and `--solo` denies outbound SSH entirely.
 Everything runs in one podman-machine VM there, so `--repo` and `--snapshot` sources must live under
 `$HOME`.
 
+**An agent in a lent sandbox says it is not signed in**
+
+Run `cs-sandbox doctor`. It walks the lending chain and names the hop that is dark. The candidates
+are a lender that is not running, one bound where no sandbox can reach it, an expired host login,
+and a cs-vcr that does not answer.
+
+**`no loan matches the credential this request carried`**
+
+The lender does not recognize what the sandbox presented. Its sandbox was destroyed, or the loan
+came from a different host. Recreate the sandbox to mint a new one. The lender never prints the
+value it refused, so look in the sandbox rather than in the lender's log.
+
+**`no anthropic key to lend`**
+
+`--lend-api-key` needs the key in `~/.cs-keys/<provider>`. The message prints the command that saves
+one.
+
 **`no systemd user session; running without a memory cgroup`**
 
 A microVM is starting outside the cgroup that would cap it. The sandbox runs, but a runaway one is
@@ -441,10 +602,11 @@ firecracker` to check a specific engine.
 
 ## Examples
 
-Create a sandbox with a repo and a logged-in agent, work in it, take the commits, throw it away:
+Create a sandbox with a repo and a logged-in agent, work in it, take the commits, throw it away.
+The agent is signed in as you, and your login never enters the sandbox:
 
 ```bash
-cs-sandbox create feature --repo ~/projects/api --inherit-agent-login claude
+cs-sandbox create feature --repo ~/projects/api --lend-agent-login claude
 ssh feature
 [feature]$ cd ~/api && cs-claude
 [feature]$ exit

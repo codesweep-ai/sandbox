@@ -61,6 +61,9 @@ type Deps struct {
 	FCVersionCache string // release actually cached (fc-version stamp); "" = unknown
 	FCCache        string // artifact cache: the reflink source (base-rootfs.ext4)
 	InstDir        string // instances root: the reflink destination
+
+	// Lend is what the CLI found out about credential lending on this host.
+	Lend LendState
 }
 
 // Diagnose runs the checks for the given engine ("podman" | "firecracker").
@@ -236,6 +239,10 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		ag.add(HM, "agent CLI(s) not found: "+strings.Join(agentMiss, " ")+" — or sign in inside an instance: cs-sandbox agent-login claude <name>")
 	}
 	r.addGroup(ag)
+
+	if g, ok := lendGroup(d.Lend); ok {
+		r.addGroup(g)
+	}
 
 	// Only worth a section when there is something to say: the feature is in
 	// use, or this is WSL, where its one hard requirement is commonly absent.

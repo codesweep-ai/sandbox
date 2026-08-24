@@ -45,7 +45,10 @@ type inspectItem struct {
 	MemMiB int    `json:"mem,omitempty"`
 	// AgentLogins are the agents whose host login was inherited at create.
 	AgentLogins []string `json:"agentlogins,omitempty"`
-	Snapshots   []string `json:"snapshots,omitempty"`
+	// Loans are the credentials this sandbox borrows rather than holds: the
+	// slot names only, because the tokens are secrets and this output is not.
+	Loans     []string `json:"loans,omitempty"`
+	Snapshots []string `json:"snapshots,omitempty"`
 	// Repos is the reason this command exists: each --repo checkout with the
 	// branch it commits to and that `fetch` lands on in the host source repo.
 	Repos []inspectRepo `json:"repos,omitempty"`
@@ -95,7 +98,7 @@ func (a *App) inspectOne(ctx context.Context, in *state.Instance) inspectItem {
 		Yolo: in.Yolo, Solo: in.Solo, Port: in.Port,
 		IP: in.FCIP, CPUs: in.CPUs, MemMiB: in.MemMiB,
 		AgentLogins: in.AgentLogins, Snapshots: in.Snapshots,
-		ImageStores: in.Shared,
+		ImageStores: in.Shared, Loans: loanSlots(a.InstDir, in.Group, in.Name),
 	}
 	for _, rc := range in.RepoClones {
 		item.Repos = append(item.Repos, inspectRepo{Dir: rc.Dir, Source: rc.Source, Branch: rc.Branch})
@@ -128,6 +131,9 @@ func writeInspectTable(out io.Writer, item inspectItem) error {
 	row("SOLO", yn(item.Solo))
 	if len(item.AgentLogins) > 0 {
 		row("AGENT LOGINS", strings.Join(item.AgentLogins, ", "))
+	}
+	if len(item.Loans) > 0 {
+		row("LOANS", strings.Join(item.Loans, ", ")+" (borrowed; the credentials stay on the host)")
 	}
 	if len(item.ImageStores) > 0 {
 		row("IMAGE STORES", strings.Join(item.ImageStores, ", "))

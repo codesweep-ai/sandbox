@@ -65,6 +65,9 @@ type App struct {
 
 // stderr is the writer for phase/progress lines: the injected errW (tests) or
 // os.Stderr.
+// dryRun reports whether this invocation only prints what it would do.
+func (a *App) dryRun() bool { return a.Exec != nil && a.Exec.DryRun }
+
 func (a *App) stderr() io.Writer {
 	if a.errW != nil {
 		return a.errW
@@ -219,6 +222,7 @@ func newRootCmd(app *App) *cobra.Command {
 	root.AddCommand(newAgentLoginCmd(app))
 	root.AddCommand(newInstallAgentToolsCmd(app))
 	root.AddCommand(newHostRouteCmd(app))
+	root.AddCommand(newLenderCmd(app))
 	for _, c := range newInstanceCmds(app) {
 		root.AddCommand(c)
 	}
@@ -276,6 +280,11 @@ type lsItem struct {
 	Network string       `json:"network"`
 	Yolo    bool         `json:"yolo"`
 	Solo    bool         `json:"solo"`
+	// AgentLogins are credentials this sandbox HOLDS, copied in at create.
+	// Loans are credentials it BORROWS, which stay on the host. The difference
+	// is the one worth scanning a listing for.
+	AgentLogins []string `json:"agentlogins,omitempty"`
+	Loans       []string `json:"loans,omitempty"`
 }
 
 func runLsJSON(ctx context.Context, app *App, out io.Writer) error {
@@ -291,6 +300,7 @@ func runLsJSON(ctx context.Context, app *App, out io.Writer) error {
 			Status: status[engine.Qualify(in)], Created: in.Created, Type: in.Type,
 			Engine: in.Engine, Network: state.NetworkName(in.Group),
 			Yolo: in.Yolo, Solo: in.Solo,
+			AgentLogins: in.AgentLogins, Loans: loanSlots(app.InstDir, in.Group, in.Name),
 		})
 	}
 	for _, o := range app.engineDeps().Orphans(ctx) {
@@ -341,18 +351,21 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 	// want. `cs-sandbox port <name>` prints it for the cases that need it.
 	// GROUP leads: the listing is primarily a view of isolation boundaries, and
 	// List already returns members grouped and sorted.
-	fmt.Fprintln(tw, "GROUP\tNAME\tSTATUS\tAGE\tTYPE\tENGINE\tYOLO\tSOLO")
+	// CREDS earns its column: it is the difference between a sandbox holding a
+	// copy of your credentials and one that only borrows them, which is the
+	// question a listing of agent sandboxes is most often scanned for.
+	fmt.Fprintln(tw, "GROUP\tNAME\tSTATUS\tAGE\tTYPE\tENGINE\tYOLO\tSOLO\tCREDS")
 	for _, in := range insts {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			in.Group, in.Name, status[engine.Qualify(in)], age(in.Created, time.Now()), in.Type, in.Engine,
-			yn(in.Yolo), yn(in.Solo))
+			yn(in.Yolo), yn(in.Solo), creds(in.AgentLogins, loanSlots(app.InstDir, in.Group, in.Name)))
 	}
 	// Leftovers last, under the sandboxes that still exist. Only the columns the
 	// data itself answers for are filled in; the rest went with the state record.
 	for _, o := range orphans {
 		name, group := SplitRef(o.Name)
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			group, name, engine.StatusRemoved, age(o.SinceRFC3339(), time.Now()), "-", o.Engine, "-", "-")
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			group, name, engine.StatusRemoved, age(o.SinceRFC3339(), time.Now()), "-", o.Engine, "-", "-", "-")
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -362,6 +375,20 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 			engine.StatusRemoved)
 	}
 	return nil
+}
+
+// creds is the CREDS column: whether this sandbox HOLDS credentials of yours,
+// BORROWS them through the lender, or has none.
+func creds(held, borrowed []string) string {
+	switch {
+	case len(held) > 0 && len(borrowed) > 0:
+		return "held+lent"
+	case len(held) > 0:
+		return "held"
+	case len(borrowed) > 0:
+		return "lent"
+	}
+	return "-"
 }
 
 // age renders how long ago created (RFC3339) was, in kubectl's compact style:

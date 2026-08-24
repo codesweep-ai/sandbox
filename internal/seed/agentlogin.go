@@ -92,6 +92,36 @@ func WriteAgentLogins(seedDir, home string, inherit []string, note func(string))
 	return carried, nil
 }
 
+// LentCredential is a fabricated credential file to seed into an agent's
+// profile: the shape that agent's own sign-in leaves behind, holding a value
+// that is worth nothing without the host's lender.
+type LentCredential struct {
+	Agent string // the profile: ~/.cs-<agent>
+	File  string // the file inside it
+	Doc   []byte // its content
+}
+
+// WriteLentCredentials seeds the fabricated credential files, and marks each
+// agent's seed directory as lent.
+//
+// It runs after WriteAgentLogins, which clears every agent's seed directory
+// before carrying the inherited ones in. The marker is what tells the guest to
+// install these on EVERY boot rather than only the first: an inherited login is
+// refreshed in place and must never be clobbered, while a lent one is a
+// placeholder the sandbox has no business keeping if it ever overwrites it.
+func WriteLentCredentials(seedDir string, lent []LentCredential) error {
+	for _, c := range lent {
+		sd := filepath.Join(seedDir, c.Agent)
+		if err := writeSecretFile(filepath.Join(sd, c.File), c.Doc); err != nil {
+			return err
+		}
+		if err := writeSecretFile(filepath.Join(sd, "lent"), []byte(c.File+"\n")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // installSecretFile copies src to dst at 0600, creating parents at 0700.
 func installSecretFile(src, dst string) error {
 	data, err := os.ReadFile(src)

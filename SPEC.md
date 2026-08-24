@@ -99,7 +99,8 @@ in the guest at `/run/cs-sandbox-seed`.
 - the resolved `inject-env` block;
 - the host's git identity;
 - the host's Claude Code theme;
-- the credential of each agent named by `--inherit-agent-login`.
+- the credential of each agent named by `--inherit-agent-login`, and the fabricated one of each
+  agent named by `--lend-agent-login` (§10.2).
 
 **R13.** The guest init **MUST** split its work by a sentinel. First boot, when `~/.cs-sandbox-initialized`
 is absent, seeds the skeleton home from the image and installs agent credentials. Every boot
@@ -267,7 +268,8 @@ and a microVM therefore reach each other exactly as two containers would.
 `127.0.0.1:<PORT>`.
 
 **R42.** Ports **MUST** be drawn from distinct ranges, so an ingress cannot collide with a sandbox.
-Containers take 2200 to 2299, microVMs 2300 to 2399, and group gateways 2400 to 2499.
+Containers take 2200 to 2299, microVMs 2300 to 2399, and group gateways 2400 to 2499. The credential
+lender (§10.2) takes 2500, above them all.
 
 **R43.** A port **MUST** be treated as free only when it is both unrecorded and unanswered. Allocation **MUST**
 probe loopback.
@@ -585,17 +587,21 @@ between two runs of one task, and that alone stops a recorded session replaying.
 
 ### 10.1 Login
 
-**R91.** A sandbox **MUST NOT** have an agent login unless `--inherit-agent-login` names one.
+A sandbox reaches a model in one of three ways, and they differ in what it ends up holding. It can
+**borrow** a credential (§10.2), which is the one to prefer: the sandbox holds a loan token and the
+host holds the credential. It can be given a copy of one, which this section covers. Or it can sign
+in on an account of its own.
 
-**R92.** `create` **MUST** snapshot the named agent's host credential into the seed, and the guest **MUST**
-install it at mode 600 on first boot only.
+**R91.** A sandbox **MUST NOT** have an agent login unless a flag names one, whether that flag lends
+it or copies it in.
+
+**R92.** `--inherit-agent-login` **MUST** snapshot the named agent's host credential into the seed, and
+the guest **MUST** install it at mode 600 on first boot only.
 
 **R92a.** The tree a login is read from **MUST** be overridable, and the override **MUST** move
 nothing else.
 
 **R93.** `create` **MUST** report which logins the sandbox ended up with.
-
-**R94.** Provider API keys **MUST NOT** be carried. A caller **MUST** pass one explicitly with `--env`.
 
 R92a is `CS_SANDBOX_AGENT_HOME`, and it exists for a caller that has to supply a login it never
 signed in for. A replay suite is one: its members need a credential the agent will start with, and a
@@ -611,19 +617,181 @@ or rate-limit pool rather than sharing yours. It is also the only route when the
 credential in the macOS Keychain. `--inherit-agent-login` copies a file, so there is nothing to
 carry, and `create` says so rather than failing quietly.
 
-An inherited login is the same seat as your host. Sandboxes sharing it share a rate-limit pool, and
-independent OAuth refreshes can log each other out. That is an accepted trade for convenience.
-
-For a key scoped to the agent rather than the whole sandbox, write it to `~/.cs-claude/env` inside
-the sandbox, or to the equivalent for the other two. The wrappers read it at launch. An API key
-overrides a subscription login, so there is rarely a reason to inherit a login and inject a key into
-the same sandbox.
+An inherited login is the same seat as your host, and the sandbox holds the credential itself.
+Sandboxes sharing it share a rate-limit pool, independent OAuth refreshes can log each other out,
+and anything that reads that sandbox reads a working credential. Lending (§10.2) removes all three:
+the sandbox spends the seat without ever holding what pays for it. Lend a login rather than copying
+one in.
 
 The wrappers answer the agents' first-run dialogs, so an unattended turn never waits on one. For
 `cs-claude` that covers the theme, the per-directory trust prompt and the custom-API-key prompt. The
 theme defaults to the one your host runs, which `create` carries in. Onboarding is the exception. A
 sandbox with no login has to keep the screen offering the sign-in choices, so the wrapper answers
 onboarding only once a credential or a key exists.
+
+### 10.2 Lending a credential
+
+A sandbox does not have to hold a credential to use one. `--lend-agent-login <agent>` and
+`--lend-api-key <provider>` give it a **loan token** instead. They point its agent at the **lender**,
+a proxy on the host that swaps that token for the real credential on the way to the provider. What
+the sandbox holds is worth nothing anywhere else, and the credential never crosses the boundary.
+
+Two things can be lent. A **token loan** lends an agent's host login, such as the one Claude Code
+signs in with. A **key loan** lends an LLM API key the host keeps in `~/.cs-keys/`.
+
+**R144.** A lent login **MUST** be seeded as the agent's own credential file, holding fabricated
+values. A lent API key **MUST** be seeded in the variable its client reads. Both **MUST** also seed the
+lender's address in the variable the agent reads for a base URL.
+
+**R144a.** A seeded credential file **MUST** be installed on every boot. An inherited one **MUST** be
+installed on the first boot only.
+
+**R144b.** A fabricated credential **MUST NOT** carry any real identity: not an account, not a
+subscription, not an address of a person.
+
+**R145.** A loan token **MUST** carry at least 128 bits of randomness, and **MUST NOT** be a credential
+anywhere but on the host that minted it.
+
+**R146.** The lender **MUST** resolve a loan token to exactly one slot. It **MUST** replace the token with
+that slot's real credential, in that slot's own header shape, before forwarding.
+
+**R147.** The upstream **MUST** be a property of the slot. No part of a request **MUST** select or change
+it: not the host, not the path, not the query, not a header.
+
+**R148.** A credential the lender did not mint **MUST** be refused, and **MUST NOT** be forwarded anywhere.
+
+**R149.** A lent credential **MUST NOT** be written into the sandbox, its seed, its environment, or the
+output of any command.
+
+**R150.** The lender **MUST** read the host's credential per request, and **MUST NOT** refresh it.
+
+**R151.** A loan **MUST** be recorded in the instance directory at mode 600. It **MUST** stop being honoured
+when that directory is removed, and there **MUST** be no other revocation.
+
+**R152.** The lender **MUST** listen on a non-loopback address, and **MUST** refuse any caller that is not
+this host.
+
+**R153.** The lender **MUST** answer `CONNECT`. It **MUST** refuse the hosts it is itself the front for, and
+tunnel every other host.
+
+**R154.** `create` **MUST** fail before anything is provisioned when a lend flag names a credential this
+host cannot supply. The failure **MUST** name the file it looked for, and the command that creates one.
+
+**R155.** `create` **MUST** report what a sandbox borrows. `ls` and `inspect` **MUST** show it, without
+printing a loan token.
+
+**R156.** A sandbox's configuration **MUST** be identical whether it reaches the lender directly or
+through a cs-vcr cassette.
+
+R144 is the decision the rest of this section rests on, and it is about durability rather than
+about what works. A gateway variable would work today for both agents. The file is chosen because a
+client reading its own credential file takes the code path it always takes, whatever that path
+becomes in a release nobody has shipped yet. The alternative asks a vendor to keep treating two auth
+modes alike, which is a promise nobody made. It is measurable that they already differ: signed in,
+Codex asks its endpoint for a model list, and on the key path it does not.
+
+The cost is that the fabrication has to satisfy the client, and R144c is how far that goes. What a
+credential looks like is the provider's decision rather than this tool's. Anthropic issues an opaque
+token with a vendor prefix, so a lent Claude holds one of those. Codex signs in with a pair of JWTs
+and treats what it cannot decode as signed out, so a lent Codex holds forged ones. Copying either
+shape into the other's file would be less faithful rather than more consistent.
+
+Nothing fabricated survives verification anywhere, which is what R144b is for. The word `loan` sits
+at the front of an opaque token, and in a claim of a forged one. Every identity in either names this
+tool, and the lender puts the real account back on the way out.
+
+R144a follows from the same place. An inherited login is refreshed in place and must never be
+clobbered by a create-time snapshot. A lent one is a placeholder, so a sandbox that overwrote it
+after a failed refresh would lose its loan for good, and re-installing it each boot costs nothing.
+
+R146 is the whole mechanism, and it needs one header. Nothing signs the body, so the swap rewrites
+a single value and reads nothing else. No request is parsed, a stream passes through byte for byte, and an unfamiliar request
+shape still works. The shape has to be restored on this side, because an OAuth login travels with
+headers an API key does not. A sandbox holding a token cannot know which it stands for.
+
+R147 keeps this from becoming a way to steal a credential. A caller that could name its own upstream
+could aim the host's real credential at a machine of its choosing. It also keeps the lender free of
+any model of a provider's API. The lender joins an origin it was given to a path it did not read.
+
+R150 is a deliberate limit. Whatever owns a login is the thing that renews it, in the way its vendor
+supports. The lender only ever reads the current value, so it holds no refresh token and implements
+no vendor's sign-in. The cost is that a host login nothing has refreshed goes stale. The lender
+reports that as itself, rather than as a rejection from the provider.
+
+R151 makes the sandbox lifecycle the whole of revocation. The loan is a fact written beside the
+instance. It is true from the moment `create` returns, and gone when `destroy` removes the
+directory. Nothing has to be sequenced at create, and no second lifetime has to be kept in step
+with the sandbox's.
+
+R152 has one cause. A sandbox reaches the host at `169.254.1.2` (R52), which arrives on the host's
+ordinary side. A server bound to `127.0.0.1` refuses that connection. Binding wider puts the port on
+the network the host is on, so the caller is checked instead. A sandbox's traffic is translated to the
+host's own address on the way out of the rootless namespace. A machine elsewhere cannot claim that
+address without being on the path. The lender takes port 2500, above every range R42
+allocates from.
+
+R153 covers the half of an agent's traffic a base URL does not govern. These clients also reach
+their provider on their own, for analytics, for news about what the agent can do, and for whatever
+else a vendor adds over time. What those calls are for varies and is not this tool's to predict.
+What matters is that a sandbox holding a loan token has no credential any of them would be accepted
+with, so each one fails. A failure there can unsettle an agent whose model calls are working
+perfectly. So the sandbox's `HTTPS_PROXY` points at the lender too. It refuses exactly the hosts it
+fronts, and tunnels everything else, because an agent's tools share its environment. Blocking `git`,
+`curl` and every package manager would buy nothing. Pass `--block-side-calls=false` to allow the
+direct route.
+
+R153 keeps an agent from confusing itself, and is not a boundary. It works through a variable
+clients honour. What makes a call around it pointless is R149: the sandbox holds no credential worth
+spending anywhere.
+
+R156 is what makes a cassette free to add or drop. `--cassette <name>` sends the sandbox's model
+calls to a cs-vcr instead, and that cs-vcr's provider points back at the lender. The sandbox's
+environment is byte-for-byte what it would be either way. A recording made through a lent credential
+therefore replays with no credential at all. cs-sandbox does not write that cs-vcr's configuration,
+which belongs to another tool with its own rules about unknown keys. `create` prints the stanza to
+paste instead, with this run's own addresses already in it.
+
+### 10.3 Provider API keys
+
+**R94.** A provider API key **MUST NOT** reach a sandbox unless a flag names it. `--inherit-api-key`
+copies one in, `--lend-api-key` lends one, and `--env` passes an arbitrary value.
+
+**R157.** The host's lendable keys **MUST** live one per file under `~/.cs-keys/<provider>`, and each file
+**MUST** hold the key and nothing else.
+
+R157 is the same move as the agent profiles and the cassette store. The directory is the
+configuration. Adding a key is a shell redirect, there is nothing to keep in sync, and what a host
+is willing to lend can be read with `ls`.
+
+The two key flags name a provider rather than an agent. A key belongs to the provider that issued
+it, and any agent reaching that endpoint can spend it. A login belongs to an agent, which is why the
+flags either side of them name one.
+
+**R158.** A key slot **MUST** name the variable its client reads for a base URL, and that variable
+**MUST NOT** be assumed to belong to the provider.
+
+**R159.** A key slot **MUST** name every variable its clients read the credential from.
+
+R158 is OpenCode's doing. Its base URL belongs to the provider rather than to the client, and only
+two providers have a variable of their own. A third has none, so OpenCode's own `OPENCODE_BASE_URL`
+points it, aimed at whichever provider the running model names. The Fireworks slot therefore names
+that variable where the others name a provider's, and a lent Fireworks key reaches OpenCode on the
+model the image pins.
+
+R159 is Codex's doing, and it is not symmetric with R158. One OpenAI key reaches two clients that
+read different variables. OpenCode reads `OPENAI_API_KEY`. Codex reads `CODEX_API_KEY`, and given
+only the former it attaches no authorization header at all, so the provider answers 401 while the
+sandbox looks correctly configured. A key slot therefore seeds every variable its clients read, with
+the same value in each.
+
+OpenCode has no login slot, and is not getting one. It reaches an endpoint through whichever model it
+runs, so a credential lent to it belongs to that provider, and the key slots already cover every one
+it can reach. The subscriptions worth lending are lent through the `claude` and `codex`
+slots, to the clients that own them.
+
+For a key scoped to the agent rather than the whole sandbox, write it to `~/.cs-claude/env` inside
+the sandbox, or to the equivalent for the other two. The wrappers read it at launch. An API key
+overrides a subscription login, so there is rarely a reason to give a sandbox both.
 
 ## 11. The Podman container engine
 
@@ -1044,14 +1212,18 @@ nothing it does not already control over its own disposable sandbox, while restr
 friction and move no boundary. This holds only while that boundary is intact: running the image
 rootful, `--privileged`, or `--userns=host` turns the same passwordless sudo into genuine host root.
 
-**Nothing at rest to leak.** No host private key is inside any sandbox, so a sandbox's disk holds no
-credential of yours. Peers are reached with generated per-group tier keys, and an inherited agent
-credential lives only in the seed and the home, never in the image or in git.
+**Nothing at rest to leak.** No host private key is inside any sandbox, and peers are reached with
+generated per-group tier keys. A sandbox that borrows its LLM credential (§10.2) holds nothing of
+yours at all. What is on its disk is a loan token, and it stops working when that sandbox is
+destroyed. A sandbox given a copy is the exception, and the copy lives only in the seed and the
+home, never in the image or in git.
 
-**`ssh -A` lends rather than copies.** When a sandbox genuinely needs your own keys, agent forwarding
-gives it use of a specific set for the life of one connection, and the keys stay on the host.
-Anything running as you there can use the socket while you are connected, though it cannot copy the
-key out, so scope what you load.
+**Lending rather than copying, twice.** `ssh -A` gives a sandbox the use of your keys for the life
+of one connection, and the keys stay on the host. Section 10.2 applies the same idea to the
+credential that pays for the model. The sandbox spends it and never holds it. Both leave a window
+rather than a copy. Anything running as you in the sandbox can use an agent-forwarding socket while
+you are connected, though it cannot copy the key out, so scope what you load. Anything in a sandbox can
+spend a loan while that sandbox exists, though it cannot learn what the loan stands for.
 
 ## 14. Limitations
 

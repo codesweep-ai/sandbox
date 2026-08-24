@@ -150,6 +150,7 @@ SMOKE_TESTS ?= Smoke \
                TestCLIAgentToolSetLive \
                TestCLIListShowsInstanceLive \
                TestCLINetworkReachabilityLive \
+               TestCLILendKeyLive \
                TestCLIPortForwardLive \
                TestCLINestedSandboxInVMLive
 
@@ -202,6 +203,30 @@ test-integration:
 	CS_COVERDIR=$(COVER_ABS)/integration \
 	  go test -tags integration $(COVERFLAGS) -p 1 -v -timeout 3600s ./... \
 	  -args -test.gocoverdir=$(COVER_ABS)/integration
+
+## test-live-agents: the credential matrix, against real providers.
+##
+## Every supported agent and credential combination, shared and lent, each one
+## driving a real agent inside a real sandbox and asking a real model to say one
+## word. Nothing else proves that a credential this tool fabricated is one the
+## provider accepts, and nothing cheaper catches the day a client changes which
+## code path a credential puts it on.
+##
+## Deliberately outside CI and outside test-integration: it spends money and
+## quota on every run, it needs credentials no runner should hold, and a
+## provider being slow or rate-limiting is not a defect in this repository. Run
+## it by hand when the credential paths change.
+##
+## Credentials come from .env at the repository root (git-ignored), and never
+## from your own profiles: the suite builds a throwaway agent home and points
+## CS_SANDBOX_AGENT_HOME at it. Members skip themselves when a key is absent, so
+## a partial .env runs the part it can.
+##
+## -p 1 and -v for the reasons test-integration gives. The timeout is generous
+## because a member waits on a model rather than on this code.
+test-live-agents:
+	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-localhost/cs-sandbox:ci-agents} \
+	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run 'LiveAgent'
 
 ## coverage: merge every tier present under $(COVERDIR) and print the report
 coverage:

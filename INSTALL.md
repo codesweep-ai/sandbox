@@ -197,8 +197,10 @@ Codex and OpenCode agents with their launch wrappers and remote tools. See
 
 ## 4. Host agent tools and login (recommended)
 
-**A sandbox does not get your agent login by default.** Logging in once here, on the host, is what
-lets a sandbox inherit it at create time with `--inherit-agent-login claude` (or `codex`/`opencode`).
+**A sandbox does not get your agent login by default, and it never has to hold one.** Logging in
+once here, on the host, is what lets a sandbox *borrow* that login at create time with
+`--lend-agent-login claude` (or `codex`). Your credential stays on this machine, and the sandbox is
+given a **loan token** that is worth nothing anywhere else.
 
 Every sandbox already carries the agent tools at `~/.local/bin`, so this step is about your
 **host**. It puts the same tools on your PATH, so you can log in with them and drive agents from
@@ -211,8 +213,8 @@ cs-sandbox install-agent-tools    # -> ~/.local/bin  (pass a directory to instal
 `cs-claude`, `cs-codex` and `cs-opencode` invoke the `claude`, `codex` and `opencode` CLIs, so those
 must be installed on the host too. `install-agent-tools` tells you which are missing.
 
-Then log in once with each one you use. The credential a sandbox inherits is copied into its
-per-sandbox seed at create time and installed on first boot, and is **never baked into the image**:
+Then log in once with each one you use. Nothing about this puts a credential in a sandbox: it is
+what gives the host something to lend, and no credential is **ever baked into the image**.
 
 ```bash
 cs-claude          # launch Claude Code - log in with /login, then exit
@@ -220,27 +222,44 @@ cs-codex           # launch Codex - choose "Sign in with ChatGPT", then exit
 cs-opencode providers login   # OpenCode - pick a provider (it is usually driven by an API key)
 ```
 
+OpenCode is the exception to lending a login. It reaches a provider through whichever model it runs,
+so what a sandbox borrows for it is a key: `--lend-api-key anthropic`, `openai` or `fireworks`. Its
+own login can only be copied in, with `--inherit-agent-login opencode`.
+
+That is all the setup lending needs. From here every sandbox can be created with
+`--lend-agent-login claude`, and none of them will ever hold what you just signed in with.
+`--inherit-agent-login` copies the real credential in instead, if you would rather share it.
+[Agent credentials](README.md#agent-credentials) covers both.
+
 You can skip all of this and log in inside each sandbox instead, with `cs-sandbox agent-login claude
 <name>`. That is also how you give a sandbox its **own account** rather than sharing yours. See
 [SPEC.md](SPEC.md#101-login).
 
-**Using an API key or a cloud provider** (a direct Anthropic/OpenAI key, Amazon Bedrock, Google
-Vertex, …) instead of a subscription? Keys are never copied from your host. Pass the ones a sandbox
-needs explicitly at create time:
+**Using an LLM API key** instead of a subscription? Save it once here, and sandboxes borrow it the
+same way. One file per provider, holding the key and nothing else:
 
 ```bash
-cs-sandbox create dev --env ANTHROPIC_API_KEY          # passes the value through from your shell
+mkdir -p ~/.cs-keys
+printf %s "$ANTHROPIC_API_KEY" > ~/.cs-keys/anthropic   # or openai, or fireworks
+chmod 600 ~/.cs-keys/anthropic
+
+cs-sandbox create dev --lend-api-key anthropic     # the key stays on this machine
+cs-sandbox create dev --inherit-api-key anthropic  # or copy it in, if you would rather share it
 ```
 
-See [SPEC.md](SPEC.md#101-login) for what is and is not carried.
+A key for something this tool has no slot for, such as Amazon Bedrock or Google Vertex, still goes
+in with `--env`, and that one does reach the sandbox. See
+[SPEC.md](SPEC.md#103-provider-api-keys) for what is and is not carried.
 
 ## 5. Verify the installation
 
 ```bash
-cs-sandbox doctor                       # re-run: everything should be green
-cs-sandbox create smoke --repo .        # create a throwaway sandbox with this repo
-ssh smoke                               # shell in by name
-cs-sandbox destroy smoke -f             # tear it down
+cs-sandbox doctor                                       # re-run: everything should be green
+cs-sandbox create smoke --repo . --lend-agent-login claude   # a sandbox that borrows your login
+ssh smoke                                               # shell in by name
+[smoke]$ cd ~/sandbox && cs-claude                      # signed in, holding nothing of yours
+[smoke]$ exit
+cs-sandbox destroy smoke -f                             # tear it down
 ```
 
 You're set - head to the [README](README.md) walkthroughs.

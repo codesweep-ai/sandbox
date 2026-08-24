@@ -30,7 +30,17 @@ By opening a pull request you agree that your contribution ships under the
 make check            # gofmt, go vet, unit tests and the linters; must pass
 make test-smoke       # the subset of the live tests that CI runs, on every host
 make test-integration # live engine tests; run when you touch create, engine or seed paths
+make test-live-agents # the credential matrix against real providers; see below
 ```
+
+`test-live-agents` is the one tier that is not part of any gate. For every supported credential
+combination, shared and lent, it drives a live agent inside a sandbox and asks the model for one
+word. Run it when you touch a credential path, and expect it to cost money: it spends provider quota
+on every member.
+
+Its keys come from a git-ignored `.env` at the repository root. The suite writes them into a
+throwaway agent home, so it never touches your own profiles, and it skips any member whose key or
+host login is absent.
 
 `make check` needs three tools that do not come with Go. Install them once:
 
@@ -103,6 +113,10 @@ table, so a contract that drifts in one of them fails loudly.
 
 Test the contract, not the implementation: the exit code, the file mode, the thing another tool
 parses. Say why the case matters in a comment when it is not obvious.
+
+The live-agents tier is deliberately outside the coverage tiers. A provider being slow or
+rate-limiting is not a defect in this repository, and a gate that fails for that reason teaches
+people to ignore it.
 
 Never lower a coverage baseline to make a run green. [`SPEC.md`](SPEC.md#16-conformance-and-testing)
 holds the tiers, what each one proves, the smoke profile, and how coverage is measured and gated.

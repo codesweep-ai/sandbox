@@ -10,6 +10,7 @@ import (
 
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/run"
+	"github.com/codesweep-ai/sandbox/internal/seed"
 	"github.com/codesweep-ai/sandbox/internal/spec"
 	"github.com/codesweep-ai/sandbox/internal/state"
 )
@@ -30,6 +31,10 @@ type CreateSpec struct {
 	ImageStores       []string
 	InjectedEnv       string   // resolved KEY=VALUE block
 	InheritAgentLogin []string // --inherit-agent-login: agents whose host login to carry in
+	// LentCredentials are the fabricated credential files a lent sandbox holds
+	// in place of a real login: the agent's own file shape, with a value only
+	// the host's lender can spend.
+	LentCredentials []seed.LentCredential
 }
 
 // ExecIO configures an interactive/exec session.

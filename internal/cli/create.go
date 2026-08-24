@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
+	"github.com/codesweep-ai/sandbox/internal/lend"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/seed"
 	"github.com/codesweep-ai/sandbox/internal/spec"
@@ -41,6 +42,12 @@ type createFlags struct {
 	solo              bool
 	privileged        bool
 	inheritAgentLogin []string
+	lendAgentLogin    []string
+	inheritAPIKey     []string
+	lendAPIKey        []string
+	cassette          string
+	vcr               string
+	blockSideCalls    bool
 	cpus, mem, disk   int
 	repos             []string
 	snapshots         []string
@@ -69,6 +76,19 @@ func newCreateCmd(app *App) *cobra.Command {
 	fl.BoolVar(&f.privileged, "privileged", false, "podman: use --privileged instead of the scaled-down cap set")
 	fl.StringSliceVar(&f.inheritAgentLogin, "inherit-agent-login", nil,
 		"inherit this agent's host login into the sandbox: "+strings.Join(seed.AgentNames(), " | ")+" (repeatable, comma-separated; default: inherit nothing)")
+	fl.StringSliceVar(&f.lendAgentLogin, "lend-agent-login", nil,
+		"lend this agent's host login: "+strings.Join(lend.SlotIDs(lend.Login), " | ")+
+			" — the sandbox gets a loan token, the credential stays on the host (repeatable, comma-separated)")
+	fl.StringSliceVar(&f.inheritAPIKey, "inherit-api-key", nil,
+		"copy this provider's key from ~/.cs-keys into the sandbox: "+strings.Join(lend.SlotIDs(lend.Key), " | ")+
+			" (repeatable, comma-separated)")
+	fl.StringSliceVar(&f.lendAPIKey, "lend-api-key", nil,
+		"lend this provider's key: "+strings.Join(lend.SlotIDs(lend.Key), " | ")+
+			" — the sandbox gets a loan token, the key stays on the host (repeatable, comma-separated)")
+	fl.StringVar(&f.cassette, "cassette", "", "record or replay the sandbox's model calls through a cs-vcr cassette of this name")
+	fl.StringVar(&f.vcr, "vcr", "", "where that cs-vcr listens (default: the host at port 8080)")
+	fl.BoolVar(&f.blockSideCalls, "block-side-calls", true,
+		"refuse the sandbox a direct route to the hosts the lender fronts, so an agent cannot reach one around its loan")
 	fl.IntVar(&f.cpus, "cpus", 4, "firecracker: vCPUs")
 	fl.IntVar(&f.mem, "mem", 4096, "firecracker: memory (MiB)")
 	fl.IntVar(&f.disk, "disk", 0, "firecracker: disk size (GiB); grow-only, default: the base rootfs size (32)")
@@ -81,6 +101,10 @@ func newCreateCmd(app *App) *cobra.Command {
 	// flag-value completion
 	_ = cmd.RegisterFlagCompletionFunc("engine", fixedComp("podman", "firecracker"))
 	_ = cmd.RegisterFlagCompletionFunc("type", fixedComp("agent", "user"))
+	_ = cmd.RegisterFlagCompletionFunc("inherit-agent-login", fixedComp(seed.AgentNames()...))
+	_ = cmd.RegisterFlagCompletionFunc("lend-agent-login", fixedComp(lend.SlotIDs(lend.Login)...))
+	_ = cmd.RegisterFlagCompletionFunc("inherit-api-key", fixedComp(lend.SlotIDs(lend.Key)...))
+	_ = cmd.RegisterFlagCompletionFunc("lend-api-key", fixedComp(lend.SlotIDs(lend.Key)...))
 	_ = cmd.RegisterFlagCompletionFunc("image-store", func(c *cobra.Command, _ []string, tc string) ([]string, cobra.ShellCompDirective) {
 		return app.storeMatches(c, tc), cobra.ShellCompDirectiveNoFileComp
 	})
@@ -156,6 +180,17 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		fmt.Fprintln(os.Stderr, "cs-sandbox: "+w)
 	}
 
+	// Credentials, before anything is provisioned: a flag naming a login the
+	// host does not hold, or a cs-vcr that is not answering, is a mistake to
+	// report now rather than one to discover from inside the sandbox.
+	plan, err := app.resolveLoans(f, name)
+	if err != nil {
+		return err
+	}
+	if injected, err = mergeLoanEnv(injected, plan.env); err != nil {
+		return err
+	}
+
 	// The group's artifacts (network, keys, gateway) and its record must exist
 	// before Deps is built: the engines take a COPY of Deps, so a field set
 	// afterwards — the allocated tap prefix — would never reach them.
@@ -200,10 +235,19 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		Name: name, Group: f.group, Type: f.typ, Yolo: f.yolo, Solo: f.solo, Privileged: f.privileged,
 		CPUs: f.cpus, MemMiB: f.mem, DiskGB: f.disk, Snapshots: snaps, RepoClones: repos,
 		ImageStores: f.imageStores, InjectedEnv: injected, InheritAgentLogin: f.inheritAgentLogin,
+		LentCredentials: plan.seeded,
 	}
 	inst, err := eng.Create(ctx, cs)
 	if err != nil {
 		return err
+	}
+	// Recorded once the instance exists, so a create that failed leaves no loan
+	// behind for the lender to honour. A dry run mints nothing it would have to
+	// revoke.
+	if len(plan.loans) > 0 && !app.dryRun() {
+		if err := lend.WriteLoans(state.Dir(app.InstDir, f.group, name), plan.loans); err != nil {
+			return fmt.Errorf("record this sandbox's loans: %w", err)
+		}
 	}
 	// A recreated name gets fresh per-instance host keys. known_hosts is keyed by
 	// the HostKeyAlias the connection used, which is <name>.<group> everywhere
@@ -222,16 +266,19 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	out := cmd.OutOrStdout()
 	// A dry run created nothing, so it must not say it did.
 	verb := "created"
-	if app.Exec != nil && app.Exec.DryRun {
+	if app.dryRun() {
 		verb = "would create"
 	}
 	fmt.Fprintf(out, "%s %s (type=%s, engine=%s, ssh port=%d)\n", verb, name, f.typ, f.engine, inst.Port)
 	fmt.Fprintf(out, "  shell: ssh %s\n", name+"."+f.group)
 	if len(inst.AgentLogins) > 0 {
 		fmt.Fprintf(out, "  agent login: %s (inherited from your host)\n", strings.Join(inst.AgentLogins, " + "))
-	} else {
-		fmt.Fprintf(out, "  agent login: none — add --inherit-agent-login %s, or run 'cs-sandbox agent-login %s %s'\n",
-			seed.AgentNames()[0], seed.AgentNames()[0], name)
+	} else if len(plan.loans) == 0 && len(plan.notes) == 0 {
+		fmt.Fprintf(out, "  agent login: none — add --lend-agent-login %s to lend yours, --inherit-agent-login %s to copy it in, or run 'cs-sandbox agent-login %s %s'\n",
+			seed.AgentNames()[0], seed.AgentNames()[0], seed.AgentNames()[0], name)
+	}
+	for _, n := range plan.notes {
+		fmt.Fprintf(out, "  %s\n", n)
 	}
 	for _, sn := range snaps {
 		fmt.Fprintf(out, "  snapshot: %s -> ~/%s (read-only, frozen at create)\n", sn.HostPath, sn.Name)

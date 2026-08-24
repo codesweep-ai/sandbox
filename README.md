@@ -12,10 +12,12 @@
 rootless Linux environment built from a single image, with a modern toolchain and the **Claude
 Code**, **Codex** & **OpenCode** agents preinstalled. Spin up many named sandboxes, reach each by
 name over SSH, and share **only** the repos or directories you choose. Nothing on the host is shared
-unless you ask: not your files, and not your SSH keys.
+unless you ask: not your files, not your SSH keys, and not the LLM provider keys you pay with.
 
-Your agent logins aren't shared by default either, though a sandbox can inherit them with
-`--inherit-agent-login` when you want it to. The loop is **create → work → fetch → destroy**.
+Agents inside a sandbox are given loan tokens, which a proxy outside it exchanges for the real
+credentials. An autonomous agent can work all day without any credential of yours.
+
+The loop is **create → work → fetch → destroy**.
 
 <p align="center">
   <img alt="cs-sandbox: create → work → fetch → destroy" src="docs/demo.gif" width="760">
@@ -28,26 +30,29 @@ Your agent logins aren't shared by default either, though a sandbox can inherit 
 - [Quickstart](#quickstart)
 - [How it fits together](#how-it-fits-together)
 - [What's in a sandbox](#whats-in-a-sandbox) · toolchain, agents, and the agent tools
+- [Agent credentials](#agent-credentials) · lending your logins and keys
 - [Before you start](#before-you-start) · one-time install + login ([INSTALL.md](INSTALL.md))
 - [Walkthroughs](#walkthroughs) · the fastest way to get a feel for it
 - [Choosing an engine](#choosing-an-engine-podman-vs-firecracker)
-- [SSH trust](#ssh-trust) · [Security model](#security-model) · [Docs](#docs)
+- [Who can SSH into what](#who-can-ssh-into-what) · [Security model](#security-model) · [Docs](#docs)
 - [Contributing](#contributing)
 
 ## Quickstart
 
 One-time host setup (the binary, Podman, `cs-sandbox build`, and a Claude, Codex, or OpenCode login
-if you want sandboxes to inherit it) is in [INSTALL.md](INSTALL.md). Then the whole loop is:
+for sandboxes to borrow) is in [INSTALL.md](INSTALL.md). Then the whole loop is:
 
 ```bash
 # Create a sandbox named "feature": share the ~/projects/api repo into it, and
-# carry your host Claude login in so the agent inside is already logged in.
-cs-sandbox create feature --repo ~/projects/api --inherit-agent-login claude
+# lend it your host Claude login, which never enters the sandbox.
+cs-sandbox create feature --repo ~/projects/api --lend-agent-login claude
 ssh feature                                        # shell in by name
 [feature]$ cd ~/api && cs-claude                   # run the agent, logged in; then exit
 cs-sandbox fetch feature                           # pull the agent's commits back to the host
 cs-sandbox destroy feature -f                      # throw the whole sandbox away
 ```
+
+The agent in the sandbox is operating as you but holds no credential of yours.
 
 The [Walkthroughs](#walkthroughs) below unpack this and the rest (user sandboxes, `--yolo --solo`,
 containers inside a sandbox, port forwarding, agents driving agents).
@@ -83,8 +88,8 @@ across engines. The host reaches a sandbox by name over SSH, and a port inside o
 the optional `host-route`.
 
 That network belongs to a **group**, and without `--group` every sandbox joins one called
-`default`, which is why they all see each other above. If you ever need two efforts on one host that
-must *not* interfere, [walkthrough 8](#8-run-two-isolated-experiments-with---group) shows how.
+`default`, which is why they all see each other above. If you ever need two experiments on one host
+that must *not* interfere, [walkthrough 8](#8-run-two-isolated-experiments-with---group) shows how.
 Until then you can ignore groups entirely.
 
 ## What's in a sandbox
@@ -103,12 +108,45 @@ Every sandbox boots from the same image, so there is nothing to install inside o
   with `-status`, `-output`, `-sessions` and `-forget` companions. They start or resume an agent
   session on *another* sandbox over SSH, keep it warm, and hand back its output. That is how one
   agent gives a task to another ([walkthrough 7](#7-let-one-coding-agent-drive-another)).
-- **A brief for the agent**, at `~/.local/bin/CS_SANDBOX.md`. It is the short reference an agent
-  reads before driving `cs-sandbox`, and it says what to do from inside a sandbox, where the CLI is
-  deliberately absent.
 
 The same tools run on your host too: `cs-sandbox install-agent-tools` puts them on your PATH, which
-is how you log in once on the host so sandboxes can inherit that login.
+is how you log in once on the host. Sandboxes borrow that login without ever holding it.
+
+## Agent credentials
+
+An agent needs a credential to call a model. Lending is the recommended way to give it one: the
+agent cannot leak your login or your LLM provider key, because it never sees either.
+
+```bash
+cs-sandbox create feature --repo ~/projects/api --lend-agent-login claude
+```
+
+What lands in the sandbox is a **loan token**, never your credential. The real one stays on your
+host, held by the **lender**, a small proxy this tool runs for you. Every model call the agent makes
+arrives at the lender carrying its token, and gets the real credential attached there before going
+on to the provider. The agent runs exactly as it would signed in.
+
+You can lend an agent login, or an LLM API key:
+
+| Flag | What it lends |
+|---|---|
+| `--lend-agent-login claude` | Your `claude` or `codex` login |
+| `--lend-api-key anthropic` | Your `anthropic`, `openai` or `fireworks` key |
+
+Keys live in `~/.cs-keys`, one file per provider:
+
+```bash
+mkdir -p ~/.cs-keys && printf %s "$ANTHROPIC_API_KEY" > ~/.cs-keys/anthropic && chmod 600 ~/.cs-keys/anthropic
+
+cs-sandbox create feature --repo ~/projects/api --lend-api-key anthropic
+```
+
+Sharing is yours to choose too. `--inherit-agent-login` and `--inherit-api-key` copy the real
+credential into the sandbox. A sandbox can also hold its own account, with `cs-sandbox agent-login
+claude <name>`.
+
+`cs-sandbox ls` marks each sandbox `lent` or `held`, and `create` prints which one you got.
+[MANUAL.md](MANUAL.md#lending-a-credential) has the whole surface.
 
 ## Before you start
 
@@ -117,11 +155,9 @@ The walkthroughs assume the one-time host setup in [INSTALL.md](INSTALL.md). Ins
 Codex or OpenCode on the host. It is a handful of commands, and `cs-sandbox doctor` checks every
 prerequisite and prints the fix for anything missing.
 
-**About the agent login.** Several walkthroughs pass `--inherit-agent-login claude` (or
-`codex`/`opencode`), which copies that host login in as the sandbox is created. That is the
-convenient choice, since it saves logging in inside every one. Leave the flag off to keep a sandbox on its own
-account, and log in there with `cs-sandbox agent-login claude <name>`. See
-[SPEC.md](SPEC.md#101-login).
+**About the agent login.** The walkthroughs below pass `--lend-agent-login claude`, which is the
+recommended path: your host login stays on your host, and the sandbox never holds it.
+[Agent credentials](#agent-credentials) covers the alternatives.
 
 ## Walkthroughs
 
@@ -135,12 +171,12 @@ Two repos go into one agent sandbox; the agent edits one, and you fetch its comm
 
 ```bash
 # Each repo lands at ~/<basename> on its own branch  cs-sandbox/<sandbox-name>.
-# --inherit-agent-login carries your host Claude login into the sandbox.
-cs-sandbox create feature --repo ~/projects/api --repo ~/projects/web --inherit-agent-login claude
+# --lend-agent-login lends your host Claude login without putting it in the sandbox.
+cs-sandbox create feature --repo ~/projects/api --repo ~/projects/web --lend-agent-login claude
 
 # shell in, by name
 ssh feature
-# Launch Claude - logged in, because we inherited the host login above.
+# Launch Claude - logged in, on the login we lent it above.
 [feature]$ cd ~/api && cs-claude
 # then type a prompt like "add a /version endpoint and commit when done"
 # ...let it work, then exit Claude
@@ -162,7 +198,7 @@ with plain git, and no host round-trip.
 
 ```bash
 # An agent sandbox does the work (its branch: cs-sandbox/worker).
-cs-sandbox create worker --repo ~/projects/api --inherit-agent-login claude
+cs-sandbox create worker --repo ~/projects/api --lend-agent-login claude
 ssh worker
 [worker]$ cd ~/api && cs-claude    # "add a /health endpoint and commit when done", then exit
 [worker]$ exit
@@ -184,13 +220,12 @@ cs-sandbox destroy worker -f && cs-sandbox destroy dev -f
 A disposable playground: the agent builds and runs a small HTTP API that you then hit from inside the
 sandbox. It is an experiment, so the agent works without stopping for approvals (**`--yolo`**) and
 stays away from your other sandboxes (**`--solo`**). The sandbox itself is the boundary. This block
-also skips `--inherit-agent-login`, so this one needs its own Claude login rather than sharing
-yours.
+also lends nothing, so this one gets its own Claude login rather than borrowing yours.
 
 ```bash
 #   --yolo  agent works with no approval prompts (the sandbox is the boundary)
 #   --solo  agent can't SSH out to your other sandboxes (it stays reachable)
-#   no --inherit-agent-login, so this sandbox starts with no Claude login
+#   no --lend-agent-login, so this sandbox starts with no Claude login at all
 cs-sandbox create lab --yolo --solo
 
 # Log it in: launches the agent inside the sandbox so you can complete its login.
@@ -273,9 +308,9 @@ does.
 ```bash
 # Two agent sandboxes. Agents can SSH to each other
 # (but never into your user sandboxes).
-cs-sandbox create driver --inherit-agent-login claude,codex
+cs-sandbox create driver --lend-agent-login claude,codex
 # worker holds the repo to work on
-cs-sandbox create worker --repo ~/projects/api --inherit-agent-login codex
+cs-sandbox create worker --repo ~/projects/api --lend-agent-login codex
 
 ssh driver
 [driver]$ cs-claude
@@ -292,7 +327,7 @@ cs-sandbox fetch worker                  # the agent's commits, before they go
 cs-sandbox destroy driver -f && cs-sandbox destroy worker -f
 ```
 
-> Each sandbox above inherited the host login it needs (`--inherit-agent-login`), so Codex on
+> Each sandbox above borrows the host login it needs (`--lend-agent-login`), so Codex on
 > `worker` is already logged in.
 > `cs-claude-remote`, `cs-codex-remote`, and `cs-opencode-remote` mirror each other; any agent can
 > drive any of the three, on any host.
@@ -300,16 +335,16 @@ cs-sandbox destroy driver -f && cs-sandbox destroy worker -f
 ### 8. Run two isolated experiments with `--group`
 
 Everything above lived in one group called `default`, and you never had to think about it. Reach for
-`--group` when two efforts share your host and must **not** interfere. Two experiments comparing
-approaches need the same set of sandboxes each, or the comparison is not fair.
+`--group` when two experiments share your host and must **not** interfere. Each one needs the same
+set of sandboxes, or the comparison is not fair.
 
 ```bash
 # Two experiments comparing caching strategies. Each --group gets its own network,
 # SSH keys and gateway, created on demand. Each holds the SAME two names, so
 # the fixture is identical and only the approach differs.
-cs-sandbox create api   --group cache-redis  --repo ~/projects/api --inherit-agent-login claude
+cs-sandbox create api   --group cache-redis  --repo ~/projects/api --lend-agent-login claude
 cs-sandbox create bench --group cache-redis  --repo ~/projects/bench
-cs-sandbox create api   --group cache-memory --repo ~/projects/api --inherit-agent-login claude
+cs-sandbox create api   --group cache-memory --repo ~/projects/api --lend-agent-login claude
 cs-sandbox create bench --group cache-memory --repo ~/projects/bench
 
 # Identity is (group, name), and a bare name always means the default group,
@@ -352,7 +387,7 @@ networking. They differ mostly in isolation versus weight. Pick with `--engine p
 | **Reach for it when** | speed, macOS | stronger isolation, untrusted workloads, nested root |
 | Specified in | [SPEC.md §11](SPEC.md#11-the-podman-container-engine) | [SPEC.md §12](SPEC.md#12-the-firecracker-microvm-engine) |
 
-## SSH trust
+## Who can SSH into what
 
 Every sandbox runs an SSH server, so you reach each one by name. What a sandbox can reach in turn
 depends on its **type**, set with `--type` and independent of engine. There are two layers:
@@ -393,25 +428,26 @@ independent of sandbox type. Lend deliberately, with two conditions in mind:
 - **The boundary is the engine.** A Podman container shares the host kernel; a Firecracker microVM
   boots its own kernel under hardware virtualization, the stronger choice for untrusted or
   autonomous work.
-- **Nothing shared by default.** Host data enters a sandbox only through `--repo` (a git checkout)
-  or `--snapshot` (a frozen read-only copy). Results come back out with `cs-sandbox fetch`.
-- **Your agent logins are not shared either**, unless you name one: `create
-  --inherit-agent-login claude` copies that login in, and `create` prints what the sandbox ended up
-  with. Without it the sandbox has no agent login, so log in inside it, on its own account if you
-  prefer. Provider API keys are never copied at all; pass one with `--env` when a sandbox needs it.
+- **Nothing shared by default.** Host data enters a sandbox only where a flag names it: `--repo` (a
+  git checkout), `--snapshot` (a frozen read-only copy), and `--env` / `--env-file` (values you pass
+  in). Results come back out with `cs-sandbox fetch`.
+- **Your credentials are not shared either**, and naming one need not mean handing it over.
+  `--lend-agent-login` and `--lend-api-key` leave the credential on the host behind a proxy, and
+  give the sandbox a loan token worth nothing elsewhere. `--inherit-…` copies the real one in
+  instead, and `create` prints which you got. See [Agent credentials](#agent-credentials).
 - **No host SSH keys in any sandbox.** Neither type receives a copy of your host keys; sandboxes
-  reach each other with generated per-group tier keys. If a sandbox ever needs your own keys, you can lend
-  a specific set for a session ([`ssh -A`](#lending-a-sandbox-specific-ssh-keys-with-ssh--a)), and
-  they stay on the host.
-- **Agent/user SSH isolation.** The per-type [SSH trust](#ssh-trust) matrix is enforced by the keys
-  themselves, so an agent can't pivot through SSH into your workspace.
+  reach each other with generated per-group tier keys. If a sandbox ever needs your own keys, you
+  can lend a specific set for a session ([`ssh -A`](#lending-a-sandbox-specific-ssh-keys-with-ssh--a)), and
+  they stay on the host. It is the same trade lending makes for a credential.
+- **Agent/user SSH isolation.** The per-type [SSH trust](#who-can-ssh-into-what) matrix is enforced
+  by the keys themselves, so an agent can't pivot through SSH into your workspace.
 - **`--yolo`** drops the agents' approval prompts, safe because the sandbox itself is the isolation
   boundary. **`--solo`** (agent sandboxes only) additionally denies the agent any *outbound* SSH into
   its group, while keeping it reachable for you to drive.
 - **Groups are an optional second boundary.** `--group <name>` puts a set of sandboxes on their own
   network with their own SSH keys, so they can neither resolve, reach nor authenticate to sandboxes
   in another group. The matrix above applies inside a group rather than across groups. Use it when
-  unrelated efforts share a host, or ignore it and everything lives in one
+  unrelated experiments share a host, or ignore it and everything lives in one
   ([SPEC.md](SPEC.md#5-groups)).
 - It is not a hardened multi-tenant boundary; isolation is whatever the chosen engine provides.
 
@@ -421,7 +457,7 @@ independent of sandbox type. Lend deliberately, with two conditions in mind:
   the image, the agent tools, and the agent login
 - [MANUAL.md](MANUAL.md) · every command, flag, file, exit status and diagnostic
 - [SPEC.md](SPEC.md) · what a sandbox guarantees and how it is built: types and trust, the seed,
-  groups, networking, sharing, both engines, and the security model
+  groups, networking, sharing, lending, both engines, and the security model
 - [CONTRIBUTING.md](CONTRIBUTING.md) · working on the tool: coverage, commit shape and writing
 
 ## Contributing

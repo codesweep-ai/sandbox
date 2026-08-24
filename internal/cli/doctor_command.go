@@ -47,6 +47,8 @@ func newDoctorCmd(app *App) *cobra.Command {
 				FCVersionCache: fc.FirecrackerVersion(),
 				FCCache:        fc.Dir,
 				InstDir:        app.InstDir,
+
+				Lend: app.lendState(),
 			}
 			rep := doctor.Diagnose(cmd.Context(), engine, d)
 			printReport(cmd.OutOrStdout(), rep)

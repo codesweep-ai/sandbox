@@ -40,8 +40,18 @@ docs:
   # belongs here; an ordinary English verb belongs in the shared list, where
   # every project gets it. runuser is the command, used as a verb in
   # INSTALL.md; not English.
+  #
+  # lend/borrow are ordinary English and belong in the shared list rather than
+  # here. They are carried locally until they land there, because they are this
+  # project's central vocabulary now: a sandbox BORROWS a credential the host
+  # LENDS it, and prose that cannot say so reads worse than the rule protects.
   projectVerbs:
     - runuser
+    - lend
+    - lends
+    - lent
+    - borrow
+    - borrows
 
 oss:
   project: cs-sandbox

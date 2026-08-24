@@ -148,14 +148,28 @@ chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$SSH_DIR" 2>/dev/null || true
 # Fallback: ensure host keys exist even without a seed.
 ssh-keygen -A >/dev/null 2>&1 || true
 
+# install_agent_cred <seed-subdir> <profile-dir> <file>
+#
+# An INHERITED login is installed first boot only, so a token the sandbox has
+# since refreshed is never clobbered by the create-time snapshot. A LENT one is
+# installed EVERY boot: it is a placeholder standing in for a credential that
+# never enters this sandbox, so there is nothing here worth preserving, and a
+# client that overwrote it after a failed refresh would otherwise lose its loan
+# for good. The seed says which by carrying a "lent" marker beside the file.
+install_agent_cred() {
+  _sd="$SEED/$1"; _pd="$2"; _f="$3"
+  [ -f "$_sd/$_f" ] || return 0
+  if [ -f "$_sd/lent" ] || [ ! -f "$_pd/$_f" ]; then
+    install -m 600 "$_sd/$_f" "$_pd/$_f"
+  fi
+}
+
 # --- Claude subscription auth (cs-claude profile: CLAUDE_CONFIG_DIR=~/.cs-claude) ---
 CC_DIR="$CS_SANDBOX_HOME/.cs-claude"
 mkdir -p "$CC_DIR"; chmod 700 "$CC_DIR" 2>/dev/null || true
 # Install the seeded credentials on FIRST BOOT ONLY, so a token the container has
 # since refreshed isn't clobbered by the create-time snapshot.
-if [ -f "$SEED/claude/.credentials.json" ] && [ ! -f "$CC_DIR/.credentials.json" ]; then
-  install -m 600 "$SEED/claude/.credentials.json" "$CC_DIR/.credentials.json"
-fi
+install_agent_cred claude "$CC_DIR" .credentials.json
 # The host's Claude Code theme, carried at create so the sandbox comes up looking
 # like the claude the user already runs instead of stopping on the picker. The
 # cs-claude wrapper reads this as its default; a theme chosen inside the sandbox
@@ -168,7 +182,16 @@ fi
 # actually has something to log in with. Marking onboarding complete on a sandbox with
 # no credentials skips the screen that offers the sign-in choices, and claude then presents
 # itself as "API Usage Billing" instead of prompting you to log in.
-if command -v jq >/dev/null 2>&1 && { [ -f "$CC_DIR/.credentials.json" ] || [ -f "$CC_DIR/env" ]; }; then
+# A key injected by hand counts as something to sign in with, the same as a
+# credentials file. A lent login needs no special case here: it arrives AS a
+# credentials file, which is the whole point of seeding one.
+cc_has_auth=
+if [ -f "$CC_DIR/.credentials.json" ] || [ -f "$CC_DIR/env" ]; then
+  cc_has_auth=1
+elif [ -f "$SEED/inject-env" ] && grep -qE '^(ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY)=' "$SEED/inject-env"; then
+  cc_has_auth=1
+fi
+if command -v jq >/dev/null 2>&1 && [ -n "$cc_has_auth" ]; then
   if [ -f "$CC_DIR/.claude.json" ]; then
     jq '.hasCompletedOnboarding=true' "$CC_DIR/.claude.json" > "$CC_DIR/.claude.json.tmp" 2>/dev/null \
       && mv "$CC_DIR/.claude.json.tmp" "$CC_DIR/.claude.json" || rm -f "$CC_DIR/.claude.json.tmp"
@@ -191,9 +214,7 @@ chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CC_DIR" 2>/dev/null || true
 # from the seed first boot only (don't clobber a token the instance later refreshed).
 CODEX_DIR="$CS_SANDBOX_HOME/.cs-codex"
 mkdir -p "$CODEX_DIR"; chmod 700 "$CODEX_DIR" 2>/dev/null || true
-if [ -f "$SEED/codex/auth.json" ] && [ ! -f "$CODEX_DIR/auth.json" ]; then
-  install -m 600 "$SEED/codex/auth.json" "$CODEX_DIR/auth.json"
-fi
+install_agent_cred codex "$CODEX_DIR" auth.json
 # YOLO marker for cs-codex (--yolo): the wrapper then runs codex with
 # --dangerously-bypass-approvals-and-sandbox. Mirrors the Claude marker above.
 if [ "${CS_SANDBOX_YOLO:-0}" = "1" ]; then
@@ -209,9 +230,7 @@ chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CODEX_DIR" 2>/dev/null || true
 # (inline env) so the credential never lands in opencode's data dir next to the session db.
 OC_DIR="$CS_SANDBOX_HOME/.cs-opencode"
 mkdir -p "$OC_DIR"; chmod 700 "$OC_DIR" 2>/dev/null || true
-if [ -f "$SEED/opencode/auth.json" ] && [ ! -f "$OC_DIR/auth.json" ]; then
-  install -m 600 "$SEED/opencode/auth.json" "$OC_DIR/auth.json"
-fi
+install_agent_cred opencode "$OC_DIR" auth.json
 # YOLO marker for cs-opencode (--yolo): the wrapper then runs opencode with --auto.
 if [ "${CS_SANDBOX_YOLO:-0}" = "1" ]; then
   : > "$OC_DIR/.yolo"

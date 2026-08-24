@@ -20,14 +20,14 @@ running an agent session on another sandbox.
 # Create: name + optional shares. Default type is agent; engine defaults to
 # firecracker on Linux/KVM, else podman.
 cs-sandbox create feature --repo ~/projects/api        # repo lands at ~/api on branch cs-sandbox/feature
-cs-sandbox create feature --repo ~/projects/api --inherit-agent-login claude   # ...agent logged in
+cs-sandbox create feature --repo ~/projects/api --lend-agent-login claude      # ...agent logged in
 cs-sandbox create dev --type user --repo ~/projects/api
 cs-sandbox create lab --yolo --solo                    # throwaway playground, no outbound ssh
 cs-sandbox create web --engine podman --snapshot ~/data # frozen read-only copy at ~/data
 
 ssh feature                     # shell in by name (preferred for interactive work)
 cs-sandbox exec feature ls      # run one command instead
-cs-sandbox ls                   # GROUP NAME STATUS AGE TYPE ENGINE YOLO SOLO
+cs-sandbox ls                   # GROUP NAME STATUS AGE TYPE ENGINE YOLO SOLO CREDS
                                 # STATUS is running, stopped or removed
 cs-sandbox ls -q                # names only, one per line — pipe it into other commands
 cs-sandbox port feature         # its host SSH port, if a tool needs it (ssh <name> does not)
@@ -137,8 +137,8 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
 
 | User says | What to do |
 |---|---|
-| "spin up a sandbox for this repo" / "give the agent a sandbox with X" | `cs-sandbox create <name> --repo <path> --inherit-agent-login claude` (drop the flag if they want it without a login); report the name and that `ssh <name>` works |
-| "it should already be logged in" / "don't make me log in again" | add `--inherit-agent-login claude` (or `codex`/`opencode`) at create |
+| "spin up a sandbox for this repo" / "give the agent a sandbox with X" | `cs-sandbox create <name> --repo <path> --lend-agent-login claude` (drop the flag if they want it without a login); report the name and that `ssh <name>` works |
+| "it should already be logged in" / "don't make me log in again" | add `--lend-agent-login claude` (or `codex`) at create; `--inherit-agent-login opencode` for OpenCode, which has no login to lend |
 | "make me a workspace I can drive" / "a user sandbox" | `cs-sandbox create <name> --type user --repo <path>` |
 | "throwaway / no prompts / let it rip" | `cs-sandbox create <name> --yolo` (add `--solo` to also deny outbound ssh) |
 | "stronger isolation" / "untrusted work" | `--engine firecracker` (Linux + `/dev/kvm` only) |
@@ -172,13 +172,17 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
   automatically. `--cpus` (default 4) and `--mem` MiB (default 4096) apply to Firecracker only.
 - On macOS everything runs in one podman-machine VM, and `--repo` / `--snapshot` sources must live
   under `$HOME` — `create` rejects paths outside it.
-- The agent login is **not** inherited by default — a sandbox starts with none. Pass
-  `--inherit-agent-login claude` (or `codex`/`opencode`, comma-separated) at create to carry the host
-  login in; that is the usual choice, since otherwise someone has to log in inside every
-  sandbox. `create` reports what the sandbox ended up with. Without the flag, log it in with
-  `cs-sandbox agent-login claude <name>`, which is also how you give a sandbox its own account
-  instead of sharing yours.
-- Provider API keys are never carried. Pass one explicitly with `--env ANTHROPIC_API_KEY`, and use
-  `--snapshot` plus `--env` for a credential file.
+- The agent login is **not** inherited by default — a sandbox starts with none. The usual choice is
+  `--lend-agent-login claude` (or `codex`), which lends the host login: the sandbox gets a loan
+  token and the real credential never enters it. `--inherit-agent-login claude` (or
+  `codex`/`opencode`, comma-separated) copies the login in instead. `create` reports what the
+  sandbox ended up with either way. Without a flag, log it in with `cs-sandbox agent-login claude
+  <name>`, which is also how you give a sandbox its own account instead of sharing yours.
+- LLM API keys work the same way, from the host's `~/.cs-keys/<provider>`:
+  `--lend-api-key anthropic` lends one, `--inherit-api-key anthropic` copies it in. A key for
+  anything else still goes in with `--env`, and a credential file with `--snapshot`.
+- Agents sometimes call their provider outside the base URL. A lent sandbox holds no credential for
+  those, so the calls are refused locally rather than left to go out and fail.
+  `--block-side-calls=false` turns that off.
 - Global flags: `-v` (per-command progress), `-q` (silence), `--dry-run` (print commands instead of
   running them — useful to show a user what would happen).

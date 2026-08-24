@@ -1,0 +1,25 @@
+{
+  "id": "SBX-025",
+  "title": "OpenCode cannot borrow its own login, only a provider key",
+  "type": "feature-idea",
+  "severity": "low",
+  "status": "wont-fix",
+  "foundBy": "session agent, while building credential lending (SPEC 10.2)",
+  "opened": "2026-08-24",
+  "resolved": "2026-08-24",
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": "Decided against, by the maintainer, while the credential matrix was being built. OpenCode reaches a provider through whichever model it is running, so a lent credential belongs to that provider rather than to OpenCode, and the key slots already cover it: --lend-api-key anthropic, openai and fireworks all reach OpenCode, and the Fireworks slot was added for the model the image pins. What a login slot would add is the ability to lend a subscription OpenCode signed in for, and nothing in the design needs it: the same subscriptions are lent through the claude and codex slots to the clients that own them.\n\nThe path is not closed. The slot table carries a per-slot credential file and a fabricator, so adding one is a table entry and a reader, the same shape the claude and codex slots already have.",
+  "details": "--lend-agent-login takes claude and codex. OpenCode is absent because its ~/.cs-opencode/auth.json is a map of providers to credentials rather than one credential, so a single slot cannot say which upstream a loan is good for, and the shape could not be verified against a real OpenCode login while the feature was built.\n\nOpenCode is not left out entirely: it reads ANTHROPIC_API_KEY / OPENAI_API_KEY and the matching base URL variables, so --lend-api-key anthropic and --lend-api-key openai reach the lender from it. Verified in a sandbox, with one caveat worth knowing: the image pins OpenCode to a model on a third provider, so a lent key applies only once the model is one of those two (`cs-opencode run -m anthropic/<model>`, or a pinned model changed in the profile). Its own base URL variable, OPENCODE_BASE_URL, is not something a loan can travel in, because the credential still belongs to whichever provider the model names.\n\nWhat it would take: expand the auth.json map into one slot per provider at read time, and give the loan token a slot id naming the provider rather than the agent. The slot table in internal/lend already carries a per-slot origin and header shape, so the work is a reader plus a table entry, not a new mechanism.",
+  "notes": [
+    {
+      "date": "2026-08-24",
+      "text": "Verified OpenCode spends every key slot end to end, including a lent Fireworks key on the image's pinned model, in the live-agents tier."
+    }
+  ],
+  "links": []
+}

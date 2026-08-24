@@ -1199,6 +1199,15 @@ func TestClaudeWrapperAnswersTheFirstRunDialogs(t *testing.T) {
 			wantApp:       []string{id},
 		},
 		{
+			// A gateway token is something to sign in with, even with no
+			// credentials file beside it, or the profile opens on the sign-in
+			// screen while its model calls work perfectly.
+			name:          "a gateway token counts as a login",
+			env:           []string{"ANTHROPIC_AUTH_TOKEN=some-gateway-token"},
+			wantTheme:     "dark",
+			wantOnboarded: true,
+		},
+		{
 			// A value claude does not know would reopen the picker, so it is
 			// dropped rather than written through.
 			name:          "a theme claude does not know falls back",
