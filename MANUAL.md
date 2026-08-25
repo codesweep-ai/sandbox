@@ -45,9 +45,6 @@ reachable by name over SSH.
 Nothing on your host enters a sandbox unless you name it. Code goes in through `--repo` or
 `--snapshot`, commits come back out with `fetch`, and the loop is create, work, fetch, destroy.
 
-**`cs-sandbox` is not installed inside a sandbox.** If the command is missing, you are probably
-already in one. Reach peers with plain `ssh <name>` and move commits with plain `git`.
-
 For the tour and the walkthroughs see [README.md](README.md). For what the tool guarantees and how
 it is built see [SPEC.md](SPEC.md).
 

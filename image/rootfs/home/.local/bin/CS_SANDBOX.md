@@ -10,9 +10,10 @@ with their `cs-claude` / `cs-codex` / `cs-opencode` launch wrappers (ready-to-us
 agent config), and the `cs-claude-remote` / `cs-codex-remote` / `cs-opencode-remote` tools for
 running an agent session on another sandbox.
 
-> **This is a host tool.** `cs-sandbox` is not installed *inside* sandboxes. If it is not on PATH,
-> you are probably already inside one — reach peers with plain `ssh <name>` and move commits with
-> plain `git` (see "From inside a sandbox" below) rather than looking for this CLI.
+> **Every sandbox carries this CLI too**, so a sandbox can drive another one: create a peer, `ls`
+> what is running, `fetch` a branch back. Between sandboxes, plain `ssh <name>` and plain `git` are
+> often shorter (see "From inside a sandbox" below). The sibling tools `cs-lint`, `cs-ledger` and
+> `cs-tracer` are here as well.
 
 ## How to use
 
@@ -122,7 +123,7 @@ cs-sandbox create web --image-store base              # mount it read-only
 cs-sandbox rm-store base -f
 ```
 
-## From inside a sandbox (no cs-sandbox CLI there)
+## From inside a sandbox
 
 A **user** sandbox can fetch a peer **agent** sandbox's work directly with plain git — same
 fast-forward rules, no host round-trip:

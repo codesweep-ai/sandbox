@@ -45,10 +45,13 @@ host login is absent.
 `make check` needs three tools that do not come with Go. Install them once:
 
 ```bash
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
 go install golang.org/x/tools/cmd/deadcode@latest
 go install github.com/codesweep-ai/lint/cmd/cs-lint@latest
 ```
+
+A sandbox built from this repository carries all of these already, along with goreleaser and
+`cs-sandbox` itself, so working on this project from inside one needs no setup.
 
 Pin `golangci-lint` to the version above, the one CI runs. A newer release gains checks, and you
 want to meet those when you upgrade the pin rather than on an unrelated pull request.

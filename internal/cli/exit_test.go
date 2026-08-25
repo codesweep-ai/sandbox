@@ -54,8 +54,7 @@ func TestSandboxedExitLeavesRealFailuresAlone(t *testing.T) {
 			if !errors.Is(got, tc.err) {
 				t.Fatalf("got %v, want it to pass through as %v", got, tc.err)
 			}
-			var status *ExitStatus
-			if errors.As(got, &status) {
+			if _, ok := errors.AsType[*ExitStatus](got); ok {
 				t.Errorf("got an *ExitStatus (%v); it would be silently swallowed", got)
 			}
 		})

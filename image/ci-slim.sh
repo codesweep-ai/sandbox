@@ -73,6 +73,12 @@ esac
 #
 # Measured: every live test in the suite passes against this image.
 #
+# The codesweep tools and this repo's own dev toolchain both go, so the CI image
+# is the one sandbox carrying neither. Nothing in the live tests reaches for them
+# from inside: they drive sandboxes from the host. The codesweep tools and
+# deadcode would need the Go this script drops anyway; the three prebuilt linters
+# would not, and go because a CI image that boots sandboxes has no use for them.
+#
 # A live test that needs more than this list belongs in `make test-integration`
 # against the real image, or the package belongs here. Adding one is cheap
 # relative to the toolchain layers, which are what the size is really about.
@@ -111,9 +117,12 @@ BEGIN {
   DROP["temurin25-binaries"]              # jdk
   DROP["archive.apache.org/dist/maven"]   # maven
   DROP["go.dev/dl/go${GO_VERSION}"]       # go toolchain
+  DROP["cmd/cs-sandbox@latest"]           # the codesweep tools: need the go above
+  DROP["golangci-lint/releases/download"] # the dev toolchain for this repo
+  DROP["cmd/deadcode@latest"]             # deadcode, the one built from source
   DROP["python3 -m venv /opt/py-tools"]   # python CLI tools venv
   DROP["+Lazy! install"]                  # the nvim plugin/LSP pre-build
-  want_dropped = 10
+  want_dropped = 13
   # The agents, and the PATH stanza that is mostly about them. Kept together or
   # dropped together: keeping the binaries without putting them on PATH would
   # pass every check here and still fail `command -v claude` in the sandbox.
@@ -124,7 +133,7 @@ BEGIN {
     DROP["openai/codex/releases"]         # codex
     DROP["anomalyco/opencode/releases"]   # opencode
     DROP["ENV JAVA_HOME"]                 # PATH additions for all of the above
-    want_dropped = 14
+    want_dropped = 17
     want_path = 0
   }
 }

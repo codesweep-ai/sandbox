@@ -238,9 +238,9 @@ RUN curl -fsSL -o /tmp/maven.tar.gz \
   && rm -f /tmp/maven.tar.gz \
   && JAVA_HOME=/opt/java /opt/maven/bin/mvn --version | head -1
 
-ARG GO_VERSION=1.26.5
-ARG GO_SHA256_AMD64=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053
-ARG GO_SHA256_ARM64=fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49
+ARG GO_VERSION=1.27.0
+ARG GO_SHA256_AMD64=675c26c449cbb18fc24b74650de1eabbae6e16f64326fd85a283fb3b58280685
+ARG GO_SHA256_ARM64=51798d2c42d0e1c6ed7fd9f48728b4193abac9e8aad6dbac2fe96a81f5909bda
 RUN case "$(uname -m)" in \
       x86_64|amd64)  garch=amd64; want="$GO_SHA256_AMD64" ;; \
       arm64|aarch64) garch=arm64; want="$GO_SHA256_ARM64" ;; \
@@ -252,6 +252,78 @@ RUN case "$(uname -m)" in \
   && tar -xzf /tmp/go.tar.gz -C /opt --no-same-owner \
   && rm -f /tmp/go.tar.gz \
   && /opt/go/bin/go version
+
+# The codesweep tools. cs-sandbox is here because a sandbox is a place to work FROM, and some of
+# that work is driving another sandbox: create a peer for a second experiment, `ls` what is running,
+# `fetch` a branch back. Its siblings come with it, so a sandbox can lint prose, keep a ledger and
+# trace a run without installing anything first. Each is a single static Go binary.
+#
+# @latest, which is how every codesweep tool is installed in CI too, rather than pins that would
+# need keeping in step by hand. None of these modules carries release tags yet, so each resolves to
+# a pseudo-version of its default branch's newest commit.
+#
+# The module cache and build cache go in the same layer, or the ~400 MB they hold ships too. One
+# `go install` per tool: it refuses a command line naming packages from more than one module.
+RUN export GOBIN=/usr/local/bin GOTOOLCHAIN=local PATH=/opt/go/bin:$PATH \
+  && go install github.com/codesweep-ai/sandbox/cmd/cs-sandbox@latest \
+  && go install github.com/codesweep-ai/lint/cmd/cs-lint@latest \
+  && go install github.com/codesweep-ai/ledger/cmd/cs-ledger@latest \
+  && go install github.com/codesweep-ai/tracer/cmd/cs-tracer@latest \
+  && go clean -modcache -cache \
+  && for t in cs-sandbox cs-lint cs-ledger cs-tracer; do \
+       command -v "$t" >/dev/null || { echo "missing after install: $t" >&2; exit 1; }; \
+     done
+
+# The rest of what `make check` needs on top of Go, so this project can be worked on from inside one
+# of its own sandboxes: build it, lint it, vet the workflows. The versions are the ones
+# CONTRIBUTING.md and CI name — a newer golangci-lint gains checks, and those should be met on
+# purpose rather than on an unrelated change. actionlint carries CI's pin for the same reason.
+#
+# goreleaser is here because `make build` prefers it and falls back to `go build` without it, which
+# would quietly produce a binary stamped differently from a released one.
+#
+# Each is fetched as the binary its own project publishes, verified against the checksum that
+# release ships. Building them from source instead cost minutes of every image build to arrive at
+# the same three binaries, and put this image's Go between the tool and the one its authors tested.
+ARG GOLANGCI_VERSION=2.13.1
+ARG GOLANGCI_SHA256_AMD64=b17bfbc9d4aaa48be7f4f1ce3240bc3d8200c870c072bacf15c26219e2cfb9cc
+ARG GOLANGCI_SHA256_ARM64=908317c23db18448f924e853b3d8a659fd919614cd438f224810a4053daa2607
+ARG ACTIONLINT_VERSION=1.7.12
+ARG ACTIONLINT_SHA256_AMD64=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+ARG ACTIONLINT_SHA256_ARM64=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
+ARG GORELEASER_VERSION=2.18.0
+ARG GORELEASER_SHA256_AMD64=41cdf49b653784b03a08013dd99e382cd5d463049e915c2d818eaed182ae6197
+ARG GORELEASER_SHA256_ARM64=1975566c9668e6f4247e6bb57656f21da13635c24d948ef47b1232e5c864a35b
+RUN set -eu; \
+    case "$(uname -m)" in \
+      x86_64|amd64)  arch=amd64; grel=x86_64; \
+        gcl="$GOLANGCI_SHA256_AMD64"; acl="$ACTIONLINT_SHA256_AMD64"; grl="$GORELEASER_SHA256_AMD64" ;; \
+      arm64|aarch64) arch=arm64; grel=arm64; \
+        gcl="$GOLANGCI_SHA256_ARM64"; acl="$ACTIONLINT_SHA256_ARM64"; grl="$GORELEASER_SHA256_ARM64" ;; \
+      *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    fetch() { \
+      curl -fsSL -o /tmp/t.tar.gz "$1"; \
+      got=$(sha256sum /tmp/t.tar.gz | cut -d" " -f1); \
+      [ "$2" = "$got" ] || { echo "checksum mismatch for $1: want=$2 got=$got" >&2; exit 1; }; \
+      rm -rf /tmp/x; mkdir -p /tmp/x; tar -xzf /tmp/t.tar.gz -C /tmp/x --no-same-owner; \
+      bin=$(find /tmp/x -type f -name "$3" | head -1); \
+      [ -n "$bin" ] || { echo "no $3 inside $1" >&2; exit 1; }; \
+      install -m0755 "$bin" /usr/local/bin/"$3"; \
+      rm -rf /tmp/t.tar.gz /tmp/x; \
+    }; \
+    fetch "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_VERSION}/golangci-lint-${GOLANGCI_VERSION}-linux-${arch}.tar.gz" "$gcl" golangci-lint; \
+    fetch "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_${arch}.tar.gz" "$acl" actionlint; \
+    fetch "https://github.com/goreleaser/goreleaser/releases/download/v${GORELEASER_VERSION}/goreleaser_Linux_${grel}.tar.gz" "$grl" goreleaser; \
+    for t in golangci-lint actionlint goreleaser; do \
+      command -v "$t" >/dev/null || { echo "missing after install: $t" >&2; exit 1; }; \
+    done
+
+# deadcode is the exception: golang.org/x/tools publishes no binaries, so this one is built.
+RUN GOBIN=/usr/local/bin GOTOOLCHAIN=local PATH=/opt/go/bin:$PATH \
+      go install golang.org/x/tools/cmd/deadcode@latest \
+  && /opt/go/bin/go clean -modcache -cache \
+  && command -v deadcode >/dev/null
 
 # Claude Code — native single-binary install (no Node/npm runtime dependency). Anthropic's
 # install.sh normally drops a self-updating launcher in ~/.local/bin; instead we fetch the same

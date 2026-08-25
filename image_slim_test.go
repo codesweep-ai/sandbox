@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -97,6 +98,28 @@ func TestCISlimKeepsAgentsWhenAsked(t *testing.T) {
 	for _, gone := range []string{"/opt/go/bin", "/opt/java/bin", "/opt/maven/bin", "/opt/pyenv/bin", "/opt/py-tools/bin", "/opt/nvm"} {
 		if strings.Contains(out, gone) {
 			t.Errorf("PATH still names dropped directory %q", gone)
+		}
+	}
+}
+
+// TestCISlimShipsTheCLIOnlyInTheRealImage: the shipped image installs cs-sandbox,
+// and the CI image does not.
+//
+// A guard rather than a preference. The CI image drops the Go toolchain that
+// builds the CLI, so it is the one sandbox without it, which means no live test
+// can notice the day the install stanza is deleted from the Containerfile.
+func TestCISlimShipsTheCLIOnlyInTheRealImage(t *testing.T) {
+	const marker = "cmd/cs-sandbox@latest"
+	real, err := os.ReadFile(filepath.Join("image", "Containerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(real), marker) {
+		t.Errorf("the shipped Containerfile no longer installs the CLI (%q)", marker)
+	}
+	for _, keep := range []string{"0", "1"} {
+		if out := slimmed(t, keep); strings.Contains(out, marker) {
+			t.Errorf("CI_SLIM_KEEP_AGENTS=%s: the CI image installs the CLI, but has no Go to build it", keep)
 		}
 	}
 }

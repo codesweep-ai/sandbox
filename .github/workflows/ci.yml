@@ -209,7 +209,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           set -euo pipefail
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
           gcl="$(go env GOPATH)/bin/golangci-lint"
           "$gcl" run
           "$gcl" run --build-tags=integration
@@ -640,15 +640,17 @@ jobs:
           sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null \
             || echo "no apparmor userns restriction here — nothing to relax"
 
-      # Ubuntu 24.04 ships Go 1.22 and go.mod needs 1.26, so fetch a toolchain.
-      # This leg takes latest stable rather than the go.mod floor the other jobs
-      # pin through setup-go: there is no setup-go inside WSL, and latest stable
-      # always satisfies the floor.
+      # Ubuntu 24.04 ships a Go older than go.mod asks for, so fetch a toolchain.
+      # There is no setup-go inside WSL, so this reads the version out of the same
+      # file setup-go reads it from on every other leg. Latest stable would also
+      # satisfy go.mod, and did until this pinned a toolchain rather than a floor:
+      # the day a new Go ships, that would put this one leg on a version no other
+      # job is running.
       - name: install Go
         shell: wsl-bash {0}
         run: |
           set -euo pipefail
-          ver="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1)"
+          ver="go$(awk '/^go [0-9]/ { print $2; exit }' go.mod)"
           curl -fsSL "https://go.dev/dl/${ver}.linux-amd64.tar.gz" | tar -C /usr/local -xz
           /usr/local/go/bin/go version
 
