@@ -82,8 +82,10 @@ build-ci-assets:
 
 ## build-ci-fc: the Firecracker artifacts the microVM smoke test needs — the
 ## pinned firecracker binary, a guest kernel extracted from Fedora's kernel-core,
-## and a base rootfs built from the CI image. Measured at ~1m35s cold and ~1 GB
-## on disk (459 MB packed), which is what makes caching them in CI worthwhile.
+## and a base rootfs built from the CI image. Measured at ~1m35s cold and ~676 MB
+## on disk (337 MB packed), which is what makes caching them in CI worthwhile.
+## `du --apparent-size` reports 33 GB instead: base-rootfs.ext4 is a sparse file,
+## which is why the CI job packs the cache with `tar --sparse`.
 ## Needs /dev/kvm writable and the FC host packages (see `cs-sandbox doctor
 ## --engine firecracker`). Set CS_SANDBOX_FC_CACHE to keep them out of the
 ## developer's real cache:
