@@ -156,9 +156,9 @@ RUN mkdir -p /var/run/sshd \
 #
 # 0.12 is a hard requirement of the config in image/rootfs/home/.config/nvim: nvim-treesitter's
 # `main` branch (the only maintained one) refuses to run on anything older.
-ARG NVIM_VERSION=0.12.4
-ARG NVIM_SHA256_X86_64=012bf3fcac5ade43914df3f174668bf64d05e049a4f032a388c027b1ebd78628
-ARG NVIM_SHA256_ARM64=ceb7e88c6b681f0515d135dcdfad54f5eb4373b25ce6172197cd9a69c758063f
+ARG NVIM_VERSION=0.12.5
+ARG NVIM_SHA256_X86_64=bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875
+ARG NVIM_SHA256_ARM64=1aa5ca085249580ae0f91eb14f27ec0919773ff2d99a163d03f3d6c21ac29725
 RUN case "$(uname -m)" in \
       x86_64|amd64)  arch=x86_64; want="$NVIM_SHA256_X86_64" ;; \
       arm64|aarch64) arch=arm64;  want="$NVIM_SHA256_ARM64" ;; \
@@ -187,26 +187,31 @@ RUN dnf install -y tree-sitter-cli && dnf clean all \
 # more Python/Node versions or global npm/pip packages, use `sudo`. Per-project work
 # (virtualenvs, node_modules) is unaffected — it lives in the user's repos.
 
-# Pyenv + Python 3.12.13 (PYENV_ROOT=/opt/pyenv)
-# 3.12 (not the newest 3.14) on purpose: it is the line the ecosystem actually runs — ~28% of
-# PyPI downloads vs ~12% for 3.13 and ~5% for 3.14 — so wheels and C extensions are most
-# likely to exist for it. `sudo pyenv install <ver>` adds another version alongside.
+# Pyenv + Python 3.14.7 (PYENV_ROOT=/opt/pyenv)
+# 3.14 is the current stable line. This image previously pinned 3.12 on the argument that it
+# was where the wheels were; two years on, 3.14 has the C-extension coverage that argument was
+# protecting against, and staying on a security-only line to buy compatibility that already
+# exists is the worse trade. A project that genuinely needs an older interpreter gets one with
+# `sudo pyenv install <ver>` and a `.python-version` in its repo — which is the whole reason
+# pyenv is here rather than a bare CPython.
 ENV PYENV_ROOT=/opt/pyenv
-RUN curl -fsSL https://pyenv.run | PYENV_GIT_TAG=v2.8.1 bash \
-  && PATH="$PYENV_ROOT/bin:$PATH" pyenv install -s 3.12.13 \
-  && PATH="$PYENV_ROOT/bin:$PATH" pyenv global 3.12.13 \
+RUN curl -fsSL https://pyenv.run | PYENV_GIT_TAG=v2.8.4 bash \
+  && PATH="$PYENV_ROOT/bin:$PATH" pyenv install -s 3.14.7 \
+  && PATH="$PYENV_ROOT/bin:$PATH" pyenv global 3.14.7 \
   && chmod -R a+rX "$PYENV_ROOT"
 
-# NVM + Node 24.18.1 (NVM_DIR=/opt/nvm): a general JS/TS runtime; npm -g lands in shared node.
-# 24.x is the Active LTS line ("Krypton", LTS since 2025-10, maintenance from 2026-10).
+# NVM + Node 24.19.0 (NVM_DIR=/opt/nvm): a general JS/TS runtime; npm -g lands in shared node.
+# 24.x is the Active LTS line ("Krypton", LTS since 2025-10, maintenance from 2026-10) — so
+# this line is worth re-evaluating in Oct 2026, when 24 goes to maintenance and 26 takes over
+# as Active LTS.
 # (The Claude Code & Codex agents are self-contained binaries under /opt, not npm packages.)
 ENV NVM_DIR=/opt/nvm
 RUN mkdir -p "$NVM_DIR" \
-  && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash \
-  && bash -c '. "$NVM_DIR/nvm.sh" && nvm install v24.18.1 && nvm alias default v24.18.1' \
+  && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.7/install.sh | bash \
+  && bash -c '. "$NVM_DIR/nvm.sh" && nvm install v24.19.0 && nvm alias default v24.19.0' \
   && chmod -R a+rX "$NVM_DIR"
 
-# Go 1.26.5 (GOROOT=/opt/go) — the upstream tarball, pinned and checksum-verified, replacing
+# Go 1.27.0 (GOROOT=/opt/go) — the upstream tarball, pinned and checksum-verified, replacing
 # Fedora's golang-bin. Go is a first-class runtime here, on the same footing as the pyenv and
 # nvm toolchains above rather than whatever `dnf update` last pulled in:
 #   * pinned + reproducible, and an unpatched upstream build (Fedora ships a patched
@@ -225,13 +230,15 @@ RUN mkdir -p "$NVM_DIR" \
 # in java-25-openjdk as its own dependency and /usr/bin/java resolved to THAT — so the image
 # shipped two JDKs, ran the one it never asked for, and floated on both. One pinned JDK on
 # PATH now, which is also what mason's `jdtls` language server runs on.
-# 25 is the current LTS line and is the version the image was already running (25.0.4).
+# 25 is the current LTS line. 25.0.4.1 is an out-of-band patch on top of 25.0.4, which is why
+# the version has four components and the build number restarts at 1 — the URL template below
+# takes both from the ARGs, so nothing else changes.
 # Checksums are Adoptium's published digests (https://api.adoptium.net/v3/assets/…);
 # bump JAVA_VERSION/JAVA_BUILD and both checksums together to upgrade.
-ARG JAVA_VERSION=25.0.4
-ARG JAVA_BUILD=7
-ARG JAVA_SHA256_X64=e58fcdcd637b25c03ca84cbbcefc70d11efb8f4b4cbd05decc9f661769d77f94
-ARG JAVA_SHA256_AARCH64=621f7196f0b682fb557da58bec89bd7dfe5419811fe1c0ba75c9cc8432f084c7
+ARG JAVA_VERSION=25.0.4.1
+ARG JAVA_BUILD=1
+ARG JAVA_SHA256_X64=dbb698396d478e7fa2b1e50f4103324b2a99b90569ee27c33f2261f9215cf41e
+ARG JAVA_SHA256_AARCH64=69df11a02cfa3ef7d7ca645e03edce6778ec090e100f6ae2b42097865730ac52
 RUN case "$(uname -m)" in \
       x86_64|amd64)  jarch=x64;     want="$JAVA_SHA256_X64" ;; \
       arm64|aarch64) jarch=aarch64; want="$JAVA_SHA256_AARCH64" ;; \
@@ -356,10 +363,12 @@ RUN GOBIN=/usr/local/bin GOTOOLCHAIN=local PATH=/opt/go/bin:$PATH \
 # pinned and reproducible (no background auto-update fighting the read-only tree). The binary IS
 # the full CLI — the launcher is only convenience + auto-update, neither of which we want here.
 # Bump CLAUDE_CODE_VERSION (or pass --build-arg) to upgrade; checksum is verified from the manifest.
-# This pin is ahead of the `stable` channel (2.1.212) on purpose: Opus 5 needs >= 2.1.219, below
-# which the `opus` alias resolves to Opus 4.8 and Opus 5 never appears. Held at the minimum that
-# satisfies that — 2.1.220 showed issues in use.
-ARG CLAUDE_CODE_VERSION=2.1.219
+# This pin tracks the `latest` channel rather than `stable` (2.1.231), so that the version in the
+# image is the same one the host drives sandboxes with — a sandbox whose agent is older than the
+# one that launched it is a confusing thing to debug. Two constraints on any bump:
+#   * >= 2.1.219. Below that the `opus` alias resolves to Opus 4.8 and Opus 5 never appears.
+#   * not 2.1.220, which showed issues in use.
+ARG CLAUDE_CODE_VERSION=2.1.245
 RUN base=https://downloads.claude.ai/claude-code-releases \
   && case "$(uname -m)" in x86_64|amd64) arch=x64 ;; arm64|aarch64) arch=arm64 ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
   && plat="linux-${arch}" \
@@ -391,7 +400,7 @@ RUN base=https://downloads.claude.ai/claude-code-releases \
 # --no-same-owner because the archive carries a build-machine uid: preserving it would leave the
 # agent binaries owned by whichever sandbox user happens to share that uid, and writable by them.
 # Bump CODEX_VERSION (or pass --build-arg) to upgrade.
-ARG CODEX_VERSION=0.148.0
+ARG CODEX_VERSION=0.149.1
 RUN case "$(uname -m)" in x86_64|amd64) tgt=x86_64-unknown-linux-musl ;; arm64|aarch64) tgt=aarch64-unknown-linux-musl ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
   && base="https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}" \
   && asset="codex-package-${tgt}.tar.gz" \
@@ -412,9 +421,9 @@ RUN case "$(uname -m)" in x86_64|amd64) tgt=x86_64-unknown-linux-musl ;; arm64|a
 # CLI tarballs (its minisign signatures cover only the desktop-app assets), so the digests below
 # were recorded from the release assets themselves; bumping OPENCODE_VERSION means re-recording
 # both. Its one external runtime dependency (ripgrep) is already installed from Fedora above.
-ARG OPENCODE_VERSION=1.18.10
-ARG OPENCODE_SHA256_X64=6b1113da704253fb4da12b41e4236acecb9f2b62949c945f6eeacaa15111b976
-ARG OPENCODE_SHA256_ARM64=41ae3041e91b894e4c0dc06a73a9a2796254bf390ffb99626a43af5e2912d170
+ARG OPENCODE_VERSION=1.18.22
+ARG OPENCODE_SHA256_X64=23eca6a892c6b53c0f9ba2333b6906bdc31902634631d54cf17500e7e8cbfa20
+ARG OPENCODE_SHA256_ARM64=7243e7a417d190efa1b7b0981dbf0d6c8aa78ba2fb0181ea23336fdbb51c5178
 RUN case "$(uname -m)" in \
        x86_64|amd64)  arch=x64;   want=$OPENCODE_SHA256_X64 ;; \
        arm64|aarch64) arch=arm64; want=$OPENCODE_SHA256_ARM64 ;; \
@@ -448,7 +457,7 @@ RUN python3 -m venv /opt/py-tools \
 # the agents (claude, codex, opencode), and the py-tools are found without sourcing ~/.bashrc.
 # (~/.bashrc additionally runs pyenv/nvm init for interactive version switching.)
 ENV JAVA_HOME=/opt/java
-ENV PATH=/opt/nvm/versions/node/v24.18.1/bin:/opt/py-tools/bin:/opt/claude/bin:/opt/codex/bin:/opt/opencode/bin:/opt/pyenv/bin:/opt/go/bin:/opt/java/bin:/opt/maven/bin:${PATH}
+ENV PATH=/opt/nvm/versions/node/v24.19.0/bin:/opt/py-tools/bin:/opt/claude/bin:/opt/codex/bin:/opt/opencode/bin:/opt/pyenv/bin:/opt/go/bin:/opt/java/bin:/opt/maven/bin:${PATH}
 
 # Repo context (entrypoint, home skeleton, vendored scripts). Deferred to here — after
 # the toolchain compiles — so edits to these files don't bust the expensive cache above.
