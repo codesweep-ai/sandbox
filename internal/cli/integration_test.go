@@ -598,12 +598,19 @@ func assertHostByName(t *testing.T, host hostenv.Host, name string, inGuest func
 	if !strings.Contains(string(data), "169.254.1.2 ") {
 		t.Errorf("host_hosts should pin the pasta host address; got:\n%s", data)
 	}
+	// The host's own name lands on whatever address the guest knows the host by,
+	// which is the seeded literal only where nothing published a better one.
 	hn := host.Names[0]
-	got := strings.TrimSpace(inGuest("getent ahosts " + hn + " | awk 'NR==1{print $1}'"))
-	if got != "169.254.1.2" {
-		t.Errorf("host name %q resolves to %q inside the sandbox, want 169.254.1.2", hn, got)
+	want := strings.TrimSpace(inGuest("getent ahosts " + engine.HostReachableName + " | awk 'NR==1{print $1}'"))
+	if want == "" {
+		t.Fatalf("the sandbox has no address for %s at all", engine.HostReachableName)
 	}
-	assertHostIsReachable(t, inGuest)
+	got := strings.TrimSpace(inGuest("getent ahosts " + hn + " | awk 'NR==1{print $1}'"))
+	if got != want {
+		t.Errorf("host name %q resolves to %q inside the sandbox, want %q, which is where %s points",
+			hn, got, want, engine.HostReachableName)
+	}
+	assertHostIsReachable(t, inGuest, engine.HostReachableName, hn)
 }
 
 // assertHostIsReachable serves one page on every address of this host and asks
@@ -612,7 +619,7 @@ func assertHostByName(t *testing.T, host hostenv.Host, name string, inGuest func
 // That name is what a loan's base URL is built from, so this is the check that
 // the address behind it is this machine rather than a gateway, a VM, or nothing
 // at all.
-func assertHostIsReachable(t *testing.T, inGuest func(sh string) string) {
+func assertHostIsReachable(t *testing.T, inGuest func(sh string) string, names ...string) {
 	t.Helper()
 	const page = "reached-the-host"
 	l, err := net.Listen("tcp", "0.0.0.0:0") // not loopback: the guest arrives on the ordinary side
@@ -626,10 +633,12 @@ func assertHostIsReachable(t *testing.T, inGuest func(sh string) string) {
 	t.Cleanup(func() { _ = srv.Close() })
 
 	_, port, _ := net.SplitHostPort(l.Addr().String())
-	url := "http://" + net.JoinHostPort(engine.HostReachableName, port) + "/"
-	if body := inGuest("curl -s --max-time 10 " + url); !strings.Contains(body, page) {
-		t.Errorf("the sandbox could not reach this host at %s, got %q\n%s", url, body,
-			inGuest("getent ahosts "+engine.HostReachableName+"; grep -i internal /etc/hosts"))
+	for _, n := range names {
+		url := "http://" + net.JoinHostPort(n, port) + "/"
+		if body := inGuest("curl -s --max-time 10 " + url); !strings.Contains(body, page) {
+			t.Errorf("the sandbox could not reach this host at %s, got %q\n%s", url, body,
+				inGuest("getent ahosts "+n+"; grep -iE 'internal|"+n+"' /etc/hosts"))
+		}
 	}
 }
 

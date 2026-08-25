@@ -3,14 +3,20 @@
   "title": "The host's own name resolves to the podman VM, not the host, on macOS",
   "type": "defect",
   "severity": "med",
-  "status": "open",
+  "status": "closed",
   "foundBy": "session agent, while fixing the lender's guest address (SBX CI, run 32792053483)",
   "opened": "2026-08-24",
-  "resolved": null,
-  "stint": null,
-  "evidence": { "commits": [], "integrated": [], "verified": null },
-  "resolution": null,
+  "resolved": "2026-08-25",
+  "stint": "2026-08-25 reaching the host from a sandbox",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": "go test -tags integration -run TestCLIHostByNameLive and TestCLIHostByNameFirecrackerLive: PASS. Both now serve a page on this host and fetch it from inside the sandbox by the host's own name and by host.containers.internal, rather than only resolving a name, which is the check whose absence let the address be wrong on macOS and on a pre-5.0 podman without anything failing."
+  },
+  "resolution": "The guest init takes the host's address from what the engine published rather than from the seed. podman writes host.containers.internal into /etc/hosts with the address that reaches its own host, whichever of pasta, slirp4netns or a machine VM it is running, so the entrypoint reads that entry and re-points the seeded host names at it. The seeded literal remains the fallback for a guest nothing published a name to, which is the microVM, where it is right because that engine is Linux and KVM only.",
   "details": "R52 pins the host's own names to the literal 169.254.1.2 in the seed's host_hosts. That address is the host only on a Linux box running podman itself with pasta. An older podman maps the host at slirp4netns' own address, and under a podman machine the literal is the VM rather than the Mac. So `ssh <your-hostname>` or `curl <your-hostname>:PORT` from a sandbox reaches the wrong machine on macOS and on a pre-5.0 podman, while R109 claims macOS parity.\n\nThis is the same defect R52a already fixed for the lender, which now points a sandbox at host.containers.internal and lets podman supply the address. The host's own names were left on the literal.\n\nIt is invisible to CI: TestCLIHostByNameLive and TestCLIHostByNameFirecrackerLive are integration-tier and run on Linux only. The smoke tier reached this class of bug only when TestCLILendKeyLive first opened a connection to the host rather than resolving a name.\n\nThe fix that needs no host-side platform detection: have the guest init resolve host.containers.internal at boot and pin the host's names to whatever that gives, falling back to the seeded literal when the engine published no such name (the microVM guest, where the seed pins it already).",
   "notes": [],
-  "links": ["SBX-026"]
+  "links": [
+    "SBX-026"
+  ]
 }

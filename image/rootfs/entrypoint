@@ -20,8 +20,16 @@ PORT="${CS_SANDBOX_SSH_PORT:-22}"
 # into /etc/hosts (NSS consults files before DNS, so it wins over the host's LAN/Tailscale
 # answer, which isn't routable from here). podman regenerates /etc/hosts each start, so append
 # idempotently. Guest-only — the host's /etc/hosts is never touched.
+#
+# The seed carries an address that is the host only where podman runs natively with pasta: an
+# older podman maps the host at slirp4netns' own address, and under a podman machine that literal
+# is the VM rather than the machine outside it. podman itself publishes host.containers.internal
+# with the right one, so take the address from there and keep the seeded literal only when nothing
+# published a better one (the microVM guest, where the seed pins the name itself).
 if [ -f "$SEED/host_hosts" ]; then
   _hh="$(cat "$SEED/host_hosts")"
+  _hip="$(awk '{for (i = 2; i <= NF; i++) if ($i == "host.containers.internal") { print $1; exit }}' /etc/hosts)"
+  [ -n "$_hip" ] && _hh="$_hip ${_hh#* }"
   grep -qxF "$_hh" /etc/hosts 2>/dev/null || echo "$_hh" >> /etc/hosts
 fi
 

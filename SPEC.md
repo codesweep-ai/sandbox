@@ -328,7 +328,8 @@ nothing inside the group.
 ### 6.3 Reaching the host from inside a sandbox
 
 **R52.** `cs-sandbox` **MUST** map the host's own names to the pasta host address `169.254.1.2` in the
-seed's `host_hosts`, and the guest init **MUST** append them to `/etc/hosts`.
+seed's `host_hosts`, and the guest init **MUST** append them to `/etc/hosts`. Where the engine
+published an address for the host itself, the guest init **MUST** use that one instead.
 
 **R52a.** A sandbox **MUST** reach a service on the host by the name `host.containers.internal`.
 Anything this tool points a sandbox at on the host **MUST** use that name rather than an address.
@@ -341,8 +342,8 @@ the rootless NAT. The pasta address is the same one Podman exposes as `host.cont
 and Firecracker taps reach it too, because they share the one rootless network namespace. NSS
 checks `files` before DNS, so the pinned mapping beats the unroutable name.
 
-R52a is there because `169.254.1.2` is only the host on a Linux box running podman itself with
-pasta. An older podman maps the host at slirp4netns' own address, and under a podman machine the
+R52 and R52a are there because `169.254.1.2` is only the host on a Linux box running podman itself
+with pasta. An older podman maps the host at slirp4netns' own address, and under a podman machine the
 literal is the VM rather than the Mac the tool runs on. Podman publishes the name with the right
 address in all three, so asking by name is asking podman where its host is. The microVM engine has
 no podman inside the guest to publish anything, so the seed pins the name there, which holds because
@@ -1252,7 +1253,6 @@ spend a loan while that sandbox exists, though it cannot learn what the loan sta
   stays a flag.
 - **No agent orchestration.** The remote agent tools start a session on another sandbox and hand
   back its output. Deciding what to run is the caller's job.
-- **No `cs-sandbox` inside a sandbox.** Peers are reached with `ssh` and commits with `git`.
 - **No image inside git.** The image is built, never committed.
 
 ## 16. Conformance and testing
