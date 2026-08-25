@@ -167,6 +167,60 @@ func TestCLILendKeyLive(t *testing.T) {
 	}
 }
 
+// TestCLILendKeyFirecrackerLive: the same loan, spent from a microVM.
+//
+// Worth its own member because the two engines reach the host by different
+// routes. A container is handed the host's name by podman; a microVM guest gets
+// only what the seed pins, and its traffic leaves over a tap rather than out of
+// a container. Nothing else in the profile spends a credential from a microVM,
+// so without this the engine that boots its own kernel is the one engine lending
+// is never proven on.
+func TestCLILendKeyFirecrackerLive(t *testing.T) {
+	_, host := liveSetup(t)
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		t.Skipf("/dev/kvm unavailable: %v", err)
+	}
+	if !fileExists(filepath.Join(paths.FCCache(), "vmlinux.elf")) {
+		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
+	}
+	// Before startLender: the lender reads its loan records from the instances
+	// root, and this moves that root.
+	fcInstancesDir(t, host)
+	home := lendingHost(t)
+	upstream, seen := standInProvider(t)
+	startLender(t, home, upstream)
+
+	name := boxName("lendkeyfc")
+	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
+	step(t, "booting firecracker microVM %s (takes ~30s)…", name)
+	out, err := execRoot(t, "create", name, "--engine", "firecracker", "--lend-api-key", "anthropic")
+	if err != nil {
+		t.Fatalf("create firecracker: %v (out=%q)", err, out)
+	}
+	if !strings.Contains(out, "lent: anthropic") {
+		t.Errorf("create should report the loan:\n%s", out)
+	}
+
+	token := strings.TrimSpace(sshCapture(t, host, name, `printf %s "$ANTHROPIC_API_KEY"`))
+	if !strings.HasPrefix(token, lend.TokenPrefix) {
+		t.Fatalf("the microVM holds %q, want a loan token", token)
+	}
+	if strings.Contains(token, "REAL-HOST-KEY") {
+		t.Fatal("the real key reached the microVM")
+	}
+
+	body := sshCapture(t, host, name,
+		`curl -s --max-time 10 -X POST "$ANTHROPIC_BASE_URL/v1/messages" -H "x-api-key: $ANTHROPIC_API_KEY" -d '{}'`)
+	if !strings.Contains(body, "stand_in") {
+		t.Fatalf("the call did not reach the provider through the lender: %q\n%s", body,
+			sshCapture(t, host, name, "getent ahosts "+engine.HostReachableName+"; grep -i internal /etc/hosts"))
+	}
+	if got, _, calls := seen.snapshot(); calls == 0 || got.Get("X-Api-Key") != "REAL-HOST-KEY" {
+		t.Errorf("provider saw x-api-key %q after %d call(s), want the host's real key",
+			got.Get("X-Api-Key"), calls)
+	}
+}
+
 // hostReachability reports how the sandbox resolves the host, for a failure
 // whose cause is which address this engine published rather than anything about
 // the loan.

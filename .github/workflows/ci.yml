@@ -11,7 +11,12 @@
 #
 # Which hosts can do what was measured, not assumed:
 #
-#   ubuntu-latest    podman 4.9.3 rootless. Live tests run.
+#   ubuntu-latest    rootless podman from the runner image. Live tests run. The
+#                    version moves with that image and is printed by the job
+#                    rather than pinned here, because it is not cosmetic: which
+#                    podman a host runs decides how a sandbox reaches the host
+#                    (SPEC R52a), and this comment claimed 4.9.3 long after the
+#                    runner had moved on.
 #   windows/WSL2     podman inside the distro. Live tests run.
 #   macos-15-intel   podman 5.8.5 + applehv (kern.hv_support=1). Live tests run.
 #                    Homebrew has no x86_64 bottle, so podman comes from the
@@ -449,6 +454,7 @@ jobs:
       - name: load the image
         run: |
           set -euo pipefail
+          podman --version
           podman load -i bin/cs-sandbox-ci.tar
           podman image exists "$CS_SANDBOX_IMAGE"
 
@@ -516,7 +522,7 @@ jobs:
           tar -C bin/fc-cache -xzf bin/fc-artifacts.tar.gz
           ls -1 bin/fc-cache
 
-      # Two members, and this is the only leg with a /dev/kvm to run them:
+      # Three members, and this is the only leg with a /dev/kvm to run them:
       # TestFirecrackerCreateLive is the cheapest proof that a microVM boots, gets
       # its disks, answers ssh as the dev user over the vsock bridge, and registers
       # with the fabric's DNS. TestCLINestedSandboxInVMLive then goes two layers
@@ -525,9 +531,13 @@ jobs:
       # sandbox — which is what covers the guest's nested podman (rootless engine,
       # newuidmap caps, /dev/net/tun) and the nested engine a sandbox gets under a
       # hypervisor. It ships the images into the guest, so it needs the
-      # slim CI image this job already loads.
+      # slim CI image this job already loads. TestCLILendKeyFirecrackerLive spends
+      # a loan from inside a microVM: the podman jobs prove lending over a
+      # container's route to the host, which is not the route a tap takes, and the
+      # guest's own address for the host comes off the seed rather than from
+      # podman.
       - name: smoke (firecracker)
-        run: make test-smoke SMOKE_TESTS="TestFirecrackerCreateLive TestCLINestedSandboxInVMLive"
+        run: make test-smoke SMOKE_TESTS="TestFirecrackerCreateLive TestCLINestedSandboxInVMLive TestCLILendKeyFirecrackerLive"
 
       - name: keep this job's coverage
         uses: actions/upload-artifact@v7
