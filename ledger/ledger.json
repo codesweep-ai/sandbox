@@ -3,5 +3,5 @@
   "idPrefix": "SBX",
   "schemaVersion": "issue.v1",
   "staleAfterDays": 14,
-  "toolVersion": "0.3.2"
+  "toolVersion": "0.3.3"
 }
