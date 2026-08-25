@@ -1274,7 +1274,7 @@ The **smoke profile** (`make test-smoke`) is not a third tier. It is the subset 
 tier that CI runs on every host, against a slimmed image. Keep it short.
 
 That image is `cs-sandbox build --slim`, derived from the shipped Containerfile rather than written
-twice. It drops the developer toolchains, which is most of the 9.3 GB and nearly all of the build
+twice. It drops the developer toolchains, which is most of the 6.04 GB and nearly all of the build
 time. `--with-agents` keeps the three agent CLIs, for a suite whose tests drive one inside the
 sandbox. A downloaded binary can build either, so a consumer needs no checkout of this repository.
 

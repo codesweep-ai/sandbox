@@ -4,9 +4,9 @@
 # The live tests need a sandbox that BOOTS: sshd, the dev user the entrypoint
 # creates at first boot, sudo, git, python3, nested podman, and the /sandbox
 # rootfs. They need none of the toolchains a developer's sandbox exists to
-# provide — and those are ~7 GB of the 9.29 GB image and nearly all of its build
+# provide — and those are ~5 GB of the 6.04 GB image and nearly all of its build
 # time (pyenv alone compiles CPython from source; the Neovim layer pre-installs
-# ~1 GB of language servers). Slimmed, the image is 2.29 GB and builds in about
+# ~900 MB of language servers). Slimmed, the image is 474 MB and builds in about
 # three minutes, which is what makes running the live tests in CI affordable.
 #
 # This DERIVES that image from the real Containerfile rather than duplicating it
@@ -34,10 +34,10 @@ test -f "$src" || { echo "ci-slim: no Containerfile at $src" >&2; exit 1; }
 # and its readback asks `command -v <cli>` inside every member before anything
 # else runs. Without the binaries that check fails and the run stops there.
 #
-# Measured: 693 MB without them, 2.22 GB with. The three binaries are ~730 MB
-# and the `chmod -R a+rX /opt` layer duplicates them, which is where the rest
-# goes. Against 9.3 GB for the real image that is still small enough to build on
-# a hosted runner, which is the whole point of this script.
+# Measured: 474 MB without them, 1.38 GB with — the three trees under /opt are
+# 858 MB of that, and nothing duplicates them any more now that each install
+# stanza chmods in its own layer. Against 6.04 GB for the real image that is
+# still small enough to build on a hosted runner, which is the point here.
 keep_agents=0
 case "${CI_SLIM_KEEP_AGENTS:-0}" in
   1|true|yes|on) keep_agents=1 ;;

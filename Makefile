@@ -57,7 +57,7 @@ build-go:
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN) $(PKG)
 
 ## build-ci-image: the slimmed sandbox image the smoke profile's live tests run
-## against in CI — 693 MB and ~70 seconds, against 9.3 GB and tens of minutes for
+## against in CI — 474 MB and ~70 seconds, against 6.04 GB and tens of minutes for
 ## the real one, which is what makes booting real sandboxes in CI affordable.
 ## Derived from the real Containerfile, never a second copy of it: see
 ## image/ci-slim.sh. Use it locally the same way CI does:
@@ -171,7 +171,7 @@ SMOKE_RUN := $(subst $(space),|,$(strip $(SMOKE_TESTS)))
 ## everything looks exactly like a run that passed.
 ## The image defaults to the slim one this profile is built around. Overriding it
 ## is honoured, but a bare `make test-smoke` should not silently spend minutes
-## seeding the 9 GB image into a store disk for the microVM member.
+## seeding the 6 GB image into a store disk for the microVM member.
 ##
 ## -timeout stays under the 25 minutes the smoke-firecracker job allows, so that
 ## when a member wedges it is Go that ends the run. Go names the test and prints

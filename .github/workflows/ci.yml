@@ -5,7 +5,7 @@
 # a separate suite. Where an engine is present it boots REAL sandboxes: create,
 # exec, destroy, ls, two sandboxes resolving each other by name, a port forward
 # end to end. That is affordable because the image those tests run against is a
-# slimmed derivation of the real Containerfile — 693 MB instead of 9.3 GB — built
+# slimmed derivation of the real Containerfile — 474 MB instead of 6.04 GB — built
 # once here, alongside the Firecracker artifacts derived from it, and shared to
 # every job that needs them.
 #
