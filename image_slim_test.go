@@ -140,3 +140,75 @@ func TestCISlimKeepsWhatASandboxBootsWith(t *testing.T) {
 		}
 	}
 }
+
+// optRoots are the shared toolchain trees under /opt, each installed by one
+// stanza of the Containerfile.
+var optRoots = []string{
+	"/opt/pyenv", "/opt/nvm", "/opt/java", "/opt/maven", "/opt/go",
+	"/opt/claude", "/opt/codex", "/opt/opencode", "/opt/py-tools", "/opt/nvim",
+}
+
+// stanzas splits a Containerfile on blank lines and strips comment-only lines.
+// Blank-line-separated blocks are how the Containerfile is already written (and
+// how ci-slim.sh reads it), so a stanza is one install and the ARG/ENV lines
+// that configure it. Comments go because they mention paths their stanza never
+// writes, which would make the "first stanza naming this tree" test below pick
+// the wrong block.
+func stanzas(src string) []string {
+	var out []string
+	for _, block := range strings.Split(src, "\n\n") {
+		var kept []string
+		for _, line := range strings.Split(block, "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+				kept = append(kept, line)
+			}
+		}
+		if s := strings.TrimSpace(strings.Join(kept, "\n")); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// TestOptStanzasChmodInLayer: every /opt toolchain is made world-readable by the
+// same stanza that installs it, and nothing chmods /opt as a whole afterwards.
+//
+// This is a size guard, not a correctness one — the permissions are identical
+// either way. `RUN chmod -R a+rX /opt` as its own stanza cost 1.9 GB of the 9.2
+// GB image: chmod writes every inode it touches, overlayfs copies up every file
+// written in a layer, so a whole-tree chmod after the installs duplicates all of
+// /opt into a layer that adds no content. Doing it inside each install layer is
+// free, and it is the kind of thing that gets "helpfully" re-added.
+func TestOptStanzasChmodInLayer(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("image", "Containerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := stanzas(string(src))
+
+	for _, b := range blocks {
+		if strings.Contains(b, "chmod -R a+rX /opt\n") || strings.HasSuffix(b, "chmod -R a+rX /opt") {
+			t.Error("a whole-tree `chmod -R a+rX /opt` stanza is back; it duplicates ~1.9 GB of /opt " +
+				"into a layer that adds no content. chmod inside each install stanza instead")
+		}
+	}
+
+	for _, root := range optRoots {
+		var found bool
+		for _, b := range blocks {
+			if !strings.Contains(b, root) {
+				continue
+			}
+			found = true
+			// The first stanza that names the tree is the one that installs it.
+			if !strings.Contains(b, "chmod -R a+rX") {
+				t.Errorf("the stanza installing %s does not chmod it in the same layer; "+
+					"without that it is unreadable to non-root users in the sandbox", root)
+			}
+			break
+		}
+		if !found {
+			t.Errorf("no stanza installs %s — drop it from optRoots if the toolchain is gone", root)
+		}
+	}
+}

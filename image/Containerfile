@@ -9,11 +9,30 @@ FROM registry.fedoraproject.org/fedora:44
 # Make dnf resilient to slow/flaky mirrors: drop any mirror that can't sustain ~100 KiB/s
 # for 20s and fail over to the next, with parallel downloads + extra retries. First step so
 # it governs every later dnf invocation.
+#
+# install_weak_deps=False is here for the same reason — one setting, every later dnf. Fedora's
+# Recommends are sized for a desktop, and three of them cost ~380 MB in a sandbox that can use
+# none of them:
+#   qemu-user-static     ~171 MB across 18 per-arch emulators. Recommended by
+#                        containers-common-extra, which podman and buildah require outright, so
+#                        it arrives with the container tooling and is only ever used to `podman
+#                        build` for a foreign architecture. `sudo dnf install qemu-user-static`
+#                        inside a sandbox brings it back for the session that wants it.
+#   mesa-vulkan-drivers  ~169 MB, recommended by mesa-libGL/EGL, which Chromium requires.
+#                        Chromium here is headless and renders through SwiftShader; it never
+#                        opens a Vulkan device. (mesa-dri-drivers is a HARD dep of libGL and
+#                        stays, and it drags llvm-libs with it — that ~190 MB only leaves if
+#                        Chromium does.)
+#   intel-*              ~36 MB of Intel GPU video-encode runtime, recommended by the same
+#                        stack, for hardware a container is not talking to.
+# A dropped Recommends is still installable by name, which is what makes this safe to set
+# globally rather than per-package.
 RUN printf '%s\n' \
       'max_parallel_downloads=10' \
       'minrate=102400' \
       'timeout=20' \
       'retries=15' \
+      'install_weak_deps=False' \
     >> /etc/dnf/dnf.conf
 
 # Install Fedora packages
@@ -155,9 +174,10 @@ RUN case "$(uname -m)" in \
 
 # tree-sitter CLI: a hard requirement of nvim-treesitter's `main` branch, which uses it to
 # install/update parsers (`:TSInstall`, `:TSUpdate`, and the parser pre-build below).
-# --setopt=install_weak_deps=False: its Recommends pull in a second, unwanted Node
-# (gcc is already installed, and the shared /opt/nvm Node is on PATH for `tree-sitter generate`).
-RUN dnf install -y --setopt=install_weak_deps=False tree-sitter-cli && dnf clean all \
+# Its Recommends pull in a second, unwanted Node (gcc is already installed, and the shared
+# /opt/nvm Node is on PATH for `tree-sitter generate`) — now covered by the global
+# install_weak_deps=False in dnf.conf, which this stanza used to set on its own.
+RUN dnf install -y tree-sitter-cli && dnf clean all \
   && tree-sitter --version
 
 # --- Toolchains under /opt (shared, root-owned, path-independent) ---------------
@@ -174,7 +194,8 @@ RUN dnf install -y --setopt=install_weak_deps=False tree-sitter-cli && dnf clean
 ENV PYENV_ROOT=/opt/pyenv
 RUN curl -fsSL https://pyenv.run | PYENV_GIT_TAG=v2.8.1 bash \
   && PATH="$PYENV_ROOT/bin:$PATH" pyenv install -s 3.12.13 \
-  && PATH="$PYENV_ROOT/bin:$PATH" pyenv global 3.12.13
+  && PATH="$PYENV_ROOT/bin:$PATH" pyenv global 3.12.13 \
+  && chmod -R a+rX "$PYENV_ROOT"
 
 # NVM + Node 24.18.1 (NVM_DIR=/opt/nvm): a general JS/TS runtime; npm -g lands in shared node.
 # 24.x is the Active LTS line ("Krypton", LTS since 2025-10, maintenance from 2026-10).
@@ -182,7 +203,8 @@ RUN curl -fsSL https://pyenv.run | PYENV_GIT_TAG=v2.8.1 bash \
 ENV NVM_DIR=/opt/nvm
 RUN mkdir -p "$NVM_DIR" \
   && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash \
-  && bash -c '. "$NVM_DIR/nvm.sh" && nvm install v24.18.1 && nvm alias default v24.18.1'
+  && bash -c '. "$NVM_DIR/nvm.sh" && nvm install v24.18.1 && nvm alias default v24.18.1' \
+  && chmod -R a+rX "$NVM_DIR"
 
 # Go 1.26.5 (GOROOT=/opt/go) — the upstream tarball, pinned and checksum-verified, replacing
 # Fedora's golang-bin. Go is a first-class runtime here, on the same footing as the pyenv and
@@ -222,6 +244,7 @@ RUN case "$(uname -m)" in \
   && mkdir -p /opt/java \
   && tar -xzf /tmp/jdk.tar.gz -C /opt/java --strip-components=1 --no-same-owner \
   && rm -f /tmp/jdk.tar.gz \
+  && chmod -R a+rX /opt/java \
   && /opt/java/bin/java -version 2>&1 | head -1
 # (java -version writes to stderr, which `podman build -q` does NOT suppress — the 2>&1
 #  keeps this sanity check out of a quiet build's console.)
@@ -236,6 +259,7 @@ RUN curl -fsSL -o /tmp/maven.tar.gz \
   && mkdir -p /opt/maven \
   && tar -xzf /tmp/maven.tar.gz -C /opt/maven --strip-components=1 --no-same-owner \
   && rm -f /tmp/maven.tar.gz \
+  && chmod -R a+rX /opt/maven \
   && JAVA_HOME=/opt/java /opt/maven/bin/mvn --version | head -1
 
 ARG GO_VERSION=1.27.0
@@ -251,6 +275,7 @@ RUN case "$(uname -m)" in \
   && { [ "$want" = "$got" ] || { echo "go checksum mismatch: want=$want got=$got" >&2; exit 1; }; } \
   && tar -xzf /tmp/go.tar.gz -C /opt --no-same-owner \
   && rm -f /tmp/go.tar.gz \
+  && chmod -R a+rX /opt/go \
   && /opt/go/bin/go version
 
 # The codesweep tools. cs-sandbox is here because a sandbox is a place to work FROM, and some of
@@ -344,6 +369,7 @@ RUN base=https://downloads.claude.ai/claude-code-releases \
   && got=$(sha256sum /opt/claude/bin/claude | cut -d' ' -f1) \
   && { [ "$want" = "$got" ] || { echo "claude checksum mismatch: want=$want got=$got" >&2; exit 1; }; } \
   && chmod +x /opt/claude/bin/claude \
+  && chmod -R a+rX /opt/claude \
   && /opt/claude/bin/claude --version
 
 # Claude Code's install-health check expects a "native"/npm install at ~/.local/bin or in
@@ -378,6 +404,7 @@ RUN case "$(uname -m)" in x86_64|amd64) tgt=x86_64-unknown-linux-musl ;; arm64|a
   && chmod 0755 /opt/codex/bin/codex /opt/codex/bin/codex-code-mode-host /opt/codex/codex-path/rg \
   && { [ ! -f /opt/codex/codex-resources/bwrap ] || chmod 0755 /opt/codex/codex-resources/bwrap; } \
   && rm -rf /tmp/codex-dl \
+  && chmod -R a+rX /opt/codex \
   && /opt/codex/bin/codex --version
 
 # OpenCode (anomalyco/opencode) — a single bun-compiled binary, installed into read-only /opt on
@@ -400,16 +427,22 @@ RUN case "$(uname -m)" in \
   && tar -xzf "/tmp/opencode-dl/$asset" -C /opt/opencode/bin --no-same-owner \
   && chmod 0755 /opt/opencode/bin/opencode \
   && rm -rf /tmp/opencode-dl \
+  && chmod -R a+rX /opt/opencode \
   && /opt/opencode/bin/opencode --version
 
 # Python CLI tools in an isolated, root-owned venv
 # --disable-pip-version-check: pip's "a new release of pip is available" notice goes to
 # stderr, which `podman build -q` does not suppress, so it would show up in a quiet build.
 RUN python3 -m venv /opt/py-tools \
-  && /opt/py-tools/bin/pip install --no-cache-dir --disable-pip-version-check claude-code-transcripts
+  && /opt/py-tools/bin/pip install --no-cache-dir --disable-pip-version-check claude-code-transcripts \
+  && chmod -R a+rX /opt/py-tools
 
-# Everything under /opt readable/traversable by every runtime user
-RUN chmod -R a+rX /opt
+# Note: there is deliberately no `RUN chmod -R a+rX /opt` here. Each stanza above chmods the
+# tree it just installed, in the same layer. A separate chmod pass costs 1.9 GB: chmod writes
+# every inode, overlayfs copies up every file it writes, and the result is a second, complete
+# copy of /opt in the image — identical bytes, no new content. Doing it in-layer is free.
+# A new toolchain under /opt therefore has to end with its own `chmod -R a+rX`; the
+# image_slim_test guards that (TestOptStanzasChmodInLayer).
 
 # Toolchains on PATH for ALL shells (incl. non-interactive `ssh cs-sandbox-x <cmd>`), so node,
 # the agents (claude, codex, opencode), and the py-tools are found without sourcing ~/.bashrc.

@@ -14,7 +14,6 @@
 -- language servers, by nvim-lspconfig name
 local servers = {
   "html",
-  "cssls",
   "tailwindcss",
   "svelte",
   "lua_ls",
@@ -39,10 +38,23 @@ local tools = {
   "eslint_d",
 }
 
+-- Servers that ride along inside another package's install, and are therefore NOT in
+-- `servers` above — nothing installs them, and they are enabled by hand below.
+--
+-- Mason's `html-lsp` and `css-lsp` are two registry entries for ONE npm package,
+-- vscode-langservers-extracted, whose bin/ ships the html, css, json, eslint and
+-- markdown servers together. Asking for both installs 94 MB of identical bytes twice.
+-- So only `html` is installed, and `cssls` is pointed at the css server that install
+-- already put on disk. Everything else about it — filetypes, root markers, settings —
+-- still comes from nvim-lspconfig's own `lsp/cssls.lua`; only `cmd` is overridden.
+local shared_servers = {
+  cssls = { package = "html-lsp", bin = "vscode-css-language-server" },
+}
+
 -- Where the packages live.
 --
 -- Mason bakes the absolute install path into the `bin/` wrappers (and into the venv it
--- builds for basedpyright), so these ~1 GB of servers cannot be pre-installed into the
+-- builds for basedpyright), so these ~900 MB of servers cannot be pre-installed into the
 -- home skeleton and then copied to a developer's home — the wrappers would still point
 -- at the build-time path. They are therefore installed into /opt like the sandbox's
 -- other heavy toolchains: one shared, root-owned, path-stable copy that is never
@@ -57,6 +69,11 @@ if not mason_root or mason_root == "" then
   mason_root = (vim.fn.isdirectory(shared_root) == 1) and shared_root or (vim.fn.stdpath("data") .. "/mason")
 end
 local writable = vim.uv.fs_access(mason_root, "W") or false
+
+-- Where a ride-along server's binary lands: npm's .bin/ inside its host package.
+local function shared_exe(ride)
+  return table.concat({ mason_root, "packages", ride.package, "node_modules", ".bin", ride.bin }, "/")
+end
 
 return {
   "mason-org/mason.nvim",
@@ -105,6 +122,39 @@ return {
       automatic_enable = servers,
     })
 
+    -- The ride-alongs, which automatic_enable above cannot see because they are not in
+    -- `servers`. Same rule as automatic_enable: only enable what is actually on disk,
+    -- so a missing one stays quiet instead of failing to spawn on every buffer.
+    local function enable_shared(name, ride)
+      local exe = shared_exe(ride)
+      if not vim.uv.fs_stat(exe) then
+        return false
+      end
+      vim.lsp.config(name, { cmd = { exe, "--stdio" } })
+      vim.lsp.enable(name)
+      return true
+    end
+
+    local pending = {}
+    for name, ride in pairs(shared_servers) do
+      if not enable_shared(name, ride) then
+        pending[name] = ride
+      end
+    end
+    -- The shipped image pre-installs everything, so the loop above is enough there. A
+    -- private, writable MASON_ROOT installs on startup instead, and the host package is
+    -- not on disk yet when this runs — pick the server up when that install finishes.
+    if next(pending) ~= nil then
+      vim.api.nvim_create_autocmd("User", {
+        pattern = "MasonToolsUpdateCompleted",
+        callback = function()
+          for name, ride in pairs(pending) do
+            enable_shared(name, ride)
+          end
+        end,
+      })
+    end
+
     mason_tool_installer.setup({
       -- server names are translated to mason package names via mason-lspconfig
       ensure_installed = vim.list_extend(vim.list_extend({}, servers), tools),
@@ -141,6 +191,15 @@ return {
       for _, name in ipairs(vim.list_extend(vim.list_extend({}, servers), tools)) do
         if not installed[name] then
           table.insert(missing, name)
+        end
+      end
+      -- A ride-along is not a package, so the check above cannot see it. Verify the
+      -- binary itself: if upstream ever stops shipping the css server inside
+      -- vscode-langservers-extracted, the image build fails here rather than producing
+      -- a sandbox where `cssls` silently never attaches.
+      for name, ride in pairs(shared_servers) do
+        if not vim.uv.fs_stat(shared_exe(ride)) then
+          table.insert(missing, name .. " (expected in " .. ride.package .. ")")
         end
       end
       if #missing > 0 then
