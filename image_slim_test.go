@@ -156,9 +156,9 @@ var optRoots = []string{
 // the wrong block.
 func stanzas(src string) []string {
 	var out []string
-	for _, block := range strings.Split(src, "\n\n") {
+	for block := range strings.SplitSeq(src, "\n\n") {
 		var kept []string
-		for _, line := range strings.Split(block, "\n") {
+		for line := range strings.SplitSeq(block, "\n") {
 			if !strings.HasPrefix(strings.TrimSpace(line), "#") {
 				kept = append(kept, line)
 			}
