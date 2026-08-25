@@ -210,7 +210,7 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 	dnsPrimary := dnsmasqIP(gw)
 
 	// Build the trust seed (authorized_keys, tier key, ssh_config, host keys, …).
-	agentLogins, err := d.writeSeed(ctx, seedDir, s, gw)
+	agentLogins, err := d.writeSeed(ctx, seedDir, s, gw, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -460,15 +460,32 @@ func dnsmasqIP(gw string) string {
 // for it: the credential lender's base URL is this address and its port.
 const HostReachableIP = "169.254.1.2"
 
+// HostReachableName is the name a guest uses for the host, and the one a
+// sandbox is pointed at for a service the host runs for it.
+//
+// A name rather than HostReachableIP, because that literal is only the host on
+// a Linux box running podman itself with pasta. Where podman is older the
+// rootless mapping is slirp4netns' own address, and on macOS podman runs in a
+// machine VM, where the literal is the VM rather than the Mac the lender runs
+// on. Podman resolves this name correctly in all three, so asking for it by
+// name is asking podman which address its own host is at.
+//
+// Podman writes the entry itself. The microVM engine has no podman inside it to
+// do that, so the seed pins the name there (hostHostsLine), which is sound
+// because that engine is Linux and KVM only.
+const HostReachableName = "host.containers.internal"
+
 // hostHostsLine builds the "<ip> <name…>" line that pins the host's own
 // name(s) to HostReachableIP in the guest's /etc/hosts, so `ssh <hostname>` /
-// `curl <hostname>:PORT` from a sandbox reach the host. Returns "" when the host
-// exposes no usable name.
-func hostHostsLine(names []string) string {
-	if len(names) == 0 {
+// `curl <hostname>:PORT` from a sandbox reach the host. aliases are extra names
+// for the same address, for an engine that publishes none of its own. Returns
+// "" when there is nothing to pin.
+func hostHostsLine(names, aliases []string) string {
+	all := append(append([]string{}, names...), aliases...)
+	if len(all) == 0 {
 		return ""
 	}
-	return HostReachableIP + " " + strings.Join(names, " ")
+	return HostReachableIP + " " + strings.Join(all, " ")
 }
 
 // envFilePath returns the seed's inject-env path when there is injected env to
@@ -482,7 +499,10 @@ func envFilePath(seedDir, block string) string {
 }
 
 // writeSeed resolves seed inputs from the host + spec and materializes the seed.
-func (d Deps) writeSeed(ctx context.Context, seedDir string, s CreateSpec, gw string) ([]string, error) {
+//
+// hostAliases are extra names to pin to the host's address, for an engine whose
+// guest gets no /etc/hosts of its own.
+func (d Deps) writeSeed(ctx context.Context, seedDir string, s CreateSpec, gw string, hostAliases []string) ([]string, error) {
 	hostPubs, _ := d.Host.PubKeys()
 	userPub, _ := os.ReadFile(filepath.Join(d.TierDir, seed.TierUserKey+".pub"))
 	agentPub, _ := os.ReadFile(filepath.Join(d.TierDir, seed.TierAgentKey+".pub"))
@@ -492,7 +512,7 @@ func (d Deps) writeSeed(ctx context.Context, seedDir string, s CreateSpec, gw st
 		Type: typ, Solo: s.Solo,
 		HostPubs: hostPubs, UserTierPub: string(userPub), AgentTierPub: string(agentPub),
 		TierName: tierName, FabricGW: gw, InjectedEnv: s.InjectedEnv,
-		HostHosts: hostHostsLine(d.Host.Names),
+		HostHosts: hostHostsLine(d.Host.Names, hostAliases),
 	}
 	if tierName != "" {
 		in.TierPrivPath = filepath.Join(d.TierDir, tierName)

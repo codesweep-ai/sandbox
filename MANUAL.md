@@ -394,7 +394,7 @@ failing with a message saying so. Run `cs-claude` once on the host to renew it.
 on the way to the lender, so a session can be recorded and replayed later.
 
 ```bash
-cs-sandbox create feature --lend-agent-login claude --cassette build-auth --vcr 169.254.1.2:8080
+cs-sandbox create feature --lend-agent-login claude --cassette build-auth --vcr host.containers.internal:8080
 ```
 
 `create` prints the configuration that cs-vcr needs, with this host's own addresses filled in. Two

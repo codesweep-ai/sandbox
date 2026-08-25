@@ -18,6 +18,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/fcnet"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/paths"
@@ -581,6 +584,10 @@ func sshOK(t *testing.T, host hostenv.Host, name, sh string) string {
 // pins the host's name(s) to the reachable pasta address, and inside the guest a
 // getaddrinfo client (gai.conf ordering) picks that IPv4 over any unreachable
 // AAAA the host's resolver returns. inGuest runs a shell snippet in the sandbox.
+//
+// It then opens a connection, because resolving is not reaching. Every check
+// here used to be a name lookup, which is why an address that resolved to the
+// wrong thing survived until something dialled it.
 func assertHostByName(t *testing.T, host hostenv.Host, name string, inGuest func(sh string) string) {
 	t.Helper()
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
@@ -595,6 +602,34 @@ func assertHostByName(t *testing.T, host hostenv.Host, name string, inGuest func
 	got := strings.TrimSpace(inGuest("getent ahosts " + hn + " | awk 'NR==1{print $1}'"))
 	if got != "169.254.1.2" {
 		t.Errorf("host name %q resolves to %q inside the sandbox, want 169.254.1.2", hn, got)
+	}
+	assertHostIsReachable(t, inGuest)
+}
+
+// assertHostIsReachable serves one page on every address of this host and asks
+// the sandbox to fetch it by the name a sandbox knows the host under.
+//
+// That name is what a loan's base URL is built from, so this is the check that
+// the address behind it is this machine rather than a gateway, a VM, or nothing
+// at all.
+func assertHostIsReachable(t *testing.T, inGuest func(sh string) string) {
+	t.Helper()
+	const page = "reached-the-host"
+	l, err := net.Listen("tcp", "0.0.0.0:0") // not loopback: the guest arrives on the ordinary side
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, page)
+	})}
+	go func() { _ = srv.Serve(l) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	_, port, _ := net.SplitHostPort(l.Addr().String())
+	url := "http://" + net.JoinHostPort(engine.HostReachableName, port) + "/"
+	if body := inGuest("curl -s --max-time 10 " + url); !strings.Contains(body, page) {
+		t.Errorf("the sandbox could not reach this host at %s, got %q\n%s", url, body,
+			inGuest("getent ahosts "+engine.HostReachableName+"; grep -i internal /etc/hosts"))
 	}
 }
 

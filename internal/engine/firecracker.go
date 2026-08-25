@@ -184,7 +184,8 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	if err = os.MkdirAll(seedDir, 0o700); err != nil {
 		return nil, err
 	}
-	agentLogins, err := d.writeSeed(ctx, seedDir, s, gw)
+	// No podman inside the guest to publish the host's name, so the seed pins it.
+	agentLogins, err := d.writeSeed(ctx, seedDir, s, gw, []string{HostReachableName})
 	if err != nil {
 		return nil, err
 	}

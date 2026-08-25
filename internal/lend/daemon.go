@@ -173,14 +173,15 @@ func ProbeAddr(bind string) string {
 	return bind
 }
 
-// GuestURL is the base URL a sandbox is given: the host's address as seen from
-// inside, and the port the lender listens on.
-func GuestURL(guestHostIP, bind string) string {
+// GuestURL is the base URL a sandbox is given: the host as seen from inside,
+// and the port the lender listens on. guestHost is whatever the guest reaches
+// this host by, a name as readily as an address.
+func GuestURL(guestHost, bind string) string {
 	_, port, err := net.SplitHostPort(bind)
 	if err != nil {
 		port = strconv.Itoa(DefaultPort)
 	}
-	return "http://" + net.JoinHostPort(guestHostIP, port)
+	return "http://" + net.JoinHostPort(guestHost, port)
 }
 
 func lastLine(s string) string {

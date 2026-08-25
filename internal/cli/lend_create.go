@@ -137,7 +137,7 @@ func (app *App) resolveLoans(f *createFlags, name string) (*loanPlan, error) {
 	if f.cassette != "" {
 		vcr := f.vcr
 		if vcr == "" {
-			vcr = fmt.Sprintf("%s:%d", engine.HostReachableIP, defaultVCRPort)
+			vcr = fmt.Sprintf("%s:%d", engine.HostReachableName, defaultVCRPort)
 		}
 		plan.base = "http://" + vcr + "/c/" + f.cassette
 		proxyBase = "http://" + vcr
@@ -176,7 +176,9 @@ func (app *App) resolveLoans(f *createFlags, name string) (*loanPlan, error) {
 		for _, k := range []string{"HTTPS_PROXY", "https_proxy"} {
 			plan.env = append(plan.env, k+"=http://"+host)
 		}
-		noProxy := "localhost,127.0.0.1," + engine.HostReachableIP
+		// The host itself, by both the name the sandbox reaches it under and
+		// the address that name has where podman runs natively.
+		noProxy := "localhost,127.0.0.1," + engine.HostReachableName + "," + engine.HostReachableIP
 		for _, k := range []string{"NO_PROXY", "no_proxy"} {
 			plan.env = append(plan.env, k+"="+noProxy)
 		}
@@ -273,18 +275,18 @@ func (app *App) ensureLender() (guestBase string, err error) {
 		// A dry run starts nothing. It reports the address a real run would use,
 		// so the environment it prints is the environment it would seed.
 		fmt.Fprintf(app.stderr(), "+ cs-sandbox lender --addr %s\n", bind)
-		return lend.GuestURL(engine.HostReachableIP, bind), nil
+		return lend.GuestURL(engine.HostReachableName, bind), nil
 	}
 	if _, recorded, alive := d.Status(); alive && recorded != "" {
 		if lend.Probe(lend.ProbeAddr(recorded)) == nil {
-			return lend.GuestURL(engine.HostReachableIP, recorded), nil
+			return lend.GuestURL(engine.HostReachableName, recorded), nil
 		}
 	}
 	// A lender this tool did not start still counts: a host that runs one under
 	// a service manager should not have a second started underneath it, and the
 	// port would refuse the attempt anyway.
 	if lend.Probe(lend.ProbeAddr(bind)) == nil {
-		return lend.GuestURL(engine.HostReachableIP, bind), nil
+		return lend.GuestURL(engine.HostReachableName, bind), nil
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -293,7 +295,7 @@ func (app *App) ensureLender() (guestBase string, err error) {
 	if err := d.Start(exe, []string{"lender", "--addr", bind}, bind, lend.ProbeAddr(bind)); err != nil {
 		return "", fmt.Errorf("start the credential lender: %w\n  its log is at %s", err, d.LogPath())
 	}
-	return lend.GuestURL(engine.HostReachableIP, bind), nil
+	return lend.GuestURL(engine.HostReachableName, bind), nil
 }
 
 // mergeLoanEnv folds the loan variables into the injected block, refusing to

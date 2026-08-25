@@ -189,11 +189,22 @@ func TestDNSMasqIP(t *testing.T) {
 }
 
 func TestHostHostsLine(t *testing.T) {
-	if got := hostHostsLine([]string{"box", "box.lan"}); got != "169.254.1.2 box box.lan" {
+	if got := hostHostsLine([]string{"box", "box.lan"}, nil); got != "169.254.1.2 box box.lan" {
 		t.Errorf("hostHostsLine = %q, want %q", got, "169.254.1.2 box box.lan")
 	}
-	if got := hostHostsLine(nil); got != "" {
+	if got := hostHostsLine(nil, nil); got != "" {
 		t.Errorf("hostHostsLine(nil) = %q, want empty", got)
+	}
+	// An alias rides on the same address, and carries the line on its own when
+	// the host has no name to pin: the microVM guest needs the mapping either
+	// way, because nothing inside it publishes one.
+	want := "169.254.1.2 box " + HostReachableName
+	if got := hostHostsLine([]string{"box"}, []string{HostReachableName}); got != want {
+		t.Errorf("hostHostsLine with an alias = %q, want %q", got, want)
+	}
+	want = "169.254.1.2 " + HostReachableName
+	if got := hostHostsLine(nil, []string{HostReachableName}); got != want {
+		t.Errorf("hostHostsLine, alias only = %q, want %q", got, want)
 	}
 }
 

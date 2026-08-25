@@ -330,12 +330,23 @@ nothing inside the group.
 **R52.** `cs-sandbox` **MUST** map the host's own names to the pasta host address `169.254.1.2` in the
 seed's `host_hosts`, and the guest init **MUST** append them to `/etc/hosts`.
 
+**R52a.** A sandbox **MUST** reach a service on the host by the name `host.containers.internal`.
+Anything this tool points a sandbox at on the host **MUST** use that name rather than an address.
+The seed **MUST** pin the name on an engine whose guest is not given it.
+
 **R53.** The guest init **MUST** write `/etc/gai.conf` with `precedence ::ffff:0:0/96 100`.
 
 The host's LAN or Tailscale name is not routable from inside a sandbox, because it hairpins through
 the rootless NAT. The pasta address is the same one Podman exposes as `host.containers.internal`,
 and Firecracker taps reach it too, because they share the one rootless network namespace. NSS
 checks `files` before DNS, so the pinned mapping beats the unroutable name.
+
+R52a is there because `169.254.1.2` is only the host on a Linux box running podman itself with
+pasta. An older podman maps the host at slirp4netns' own address, and under a podman machine the
+literal is the VM rather than the Mac the tool runs on. Podman publishes the name with the right
+address in all three, so asking by name is asking podman where its host is. The microVM engine has
+no podman inside the guest to publish anything, so the seed pins the name there, which holds because
+that engine is Linux and KVM only.
 
 Two things catch people out, and R52 and R53 address them. The host service must listen on a
 non-loopback address, because `169.254.1.2` is not a mapping onto the host's loopback. A guest
@@ -723,8 +734,8 @@ instance. It is true from the moment `create` returns, and gone when `destroy` r
 directory. Nothing has to be sequenced at create, and no second lifetime has to be kept in step
 with the sandbox's.
 
-R152 has one cause. A sandbox reaches the host at `169.254.1.2` (R52), which arrives on the host's
-ordinary side. A server bound to `127.0.0.1` refuses that connection. Binding wider puts the port on
+R152 has one cause. A sandbox reaches the host by name (R52a), at an address that arrives on the
+host's ordinary side. A server bound to `127.0.0.1` refuses that connection. Binding wider puts the port on
 the network the host is on, so the caller is checked instead. A sandbox's traffic is translated to the
 host's own address on the way out of the rootless namespace. A machine elsewhere cannot claim that
 address without being on the path. The lender takes port 2500, above every range R42

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/lend"
 	"github.com/codesweep-ai/sandbox/internal/run"
@@ -259,7 +260,7 @@ func TestDryRunMintsNothingAndStartsNothing(t *testing.T) {
 		t.Error("a dry run recorded a lender it did not start")
 	}
 	// And the environment it reports is the environment a real run would seed.
-	if got := strings.Join(plan.env, " "); !strings.Contains(got, "ANTHROPIC_BASE_URL=http://169.254.1.2:") {
+	if got := strings.Join(plan.env, " "); !strings.Contains(got, "ANTHROPIC_BASE_URL=http://"+engine.HostReachableName+":") {
 		t.Errorf("env = %q, want the address a real run would use", got)
 	}
 }

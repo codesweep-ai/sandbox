@@ -16,8 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codesweep-ai/sandbox/internal/engine"
+	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/lend"
 	"github.com/codesweep-ai/sandbox/internal/paths"
+	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
@@ -138,15 +141,16 @@ func TestCLILendKeyLive(t *testing.T) {
 	if strings.Contains(token, "REAL-HOST-KEY") {
 		t.Fatal("the real key reached the sandbox")
 	}
-	if !strings.Contains(base, "169.254.1.2") {
-		t.Errorf("base URL = %q, want the host's address as seen from inside", base)
+	if !strings.Contains(base, engine.HostReachableName) {
+		t.Errorf("base URL = %q, want the host as seen from inside", base)
 	}
 
 	// And what a provider receives when it spends it.
 	body := inBox(ctx, r, host, name,
 		`curl -s --max-time 10 -X POST "$ANTHROPIC_BASE_URL/v1/messages" -H "x-api-key: $ANTHROPIC_API_KEY" -d '{}'`)
 	if !strings.Contains(body, "stand_in") {
-		t.Fatalf("the call did not reach the provider through the lender: %q", body)
+		t.Fatalf("the call did not reach the provider through the lender: %q\n%s",
+			body, hostReachability(ctx, r, host, name))
 	}
 	got, path, calls := seen.snapshot()
 	if calls == 0 {
@@ -161,6 +165,23 @@ func TestCLILendKeyLive(t *testing.T) {
 	if path != "/v1/messages" {
 		t.Errorf("provider path = %q, want the client's own path", path)
 	}
+}
+
+// hostReachability reports how the sandbox resolves the host, for a failure
+// whose cause is which address this engine published rather than anything about
+// the loan.
+//
+// The name is podman's to publish, and what it publishes is not the same
+// everywhere: pasta's host mapping where podman runs natively, slirp4netns' own
+// address on an older one, and a route to the Mac rather than to the VM under a
+// podman machine. A test that fails on a host nobody can log into has to say
+// which of those it got.
+func hostReachability(ctx context.Context, r *run.Exec, host hostenv.Host, name string) string {
+	return "the sandbox resolves the host as:\n" +
+		inBox(ctx, r, host, name,
+			`getent ahosts `+engine.HostReachableName+`; grep -i internal /etc/hosts; `+
+				`curl -s -o /dev/null --max-time 10 "$ANTHROPIC_BASE_URL/healthz"; `+
+				`echo "curl exit $?"`)
 }
 
 // TestCLILendLoginLive: a sandbox spends the host's agent login, in the header
@@ -354,7 +375,7 @@ func standInVCR(t *testing.T, lenderAddr string) string {
 	go func() { _ = srv.Serve(l) }()
 	t.Cleanup(func() { _ = srv.Close() })
 	_, port, _ := net.SplitHostPort(l.Addr().String())
-	return "169.254.1.2:" + port
+	return engine.HostReachableName + ":" + port
 }
 
 // TestCLILendThroughCassetteLive: a cassette in front of the lender changes one
