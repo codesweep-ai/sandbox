@@ -322,6 +322,33 @@ func TestImageRefUsesTheVersionedPackages(t *testing.T) {
 	}
 }
 
+// TestBuildSkipsThePullForALocalImage: a localhost/ reference names an image
+// that only ever exists in the local store, so there is no registry to ask.
+// podman does not know that: it resolves the name to a registry called
+// localhost and spends three retries on https://localhost/v2/ before failing.
+// CI sets CS_SANDBOX_IMAGE to a local tag for every job that builds one, so
+// without this it pays that on every run.
+func TestBuildSkipsThePullForALocalImage(t *testing.T) {
+	t.Setenv("CS_SANDBOX_IMAGE", "localhost/sandbox:ci")
+	f, err := runRoot(t, &App{}, "build", "--engine", "podman")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	var built bool
+	for _, call := range f.Calls {
+		if len(call) < 2 || call[0] != "podman" {
+			continue
+		}
+		if call[1] == "pull" {
+			t.Errorf("tried to pull a local-only image: %v", call)
+		}
+		built = built || call[1] == "build"
+	}
+	if !built {
+		t.Errorf("no podman build call; calls=%s", f)
+	}
+}
+
 // TestBuildDryRunReachesTheBuild: a dry run prints the pull AND the build.
 // Pulling is a mutation, so --dry-run skips the command and reports success;
 // reading that as a hit would leave a dry run of `build` having printed nothing

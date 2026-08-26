@@ -133,6 +133,13 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim, withAgents, 
 // an error and the caller builds instead; podman's own message is left on
 // stderr only under --verbose, where the reason for a miss is worth seeing.
 func (a *App) pullImage(ctx context.Context) bool {
+	// localhost/ is podman's name for an image that exists only in the local
+	// store, so there is no registry to ask. Without this podman spends three
+	// retries on https://localhost/v2/ before failing, on every build whose
+	// CS_SANDBOX_IMAGE names a local tag, which is every build CI runs.
+	if strings.HasPrefix(a.Image, "localhost/") {
+		return false
+	}
 	a.phase("looking for " + a.Image + " on the registry…")
 	// Interactive, and -q unless --verbose: the same shape the build below uses.
 	// A pull moves gigabytes, so podman's own progress is the only thing between
