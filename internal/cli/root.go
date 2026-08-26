@@ -24,7 +24,7 @@ import (
 )
 
 // devVersion marks a binary that carried no release stamp.
-const devVersion = "0.1.0-dev"
+const devVersion = "dev"
 
 // Version is the tool version (set via -ldflags at release).
 var Version = devVersion

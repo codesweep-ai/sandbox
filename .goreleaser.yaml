@@ -25,7 +25,6 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X github.com/codesweep-ai/sandbox/internal/cli.Version={{ .Version }}
     # Firecracker is linux/amd64-only at runtime; the binary still builds for the
     # podman-only targets (it errors clearly if an unsupported engine is asked for).
     goos:
