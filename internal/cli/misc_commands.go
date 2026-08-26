@@ -125,6 +125,31 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim, withAgents b
 		"--build-arg", "BUILD_VERBOSE="+buildVerbose,
 		"--build-arg", "CS_SANDBOX_PRIVATE_REGISTRY="+envOr("CS_SANDBOX_PRIVATE_REGISTRY", ""),
 		"--build-arg", "CS_SANDBOX_PRIVATE_REGISTRY_INSECURE="+normalizeInsecure(envOr("CS_SANDBOX_PRIVATE_REGISTRY_INSECURE", "0")),
+	)
+	// The sibling cs- tools the image ships, at the versions go.mod pins rather
+	// than at their branch tips. Passed rather than copied: the build context is
+	// rootfs/, and `COPY . /sandbox` would put a stray manifest in the guest.
+	//
+	// A missing pin is fatal here rather than in the middle of a long build: the
+	// Containerfile refuses an empty version, and saying so now costs seconds
+	// instead of minutes.
+	pins, err := assets.ToolPins(app.AssetDir)
+	if err != nil {
+		return err
+	}
+	for _, tool := range []struct{ arg, module, bin string }{
+		{"CS_LINT_VERSION", "github.com/codesweep-ai/lint", "cs-lint"},
+		{"CS_LEDGER_VERSION", "github.com/codesweep-ai/ledger", "cs-ledger"},
+		{"CS_TRACER_VERSION", "github.com/codesweep-ai/tracer", "cs-tracer"},
+	} {
+		v := pins[tool.module]
+		if v == "" {
+			return fmt.Errorf("go.mod pins no version for %s: run `go get -tool %s/cmd/%s@main`",
+				tool.module, tool.module, tool.bin)
+		}
+		args = append(args, "--build-arg", tool.arg+"="+v)
+	}
+	args = append(args,
 		filepath.Join(imgDir, "rootfs"),
 	)
 	if _, err := app.Runner.Run(cmd.Context(), run.Opts{Interactive: true}, args...); err != nil {

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	assets "github.com/codesweep-ai/sandbox"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/state"
 )
@@ -118,6 +119,69 @@ func TestBuildPodmanQuietFlag(t *testing.T) {
 				t.Errorf("podman build missing %s (%v)", wantBV, argv)
 			}
 		})
+	}
+}
+
+// TestBuildPassesToolPinsFromGoMod: the sibling cs- tools the image ships are
+// installed at the versions go.mod pins, not at their branch tips, and the
+// versions travel as build args because the build context is rootfs/ and
+// `COPY . /sandbox` would carry a manifest into the guest.
+//
+// Two halves, because either alone would pass while the image drifted: the
+// build args must carry the manifest's versions, and the Containerfile must
+// actually consume them rather than reaching for @latest.
+func TestBuildPassesToolPinsFromGoMod(t *testing.T) {
+	pins, err := assets.ToolPins("")
+	if err != nil {
+		t.Fatalf("ToolPins: %v", err)
+	}
+	f, err := runRoot(t, &App{}, "build", "--engine", "podman")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	var argv []string
+	for _, call := range f.Calls {
+		if len(call) >= 2 && call[0] == "podman" && call[1] == "build" {
+			argv = call
+		}
+	}
+	if argv == nil {
+		t.Fatalf("no podman build call; calls=%s", f)
+	}
+	for arg, module := range map[string]string{
+		"CS_LINT_VERSION":   "github.com/codesweep-ai/lint",
+		"CS_LEDGER_VERSION": "github.com/codesweep-ai/ledger",
+		"CS_TRACER_VERSION": "github.com/codesweep-ai/tracer",
+	} {
+		want := pins[module]
+		if want == "" {
+			t.Errorf("go.mod pins no version for %s", module)
+			continue
+		}
+		if !slices.Contains(argv, arg+"="+want) {
+			t.Errorf("podman build missing %s=%s (%v)", arg, want, argv)
+		}
+	}
+
+	// The other half: the Containerfile has to install each sibling at its
+	// build arg. cs-sandbox is deliberately absent — a module cannot pin
+	// itself, so that one install stays @latest.
+	cf, err := os.ReadFile(filepath.Join("..", "..", "image", "Containerfile"))
+	if err != nil {
+		t.Fatalf("read Containerfile: %v", err)
+	}
+	for bin, arg := range map[string]string{
+		"cs-lint":   "CS_LINT_VERSION",
+		"cs-ledger": "CS_LEDGER_VERSION",
+		"cs-tracer": "CS_TRACER_VERSION",
+	} {
+		want := "/cmd/" + bin + "@${" + arg + "}"
+		if !strings.Contains(string(cf), want) {
+			t.Errorf("Containerfile does not install %s at its pin (want %q)", bin, want)
+		}
+		if strings.Contains(string(cf), "/cmd/"+bin+"@latest") {
+			t.Errorf("Containerfile still installs %s at @latest", bin)
+		}
 	}
 }
 

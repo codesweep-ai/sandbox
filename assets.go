@@ -33,6 +33,15 @@ var fixedMtime = time.Unix(1704067200, 0)
 //go:embed all:image
 var embedded embed.FS
 
+// goMod is the module manifest, embedded so the image build can install the
+// sibling cs- tools at the versions THIS repository pins rather than at
+// whatever their branch tips happen to be. It is read for those versions, not
+// copied into the build context: the context is rootfs/, every file of which
+// `COPY . /sandbox` puts inside the guest.
+//
+//go:embed go.mod
+var goMod embed.FS
+
 // image returns the embedded tree rooted so paths look like "Containerfile",
 // "guest/init", "rootfs/entrypoint".
 func image() fs.FS {
@@ -122,6 +131,34 @@ func ImageDir(assetDir string) (dir string, cleanup func(), err error) {
 		return "", func() {}, err
 	}
 	return tmp, func() { _ = os.RemoveAll(tmp) }, nil
+}
+
+// ToolPins reports the versions this module pins for the sibling cs- tools the
+// image ships, as module path -> version. It prefers the checkout's go.mod over
+// the embedded copy, the same preference sourceFS applies to the image tree, so
+// a checkout that has moved a pin builds an image carrying it.
+//
+// The manifest is scanned rather than parsed: a require line is "path version"
+// once trimmed, which is all this needs. A module the manifest does not mention
+// is simply absent, and the caller decides whether that is fatal.
+func ToolPins(assetDir string) (map[string]string, error) {
+	data, err := os.ReadFile(filepath.Join(assetDir, "go.mod"))
+	if err != nil {
+		if data, err = fs.ReadFile(goMod, "go.mod"); err != nil {
+			return nil, err
+		}
+	}
+	pins := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.HasPrefix(fields[0], "github.com/codesweep-ai/") {
+			continue
+		}
+		if strings.HasPrefix(fields[1], "v") {
+			pins[fields[0]] = fields[1]
+		}
+	}
+	return pins, nil
 }
 
 // GuestInitPath returns a host path to the guest init (image/guest/init): the
