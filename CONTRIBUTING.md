@@ -131,8 +131,9 @@ will not fit one idea, split it.
 
 **Subject**, always. Under 60 characters, imperative, no trailing period, completing *"If applied,
 this commit will …"*. Say what the change does, in plain English rather than in this project's
-internal shorthand. Use no conventional-commit prefix: `fix(proxy):` names a category rather than a
-change, and the category is already in the diff.
+internal shorthand. Use no category label: `fix(proxy):`, `bugfix:` and `[docs]` each name a class
+of change rather than the change itself, which the diff already shows. The gate fails on one, so
+amend before you push.
 
 **Body**, rarely. Most commits need none. Add one only when the subject leaves a question a reader
 would otherwise have to open the diff to answer, and then answer that question. A sentence or two
