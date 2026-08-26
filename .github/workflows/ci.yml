@@ -285,9 +285,8 @@ jobs:
   # it needs no matrix and builds nothing of this repository, so it answers in a
   # minute and answers even when the tests are failing.
   # `make check` runs it too, for the contributor who runs one command before
-  # pushing. cs-lint is installed from source in each of the three jobs below
-  # rather than pinned: it is this family's own linter, and a check it gains has
-  # to reach here on the day it lands.
+  # pushing. cs-lint needs no install step: it is pinned in go.mod and the make
+  # targets run it with `go tool`, so CI and a laptop use the same build.
   prose:
     name: docs prose
     runs-on: ubuntu-latest
@@ -297,10 +296,6 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: cs-lint
-        run: |
-          go install github.com/codesweep-ai/lint/cmd/cs-lint@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make prose
 
   # The rules this repository has to satisfy as a published project: the
@@ -320,10 +315,6 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: cs-lint
-        run: |
-          go install github.com/codesweep-ai/lint/cmd/cs-lint@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make refs
 
   # The rules this repository has to satisfy as a published project: the
@@ -342,10 +333,6 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: cs-lint
-        run: |
-          go install github.com/codesweep-ai/lint/cmd/cs-lint@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make oss
 
   # The documented interface against the real one: every command they name
@@ -362,10 +349,6 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: true
-      - name: cs-lint
-        run: |
-          go install github.com/codesweep-ai/lint/cmd/cs-lint@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make surface
 
   # The ledger's freshness gate. CONTRIBUTING.md asks for a render and a check
@@ -381,9 +364,7 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: true
-      - name: install cs-ledger
-        run: go install github.com/codesweep-ai/ledger/cmd/cs-ledger@latest
-      - run: cs-ledger check ledger
+      - run: make ledger
 
   build-artifacts:
     name: build-artifacts (ubuntu-latest)
