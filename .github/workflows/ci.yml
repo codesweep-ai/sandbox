@@ -988,19 +988,17 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      # The layer store, not the images. A published image cannot seed a build
-      # cache — podman matches steps against the per-step intermediate images a
-      # build leaves behind, and a pull carries none of them — so the store is
-      # the thing worth keeping. Keyed on the build's inputs alone, with no sha:
-      # a commit that changes none of them hits the key exactly, actions/cache
-      # skips the save, and the build re-runs only the codesweep-tools layer,
-      # which is ~31 MB. A commit that does change them saves a new entry.
-      - name: cache the image build store
-        uses: actions/cache@v4
-        with:
-          path: ~/.local/share/containers/storage
-          key: sandbox-image-store-${{ hashFiles('image/**', 'go.mod') }}
-          restore-keys: sandbox-image-store-
+      # No build cache here, deliberately. Caching the layer store cannot work:
+      # rootless podman's overlay layers hold files owned by mapped subuids with
+      # mode 000 (/etc/shadow and friends, inside every layer's diff/), the
+      # runner user cannot read them, and tar exits 2. actions/cache reports that
+      # as a warning, so the job stays green while caching nothing. Packing the
+      # store under `podman unshare` would get around it, and would cost about as
+      # long as the build: this one takes ~7 minutes cold, and a ~3 GB restore
+      # and repack is most of that, while evicting the artifacts cache the smoke
+      # jobs live on. A published image cannot seed a build cache either, because
+      # podman matches steps against per-step intermediate images and a pull
+      # carries none of them.
 
       - name: build the binary that names the images
         run: make build-go

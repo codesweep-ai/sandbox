@@ -141,11 +141,13 @@ func (a *App) pullImage(ctx context.Context) bool {
 		return false
 	}
 	a.phase("looking for " + a.Image + " on the registry…")
-	// Interactive, and -q unless --verbose: the same shape the build below uses.
-	// A pull moves gigabytes, so podman's own progress is the only thing between
-	// the phase line above and several silent minutes.
+	// Progress unless --quiet, which is NOT the shape the build below uses. A
+	// pull moves gigabytes, and podman's progress is the only thing between the
+	// phase line above and several silent minutes: quietened, a working download
+	// is indistinguishable from a hang. `podman build -q` is different, because
+	// it suppresses a RUN's chatter rather than the one report of progress.
 	argv := []string{"podman", "pull"}
-	if !a.Verbose {
+	if a.Quiet {
 		argv = append(argv, "-q")
 	}
 	_, err := a.Runner.Run(ctx, run.Opts{Interactive: true}, append(argv, a.Image)...)

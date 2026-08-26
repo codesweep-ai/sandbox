@@ -322,6 +322,41 @@ func TestImageRefUsesTheVersionedPackages(t *testing.T) {
 	}
 }
 
+// TestPullShowsProgressUnlessQuiet: a pull moves gigabytes, and podman prints
+// the only sign that anything is happening. Quietened, it reads as a hang, and
+// the person watching kills it. Only --quiet, which asks for silence, gets it.
+func TestPullShowsProgressUnlessQuiet(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		args  []string
+		wantQ bool
+	}{
+		{"default", nil, false},
+		{"verbose", []string{"--verbose"}, false},
+		{"quiet", []string{"--quiet"}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			args := append(append([]string{}, c.args...), "build", "--engine", "podman")
+			f, err := runRoot(t, &App{}, args...)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			var pull []string
+			for _, call := range f.Calls {
+				if len(call) >= 2 && call[0] == "podman" && call[1] == "pull" {
+					pull = call
+				}
+			}
+			if pull == nil {
+				t.Fatalf("no podman pull call; calls=%s", f)
+			}
+			if got := slices.Contains(pull, "-q"); got != c.wantQ {
+				t.Errorf("podman pull -q = %v, want %v (%v)", got, c.wantQ, pull)
+			}
+		})
+	}
+}
+
 // TestBuildSkipsThePullForALocalImage: a localhost/ reference names an image
 // that only ever exists in the local store, so there is no registry to ask.
 // podman does not know that: it resolves the name to a registry called
