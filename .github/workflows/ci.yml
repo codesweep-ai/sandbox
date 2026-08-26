@@ -288,8 +288,8 @@ jobs:
   # pushing. cs-lint is installed from source in each of the three jobs below
   # rather than pinned: it is this family's own linter, and a check it gains has
   # to reach here on the day it lands.
-  docs:
-    name: docs prose and refs
+  prose:
+    name: docs prose
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -301,7 +301,30 @@ jobs:
         run: |
           go install github.com/codesweep-ai/lint/cmd/cs-lint@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - run: make docs
+      - run: make prose
+
+  # The rules this repository has to satisfy as a published project: the
+  # licence, the document set, what must never reach a public commit, the
+  # release path, and what a stranger's clone can do with it. fetch-depth: 0
+  # because half of them read the history, and a shallow checkout would let
+  # them pass by seeing nothing.
+  # Everything the documents point at, resolved against the tree. It needs
+  # no binary either, so it answers beside the prose job rather than after
+  # the build.
+  refs:
+    name: docs refs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: cs-lint
+        run: |
+          go install github.com/codesweep-ai/lint/cmd/cs-lint@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: make refs
 
   # The rules this repository has to satisfy as a published project: the
   # licence, the document set, what must never reach a public commit, the

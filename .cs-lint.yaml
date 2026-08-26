@@ -83,9 +83,10 @@ oss:
   project: cs-sandbox
   githubRepo: codesweep-ai/sandbox
 
-  # True once the repository is public. Published history cannot be rewritten,
-  # so the two rules that scan past commits for a leak report as warnings from
-  # that point on.
+  # True once the repository is public. From that point a finding about a commit
+  # a remote already carries reports as a warning, because rewriting one is a
+  # decision about every clone somebody else made. A finding about a commit no
+  # remote has stays an error, because an amend still reaches it.
   published: true
 
   # This repository ships a binary, so it carries the whole set.
@@ -110,5 +111,5 @@ oss:
   # address anybody reads.
   emailAllow: ["Microsoft.com"]
 
-  requiredTargets: ["build", "test", "check", "lint", "docs", "oss", "clean"]
+  requiredTargets: ["build", "test", "check", "lint", "prose", "refs", "oss", "clean"]
   expectedTargets: ["help", "install", "uninstall", "fmt", "fmt-check", "vet", "deadcode"]
