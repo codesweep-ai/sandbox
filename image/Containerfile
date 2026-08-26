@@ -303,11 +303,17 @@ RUN case "$(uname -m)" in \
 #
 # The module cache and build cache go in the same layer, or the ~400 MB they hold ships too. One
 # `go install` per tool: it refuses a command line naming packages from more than one module.
+# CS_GOPROXY/CS_GONOSUMDB are set only by `cs-sandbox build --local-sandbox`, which mounts a
+# file:// proxy holding this checkout's own module zip so a revision nobody has pushed can still be
+# installed by version. Empty on every other build, which leaves the toolchain defaults alone.
+ARG CS_GOPROXY=
+ARG CS_GONOSUMDB=
 ARG CS_SANDBOX_VERSION=
 ARG CS_LINT_VERSION=
 ARG CS_LEDGER_VERSION=
 ARG CS_TRACER_VERSION=
 RUN export GOBIN=/usr/local/bin GOTOOLCHAIN=local PATH=/opt/go/bin:$PATH \
+  && if [ -n "${CS_GOPROXY}" ]; then export GOPROXY="${CS_GOPROXY}" GONOSUMDB="${CS_GONOSUMDB}"; fi \
   && for v in "${CS_SANDBOX_VERSION}" "${CS_LINT_VERSION}" "${CS_LEDGER_VERSION}" "${CS_TRACER_VERSION}"; do \
        test -n "$v" || { echo "a cs- tool version is empty: build with 'cs-sandbox build', which passes the go.mod pins" >&2; exit 1; }; \
      done \

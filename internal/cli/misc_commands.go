@@ -15,9 +15,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// guestProxyDir is where --local-sandbox mounts the throwaway module proxy
+// inside the build. Under /tmp so nothing survives into the image.
+const guestProxyDir = "/tmp/cs-goproxy"
+
 func newBuildCmd(app *App) *cobra.Command {
 	var engines []string
-	var slim, withAgents bool
+	var slim, withAgents, localSandbox bool
 	cmd := &cobra.Command{
 		Use:   "build",
 		Short: "Set up the sandbox image and, on capable hosts, the Firecracker artifacts",
@@ -40,7 +44,7 @@ func newBuildCmd(app *App) *cobra.Command {
 			if withAgents && !slim {
 				return errors.New("--with-agents applies to --slim only: the full image already has the agent CLIs")
 			}
-			return runBuild(cmd, app, engines, slim, withAgents)
+			return runBuild(cmd, app, engines, slim, withAgents, localSandbox)
 		},
 	}
 	cmd.Flags().StringArrayVar(&engines, "engine", nil,
@@ -49,6 +53,8 @@ func newBuildCmd(app *App) *cobra.Command {
 		"build the slimmed CI image (no developer toolchains) instead of the shipped one")
 	cmd.Flags().BoolVar(&withAgents, "with-agents", false,
 		"with --slim: keep the claude/codex/opencode CLIs, for tests that drive an agent")
+	cmd.Flags().BoolVar(&localSandbox, "local-sandbox", false,
+		"install cs-sandbox in the image from this checkout's commit instead of from the module proxy, for a revision that is not pushed yet")
 	_ = cmd.RegisterFlagCompletionFunc("engine", fixedComp("podman", "firecracker"))
 	return cmd
 }
@@ -69,7 +75,7 @@ const (
 	slimAgentsImage = "localhost/cs-sandbox:ci-agents"
 )
 
-func runBuild(cmd *cobra.Command, app *App, engines []string, slim, withAgents bool) error {
+func runBuild(cmd *cobra.Command, app *App, engines []string, slim, withAgents, localSandbox bool) error {
 	wantFC, err := buildWantsFirecracker(app, engines)
 	if err != nil {
 		return err
@@ -144,6 +150,38 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim, withAgents b
 		app.phase(dirtyNote)
 	}
 	args = append(args, "--build-arg", "CS_SANDBOX_VERSION="+sbVersion)
+
+	// --local-sandbox: serve that version from a file:// proxy built out of this
+	// checkout, so a revision nobody has pushed can still be installed BY
+	// VERSION. Bind-mounted rather than copied: the build context is rootfs/,
+	// and `COPY . /sandbox` would put the proxy inside every sandbox.
+	if localSandbox {
+		if sbVersion == "latest" {
+			return errors.New("--local-sandbox needs a cs-sandbox that reports a module version; this one reports none")
+		}
+		rev := sandboxRevision()
+		if rev == "" {
+			return errors.New("--local-sandbox needs the revision this binary was built from, and its build info records none")
+		}
+		if app.AssetDir == "" {
+			return errors.New("--local-sandbox needs a checkout to read the module from; set CS_SANDBOX_ASSETS_DIR or run from one")
+		}
+		proxyDir, proxyCleanup, err := localModuleProxy(app.AssetDir, sbVersion, rev)
+		if err != nil {
+			return err
+		}
+		defer proxyCleanup()
+		app.phase(fmt.Sprintf("installing cs-sandbox %s from this checkout rather than the module proxy", sbVersion))
+		args = append(args,
+			"-v", proxyDir+":"+guestProxyDir+":ro",
+			// The real proxy still serves everything else, the Go toolchain
+			// included: a bare file:// proxy 404s for those and the build stops.
+			"--build-arg", "CS_GOPROXY=file://"+guestProxyDir+",https://proxy.golang.org,direct",
+			// Scoped, not GOSUMDB=off: an unpublished module has no checksum-db
+			// entry, but every other module must still be verified.
+			"--build-arg", "CS_GONOSUMDB=github.com/codesweep-ai/*",
+		)
+	}
 
 	pins, err := assets.ToolPins(app.AssetDir)
 	if err != nil {

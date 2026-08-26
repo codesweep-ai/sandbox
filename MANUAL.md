@@ -204,6 +204,7 @@ cs-sandbox rm-store [-f] <name>
 ```
 cs-sandbox build [--engine ENGINE]...     # the image, and the Firecracker artifacts
 cs-sandbox build --slim [--with-agents]   # the CI image instead: no developer toolchains
+cs-sandbox build --local-sandbox          # take cs-sandbox from this checkout, not the proxy
 cs-sandbox doctor [--engine ENGINE]       # check prerequisites, print the fix for each gap
 cs-sandbox install-agent-tools [dir]      # the agent tools onto your PATH
 cs-sandbox agent-login <agent> <name>     # log an agent in inside a sandbox
@@ -236,6 +237,12 @@ it in content.
 Add `--with-agents` when the tests being run drive `claude`, `codex` or `opencode` **inside** the
 sandbox. Those three CLIs are dropped with everything else otherwise, and a member without them
 fails its readback at `command -v`. They cost about 858 MB.
+
+`--local-sandbox` installs `cs-sandbox` in the image from this checkout rather than from the module
+proxy. The image installs it by version, which needs that revision pushed. On one you have not, the
+build stops at `unknown revision`. The flag writes the module zip the proxy would have served, out
+of your git tree, and the build reads it over a temporary `file://` mount. The binary still reports
+its own version. It takes the commit rather than the working tree, and needs a checkout to read.
 
 A slim build is tagged `localhost/cs-sandbox:ci`, or `localhost/cs-sandbox:ci-agents` with
 `--with-agents`, unless `CS_SANDBOX_IMAGE` says otherwise. None of the three images is
