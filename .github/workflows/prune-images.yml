@@ -1,0 +1,81 @@
+# Expire the dev images. One is published per commit to main, so without this the
+# package list grows without bound and the useful entries sink out of sight.
+#
+# What survives: anything tagged as a release (v1.2.3), and the five most recent
+# versions of each package whatever their age, so a package can never be emptied
+# by a bad cutoff. Everything else goes ten days after it was last touched. A
+# deleted version is a deleted image: a host still naming one gets a pull failure
+# and falls back to building, which is why only dev tags are eligible.
+name: prune-images
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List what would be deleted without deleting it"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  prune:
+    name: prune dev images
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # A scheduled run prunes; a hand-started one asks first.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+      KEEP_RECENT: "5"
+      MAX_AGE_DAYS: "10"
+    steps:
+      - name: prune
+        run: |
+          set -euo pipefail
+          owner='${{ github.repository_owner }}'
+          cutoff=$(date -u -d "-${MAX_AGE_DAYS} days" +%s)
+
+          for pkg in sandbox sandbox-slim sandbox-slim-agents; do
+            echo "== $pkg"
+            # An owner that is a user rather than an organisation answers on a
+            # different path. Try the org one and say which failed, rather than
+            # letting a 404 read as "nothing to prune".
+            if ! versions=$(gh api --paginate \
+                  "/orgs/$owner/packages/container/$pkg/versions" 2>/dev/null); then
+              versions=$(gh api --paginate "/users/$owner/packages/container/$pkg/versions")
+            fi
+
+            # Newest first, so the index is the rank the keep-recent rule uses.
+            echo "$versions" | jq -c 'sort_by(.updated_at) | reverse | to_entries[]' | \
+            while read -r entry; do
+              rank=$(jq -r '.key' <<<"$entry")
+              id=$(jq -r '.value.id' <<<"$entry")
+              updated=$(jq -r '.value.updated_at' <<<"$entry")
+              tags=$(jq -r '.value.metadata.container.tags // [] | join(",")' <<<"$entry")
+
+              if [ "$rank" -lt "$KEEP_RECENT" ]; then
+                echo "  keep  ${tags:-<untagged>} (one of the $KEEP_RECENT most recent)"
+                continue
+              fi
+              if grep -qE '(^|,)v[0-9]+\.[0-9]+\.[0-9]+(,|$)' <<<"$tags"; then
+                echo "  keep  $tags (release)"
+                continue
+              fi
+              if [ "$(date -u -d "$updated" +%s)" -ge "$cutoff" ]; then
+                echo "  keep  ${tags:-<untagged>} ($updated, under $MAX_AGE_DAYS days)"
+                continue
+              fi
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "  WOULD DELETE ${tags:-<untagged>} ($updated)"
+                continue
+              fi
+              echo "  delete ${tags:-<untagged>} ($updated)"
+              gh api -X DELETE "/orgs/$owner/packages/container/$pkg/versions/$id" \
+                || gh api -X DELETE "/users/$owner/packages/container/$pkg/versions/$id"
+            done
+          done

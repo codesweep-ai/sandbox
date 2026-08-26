@@ -289,7 +289,8 @@ answered by a published image. A binary that reports no version at all names no 
 rather than guessing; `make build` from a git clone gives it one.
 
 Images are published by CI alone, on every push to `main` and on every release tag. A commit that
-has not reached `main` therefore has no image to pull, and `build` builds one.
+has not reached `main` therefore has no image to pull, and `build` builds one. Images for release
+tags are kept; the rest expire ten days after they are published.
 
 `completion` writes a script to stdout. It completes sandbox names, store names and flag values
 live, by asking the binary. [INSTALL.md](INSTALL.md#optional-shell-completion) has the per-shell
