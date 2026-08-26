@@ -15,3 +15,8 @@
 # profile and report are derived from them. The baseline (.coverage-baseline)
 # is committed on purpose — it is what makes a lost suite reviewable.
 .coverage/
+
+# A local cross-repo workspace is a personal dev tool, never committed:
+# it would override the go.mod pins for anyone who cloned this.
+go.work
+go.work.sum

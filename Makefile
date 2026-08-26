@@ -94,6 +94,39 @@ build-ci-fc: build-go build-ci-assets
 	CS_SANDBOX_ASSETS_DIR=$(CI_ASSETS) CS_SANDBOX_IMAGE=$(CI_IMAGE) \
 	  ./$(BIN) build --engine firecracker
 
+## versions: what this build is made of — this repo's binary, every pinned tool,
+## the Go toolchain, and whether a workspace is overriding the go.mod pins. Every
+## line is read the same way, by running that binary's own `version` verb; run one
+## directly for the fuller line (cs-ledger also reports its renderer version).
+.PHONY: versions
+versions: build-go
+	@printf '%-12s %-38s %s\n' '$(notdir $(BIN))' "$$($(BIN) version | awk '{print $$2}')" 'this repo'
+	@for t in $$(go list tool 2>/dev/null); do \
+		printf '%-12s %s\n' "$$(basename $$t)" "$$(go tool $$t version | awk '{print $$2}')"; \
+	done
+	@printf '%-12s %s\n' 'go' "$$(go env GOVERSION)"
+	@w="$$(go env GOWORK)"; \
+	case "$$w" in \
+		''|off) printf '%-12s %s\n' 'workspace' 'off — versions above are go.mod pins' ;; \
+		*)      printf '%-12s %s\n' 'workspace' "$$w — local checkouts override the go.mod pins" ;; \
+	esac
+
+## repin: move every codesweep-ai tool pin to its branch tip, then report. Uses
+## GOPROXY=direct because the module proxy caches branch resolution and `@main`
+## can come back a commit behind origin/main. Uses GOWORK=off so this edits the
+## recorded pins even while a workspace is serving local checkouts.
+.PHONY: repin
+repin:
+	@tools="$$(go list tool 2>/dev/null | grep codesweep-ai || true)"; \
+	if [ -z "$$tools" ]; then \
+		echo "no codesweep-ai tools declared yet — add the first with:" >&2; \
+		echo "  go get -tool github.com/codesweep-ai/lint/cmd/cs-lint@main" >&2; \
+		exit 1; \
+	fi; \
+	GOWORK=off GOPROXY=direct go get -tool $$(echo "$$tools" | sed 's|$$|@main|')
+	@GOWORK=off go mod tidy
+	@$(MAKE) versions
+
 ## install: copy bin/cs-sandbox into $(PREFIX)/bin (default ~/.local/bin), plus
 ## CS_SANDBOX.md beside it — the companion doc that teaches coding agents how to
 ## drive the CLI, installed the same way `install-agent-tools` installs the other
