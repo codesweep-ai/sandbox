@@ -153,8 +153,8 @@ func TestBuildPodmanQuietFlag(t *testing.T) {
 	}
 }
 
-// TestBuildPassesToolPinsFromGoMod: the sibling cs- tools the image ships are
-// installed at the versions go.mod pins, not at their branch tips, and the
+// TestBuildPassesToolPinsFromGoMod: every tool the image builds from source is
+// installed at the version go.mod pins, not at a branch tip, and the
 // versions travel as build args because the build context is rootfs/ and
 // `COPY . /sandbox` would carry a manifest into the guest.
 //
@@ -180,9 +180,10 @@ func TestBuildPassesToolPinsFromGoMod(t *testing.T) {
 		t.Fatalf("no podman build call; calls=%s", f)
 	}
 	for arg, module := range map[string]string{
-		"CS_LINT_VERSION":   "github.com/codesweep-ai/lint",
-		"CS_LEDGER_VERSION": "github.com/codesweep-ai/ledger",
-		"CS_TRACER_VERSION": "github.com/codesweep-ai/tracer",
+		"CS_LINT_VERSION":     "github.com/codesweep-ai/lint",
+		"CS_LEDGER_VERSION":   "github.com/codesweep-ai/ledger",
+		"CS_TRACER_VERSION":   "github.com/codesweep-ai/tracer",
+		"CS_DEADCODE_VERSION": "golang.org/x/tools",
 	} {
 		want := pins[module]
 		if want == "" {
@@ -194,9 +195,9 @@ func TestBuildPassesToolPinsFromGoMod(t *testing.T) {
 		}
 	}
 
-	// The other half: the Containerfile has to install each sibling at its
-	// build arg. cs-sandbox is deliberately absent — a module cannot pin
-	// itself, so that one install stays @latest.
+	// The other half: the Containerfile has to install each of them at its build
+	// arg. cs-sandbox is here too, though a module cannot pin itself — the
+	// cs-sandbox running the build passes its own version instead.
 	cf, err := os.ReadFile(filepath.Join("..", "..", "image", "Containerfile"))
 	if err != nil {
 		t.Fatalf("read Containerfile: %v", err)
@@ -206,6 +207,7 @@ func TestBuildPassesToolPinsFromGoMod(t *testing.T) {
 		"cs-lint":    "CS_LINT_VERSION",
 		"cs-ledger":  "CS_LEDGER_VERSION",
 		"cs-tracer":  "CS_TRACER_VERSION",
+		"deadcode":   "CS_DEADCODE_VERSION",
 	} {
 		want := "/cmd/" + bin + "@${" + arg + "}"
 		if !strings.Contains(string(cf), want) {

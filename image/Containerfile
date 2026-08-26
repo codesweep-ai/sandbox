@@ -331,9 +331,16 @@ RUN set -eu; \
       command -v "$t" >/dev/null || { echo "missing after install: $t" >&2; exit 1; }; \
     done
 
-# deadcode is the exception: golang.org/x/tools publishes no binaries, so this one is built.
-RUN GOBIN=/usr/local/bin GOTOOLCHAIN=local PATH=/opt/go/bin:$PATH \
-      go install golang.org/x/tools/cmd/deadcode@latest \
+# deadcode is the exception among the three above: golang.org/x/tools publishes no binaries, so this
+# one is built. Its version is the pin this repository's own gate runs it at, passed in by
+# `cs-sandbox build` from go.mod, so a sandbox reads this code with the deadcode the code names.
+# Running it through the pin rather than @latest also keeps it on a Go it can load: a deadcode built
+# by an older toolchain reports "packages contain errors" for every package and finds nothing.
+ARG CS_DEADCODE_VERSION=
+RUN test -n "${CS_DEADCODE_VERSION}" \
+      || { echo "CS_DEADCODE_VERSION is empty: build with 'cs-sandbox build', which passes the go.mod pins" >&2; exit 1; } \
+  && GOBIN=/usr/local/bin GOTOOLCHAIN=local PATH=/opt/go/bin:$PATH \
+      go install golang.org/x/tools/cmd/deadcode@${CS_DEADCODE_VERSION} \
   && /opt/go/bin/go clean -modcache -cache \
   && command -v deadcode >/dev/null
 

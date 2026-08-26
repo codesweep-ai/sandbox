@@ -220,10 +220,7 @@ jobs:
       # another package still looks used. See the deadcode target in the Makefile.
       - name: deadcode
         if: matrix.os == 'ubuntu-latest'
-        run: |
-          set -euo pipefail
-          go install golang.org/x/tools/cmd/deadcode@latest
-          make deadcode
+        run: make deadcode
 
       - name: build
         run: go build ./... # compile-check every package

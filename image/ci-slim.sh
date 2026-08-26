@@ -119,7 +119,7 @@ BEGIN {
   DROP["go.dev/dl/go${GO_VERSION}"]       # go toolchain
   DROP["cmd/cs-sandbox@"]                 # the codesweep tools: need the go above
   DROP["golangci-lint/releases/download"] # the dev toolchain for this repo
-  DROP["cmd/deadcode@latest"]             # deadcode, the one built from source
+  DROP["cmd/deadcode@"]                   # deadcode, the one built from source
   DROP["python3 -m venv /opt/py-tools"]   # python CLI tools venv
   DROP["+Lazy! install"]                  # the nvim plugin/LSP pre-build
   DROP["COPY home/.config/nvim"]          # the config that pre-build reads, staged ahead of it

@@ -255,15 +255,18 @@ func buildImage(cmd *cobra.Command, app *App, slim, withAgents, localSandbox boo
 	if err != nil {
 		return err
 	}
-	for _, tool := range []struct{ arg, module, bin string }{
-		{"CS_LINT_VERSION", "github.com/codesweep-ai/lint", "cs-lint"},
-		{"CS_LEDGER_VERSION", "github.com/codesweep-ai/ledger", "cs-ledger"},
-		{"CS_TRACER_VERSION", "github.com/codesweep-ai/tracer", "cs-tracer"},
+	// ref is what to ask for when the pin is missing: the cs- tools track their
+	// branch tip, and deadcode takes a release.
+	for _, tool := range []struct{ arg, module, bin, ref string }{
+		{"CS_LINT_VERSION", "github.com/codesweep-ai/lint", "cs-lint", "main"},
+		{"CS_LEDGER_VERSION", "github.com/codesweep-ai/ledger", "cs-ledger", "main"},
+		{"CS_TRACER_VERSION", "github.com/codesweep-ai/tracer", "cs-tracer", "main"},
+		{"CS_DEADCODE_VERSION", "golang.org/x/tools", "deadcode", "latest"},
 	} {
 		v := pins[tool.module]
 		if v == "" {
-			return fmt.Errorf("go.mod pins no version for %s: run `go get -tool %s/cmd/%s@main`",
-				tool.module, tool.module, tool.bin)
+			return fmt.Errorf("go.mod pins no version for %s: run `go get -tool %s/cmd/%s@%s`",
+				tool.module, tool.module, tool.bin, tool.ref)
 		}
 		args = append(args, "--build-arg", tool.arg+"="+v)
 	}
