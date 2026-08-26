@@ -67,11 +67,12 @@ One build serves every developer and every machine.
 **R7.** Toolchains **MUST** live under `/opt`, root-owned and shared, rather than in a per-user `$HOME`.
 
 **R8.** Every toolchain **MUST** be pinned in the `Containerfile` and **MUST** be on `PATH` for every shell,
-including a non-interactive `ssh <name> <cmd>`. The sibling `cs-` tools the image carries **MUST** be
+including a non-interactive `ssh <name> <cmd>`. The tools the image builds from source **MUST** be
 pinned by this module's `go.mod` rather than installed at `@latest`.
 
 Pinning those in `go.mod` keeps one source of truth: `make versions` reports what an image will
-ship, and `make repin` moves the pins in a diff somebody reviews. `cs-sandbox` itself is pinned to
+ship, and every pin moves in a diff somebody reviews. `make repin` moves the `cs-` ones to their
+branch tips. `cs-sandbox` itself is pinned to
 the revision of the binary running the build, because a module cannot name its own version. That
 revision has to be published for the install to resolve. Serving it from the checkout instead is
 what `cs-sandbox build --local-sandbox` is for, and it is the deliberate exception.

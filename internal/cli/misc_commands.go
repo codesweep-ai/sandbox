@@ -32,8 +32,9 @@ func newBuildCmd(app *App) *cobra.Command {
 			"`--engine podman` for the image only, or `--engine firecracker` to force the FC set.\n\n" +
 			"--slim builds the CI image instead: the same Containerfile with the developer\n" +
 			"toolchains removed, ~700 MB against 9.3 GB and minutes against tens of them. It is\n" +
-			"what makes booting real sandboxes on a hosted runner affordable — the full image\n" +
-			"does not fit on one. Add --with-agents when the tests being run drive claude, codex\n" +
+			"what makes booting real sandboxes on a hosted runner affordable: building the full one\n" +
+			"on every push costs more time and disk than such a job has. Add --with-agents when the\n" +
+			"tests being run drive claude, codex\n" +
 			"or opencode inside the sandbox; without it those three CLIs are absent.\n\n" +
 			"A slim build goes to " + slimImageRepo + "\n" +
 			"(or " + slimAgentsImageRepo + " with --with-agents),\n" +

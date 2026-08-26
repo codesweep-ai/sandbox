@@ -175,8 +175,12 @@ cs-sandbox build --engine podman       # image only (skip Firecracker)
 cs-sandbox build --engine firecracker  # force the Firecracker set (implies the image)
 ```
 
-The shipped image is 6.04 GB and takes tens of minutes, which does not fit a hosted CI runner. For a
-suite that boots real sandboxes there, build the slimmed one instead:
+The image is named after the version of `cs-sandbox` that built it, and `build` looks for that one
+on the registry before building anything. A released binary usually gets its image by download.
+[MANUAL.md](MANUAL.md#which-image-a-sandbox-runs) has the naming rules.
+
+The shipped image is 6.04 GB, more than a test job on a hosted runner wants to build on every push.
+For a suite that boots real sandboxes there, build the slimmed one instead:
 
 ```bash
 cs-sandbox build --slim                # no developer toolchains: ~474 MB, minutes

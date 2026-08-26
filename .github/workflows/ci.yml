@@ -1022,10 +1022,16 @@ jobs:
       # Each build tags the fully-qualified name, so the push takes it unaltered.
       # `build` pulls before it builds, so a re-run of this workflow finds the
       # image already published and pushes back the digest it just fetched.
+      # The runner's root volume holds the whole layer store. The shipped image is
+      # ~6 GB and the store is larger while a build is in flight, so print the
+      # headroom either side: a job that dies at 90% for want of disk should say
+      # so here rather than in a podman error about a partial write.
       - name: build and push the sandbox image
         run: |
           set -euo pipefail
+          df -h / | tail -1
           ./bin/cs-sandbox build --engine podman
+          df -h / | tail -1
           podman push '${{ steps.refs.outputs.image }}'
 
       - name: build and push the CI images

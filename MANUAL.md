@@ -229,8 +229,9 @@ for the image alone. The flag is repeatable, so `--engine podman --engine firecr
 `--slim` builds the CI image instead of the shipped one: the same Containerfile with the developer
 toolchains removed. That drops Go, Node, Python, the JDK, Maven, Neovim and its language servers,
 and Chromium. The image weighs about 474 MB against 6.04 GB, and it builds in minutes against tens
-of them. That difference is what lets a job boot real sandboxes on a hosted runner, where the full
-image does not fit on the disk at all. The derivation lives in `image/ci-slim.sh` and is applied to
+of them. That difference is what lets a job boot real sandboxes on a hosted runner. Building the
+full image on every push would cost more time and disk than such a job has. The derivation lives in
+`image/ci-slim.sh` and is applied to
 the real Containerfile, so the slim image can lag the shipped one in weight but never diverge from
 it in content.
 
