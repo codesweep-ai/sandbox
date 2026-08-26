@@ -84,7 +84,8 @@ oss:
   githubRepo: codesweep-ai/sandbox
 
   # True once the repository is public. Published history cannot be rewritten,
-  # so the history rules report as warnings from that point on.
+  # so the two rules that scan past commits for a leak report as warnings from
+  # that point on.
   published: true
 
   # This repository ships a binary, so it carries the whole set.
