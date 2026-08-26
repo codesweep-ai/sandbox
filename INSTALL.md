@@ -38,7 +38,7 @@ signature. Until then, build from source below.
 
 ### Or build from source
 
-Needs **Go 1.26+**, **git**, and **goreleaser** (which produces the version-stamped static binary):
+Needs **Go 1.27+**, **git**, and **goreleaser** (which produces the version-stamped static binary):
 
 ```bash
 # --- Go (1.26 or newer) ---

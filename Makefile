@@ -297,6 +297,15 @@ ledger:
 ## check: the full local gate — fmt-check, vet, the linters, and unit tests
 check: fmt-check vet lint deadcode test coverage-check prose refs oss surface
 
+# say prints a heading above each gate, so a long run reads as a list rather
+# than as a wall. Bold where a terminal is reading it and plain where a pipe
+# is: `make ci > ci.log` should leave a log somebody can read. The escapes are
+# the same ones scripts/check.sh uses in tracer, which is where the shape came
+# from.
+define say
+@if [ -t 1 ]; then printf '\n\033[1m==> %s\033[0m\n' "$(1)"; else printf '\n==> %s\n' "$(1)"; fi
+endef
+
 ## ci: every gate the CI workflow runs, on this machine
 ##
 ## One Linux leg of .github/workflows/ci.yml, in the order CI runs it, so a
@@ -308,18 +317,26 @@ check: fmt-check vet lint deadcode test coverage-check prose refs oss surface
 ## job builds, and one of them needs /dev/kvm. Run them with
 ## `make build-ci-image && make test-smoke`.
 ci:
+	$(call say,the gate a contributor runs before pushing)
 	@$(MAKE) --no-print-directory check
+	$(call say,module verification)
 	go mod verify
+	$(call say,vet behind the build tags)
 	go vet -tags integration ./...
 	go vet -tags smoke ./...
+	$(call say,actionlint)
 	@command -v actionlint >/dev/null 2>&1 || { \
 		echo "actionlint is not installed; go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12" >&2; \
 		exit 1; \
 	}
 	actionlint
+	$(call say,compile every package)
 	go build ./...
+	$(call say,build)
 	@$(MAKE) --no-print-directory build-go
+	$(call say,release manifest)
 	@$(MAKE) --no-print-directory release-check
+	$(call say,ledger)
 	@$(MAKE) --no-print-directory ledger
 	@printf '\nci: every gate ran. Not reproduced here: build-test on macOS and\n'
 	@printf 'WSL, the smoke tiers, and the coverage job that merges them.\n'
