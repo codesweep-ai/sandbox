@@ -174,6 +174,14 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim, withAgents, 
 		app.phase(fmt.Sprintf("installing cs-sandbox %s from this checkout rather than the module proxy", sbVersion))
 		args = append(args,
 			"-v", proxyDir+":"+guestProxyDir+":ro",
+			// The proxy is a host temp dir the invoking user owns, and on an
+			// SELinux host the build's RUN steps are denied every read of it:
+			// `go install` fails on the .info with "permission denied" and the
+			// mount looks empty rather than forbidden. Confinement off rather
+			// than a :z relabel, the same choice the run paths make — a relabel
+			// also has to be undone, and it fails outright on the virtiofs
+			// mounts a macOS podman machine serves host directories from.
+			"--security-opt", "label=disable",
 			// The real proxy still serves everything else, the Go toolchain
 			// included: a bare file:// proxy 404s for those and the build stops.
 			"--build-arg", "CS_GOPROXY=file://"+guestProxyDir+",https://proxy.golang.org,direct",

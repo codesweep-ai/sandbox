@@ -136,6 +136,11 @@ func TestLocalSandboxMountsTheProxyAndOverridesGOPROXY(t *testing.T) {
 	if !strings.HasSuffix(mount, guestProxyDir+":ro") {
 		t.Errorf("proxy is not mounted read-only at %s: %q", guestProxyDir, mount)
 	}
+	// Without this an SELinux host denies the build every read of the mount and
+	// `go install` stops on the .info with "permission denied".
+	if i := slices.Index(argv, "--security-opt"); i < 0 || i+1 >= len(argv) || argv[i+1] != "label=disable" {
+		t.Errorf("the mounted proxy is not readable under SELinux confinement (%v)", argv)
+	}
 	if !slices.Contains(argv, "CS_SANDBOX_VERSION="+Version) {
 		t.Errorf("the image would install a different version than the proxy serves (%v)", argv)
 	}
@@ -159,6 +164,9 @@ func TestBuildWithoutLocalSandboxSetsNoProxy(t *testing.T) {
 		}
 		if slices.Contains(call, "-v") {
 			t.Errorf("plain build bind-mounts something: %v", call)
+		}
+		if slices.Contains(call, "--security-opt") {
+			t.Errorf("plain build drops SELinux confinement: %v", call)
 		}
 	}
 }
