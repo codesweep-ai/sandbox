@@ -141,7 +141,10 @@ func (a *App) pullImage(ctx context.Context) bool {
 		argv = append(argv, "-q")
 	}
 	_, err := a.Runner.Run(ctx, run.Opts{Interactive: true}, append(argv, a.Image)...)
-	return err == nil
+	// A dry run prints the pull and then has to reach the build as well. Pulling
+	// is a mutation, so --dry-run skips the command and reports success; reading
+	// that as a hit would end the run having printed nothing that makes an image.
+	return err == nil && !a.dryRun()
 }
 
 // buildImage builds the sandbox image from the Containerfile. Split from

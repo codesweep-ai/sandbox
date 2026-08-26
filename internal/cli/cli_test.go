@@ -320,6 +320,42 @@ func TestImageRefUsesTheVersionedPackages(t *testing.T) {
 	}
 }
 
+// TestBuildDryRunReachesTheBuild: a dry run prints the pull AND the build.
+// Pulling is a mutation, so --dry-run skips the command and reports success;
+// reading that as a hit would leave a dry run of `build` having printed nothing
+// that makes an image, which is the one thing it exists to show.
+func TestBuildDryRunReachesTheBuild(t *testing.T) {
+	saved := Version
+	t.Cleanup(func() { Version = saved })
+	Version = testVersion
+
+	// A Fake with no canned failures answers yes to everything, which is what a
+	// skipped-because-dry-run command looks like from here.
+	app := &App{Exec: &run.Exec{DryRun: true}}
+	f, err := runRootWith(t, app, run.NewFake(), "build", "--engine", "podman")
+	if err != nil {
+		t.Fatalf("build --dry-run: %v", err)
+	}
+	var pulled, built bool
+	for _, call := range f.Calls {
+		if len(call) < 2 || call[0] != "podman" {
+			continue
+		}
+		switch call[1] {
+		case "pull":
+			pulled = true
+		case "build":
+			built = true
+		}
+	}
+	if !pulled {
+		t.Errorf("a dry run of build never reached the pull; calls=%s", f)
+	}
+	if !built {
+		t.Error("the skipped pull was taken as a hit, so the dry run printed no build")
+	}
+}
+
 // TestVersionImages: `version --images` is what the publish workflow reads to
 // learn what to push, so it has to name all three packages and fail rather than
 // print a partial list. A workflow that pushed two of three would leave a
