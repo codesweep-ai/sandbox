@@ -95,14 +95,22 @@ build-ci-fc: build-go build-ci-assets
 	  ./$(BIN) build --engine firecracker
 
 ## versions: what this build is made of — this repo's binary, every pinned tool,
-## the Go toolchain, and whether a workspace is overriding the go.mod pins. Every
-## line is read the same way, by running that binary's own `version` verb; run one
-## directly for the fuller line (cs-ledger also reports its renderer version).
+## the Go toolchain, and whether a workspace is overriding the go.mod pins. Each
+## line is read by asking that binary its own version. It deliberately depends on
+## nothing and runs from source: reporting a version must not trigger a build.
 .PHONY: versions
-versions: build-go
-	@printf '%-12s %-38s %s\n' '$(notdir $(BIN))' "$$($(BIN) version | awk '{print $$2}')" 'this repo'
+versions:
+	@if out="$$(go run -ldflags '$(LDFLAGS)' $(PKG) version 2>&1)"; then \
+		printf '%-12s %-38s %s\n' '$(notdir $(BIN))' "$$(printf '%s\n' "$$out" | awk 'NR==1{print $$2}')" 'this repo'; \
+	else \
+		printf '%-12s %s\n' '$(notdir $(BIN))' "FAILED — $$(printf '%s\n' "$$out" | head -1)"; \
+	fi
 	@for t in $$(go list tool 2>/dev/null); do \
-		printf '%-12s %s\n' "$$(basename $$t)" "$$(go tool $$t version | awk '{print $$2}')"; \
+		if out="$$(go tool $$t version 2>&1)"; then \
+			printf '%-12s %s\n' "$$(basename $$t)" "$$(printf '%s\n' "$$out" | awk 'NR==1{print $$2}')"; \
+		else \
+			printf '%-12s %s\n' "$$(basename $$t)" "FAILED — $$(printf '%s\n' "$$out" | head -1)"; \
+		fi; \
 	done
 	@printf '%-12s %s\n' 'go' "$$(go env GOVERSION)"
 	@w="$$(go env GOWORK)"; \
@@ -120,7 +128,7 @@ repin:
 	@tools="$$(go list tool 2>/dev/null | grep codesweep-ai || true)"; \
 	if [ -z "$$tools" ]; then \
 		echo "no codesweep-ai tools declared yet — add the first with:" >&2; \
-		echo "  go get -tool github.com/codesweep-ai/lint/cmd/cs-lint@main" >&2; \
+		echo "  GOPROXY=direct go get -tool github.com/codesweep-ai/lint/cmd/cs-lint@main" >&2; \
 		exit 1; \
 	fi; \
 	GOWORK=off GOPROXY=direct go get -tool $$(echo "$$tools" | sed 's|$$|@main|')
