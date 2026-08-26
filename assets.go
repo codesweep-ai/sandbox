@@ -149,7 +149,7 @@ func ToolPins(assetDir string) (map[string]string, error) {
 		}
 	}
 	pins := map[string]string{}
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 || !strings.HasPrefix(fields[0], "github.com/codesweep-ai/") {
 			continue
