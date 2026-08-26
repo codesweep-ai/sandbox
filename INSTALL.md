@@ -41,10 +41,10 @@ signature. Until then, build from source below.
 Needs **Go 1.27+**, **git**, and **goreleaser** (which produces the version-stamped static binary):
 
 ```bash
-# --- Go (1.26 or newer) ---
+# --- Go (1.27 or newer) ---
 brew install go                     # macOS
 sudo dnf install golang             # Fedora
-# Debian/Ubuntu package Go well behind 1.26, so install the current release instead
+# Debian/Ubuntu package Go well behind 1.27, so install the current release instead
 # (or pick your arch's tarball by hand from https://go.dev/dl/):
 ver="$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1)"
 curl -LO "https://go.dev/dl/${ver}.linux-amd64.tar.gz"
