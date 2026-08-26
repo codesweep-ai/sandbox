@@ -289,7 +289,7 @@ jobs:
   # rather than pinned: it is this family's own linter, and a check it gains has
   # to reach here on the day it lands.
   docs:
-    name: docs prose
+    name: docs prose and refs
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -325,12 +325,12 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make oss
 
-  # The documents against the software: every command they name exists, every
-  # command the binary carries is named, the settings the code reads are the
-  # settings they list, and a sample output is still what the command prints.
-  # It builds the binary first, because half the checks ask the binary itself.
-  walkthrough:
-    name: docs walkthrough
+  # The documented interface against the real one: every command they name
+  # exists, every command the binary carries is named, the settings the code
+  # reads are the settings they list, and a sample output is still what the
+  # command prints. It builds first, because every check here asks the binary.
+  surface:
+    name: docs surface
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -343,7 +343,7 @@ jobs:
         run: |
           go install github.com/codesweep-ai/lint/cmd/cs-lint@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - run: make walkthrough
+      - run: make surface
 
   # The ledger's freshness gate. CONTRIBUTING.md asks for a render and a check
   # before every commit that touches ledger/, and nothing enforced it until

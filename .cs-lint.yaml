@@ -8,50 +8,76 @@
 # every reported problem is a real one: a check that cries wolf is worse than
 # no check.
 
+# The documentation block: the set of documents the checks read, then one
+# section per documentation linter.
 docs:
-  # Directories holding fixtures, corpora or generated Markdown, added to the
-  # linter's own list. image/ is embedded in the binary (assets.go) and shipped
-  # into the sandbox, so it is payload rather than this project's prose.
-  skipExtra:
-    - image
+  prose:
+    # Directories holding fixtures, corpora or generated Markdown, added to the
+    # linter's own list. image/ is embedded in the binary (assets.go) and shipped
+    # into the sandbox, so it is payload rather than this project's prose.
+    skipExtra:
+      - image
 
-  # The domain terms a reader of this project cannot infer. Each must be
-  # introduced where a document first uses it: glossed on the spot, defined in a
-  # glossary table, or linked to the page that defines it.
-  #
-  # Leave out any term that collides with a common verb: the check cannot tell
-  # the noun "pin" from "pins" and would fire on every ordinary use of the
-  # latter. "sandbox" is deliberately absent too — it is the subject of every
-  # document, and the manual's Name line is a man-page convention that cannot
-  # gloss it.
-  glossary:
-    - engine
-    - group
-    - seed
-    - fabric
+    # The domain terms a reader of this project cannot infer. Each must be
+    # introduced where a document first uses it: glossed on the spot, defined in a
+    # glossary table, or linked to the page that defines it.
+    #
+    # Leave out any term that collides with a common verb: the check cannot tell
+    # the noun "pin" from "pins" and would fire on every ordinary use of the
+    # latter. "sandbox" is deliberately absent too. It is the subject of every
+    # document, and the manual's Name line is a man-page convention that cannot
+    # gloss it.
+    glossary:
+      - engine
+      - group
+      - seed
+      - fabric
 
-  # The project's own command name, which starts sentences in lower case.
-  # Without it the splitter reads "Nothing prompts. cs-sandbox exits 1." as one
-  # six-word sentence and reports a length that is not real.
-  lowercaseStarters:
-    - cs-sandbox
+    # The project's own command name, which starts sentences in lower case.
+    # Without it the splitter reads "Nothing prompts. cs-sandbox exits 1." as one
+    # six-word sentence and reports a length that is not real.
+    lowercaseStarters:
+      - cs-sandbox
 
-  # Verbs the shared list does not carry. Only what is this project's own
-  # belongs here; an ordinary English verb belongs in the shared list, where
-  # every project gets it. runuser is the command, used as a verb in
-  # INSTALL.md; not English.
-  #
-  # lend/borrow are ordinary English and belong in the shared list rather than
-  # here. They are carried locally until they land there, because they are this
-  # project's central vocabulary now: a sandbox BORROWS a credential the host
-  # LENDS it, and prose that cannot say so reads worse than the rule protects.
-  projectVerbs:
-    - runuser
-    - lend
-    - lends
-    - lent
-    - borrow
-    - borrows
+    # Verbs the shared list does not carry. Only what is this project's own
+    # belongs here; an ordinary English verb belongs in the shared list, where
+    # every project gets it. runuser is the command, used as a verb in
+    # INSTALL.md; not English.
+    #
+    # lend/borrow are ordinary English and belong in the shared list rather than
+    # here. They are carried locally until they land there, because they are this
+    # project's central vocabulary now: a sandbox BORROWS a credential the host
+    # LENDS it, and prose that cannot say so reads worse than the rule protects.
+    projectVerbs:
+      - runuser
+      - lend
+      - lends
+      - lent
+      - borrow
+      - borrows
+
+  refs:
+    # The walkthroughs say plainly that these paths are the reader's to supply.
+    placeholderOK: ["~/projects/"]
+
+  surface:
+    tool: cs-sandbox
+    toolPath: bin/cs-sandbox
+
+    envPrefix: CS_SANDBOX_
+
+    envInternal:
+      CS_SANDBOX_COVERAGE_LOG: "test instrumentation: the coverage emitter writes a record only when the suite sets it"
+      CS_SANDBOX_IT_HOSTROUTE: "test instrumentation: opts the live host-route test in"
+
+    # The guest's own scripts read the settings the seed hands them. They are an
+    # internal protocol between the CLI and the image, not something a user sets.
+    sourceSkip:
+      "image/": "the sandbox image's own scripts, read inside a guest"
+
+    # No document shows a captured sample, so there is nothing to reproduce yet.
+    # Adding one means adding the verb here.
+    safeVerbs: []
 
 oss:
   project: cs-sandbox
@@ -85,25 +111,3 @@ oss:
 
   requiredTargets: ["build", "test", "check", "lint", "docs", "oss", "clean"]
   expectedTargets: ["help", "install", "uninstall", "fmt", "fmt-check", "vet", "deadcode"]
-
-walkthrough:
-  tool: cs-sandbox
-  toolPath: bin/cs-sandbox
-
-  envPrefix: CS_SANDBOX_
-
-  envInternal:
-    CS_SANDBOX_COVERAGE_LOG: "test instrumentation: the coverage emitter writes a record only when the suite sets it"
-    CS_SANDBOX_IT_HOSTROUTE: "test instrumentation: opts the live host-route test in"
-
-  # The guest's own scripts read the settings the seed hands them. They are an
-  # internal protocol between the CLI and the image, not something a user sets.
-  sourceSkip:
-    "image/": "the sandbox image's own scripts, read inside a guest"
-
-  # No document shows a captured sample, so there is nothing to reproduce yet.
-  # Adding one means adding the verb here.
-  safeVerbs: []
-
-  # The walkthroughs say plainly that these paths are the reader's to supply.
-  placeholderOK: ["~/projects/"]

@@ -186,7 +186,7 @@ edit one:
    the sentence backwards.
 3. **Give every sentence a subject and a verb.** "Two version numbers, one verdict, one remedy"
    reads as knowing rather than clear. Say what the thing is.
-4. **A walkthrough is steps that work.** Put the reasons somewhere else. A reader working through
+4. **A how-to is steps that work.** Put the reasons somewhere else. A reader working through
    one wants commands that run.
 5. **Describe what the software does, not how it came to do it.** Leave out what the project used
    to do, what was tried and dropped, and numbers from a run somebody did once.
@@ -198,7 +198,7 @@ The mechanical rules are enforced rather than restated here.
 repository. To read what a rule wants and the guidance behind it:
 
 ```bash
-cs-lint docs --explain
+cs-lint prose --explain
 ```
 
 That listing is the authority. Where this section and the linter disagree, the linter is right.

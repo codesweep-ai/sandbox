@@ -9,7 +9,7 @@ issues:
   max-issues-per-linter: 0
   max-same-issues: 0
 
-# The Go counterpart to `cs-lint docs`, and shared the same way: this file stays
+# The Go counterpart to `cs-lint prose`, and shared the same way: this file stays
 # byte-identical across the family, so a change to a check goes back into the
 # shared copy and is copied out again. A project's own exception does not belong
 # here. It goes in a `//nolint:<linter> // <reason>` at the site, where the
