@@ -1,0 +1,16 @@
+{
+  "id": "SBX-028",
+  "title": "Publishing an image needs a workflow; there is no way to push one by hand",
+  "type": "feature-idea",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "user (host), while settling the publish design: \"no cs-sandbox push for now, add a ledger entry for it as an idea\"",
+  "opened": "2026-08-26",
+  "resolved": null,
+  "stint": null,
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "CI is the only publisher of the sandbox images. It builds them from a clean checkout of a pushed commit and pushes them to `ghcr.io/codesweep-ai/sandbox` and the two `-slim` packages, which is what makes a tag mean \"the image CI built from this commit\".\n\nThat leaves no supported way for a maintainer to publish one from a workstation. The cases where it would matter are narrow: a workflow that is broken, a registry outage that dropped a tag, or a one-off image for a revision CI skipped. `podman push` does the job today, because `cs-sandbox build` already tags the fully-qualified name that a push takes unaltered.\n\nA `cs-sandbox push` would add the checks a bare `podman push` has no way to make: refuse a `-dirty` tag, refuse a revision the module proxy cannot resolve, and refuse an image whose `cs-sandbox` came from `--local-sandbox` rather than from the version its tag names. Each of those publishes something the tag misdescribes.\n\nWorth doing only if hand-publishing turns out to be a thing that happens. Until then the absence is deliberate, and this record is here so the reason is findable.",
+  "notes": [],
+  "links": ["SBX-014"]
+}
