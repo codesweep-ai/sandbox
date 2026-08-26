@@ -327,12 +327,31 @@ func newRootCmd(app *App) *cobra.Command {
 }
 
 func newVersionCmd(app *App) *cobra.Command {
-	return &cobra.Command{
+	var images bool
+	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Print the cs-sandbox version, and the image it names",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
+			// --images: every reference this binary names, for a caller that has
+			// to act on one. The release workflow builds and pushes all three,
+			// and asking here is what keeps the naming rule in one place instead
+			// of half here and half in a shell substitution.
+			if images {
+				for _, r := range []struct{ label, repo string }{
+					{"image", imageRepo},
+					{"image-slim", slimImageRepo},
+					{"image-slim-agents", slimAgentsImageRepo},
+				} {
+					ref, err := imageRef(r.repo)
+					if err != nil {
+						return err
+					}
+					fmt.Fprintf(out, "%-18s %s\n", r.label, ref)
+				}
+				return nil
+			}
 			fmt.Fprintf(out, "cs-sandbox %s (%s/%s, %s)\n",
 				buildVersion(), runtime.GOOS, runtime.GOARCH, runtime.Version())
 			// The image this binary creates from. Printed here because the name
@@ -348,6 +367,9 @@ func newVersionCmd(app *App) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&images, "images", false,
+		"print every image reference this binary names, one per line, instead of the version")
+	return cmd
 }
 
 func newLsCmd(app *App) *cobra.Command {

@@ -957,3 +957,92 @@ jobs:
       # baseline records has stopped being reached by the tier that reached it.
       - name: report and gate
         run: make coverage-check
+
+  # Publish the three images, from main and from a release tag only.
+  #
+  # CI is the only publisher. A tag names the image CI built from that commit,
+  # which is a promise a workstation cannot keep: the image is not reproducible
+  # (SPEC §14) and a working tree can differ from what was pushed. Publishing
+  # from a clean checkout of a pushed commit is what makes the name true.
+  #
+  # It runs after the tests, because every sandbox anybody creates runs what this
+  # pushes. It does not gate them: nothing waits on this job.
+  publish-images:
+    name: publish images (ubuntu-latest)
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: [build-test, smoke-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the module version is derived from the VCS stamp
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # The layer store, not the images. A published image cannot seed a build
+      # cache — podman matches steps against the per-step intermediate images a
+      # build leaves behind, and a pull carries none of them — so the store is
+      # the thing worth keeping. Keyed on the build's inputs alone, with no sha:
+      # a commit that changes none of them hits the key exactly, actions/cache
+      # skips the save, and the build re-runs only the codesweep-tools layer,
+      # which is ~31 MB. A commit that does change them saves a new entry.
+      - name: cache the image build store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/containers/storage
+          key: sandbox-image-store-${{ hashFiles('image/**', 'go.mod') }}
+          restore-keys: sandbox-image-store-
+
+      - name: build the binary that names the images
+        run: make build-go
+
+      # Asked of the binary rather than assembled here: the name carries the
+      # version, and the naming rule lives in one place.
+      - name: the references this revision publishes
+        id: refs
+        run: |
+          set -euo pipefail
+          ./bin/cs-sandbox version
+          # Underscores, not the hyphens the labels use: a GitHub expression
+          # reads outputs.image-slim as a subtraction.
+          ./bin/cs-sandbox version --images | while read -r label ref; do
+            echo "${label//-/_}=$ref" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: log in to ghcr.io
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | podman login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      # Each build tags the fully-qualified name, so the push takes it unaltered.
+      # `build` pulls before it builds, so a re-run of this workflow finds the
+      # image already published and pushes back the digest it just fetched.
+      - name: build and push the sandbox image
+        run: |
+          set -euo pipefail
+          ./bin/cs-sandbox build --engine podman
+          podman push '${{ steps.refs.outputs.image }}'
+
+      - name: build and push the CI images
+        run: |
+          set -euo pipefail
+          ./bin/cs-sandbox build --engine podman --slim
+          podman push '${{ steps.refs.outputs.image_slim }}'
+          ./bin/cs-sandbox build --engine podman --slim --with-agents
+          podman push '${{ steps.refs.outputs.image_slim_agents }}'
+
+      - name: what was published
+        run: |
+          {
+            echo '### Images published'
+            echo
+            ./bin/cs-sandbox version --images | sed 's/^/    /'
+          } >> "$GITHUB_STEP_SUMMARY"

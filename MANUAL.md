@@ -31,7 +31,7 @@ cs-sandbox build [--engine ENGINE]...  cs-sandbox doctor [--engine ENGINE]
 cs-sandbox agent-login <agent> <name>  cs-sandbox install-agent-tools [dir]
 cs-sandbox lender [--addr ADDR]
 cs-sandbox completion bash|zsh|fish|powershell
-cs-sandbox version
+cs-sandbox version [--images]
 
 Global: [-v|--verbose] [-q|--quiet] [--dry-run]
 ```
@@ -269,6 +269,16 @@ cs-sandbox v0.1.0 (linux/amd64, go1.27.0)
 image      ghcr.io/codesweep-ai/sandbox:v0.1.0
 ```
 
+`--images` prints every reference this binary names instead, one per line, including the two CI
+images that `--slim` builds:
+
+```
+$ cs-sandbox version --images
+image              ghcr.io/codesweep-ai/sandbox:v0.1.0
+image-slim         ghcr.io/codesweep-ai/sandbox-slim:v0.1.0
+image-slim-agents  ghcr.io/codesweep-ai/sandbox-slim-agents:v0.1.0
+```
+
 `build` looks for that image on the registry and builds it only when there is none. A released
 binary usually reaches a working image in the time a download takes. `create` does neither: when the
 image is absent it says so and names `build`.
@@ -277,6 +287,9 @@ A binary built from a modified tree names a `-dirty` tag. No `-dirty` image is e
 that binary always builds its own. That is what keeps a Containerfile you are editing from being
 answered by a published image. A binary that reports no version at all names no image, and says so
 rather than guessing; `make build` from a git clone gives it one.
+
+Images are published by CI alone, on every push to `main` and on every release tag. A commit that
+has not reached `main` therefore has no image to pull, and `build` builds one.
 
 `completion` writes a script to stdout. It completes sandbox names, store names and flag values
 live, by asking the binary. [INSTALL.md](INSTALL.md#optional-shell-completion) has the per-shell

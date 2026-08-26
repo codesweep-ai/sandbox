@@ -320,6 +320,49 @@ func TestImageRefUsesTheVersionedPackages(t *testing.T) {
 	}
 }
 
+// TestVersionImages: `version --images` is what the publish workflow reads to
+// learn what to push, so it has to name all three packages and fail rather than
+// print a partial list. A workflow that pushed two of three would leave a
+// release half published, with nothing saying so.
+func TestVersionImages(t *testing.T) {
+	saved := Version
+	t.Cleanup(func() { Version = saved })
+
+	t.Run("names every package", func(t *testing.T) {
+		Version = testVersion
+		app := &App{errW: io.Discard}
+		var out bytes.Buffer
+		root := newRootCmd(app)
+		root.SetArgs([]string{"version", "--images"})
+		root.SetOut(&out)
+		root.SetErr(io.Discard)
+		if err := root.Execute(); err != nil {
+			t.Fatalf("version --images: %v", err)
+		}
+		for _, want := range []string{
+			"image              " + imageRepo + ":" + testVersion,
+			"image-slim         " + slimImageRepo + ":" + testVersion,
+			"image-slim-agents  " + slimAgentsImageRepo + ":" + testVersion,
+		} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("missing %q in:\n%s", want, out.String())
+			}
+		}
+	})
+
+	t.Run("refuses an unversioned binary", func(t *testing.T) {
+		Version = devVersion
+		app := &App{errW: io.Discard}
+		root := newRootCmd(app)
+		root.SetArgs([]string{"version", "--images"})
+		root.SetOut(io.Discard)
+		root.SetErr(io.Discard)
+		if err := root.Execute(); err == nil {
+			t.Fatal("version --images succeeded with no version to name images after")
+		}
+	})
+}
+
 // TestBuildSlim: --slim derives a Containerfile with ci-slim.sh and builds from
 // that one, under a tag of its own; the default build is untouched. The tag
 // matters as much as the file — three images that are not interchangeable, and
