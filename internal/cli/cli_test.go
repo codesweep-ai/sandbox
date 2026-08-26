@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -48,7 +50,36 @@ func TestVerbosityGating(t *testing.T) {
 // so no external podman/firecracker is touched.
 func runRoot(t *testing.T, app *App, args ...string) (*run.Fake, error) {
 	t.Helper()
-	f := run.NewFake()
+	saved := Version
+	t.Cleanup(func() { Version = saved })
+	Version = testVersion
+	return runRootWith(t, app, unpublished(), args...)
+}
+
+// testVersion stands in for the module version a test binary does not carry. Go
+// records one only when it builds from a checkout and `go test` does not, so
+// without this every command that names an image would take the refusal path —
+// which is a case of its own, held by TestImageTag.
+const testVersion = "v0.0.0-20260101000000-0123456789ab"
+
+// runRootAsBuilt runs the tree without standing in a version, for the tests that
+// have chosen one — or chosen to have none.
+func runRootAsBuilt(t *testing.T, app *App, args ...string) (*run.Fake, error) {
+	t.Helper()
+	return runRootWith(t, app, unpublished(), args...)
+}
+
+// unpublished is a Fake whose registry has no image for this version, which is
+// the ordinary case for a working checkout and the one that makes `build`
+// build. A Fake that answered yes to everything would let the pull succeed and
+// skip the build, leaving every assertion about podman build nothing to read.
+func unpublished() *run.Fake {
+	return run.NewFake().On("podman pull", run.Result{}, errors.New("manifest unknown"))
+}
+
+// runRootWith runs the tree against a Fake the caller prepared.
+func runRootWith(t *testing.T, app *App, f *run.Fake, args ...string) (*run.Fake, error) {
+	t.Helper()
 	app.Runner = f
 	if app.errW == nil {
 		app.errW = io.Discard
@@ -221,6 +252,74 @@ func TestSandboxPinIsInstallable(t *testing.T) {
 	}
 }
 
+// ociTag is the tag grammar a registry accepts. A reference podman rejects is
+// found here rather than several minutes into a build.
+var ociTag = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$`)
+
+// TestImageTag: the image is named after the version that built it, so the tag
+// has to BE that version — and has to be a legal tag. The two do not always
+// coincide: Go marks a binary from a modified tree with +dirty, and + is not a
+// tag character. -dirty is, nothing ever publishes one, and so a dirty binary
+// asks the registry for something that cannot exist, which is the intent.
+func TestImageTag(t *testing.T) {
+	saved := Version
+	t.Cleanup(func() { Version = saved })
+
+	cases := []struct {
+		name, stamp, want, wantErr string
+	}{
+		{"pseudo-version", "v0.0.0-20260826151729-1c4a9cc0fe4c", "v0.0.0-20260826151729-1c4a9cc0fe4c", ""},
+		{"release", "v1.2.3", "v1.2.3", ""},
+		{"dirty tree", "v0.0.0-20260826151729-1c4a9cc0fe4c+dirty", "v0.0.0-20260826151729-1c4a9cc0fe4c-dirty", ""},
+		{"dirty at a tag", "v1.2.3+dirty", "v1.2.3-dirty", ""},
+		{"no version at all", devVersion, "", "reports no version"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			Version = c.stamp
+			got, err := imageTag()
+			if c.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+					t.Fatalf("imageTag() error = %v, want one saying %q", err, c.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("imageTag(): %v", err)
+			}
+			if got != c.want {
+				t.Errorf("imageTag() = %q, want %q", got, c.want)
+			}
+			if !ociTag.MatchString(got) {
+				t.Errorf("%q is not a legal OCI tag; podman would refuse the reference", got)
+			}
+		})
+	}
+}
+
+// TestImageRefUsesTheVersionedPackages: each of the three images is named for
+// the same version, in a package of its own. A sandbox package that could hand
+// out a toolchain-less image is the thing this prevents.
+func TestImageRefUsesTheVersionedPackages(t *testing.T) {
+	saved := Version
+	t.Cleanup(func() { Version = saved })
+	Version = testVersion
+
+	for repo, want := range map[string]string{
+		imageRepo:           "ghcr.io/codesweep-ai/sandbox:" + testVersion,
+		slimImageRepo:       "ghcr.io/codesweep-ai/sandbox-slim:" + testVersion,
+		slimAgentsImageRepo: "ghcr.io/codesweep-ai/sandbox-slim-agents:" + testVersion,
+	} {
+		got, err := imageRef(repo)
+		if err != nil {
+			t.Fatalf("imageRef(%q): %v", repo, err)
+		}
+		if got != want {
+			t.Errorf("imageRef(%q) = %q, want %q", repo, got, want)
+		}
+	}
+}
+
 // TestBuildSlim: --slim derives a Containerfile with ci-slim.sh and builds from
 // that one, under a tag of its own; the default build is untouched. The tag
 // matters as much as the file — three images that are not interchangeable, and
@@ -234,10 +333,10 @@ func TestBuildSlim(t *testing.T) {
 		wantSlimFile  bool
 		wantKeepAgent bool
 	}{
-		{"default", nil, "", "localhost/cs-sandbox:44", false, false},
-		{"slim", []string{"--slim"}, "", "localhost/cs-sandbox:ci", true, false},
-		{"slim with agents", []string{"--slim", "--with-agents"}, "", "localhost/cs-sandbox:ci-agents", true, true},
-		// An explicit tag wins: it is how CI pins the build and the test run to one.
+		{"default", nil, "", imageRepo + ":" + testVersion, false, false},
+		{"slim", []string{"--slim"}, "", slimImageRepo + ":" + testVersion, true, false},
+		{"slim with agents", []string{"--slim", "--with-agents"}, "", slimAgentsImageRepo + ":" + testVersion, true, true},
+		// An explicit reference wins: it is how CI pins the build and the test run to one.
 		{"slim honours CS_SANDBOX_IMAGE", []string{"--slim"}, "localhost/pinned:7", "localhost/pinned:7", true, false},
 	}
 	for _, c := range cases {

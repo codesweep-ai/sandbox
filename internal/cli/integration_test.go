@@ -44,11 +44,18 @@ var runID = func() string {
 	return hex.EncodeToString(b)
 }()
 
-func image() string {
-	if v := os.Getenv("CS_SANDBOX_IMAGE"); v != "" {
-		return v
+// image is the sandbox image the live tests run against. There is no default any
+// more: the name carries the version of the cs-sandbox that built it, and a test
+// binary carries no version to derive it from. `make test-integration` and
+// `make test-smoke` both set the variable from the binary; a bare `go test`
+// against these tags has to say which image it means.
+func image(t *testing.T) string {
+	t.Helper()
+	v := os.Getenv("CS_SANDBOX_IMAGE")
+	if v == "" {
+		t.Skip("set CS_SANDBOX_IMAGE to the image to run against, or use `make test-integration`")
 	}
-	return "localhost/cs-sandbox:44"
+	return v
 }
 
 // storeImage is the image a member seeds into a shared store, and it prefers the
@@ -71,12 +78,12 @@ func storeImage(t *testing.T) string {
 	if v := os.Getenv("CS_SANDBOX_IMAGE"); v != "" {
 		return v
 	}
-	const slim = "localhost/cs-sandbox:ci"
+	const slim = "localhost/sandbox:ci"
 	r := &run.Exec{}
 	if _, err := r.Run(context.Background(), run.Opts{ReadOnly: true}, "podman", "image", "exists", slim); err == nil {
 		return slim
 	}
-	return image()
+	return image(t)
 }
 
 // liveSetup skips unless podman + the image are present, redirects instance/tier
@@ -90,7 +97,7 @@ func liveSetup(t *testing.T) (*run.Exec, hostenv.Host) {
 	if _, err := r.Run(context.Background(), run.Opts{ReadOnly: true}, "podman", "info"); err != nil {
 		t.Skipf("podman unavailable: %v", err)
 	}
-	img := image()
+	img := image(t)
 	if _, err := r.Run(context.Background(), run.Opts{ReadOnly: true}, "podman", "image", "exists", img); err != nil {
 		t.Skipf("image %s not built (run: cs-sandbox build) — %v", img, err)
 	}

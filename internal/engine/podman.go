@@ -308,11 +308,17 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 // image, which `cs-sandbox build` builds directly.
 func (p *Podman) Prepare(ctx context.Context) error { return nil }
 
-// Verify confirms the shared image exists, so create fails cleanly (pointing at
-// build) instead of with a raw "image not known" from podman run.
+// Verify confirms the shared image is on this host, so create fails cleanly
+// (pointing at build) instead of with a raw "image not known" from podman run.
+//
+// This check is also what keeps create from fetching anything. `podman create`
+// defaults to --pull=missing and would pull the image itself, and a create that
+// quietly moves gigabytes is not what anybody asked for; failing here first is
+// what makes the pull a thing you ask for by name.
 func (p *Podman) Verify(ctx context.Context) error {
 	if _, err := p.d.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "image", "exists", p.d.Image); err != nil {
-		return fmt.Errorf("sandbox image %q not built — run: cs-sandbox build", p.d.Image)
+		return fmt.Errorf("sandbox image %q is not on this host — run: cs-sandbox build "+
+			"(it pulls that image when one is published, and builds it when none is)", p.d.Image)
 	}
 	return nil
 }

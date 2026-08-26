@@ -14,11 +14,18 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
 
-func image() string {
-	if v := os.Getenv("CS_SANDBOX_IMAGE"); v != "" {
-		return v
+// image is the sandbox image the live tests run against. There is no default
+// any more: the name carries the version of the cs-sandbox that built it, and a
+// test binary carries no version to derive it from. `make test-integration` and
+// `make test-smoke` both set the variable from the binary; a bare `go test`
+// against these tags has to say which image it means.
+func image(t *testing.T) string {
+	t.Helper()
+	v := os.Getenv("CS_SANDBOX_IMAGE")
+	if v == "" {
+		t.Skip("set CS_SANDBOX_IMAGE to the image to run against, or use `make test-integration`")
 	}
-	return "localhost/cs-sandbox:44"
+	return v
 }
 
 func requirePodman(t *testing.T, requiredImage string) {
@@ -40,9 +47,9 @@ func requirePodman(t *testing.T, requiredImage string) {
 // TestStoreLifecycleLive: create -> seed (nested pull) -> list -> remove, on real
 // podman. Proves the shared-image-store path (--image-store) end to end.
 func TestStoreLifecycleLive(t *testing.T) {
-	requirePodman(t, image())
+	requirePodman(t, image(t))
 	ctx := context.Background()
-	m := Manager{Runner: &run.Exec{}, Image: image()}
+	m := Manager{Runner: &run.Exec{}, Image: image(t)}
 	name := fmt.Sprintf("csgostoretest%d", os.Getpid())
 	t.Cleanup(func() { _ = m.Remove(context.Background(), name, true) })
 
@@ -83,10 +90,10 @@ func TestStoreLifecycleLive(t *testing.T) {
 // the host store into the shared store (no registry pull), and rejects an image
 // that isn't in the host store.
 func TestStoreSeedFromHostLive(t *testing.T) {
-	requirePodman(t, image())
+	requirePodman(t, image(t))
 	ctx := context.Background()
 	r := &run.Exec{}
-	m := Manager{Runner: r, Image: image()}
+	m := Manager{Runner: r, Image: image(t)}
 	name := fmt.Sprintf("csgostorefh%d", os.Getpid())
 	t.Cleanup(func() { _ = m.Remove(context.Background(), name, true) })
 

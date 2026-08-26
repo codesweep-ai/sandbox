@@ -35,10 +35,11 @@ func newBuildCmd(app *App) *cobra.Command {
 			"what makes booting real sandboxes on a hosted runner affordable — the full image\n" +
 			"does not fit on one. Add --with-agents when the tests being run drive claude, codex\n" +
 			"or opencode inside the sandbox; without it those three CLIs are absent.\n\n" +
-			"A slim build is tagged " + slimImage + " (or " + slimAgentsImage + " with\n" +
-			"--with-agents) unless CS_SANDBOX_IMAGE says otherwise, so it can never be mistaken\n" +
-			"for the shipped image, nor the two slim ones for each other. Point the same\n" +
-			"variable at that tag when running the tests.",
+			"A slim build goes to " + slimImageRepo + "\n" +
+			"(or " + slimAgentsImageRepo + " with --with-agents),\n" +
+			"tagged with this cs-sandbox's version, unless CS_SANDBOX_IMAGE says otherwise — so it\n" +
+			"can never be mistaken for the shipped image, nor the two slim ones for each other.\n" +
+			"Point the same variable at that reference when running the tests.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if withAgents && !slim {
@@ -59,44 +60,94 @@ func newBuildCmd(app *App) *cobra.Command {
 	return cmd
 }
 
-// slimImage and slimAgentsImage are what a --slim build is tagged when
-// CS_SANDBOX_IMAGE does not say otherwise.
-//
-// Separate tags rather than the default one because none of the three images is
-// interchangeable with another: a sandbox created from a slim one has no
-// toolchains, and letting it answer to localhost/cs-sandbox:44 would hand that to
-// a developer who asked for the real thing and leave them to work out why go had
-// vanished. --with-agents earns a tag of its own for the same reason one step
-// down — it is ~730 MB larger and it is the only one of the two that can run an
-// agent, so a run that got the wrong one fails at `command -v claude` rather than
-// anywhere near the flag that chose it.
-const (
-	slimImage       = "localhost/cs-sandbox:ci"
-	slimAgentsImage = "localhost/cs-sandbox:ci-agents"
-)
-
 func runBuild(cmd *cobra.Command, app *App, engines []string, slim, withAgents, localSandbox bool) error {
 	wantFC, err := buildWantsFirecracker(app, engines)
 	if err != nil {
 		return err
 	}
 
-	// Retag before anything reads app.Image: the phase line below, and the
-	// Firecracker artifacts, which are exported from whatever this tag names.
+	// Retarget before anything reads app.Image: the pull below, the phase lines,
+	// and the Firecracker artifacts, which are exported from whatever it names.
 	//
 	// An explicit CS_SANDBOX_IMAGE wins — that is how CI pins the build and the
-	// test run to one tag. Empty counts as unset, which is how envOr read the
-	// variable when it set app.Image in the first place; testing for presence
-	// instead would let `CS_SANDBOX_IMAGE= cs-sandbox build --slim` tag a slim
-	// image :44.
+	// test run to one reference. Empty counts as unset, the way it was read at
+	// startup; testing for presence instead would let
+	// `CS_SANDBOX_IMAGE= cs-sandbox build --slim` publish a slim image under the
+	// sandbox package.
+	//
+	// Each slim variant has a package of its own, because none of the three
+	// images is interchangeable with another: a sandbox made from a slim one has
+	// no toolchains, and letting it answer to the sandbox package would hand that
+	// to a developer who asked for the real thing and leave them working out why
+	// go had vanished. --with-agents earns a package for the same reason one step
+	// down — it is ~730 MB larger and it is the only one of the two that can run
+	// an agent, so a run that got the wrong one fails at `command -v claude`
+	// rather than anywhere near the flag that chose it.
 	if slim && os.Getenv("CS_SANDBOX_IMAGE") == "" {
-		app.Image = slimImage
+		repo := slimImageRepo
 		if withAgents {
-			app.Image = slimAgentsImage
+			repo = slimAgentsImageRepo
 		}
+		ref, err := imageRef(repo)
+		if err != nil {
+			return err
+		}
+		app.Image = ref
+	}
+	if err := app.requireImage(); err != nil {
+		return err
 	}
 
-	// The shared image first — both engines are built from it.
+	// Prefer the published image. It is named after the version that would build
+	// it, so pulling is not a shortcut to a lesser thing — it is the same image,
+	// in a fraction of the time. Nothing is published for a dirty tree or an
+	// unpushed commit, so the pull simply misses there and the build runs, which
+	// is also what stops a Containerfile you are editing from being quietly
+	// replaced by somebody else's image.
+	if !localSandbox && app.pullImage(cmd.Context()) {
+		app.phase("pulled " + app.Image)
+	} else if err := buildImage(cmd, app, slim, withAgents, localSandbox); err != nil {
+		return err
+	}
+
+	// Firecracker artifacts (download + guest kernel + base rootfs), built from
+	// the image just produced. Prepare() preflights first, so a host missing the
+	// FC packages or /dev/kvm fails fast with an actionable error.
+	if wantFC {
+		app.phase("setting up firecracker artifacts…")
+		// The FC build emits top-level phase lines (guest kernel, base rootfs,
+		// firecracker download), so route this engine's callback to phase (shown
+		// unless --quiet) rather than the verbose-only per-command progress sink.
+		d := app.engineDeps()
+		d.Progress = app.phase
+		if err := engine.NewFirecracker(d).Prepare(cmd.Context()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pullImage fetches the image this binary is named for, reporting whether it
+// arrived. A miss is the ordinary case for an unpublished revision, so it is not
+// an error and the caller builds instead; podman's own message is left on
+// stderr only under --verbose, where the reason for a miss is worth seeing.
+func (a *App) pullImage(ctx context.Context) bool {
+	a.phase("looking for " + a.Image + " on the registry…")
+	// Interactive, and -q unless --verbose: the same shape the build below uses.
+	// A pull moves gigabytes, so podman's own progress is the only thing between
+	// the phase line above and several silent minutes.
+	argv := []string{"podman", "pull"}
+	if !a.Verbose {
+		argv = append(argv, "-q")
+	}
+	_, err := a.Runner.Run(ctx, run.Opts{Interactive: true}, append(argv, a.Image)...)
+	return err == nil
+}
+
+// buildImage builds the sandbox image from the Containerfile. Split from
+// runBuild so the pull above can stand beside it as the other way to arrive at
+// the same image, rather than being an early return inside one long function.
+func buildImage(cmd *cobra.Command, app *App, slim, withAgents, localSandbox bool) error {
 	// The build assets come from the checkout when present, else from the
 	// binary's embedded copy (so a downloaded binary can build the image).
 	imgDir, cleanup, err := assets.ImageDir(app.AssetDir)
@@ -142,23 +193,29 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim, withAgents, 
 	// cs-sandbox pins itself: a module cannot name its own version in its
 	// manifest, but the running binary knows which revision built it.
 	sbVersion, dirtyNote := sandboxPin()
-	switch {
-	case sbVersion == "":
-		sbVersion = "latest"
-		app.phase("this cs-sandbox reports no module version; the image will install cs-sandbox@latest")
-	case dirtyNote != "":
+	if sbVersion == "" {
+		return errors.New("this cs-sandbox reports no module version, so the image has no cs-sandbox to install. " +
+			"Build with `make build` from a git clone rather than with `go run`")
+	}
+	if dirtyNote != "" {
 		app.phase(dirtyNote)
 	}
-	args = append(args, "--build-arg", "CS_SANDBOX_VERSION="+sbVersion)
+	args = append(args, "--build-arg", "CS_SANDBOX_VERSION="+sbVersion,
+		// The commit that version resolves to, for the revision label. Not
+		// validated the way the versions are: a release version names no commit
+		// on its own, so the label is worth having, but no build should fail for
+		// want of it.
+		"--build-arg", "CS_SANDBOX_REVISION="+sandboxRevision())
 
 	// --local-sandbox: serve that version from a file:// proxy built out of this
 	// checkout, so a revision nobody has pushed can still be installed BY
 	// VERSION. Bind-mounted rather than copied: the build context is rootfs/,
 	// and `COPY . /sandbox` would put the proxy inside every sandbox.
 	if localSandbox {
-		if sbVersion == "latest" {
-			return errors.New("--local-sandbox needs a cs-sandbox that reports a module version; this one reports none")
-		}
+		// A binary with no module version never reaches here — it cannot name the
+		// image either, so the build refused before this. What remains is the
+		// binary whose version came from -ldflags with no VCS stamp behind it:
+		// it has a version to install by, and no commit to zip.
 		rev := sandboxRevision()
 		if rev == "" {
 			return errors.New("--local-sandbox needs the revision this binary was built from, and its build info records none")
@@ -212,21 +269,6 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim, withAgents, 
 	)
 	if _, err := app.Runner.Run(cmd.Context(), run.Opts{Interactive: true}, args...); err != nil {
 		return err
-	}
-
-	// Firecracker artifacts (download + guest kernel + base rootfs), built from
-	// the image just produced. Prepare() preflights first, so a host missing the
-	// FC packages or /dev/kvm fails fast with an actionable error.
-	if wantFC {
-		app.phase("setting up firecracker artifacts…")
-		// The FC build emits top-level phase lines (guest kernel, base rootfs,
-		// firecracker download), so route this engine's callback to phase (shown
-		// unless --quiet) rather than the verbose-only per-command progress sink.
-		d := app.engineDeps()
-		d.Progress = app.phase
-		if err := engine.NewFirecracker(d).Prepare(cmd.Context()); err != nil {
-			return err
-		}
 	}
 	return nil
 }

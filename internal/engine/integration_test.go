@@ -23,7 +23,7 @@ import (
 
 func testDeps(t *testing.T) Deps {
 	t.Helper()
-	requirePodman(t, image())
+	requirePodman(t, image(t))
 	h, err := hostenv.Detect()
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +34,7 @@ func testDeps(t *testing.T) Deps {
 		Host:         h,
 		InstDir:      dir,
 		TierDir:      filepath.Join(dir, "tier-keys"),
-		Image:        image(),
+		Image:        image(t),
 		Network:      "cs-sandbox-net",
 		SSHBind:      "127.0.0.1",
 		TZ:           "America/Los_Angeles",
@@ -42,11 +42,18 @@ func testDeps(t *testing.T) Deps {
 	}
 }
 
-func image() string {
-	if v := os.Getenv("CS_SANDBOX_IMAGE"); v != "" {
-		return v
+// image is the sandbox image the live tests run against. There is no default
+// any more: the name carries the version of the cs-sandbox that built it, and a
+// test binary carries no version to derive it from. `make test-integration` and
+// `make test-smoke` both set the variable from the binary; a bare `go test`
+// against these tags has to say which image it means.
+func image(t *testing.T) string {
+	t.Helper()
+	v := os.Getenv("CS_SANDBOX_IMAGE")
+	if v == "" {
+		t.Skip("set CS_SANDBOX_IMAGE to the image to run against, or use `make test-integration`")
 	}
-	return "localhost/cs-sandbox:44"
+	return v
 }
 
 func TestPodmanCreateLive(t *testing.T) {

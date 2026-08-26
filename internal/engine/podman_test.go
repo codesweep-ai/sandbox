@@ -17,7 +17,7 @@ func baseParams() runParams {
 		DNSPrimary: "10.89.0.53", DNSGateway: "10.89.0.1",
 		User: "dev", UID: 1000, GID: 1000, Home: "/home/dev", TZ: "America/Los_Angeles",
 		HomeVol: "cs-sandbox-home-feature", ContVol: "cs-sandbox-containers-feature",
-		SeedDir: "/inst/feature/seed", Image: "localhost/cs-sandbox:44",
+		SeedDir: "/inst/feature/seed", Image: "ghcr.io/codesweep-ai/sandbox:v0.0.0-20260101000000-0123456789ab",
 	}
 }
 
@@ -46,7 +46,7 @@ func TestBuildRunArgsScaledDownCaps(t *testing.T) {
 		// The nested store is the user's rootless graphroot, on its own volume.
 		"-v cs-sandbox-containers-feature:/home/dev/.local/share/containers",
 		"-v /inst/feature/seed:/run/cs-sandbox-seed:ro",
-		"localhost/cs-sandbox:44 sleep infinity",
+		"ghcr.io/codesweep-ai/sandbox:v0.0.0-20260101000000-0123456789ab sleep infinity",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("argv missing %q\nfull: %s", want, got)

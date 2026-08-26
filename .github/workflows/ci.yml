@@ -371,7 +371,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      CS_SANDBOX_IMAGE: localhost/cs-sandbox:ci
+      CS_SANDBOX_IMAGE: localhost/sandbox:ci
       CS_SANDBOX_FC_CACHE: ${{ github.workspace }}/bin/fc-cache
     steps:
       - uses: actions/checkout@v7
@@ -442,7 +442,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      CS_SANDBOX_IMAGE: localhost/cs-sandbox:ci
+      CS_SANDBOX_IMAGE: localhost/sandbox:ci
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -483,7 +483,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      CS_SANDBOX_IMAGE: localhost/cs-sandbox:ci
+      CS_SANDBOX_IMAGE: localhost/sandbox:ci
       CS_SANDBOX_FC_CACHE: ${{ github.workspace }}/bin/fc-cache
     steps:
       - uses: actions/checkout@v7
@@ -696,7 +696,7 @@ jobs:
           set -eu
           export PATH=/usr/local/go/bin:$PATH
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          export CS_SANDBOX_IMAGE=localhost/cs-sandbox:ci
+          export CS_SANDBOX_IMAGE=localhost/sandbox:ci
           cd "$HOME/src"
           exec "$@"
           SH
@@ -708,7 +708,7 @@ jobs:
         run: |
           set -euo pipefail
           su - dev -c '/home/dev/run.sh podman load -i /home/dev/cs-sandbox-ci.tar'
-          su - dev -c '/home/dev/run.sh podman image exists localhost/cs-sandbox:ci'
+          su - dev -c '/home/dev/run.sh podman image exists localhost/sandbox:ci'
           su - dev -c '/home/dev/run.sh podman info --format "{{.Host.Security.Rootless}} rootless"'
 
       - name: smoke
@@ -743,7 +743,7 @@ jobs:
     runs-on: macos-15-intel
     timeout-minutes: 35
     env:
-      CS_SANDBOX_IMAGE: localhost/cs-sandbox:ci
+      CS_SANDBOX_IMAGE: localhost/sandbox:ci
       PODMAN_VERSION: v5.8.5
       # From https://github.com/containers/podman/releases/download/v5.8.5/shasums
       PODMAN_PKG_SHA256: 2677be9fa3bf75f7dbd4dfe5f5039cf105806f102af15ee6c6d174c70dcda3b8
@@ -841,7 +841,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 35
     env:
-      CS_SANDBOX_IMAGE: localhost/cs-sandbox:ci
+      CS_SANDBOX_IMAGE: localhost/sandbox:ci
     steps:
       - uses: actions/checkout@v7
       # Off for the same reason as the build-test leg above: this runner's

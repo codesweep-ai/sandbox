@@ -560,9 +560,14 @@ RUN install -Dm0644 /sandbox/etc/cs-sandbox/env /etc/cs-sandbox/env
 ARG CS_GOPROXY=
 ARG CS_GONOSUMDB=
 ARG CS_SANDBOX_VERSION=
+ARG CS_SANDBOX_REVISION=
 ARG CS_LINT_VERSION=
 ARG CS_LEDGER_VERSION=
 ARG CS_TRACER_VERSION=
+
+# The install itself, in a stanza of its own so ci-slim.sh can drop it and keep the
+# declarations above: the CI image ships no cs-sandbox, and is still tagged and
+# labelled with the version that built it.
 RUN export GOBIN=/usr/local/bin GOTOOLCHAIN=local PATH=/opt/go/bin:$PATH \
   && if [ -n "${CS_GOPROXY}" ]; then export GOPROXY="${CS_GOPROXY}" GONOSUMDB="${CS_GONOSUMDB}"; fi \
   && for v in "${CS_SANDBOX_VERSION}" "${CS_LINT_VERSION}" "${CS_LEDGER_VERSION}" "${CS_TRACER_VERSION}"; do \
@@ -578,17 +583,22 @@ RUN export GOBIN=/usr/local/bin GOTOOLCHAIN=local PATH=/opt/go/bin:$PATH \
      done
 
 # Image metadata. Placed here — after the heavy toolchain/COPY layers — so editing a
-# label only rebuilds this cheap layer, not the build above. The :44 tag is a rolling
-# pointer to the latest build; these labels make the running image self-describing
-# (which Fedora base, what this image is) without baking a version into the tag.
-# The version/vendor/licenses/url here OVERRIDE values inherited from the Fedora base
-# (which would otherwise read 44 / "Fedora Project" / MIT / fedoraproject.org and
-# misdescribe this image). version mirrors the rolling :44 tag — there is no separate
-# image version scheme.
-LABEL org.opencontainers.image.title="cs-sandbox" \
+# label only rebuilds this cheap layer, not the build above. It reads the two ARGs
+# declared by the stanza above, which is the last one to declare any.
+#
+# version is the cs-sandbox this image ships and is tagged with, so a running sandbox
+# can say which build it came from without anyone reading a tag off the host. revision
+# is the commit that version resolves to: a release build's version is `v0.1.0`, which
+# carries no revision of its own, so this is the only way back to the source from
+# inside the image. The version/vendor/licenses/url here OVERRIDE values inherited from
+# the Fedora base (which would otherwise read 44 / "Fedora Project" / MIT /
+# fedoraproject.org and misdescribe this image); os-version below is the Fedora major,
+# which is a different thing and keeps its own label.
+LABEL org.opencontainers.image.title="sandbox" \
       org.opencontainers.image.description="Generic sandbox image (Fedora 44 base, shared /opt toolchains; per-developer user created at first boot)." \
       org.opencontainers.image.base.name="registry.fedoraproject.org/fedora:44" \
-      org.opencontainers.image.version="44" \
+      org.opencontainers.image.version="${CS_SANDBOX_VERSION}" \
+      org.opencontainers.image.revision="${CS_SANDBOX_REVISION}" \
       org.opencontainers.image.vendor="CodeSweep" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.url="https://github.com/codesweep-ai/sandbox" \

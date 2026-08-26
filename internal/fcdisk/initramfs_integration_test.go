@@ -29,7 +29,7 @@ func TestInitramfsBuild(t *testing.T) {
 	if _, err := r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "info"); err != nil {
 		t.Skipf("podman unavailable: %v", err)
 	}
-	img := image()
+	img := image(t)
 	if _, err := r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "image", "exists", img); err != nil {
 		t.Skipf("image %s not built (run: cs-sandbox build) — %v", img, err)
 	}

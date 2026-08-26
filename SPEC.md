@@ -76,6 +76,26 @@ the revision of the binary running the build, because a module cannot name its o
 revision has to be published for the install to resolve. Serving it from the checkout instead is
 what `cs-sandbox build --local-sandbox` is for, and it is the deliberate exception.
 
+**R160.** The image **MUST** be named after the version of `cs-sandbox` that built it, in the
+package `ghcr.io/codesweep-ai/sandbox`, and a sandbox **MUST** run the image its own binary names.
+
+**R161.** A binary that reports no version **MUST** refuse to name or build an image, rather than
+installing an unnamed `cs-sandbox` into one.
+
+**R162.** `build` **MUST** try the registry before building, and `create` **MUST** do neither: a
+missing image is an error naming `build`.
+
+The image carries the `cs-sandbox` that built it. The version is therefore the only thing that says
+what is inside, which is why the tag is the version string rather than the revision. The same commit
+yields a different image once it is tagged for release, because the `cs-sandbox` in it then reports
+the release version. Go marks a binary from a modified tree `+dirty`, which no tag may contain. That
+binary names a `-dirty` tag instead. No `-dirty` image is ever published, so it always builds its
+own. `CS_SANDBOX_IMAGE` overrides the name, which is how a test run pins one.
+
+The two CI images (§16) are separate packages, `-slim` and `-slim-agents`. Neither is a sandbox, and
+a container that boots with no toolchains would be a confusing thing to find under the sandbox
+package.
+
 Toolchains under `/opt` are read-only for the dev user, so a new language version or a global
 package needs `sudo`. Per-project virtualenvs and `node_modules` are unaffected. Two cases would
 otherwise chafe, and both have an escape hatch. Go keeps upstream's `GOTOOLCHAIN=auto`, so a

@@ -63,6 +63,9 @@ func newCreateCmd(app *App) *cobra.Command {
 		Short: "Create and start a sandbox",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := app.requireImage(); err != nil {
+				return err
+			}
 			return runCreate(cmd.Context(), app, args[0], f, cmd)
 		},
 	}

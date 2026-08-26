@@ -244,15 +244,39 @@ build stops at `unknown revision`. The flag writes the module zip the proxy woul
 of your git tree, and the build reads it over a temporary `file://` mount. The binary still reports
 its own version. It takes the commit rather than the working tree, and needs a checkout to read.
 
-A slim build is tagged `localhost/cs-sandbox:ci`, or `localhost/cs-sandbox:ci-agents` with
-`--with-agents`, unless `CS_SANDBOX_IMAGE` says otherwise. None of the three images is
-interchangeable with another, and the tag is all a later `create` has to tell them apart. Point the
-same variable at that tag when running the tests:
+A slim build goes to `ghcr.io/codesweep-ai/sandbox-slim`, or
+`ghcr.io/codesweep-ai/sandbox-slim-agents` with `--with-agents`, tagged with the same version as the
+shipped image. None of the three images is interchangeable with another, and the name is all a later
+`create` has to tell them apart. `CS_SANDBOX_IMAGE` names one directly, which is how to build and
+test against a name of your own:
 
 ```
-cs-sandbox build --engine firecracker --slim --with-agents
-CS_SANDBOX_IMAGE=localhost/cs-sandbox:ci-agents make test-smoke
+CS_SANDBOX_IMAGE=localhost/sandbox:ci-agents cs-sandbox build --engine firecracker --slim --with-agents
+CS_SANDBOX_IMAGE=localhost/sandbox:ci-agents make test-smoke
 ```
+
+### Which image a sandbox runs
+
+The image is named after the version of `cs-sandbox` that built it:
+`ghcr.io/codesweep-ai/sandbox:v0.1.0` for a release, and a pseudo-version such as
+`ghcr.io/codesweep-ai/sandbox:v0.0.0-20260826171442-c36e1fe91606` between releases. Every sandbox a
+binary creates runs that image and no other, so the `cs-sandbox` inside a sandbox is the one that
+built it. `cs-sandbox version` prints the name in full:
+
+```
+$ cs-sandbox version
+cs-sandbox v0.1.0 (linux/amd64, go1.27.0)
+image      ghcr.io/codesweep-ai/sandbox:v0.1.0
+```
+
+`build` looks for that image on the registry and builds it only when there is none. A released
+binary usually reaches a working image in the time a download takes. `create` does neither: when the
+image is absent it says so and names `build`.
+
+A binary built from a modified tree names a `-dirty` tag. No `-dirty` image is ever published, so
+that binary always builds its own. That is what keeps a Containerfile you are editing from being
+answered by a published image. A binary that reports no version at all names no image, and says so
+rather than guessing; `make build` from a git clone gives it one.
 
 `completion` writes a script to stdout. It completes sandbox names, store names and flag values
 live, by asking the binary. [INSTALL.md](INSTALL.md#optional-shell-completion) has the per-shell
@@ -507,7 +531,7 @@ The second group changes what gets built or run.
 | Variable | Default | Effect |
 |---|---|---|
 | `CS_SANDBOX_ENGINE` | unset | The engine `create` uses when no `--engine` is given. Unset, it picks Firecracker on Linux with KVM and Podman otherwise. |
-| `CS_SANDBOX_IMAGE` | `localhost/cs-sandbox:44` | The sandbox image to run. |
+| `CS_SANDBOX_IMAGE` | the image named after this binary's version | The sandbox image to run. |
 | `CS_SANDBOX_ASSETS_DIR` | the embedded copy | An `image/` asset tree for `build` to use instead of the one embedded in the binary. |
 | `CS_SANDBOX_PRIVATE_REGISTRY` | none | A registry the image should trust, as a bare `host:port`. Read at `build` time. |
 | `CS_SANDBOX_PRIVATE_REGISTRY_INSECURE` | `0` | `1`, `true`, `yes` or `on` lets that registry use plain HTTP. |

@@ -63,24 +63,41 @@ func TestLocalModuleProxyInstallsAnUnpushedRevision(t *testing.T) {
 }
 
 // TestLocalSandboxRefusesWithoutARevision: the flag names a commit to zip, so
-// the cases with no commit to name have to fail before podman is started
-// rather than half way through an image build.
+// the cases with no commit to name have to fail before podman is started rather
+// than half way through an image build. There are two, and they fail for
+// different reasons: a binary with no version at all cannot name the image it
+// would build, and never reaches the flag; one whose version came from -ldflags
+// with no VCS stamp behind it has a version to install by and no commit to zip.
 func TestLocalSandboxRefusesWithoutARevision(t *testing.T) {
-	saved := Version
-	t.Cleanup(func() { Version = saved })
-	Version = devVersion // no module version, so sandboxPin is empty
+	cases := []struct {
+		name, version, want string
+		revision            func() string
+	}{
+		{"no version at all", devVersion, "reports no version", nil},
+		{"a version with no commit behind it", "v1.2.3", "--local-sandbox", func() string { return "" }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			savedV, savedR := Version, sandboxRevision
+			t.Cleanup(func() { Version, sandboxRevision = savedV, savedR })
+			Version = c.version
+			if c.revision != nil {
+				sandboxRevision = c.revision
+			}
 
-	f, err := runRoot(t, &App{}, "build", "--engine", "podman", "--local-sandbox")
-	if err == nil {
-		t.Fatalf("build --local-sandbox succeeded with no module version; calls=%s", f)
-	}
-	if !strings.Contains(err.Error(), "--local-sandbox") {
-		t.Errorf("error does not name the flag: %v", err)
-	}
-	for _, call := range f.Calls {
-		if len(call) >= 2 && call[0] == "podman" && call[1] == "build" {
-			t.Errorf("podman build ran anyway: %v", call)
-		}
+			f, err := runRootAsBuilt(t, &App{}, "build", "--engine", "podman", "--local-sandbox")
+			if err == nil {
+				t.Fatalf("build --local-sandbox succeeded; calls=%s", f)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error does not say %q: %v", c.want, err)
+			}
+			for _, call := range f.Calls {
+				if len(call) >= 2 && call[0] == "podman" && call[1] == "build" {
+					t.Errorf("podman build ran anyway: %v", call)
+				}
+			}
+		})
 	}
 }
 
@@ -102,7 +119,7 @@ func TestLocalSandboxMountsTheProxyAndOverridesGOPROXY(t *testing.T) {
 	// operator would rather than setting the field and watching it be replaced.
 	t.Setenv("CS_SANDBOX_ASSETS_DIR", repo)
 
-	f, err := runRoot(t, &App{}, "build", "--engine", "podman", "--local-sandbox")
+	f, err := runRootAsBuilt(t, &App{}, "build", "--engine", "podman", "--local-sandbox")
 	if err != nil {
 		t.Fatalf("build --local-sandbox: %v", err)
 	}

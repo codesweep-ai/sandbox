@@ -23,6 +23,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// The packages the images are published to. The LOCAL image carries the same
+// fully-qualified name as the published one, so an image that was built and one
+// that was pulled are the same reference: nothing retags, and `podman push`
+// takes what `cs-sandbox build` made.
+//
+// The two CI images are separate packages rather than tags of the first,
+// because neither is a sandbox: ci-slim.sh strips every toolchain, so somebody
+// who found one under the sandbox package and pulled it would get a container
+// that boots and then has no go, no node and no agents. A package whose name
+// says slim cannot be mistaken that way.
+const (
+	imageRepo           = "ghcr.io/codesweep-ai/sandbox"
+	slimImageRepo       = imageRepo + "-slim"
+	slimAgentsImageRepo = imageRepo + "-slim-agents"
+)
+
 // devVersion marks a binary that carried no release stamp.
 const devVersion = "dev"
 
@@ -64,6 +80,40 @@ func sandboxPin() (version, dirtyNote string) {
 	return v, ""
 }
 
+// imageRef names an image for this binary: the package, tagged with the version
+// this binary reports. The image ships the cs-sandbox that built it (see
+// sandboxPin), so the version is the only thing that names what is inside —
+// which is why the tag is the version string rather than the revision. The same
+// commit yields a different image once it is tagged for release, because the
+// cs-sandbox in it then reports the release version.
+func imageRef(repo string) (string, error) {
+	tag, err := imageTag()
+	if err != nil {
+		return "", err
+	}
+	return repo + ":" + tag, nil
+}
+
+// imageTag is this binary's version as an OCI tag.
+//
+// Go marks a binary built from a modified tree with +dirty, and + is not a legal
+// tag character. -dirty is, so that is what a dirty tree gets. Nothing publishes
+// a -dirty tag, which makes the reference unpullable by construction rather than
+// by a special case, and says plainly that the image is not the published one
+// for that revision — its rootfs came from a tree nobody else has.
+func imageTag() (string, error) {
+	v := buildVersion()
+	if v == devVersion {
+		return "", errors.New("this cs-sandbox reports no version, so it cannot name its image — " +
+			"build it with `make build` from a git clone rather than running `go run`, " +
+			"or name an image with CS_SANDBOX_IMAGE")
+	}
+	if trimmed, ok := strings.CutSuffix(v, "+dirty"); ok {
+		return trimmed + "-dirty", nil
+	}
+	return v, nil
+}
+
 // App holds process-wide dependencies resolved once at startup.
 type App struct {
 	Host     hostenv.Host
@@ -73,6 +123,7 @@ type App struct {
 	FCCache  string // XDG cache: firecracker artifacts
 	AssetDir string // checkout root holding the build assets (or "" -> embedded)
 	Image    string
+	ImageErr error // why Image is empty; raised by the commands that need one
 	Network  string
 	SSHBind  string
 	TZ       string
@@ -85,6 +136,20 @@ type App struct {
 
 // stderr is the writer for phase/progress lines: the injected errW (tests) or
 // os.Stderr.
+// requireImage fails when this binary could not name its image, with the reason
+// it could not. Commands that reach for an image call it first, so the failure
+// names its cause instead of surfacing as a podman error about an empty
+// reference several layers down.
+func (a *App) requireImage() error {
+	if a.Image != "" {
+		return nil
+	}
+	if a.ImageErr != nil {
+		return a.ImageErr
+	}
+	return errors.New("no sandbox image is configured")
+}
+
 // dryRun reports whether this invocation only prints what it would do.
 func (a *App) dryRun() bool { return a.Exec != nil && a.Exec.DryRun }
 
@@ -214,7 +279,16 @@ func newRootCmd(app *App) *cobra.Command {
 			app.TierDir = paths.TierKeys()
 			app.FCCache = paths.FCCache()
 			app.AssetDir = paths.AssetDir()
-			app.Image = envOr("CS_SANDBOX_IMAGE", "localhost/cs-sandbox:44")
+			// The image is named after the version that built it, so a sandbox
+			// runs the image its own binary came from. A binary that reports no
+			// version cannot form that name, which is not fatal here — version,
+			// ls and --help all work without an image — so the reason is held
+			// and raised by requireImage.
+			if img := os.Getenv("CS_SANDBOX_IMAGE"); img != "" {
+				app.Image = img
+			} else {
+				app.Image, app.ImageErr = imageRef(imageRepo)
+			}
 			app.Network = state.NetworkName(state.DefaultGroup)
 			app.SSHBind = envOr("CS_SANDBOX_SSH_BIND", "127.0.0.1")
 			app.TZ = envOr("CS_SANDBOX_TZ", "America/Los_Angeles")
@@ -226,7 +300,7 @@ func newRootCmd(app *App) *cobra.Command {
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output: per-command progress, full podman build output, and external commands")
 	root.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "silence all output, including build-phase progress")
 
-	root.AddCommand(newVersionCmd())
+	root.AddCommand(newVersionCmd(app))
 	root.AddCommand(newLsCmd(app))
 	root.AddCommand(newCreateCmd(app))
 	root.AddCommand(newFetchCmd(app))
@@ -252,14 +326,25 @@ func newRootCmd(app *App) *cobra.Command {
 	return root
 }
 
-func newVersionCmd() *cobra.Command {
+func newVersionCmd(app *App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print the cs-sandbox version",
+		Short: "Print the cs-sandbox version, and the image it names",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			fmt.Fprintf(cmd.OutOrStdout(), "cs-sandbox %s (%s/%s, %s)\n",
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "cs-sandbox %s (%s/%s, %s)\n",
 				buildVersion(), runtime.GOOS, runtime.GOARCH, runtime.Version())
+			// The image this binary creates from. Printed here because the name
+			// is derived rather than configured, so without it the only way to
+			// learn which image a host wants is to run something that needs it.
+			// Second field of a labelled line, which is how a Makefile or a
+			// workflow reads it back.
+			if err := app.requireImage(); err != nil {
+				fmt.Fprintf(out, "image      none: %s\n", err)
+				return nil
+			}
+			fmt.Fprintf(out, "image      %s\n", app.Image)
 			return nil
 		},
 	}

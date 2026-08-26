@@ -61,8 +61,8 @@ build-go:
 ## the real one, which is what makes booting real sandboxes in CI affordable.
 ## Derived from the real Containerfile, never a second copy of it: see
 ## image/ci-slim.sh. Use it locally the same way CI does:
-##   make build-ci-image && CS_SANDBOX_IMAGE=localhost/cs-sandbox:ci make test-smoke
-CI_IMAGE ?= localhost/cs-sandbox:ci
+##   make build-ci-image && CS_SANDBOX_IMAGE=localhost/sandbox:ci make test-smoke
+CI_IMAGE ?= localhost/sandbox:ci
 build-ci-image:
 	@mkdir -p $(dir $(BIN))
 	./image/ci-slim.sh > bin/Containerfile.ci
@@ -243,9 +243,17 @@ test-smoke:
 ## test the clock happened to land on rather than the one at fault. internal/cli
 ## alone runs half an hour when nothing is cached, since seeding the image store
 ## for the nested-microVM tests costs minutes before a VM even boots.
+## SBX_IMAGE: the sandbox image this checkout's cs-sandbox names. Asked of the
+## binary rather than written down here, because the name carries the version and
+## only the binary knows its own. -buildvcs=true for the same reason `versions`
+## needs it: `go run` leaves the VCS stamp out by default, and without the stamp
+## there is no version and so no name. Recursive (=) so it costs a `go run` only
+## when a target actually reads it.
+SBX_IMAGE = $(shell go run -buildvcs=true $(PKG) version 2>/dev/null | awk '$$1=="image"{print $$2}')
+
 test-integration:
 	@scripts/coverage.sh reset integration
-	CS_COVERDIR=$(COVER_ABS)/integration \
+	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(SBX_IMAGE)} CS_COVERDIR=$(COVER_ABS)/integration \
 	  go test -tags integration $(COVERFLAGS) -p 1 -v -timeout 3600s ./... \
 	  -args -test.gocoverdir=$(COVER_ABS)/integration
 
@@ -270,7 +278,7 @@ test-integration:
 ## -p 1 and -v for the reasons test-integration gives. The timeout is generous
 ## because a member waits on a model rather than on this code.
 test-live-agents:
-	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-localhost/cs-sandbox:ci-agents} \
+	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-localhost/sandbox:ci-agents} \
 	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run 'LiveAgent'
 
 ## coverage: merge every tier present under $(COVERDIR) and print the report

@@ -53,7 +53,7 @@ func fcTestDeps(t *testing.T) Deps {
 		Host:         h,
 		InstDir:      dir,
 		TierDir:      filepath.Join(dir, "tier-keys"),
-		Image:        image(),
+		Image:        image(t),
 		Network:      "cs-sandbox-net",
 		SSHBind:      "127.0.0.1",
 		TZ:           "America/Los_Angeles",
