@@ -68,9 +68,10 @@ RUN dnf -y install \
 # CHROME_BIN is declared in rootfs/etc/cs-sandbox/env — an image ENV never reaches
 # an SSH session or a microVM. See that file.
 
-# NOTE: `COPY . /sandbox` is intentionally deferred to just before it's first needed
-# (the Neovim plugin pre-build / entrypoint), AFTER the expensive toolchain compiles, so
-# editing the entrypoint / dotfiles / vendored scripts doesn't invalidate those layers.
+# NOTE: `COPY . /sandbox` is intentionally deferred to the very bottom — after the
+# toolchain compiles AND after the Neovim pre-build — so editing the entrypoint /
+# dotfiles / vendored scripts doesn't invalidate any of them. The pre-build needs the
+# editor config, so that one directory is copied ahead of it on its own.
 
 # Disable PAM for sudo.
 #
@@ -438,14 +439,13 @@ RUN python3 -m venv /opt/py-tools \
 ENV JAVA_HOME=/opt/java
 ENV PATH=/opt/nvm/versions/node/v24.19.0/bin:/opt/py-tools/bin:/opt/claude/bin:/opt/codex/bin:/opt/opencode/bin:/opt/pyenv/bin:/opt/go/bin:/opt/java/bin:/opt/maven/bin:${PATH}
 
-# Repo context (entrypoint, home skeleton, vendored scripts). Deferred to here — after
-# the toolchain compiles — so edits to these files don't bust the expensive cache above.
-COPY . /sandbox
-
-# The guest environment declaration, at a path both entry paths read. Installed
-# rather than referenced under /sandbox so it looks like the config it is.
-RUN install -Dm0644 /sandbox/etc/cs-sandbox/env /etc/cs-sandbox/env
-
+# The Neovim config, and ONLY that, ahead of the pre-build below — 72 KB of the 392 KB
+# `COPY . /sandbox` used to bring here. That pre-build is the single largest layer in the
+# image at 956 MB, and everything copied above it is one more thing whose edit re-creates
+# it: with the whole repo context up here, touching the entrypoint or one of the vendored
+# cs- scripts rebuilt 956 MB of language servers that had not changed. Now only a real
+# edit to the editor config or lazy-lock.json does.
+COPY home/.config/nvim /sandbox/home/.config/nvim
 
 # Pre-build the ENTIRE Neovim setup, so the first `nvim` in a sandbox is instant and needs
 # no network. Three kinds of artifact, and they can't all live in the same place:
@@ -474,16 +474,17 @@ RUN install -Dm0644 /sandbox/etc/cs-sandbox/env /etc/cs-sandbox/env
 # behind (gopls alone leaves ~550 MB in ~/.cache/go-build and ~/go), plus the path-keyed Lua
 # bytecode cache and logs — which would otherwise be copied into every sandbox home. That
 # leak is invisible (the build still succeeds), so the final `du` check fails the build if
-# the seed grows past ~100 MB: ~80 MB is plugins + treesitter parsers, and anything beyond
+# the seed grows past ~100 MB. $HOME holds the nvim config and what this step made and
+# nothing else — the rest of the home skeleton is copied in below — so that number is this
+# step's own output: ~80 MB is plugins + treesitter parsers, and anything beyond
 # means a newly added package left a cache that needs adding to the rm list.
 #
 # `step` keeps the console quiet. `podman build -q` (what `cs-sandbox build` uses unless
 # you pass --verbose) only suppresses a RUN's stdout — its stderr goes straight to the
 # terminal, and `nvim --headless` writes everything there, so these four commands used to
-# spray ~120 lines of lazy/mason/treesitter progress over every build. This layer sits
-# after `COPY . /sandbox`, so ANY edit in the repo re-runs it. Output is captured instead
-# and replayed only if a step fails; BUILD_VERBOSE=1 (set by `cs-sandbox build --verbose`)
-# passes it through live.
+# spray ~120 lines of lazy/mason/treesitter progress over every build. Output is captured
+# instead and replayed only if a step fails; BUILD_VERBOSE=1 (set by `cs-sandbox build
+# --verbose`) passes it through live.
 ARG BUILD_VERBOSE=0
 RUN set -e; \
     export HOME=/sandbox/home \
@@ -512,6 +513,18 @@ RUN set -e; \
     seed_mb=$(du -sm "$HOME" | cut -f1); \
     echo "home seed: ${seed_mb} MB"; \
     [ "$seed_mb" -lt 100 ] || { echo "home seed too large (${seed_mb} MB) — a build cache leaked into /sandbox/home" >&2; du -sm "$HOME"/* "$HOME"/.[a-z]* 2>/dev/null | sort -n | tail -10 >&2; exit 1; }
+
+# Repo context (entrypoint, home skeleton, vendored scripts). Deferred to here — below the
+# toolchain compiles AND below the Neovim pre-build — so editing any of it re-creates 392 KB
+# rather than the 956 MB above. It merges into the home that pre-build just seeded: COPY
+# adds and overwrites but never deletes, so the plugins and parsers under
+# /sandbox/home/.local/share/nvim survive, and .config/nvim is rewritten with the same bytes
+# it was copied from a moment ago.
+COPY . /sandbox
+
+# The guest environment declaration, at a path both entry paths read. Installed
+# rather than referenced under /sandbox so it looks like the config it is.
+RUN install -Dm0644 /sandbox/etc/cs-sandbox/env /etc/cs-sandbox/env
 
 # The codesweep tools. cs-sandbox is here because a sandbox is a place to work FROM, and some of
 # that work is driving another sandbox: create a peer for a second experiment, `ls` what is running,

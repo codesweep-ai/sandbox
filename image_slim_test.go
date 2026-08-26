@@ -266,3 +266,45 @@ func TestCSToolsStanzaIsLast(t *testing.T) {
 		}
 	}
 }
+
+// TestNvimPreBuildAboveTheFullCopy: the Neovim pre-build must stay ABOVE
+// `COPY . /sandbox`.
+//
+// That layer is 956 MB, the largest in the 6.04 GB image, and buildah re-creates
+// it whenever anything above it changes. `COPY . /sandbox` is the whole build
+// context, so with the copy above the pre-build, editing the entrypoint or one
+// of the vendored cs- scripts rebuilt 956 MB of language servers that had not
+// moved — and, once images are published per version, pushed them again.
+//
+// The pre-build genuinely needs the editor config, so that one directory (72 KB)
+// is staged above it on its own and the rest of the context follows below. The
+// obvious "simplification" is to merge the two copies back into one; this is
+// here to make that show up as a failing test rather than as a GB on the wire.
+func TestNvimPreBuildAboveTheFullCopy(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("image", "Containerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := stanzas(string(src))
+
+	idx := func(want string) int {
+		for i, b := range blocks {
+			if strings.Contains(b, want) {
+				return i
+			}
+		}
+		t.Fatalf("no stanza contains %q", want)
+		return -1
+	}
+
+	staged, prebuild, full := idx("COPY home/.config/nvim"), idx("+Lazy! install"), idx("COPY . /sandbox")
+	if staged > prebuild {
+		t.Error("the nvim config is copied after the pre-build that reads it; stage it above")
+	}
+	if prebuild > full {
+		t.Errorf("`COPY . /sandbox` (stanza %d) comes before the Neovim pre-build (stanza %d); "+
+			"that makes every edit under image/rootfs re-create a 956 MB layer. "+
+			"Keep the full copy below the pre-build, with only the nvim config staged above it",
+			full, prebuild)
+	}
+}

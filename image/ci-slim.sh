@@ -122,7 +122,8 @@ BEGIN {
   DROP["cmd/deadcode@latest"]             # deadcode, the one built from source
   DROP["python3 -m venv /opt/py-tools"]   # python CLI tools venv
   DROP["+Lazy! install"]                  # the nvim plugin/LSP pre-build
-  want_dropped = 13
+  DROP["COPY home/.config/nvim"]          # the config that pre-build reads, staged ahead of it
+  want_dropped = 14
   # The agents, and the PATH stanza that is mostly about them. Kept together or
   # dropped together: keeping the binaries without putting them on PATH would
   # pass every check here and still fail `command -v claude` in the sandbox.
@@ -133,7 +134,7 @@ BEGIN {
     DROP["openai/codex/releases"]         # codex
     DROP["anomalyco/opencode/releases"]   # opencode
     DROP["ENV JAVA_HOME"]                 # PATH additions for all of the above
-    want_dropped = 17
+    want_dropped = 18
     want_path = 0
   }
 }
