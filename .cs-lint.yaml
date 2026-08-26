@@ -111,5 +111,14 @@ oss:
   # address anybody reads.
   emailAllow: ["Microsoft.com"]
 
-  requiredTargets: ["build", "test", "check", "lint", "prose", "refs", "oss", "clean"]
-  expectedTargets: ["help", "install", "uninstall", "fmt", "fmt-check", "vet", "deadcode", "ci"]
+  # The one job `make ci` does not mirror. Building the Firecracker artifacts
+  # needs a writable /dev/kvm and 676 MB on disk, and it exists to feed the
+  # microVM smoke tier, which needs the same host. `make ci` names both on the
+  # way out, and `make build-ci-image && make test-smoke` runs them where the
+  # host can carry them.
+  ciSkip:
+    "build-ci-fc": "the microVM smoke tier needs a writable /dev/kvm and 676 MB of artifacts"
+
+  # Only what the built-in list does not already carry. deadcode is a Go tool,
+  # so it is this project's to name rather than every project's.
+  expectedTargets: ["install", "uninstall", "fmt", "fmt-check", "vet", "deadcode"]
