@@ -30,7 +30,7 @@ COVERDIR   ?= .coverage
 COVER_ABS  := $(abspath $(COVERDIR))
 COVERFLAGS := -covermode=atomic -coverpkg=./...
 
-.PHONY: help build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-race test-smoke test-integration coverage coverage-check coverage-baseline vet fmt fmt-check check prose refs oss surface cs-lint-installed ledger lint deadcode snapshot release release-check clean
+.PHONY: help build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-race test-smoke test-integration coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface cs-lint-installed ledger lint deadcode snapshot release release-check clean
 
 .DEFAULT_GOAL := help
 
@@ -296,6 +296,33 @@ ledger:
 
 ## check: the full local gate — fmt-check, vet, the linters, and unit tests
 check: fmt-check vet lint deadcode test coverage-check prose refs oss surface
+
+## ci: every gate the CI workflow runs, on this machine
+##
+## One Linux leg of .github/workflows/ci.yml, in the order CI runs it, so a
+## red build is something you can see before you push rather than after. The
+## build-tag vets are here because a tag hides a file from the compiler as
+## surely as from the linter, and only CI vetted behind them until now.
+##
+## The smoke tiers are left out: each boots a real guest from an image another
+## job builds, and one of them needs /dev/kvm. Run them with
+## `make build-ci-image && make test-smoke`.
+ci:
+	@$(MAKE) --no-print-directory check
+	go mod verify
+	go vet -tags integration ./...
+	go vet -tags smoke ./...
+	@command -v actionlint >/dev/null 2>&1 || { \
+		echo "actionlint is not installed; go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12" >&2; \
+		exit 1; \
+	}
+	actionlint
+	go build ./...
+	@$(MAKE) --no-print-directory build-go
+	@$(MAKE) --no-print-directory release-check
+	@$(MAKE) --no-print-directory ledger
+	@printf '\nci: every gate ran. Not reproduced here: build-test on macOS and\n'
+	@printf 'WSL, the smoke tiers, and the coverage job that merges them.\n'
 
 ## lint: the Go rules from .golangci.yml (see that file for what is on and why).
 ## Three passes for the same reason vet takes three: a build tag hides a file

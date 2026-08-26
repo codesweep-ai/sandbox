@@ -50,6 +50,13 @@ go install golang.org/x/tools/cmd/deadcode@latest
 go install github.com/codesweep-ai/lint/cmd/cs-lint@latest
 ```
 
+`make ci` is the wider gate, every job the CI workflow runs on one Linux machine. It adds
+`actionlint`, which reads the workflow files themselves:
+
+```bash
+go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+```
+
 A sandbox built from this repository carries all of these already, along with goreleaser and
 `cs-sandbox` itself, so working on this project from inside one needs no setup.
 
