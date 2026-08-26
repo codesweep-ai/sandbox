@@ -285,47 +285,6 @@ RUN case "$(uname -m)" in \
   && chmod -R a+rX /opt/go \
   && /opt/go/bin/go version
 
-# The codesweep tools. cs-sandbox is here because a sandbox is a place to work FROM, and some of
-# that work is driving another sandbox: create a peer for a second experiment, `ls` what is running,
-# `fetch` a branch back. Its siblings come with it, so a sandbox can lint prose, keep a ledger and
-# trace a run without installing anything first. Each is a single static Go binary.
-#
-# The three siblings are installed at the versions THIS repository's go.mod pins, passed in by
-# `cs-sandbox build` from that manifest, so the image ships what `make versions` reports rather than
-# whatever each branch tip held the moment the image was built. `make repin` moves them, in a diff
-# somebody reviews. There is no default: an empty version means the image was built by something
-# other than `cs-sandbox build`, and guessing @latest there is the drift this replaced.
-#
-# cs-sandbox pins itself: its version is not in the manifest, because a module cannot name its own,
-# but the cs-sandbox running the build knows which revision built it and passes that. So the image
-# ships the cs-sandbox that made it, and a sandbox can drive a peer with the same binary it came
-# from. That revision has to be pushed for the install to resolve.
-#
-# The module cache and build cache go in the same layer, or the ~400 MB they hold ships too. One
-# `go install` per tool: it refuses a command line naming packages from more than one module.
-# CS_GOPROXY/CS_GONOSUMDB are set only by `cs-sandbox build --local-sandbox`, which mounts a
-# file:// proxy holding this checkout's own module zip so a revision nobody has pushed can still be
-# installed by version. Empty on every other build, which leaves the toolchain defaults alone.
-ARG CS_GOPROXY=
-ARG CS_GONOSUMDB=
-ARG CS_SANDBOX_VERSION=
-ARG CS_LINT_VERSION=
-ARG CS_LEDGER_VERSION=
-ARG CS_TRACER_VERSION=
-RUN export GOBIN=/usr/local/bin GOTOOLCHAIN=local PATH=/opt/go/bin:$PATH \
-  && if [ -n "${CS_GOPROXY}" ]; then export GOPROXY="${CS_GOPROXY}" GONOSUMDB="${CS_GONOSUMDB}"; fi \
-  && for v in "${CS_SANDBOX_VERSION}" "${CS_LINT_VERSION}" "${CS_LEDGER_VERSION}" "${CS_TRACER_VERSION}"; do \
-       test -n "$v" || { echo "a cs- tool version is empty: build with 'cs-sandbox build', which passes the go.mod pins" >&2; exit 1; }; \
-     done \
-  && go install github.com/codesweep-ai/sandbox/cmd/cs-sandbox@${CS_SANDBOX_VERSION} \
-  && go install github.com/codesweep-ai/lint/cmd/cs-lint@${CS_LINT_VERSION} \
-  && go install github.com/codesweep-ai/ledger/cmd/cs-ledger@${CS_LEDGER_VERSION} \
-  && go install github.com/codesweep-ai/tracer/cmd/cs-tracer@${CS_TRACER_VERSION} \
-  && go clean -modcache -cache \
-  && for t in cs-sandbox cs-lint cs-ledger cs-tracer; do \
-       command -v "$t" >/dev/null || { echo "missing after install: $t" >&2; exit 1; }; \
-     done
-
 # The rest of what `make check` needs on top of Go, so this project can be worked on from inside one
 # of its own sandboxes: build it, lint it, vet the workflows. The versions are the ones
 # CONTRIBUTING.md and CI name — a newer golangci-lint gains checks, and those should be met on
@@ -553,6 +512,57 @@ RUN set -e; \
     seed_mb=$(du -sm "$HOME" | cut -f1); \
     echo "home seed: ${seed_mb} MB"; \
     [ "$seed_mb" -lt 100 ] || { echo "home seed too large (${seed_mb} MB) — a build cache leaked into /sandbox/home" >&2; du -sm "$HOME"/* "$HOME"/.[a-z]* 2>/dev/null | sort -n | tail -10 >&2; exit 1; }
+
+# The codesweep tools. cs-sandbox is here because a sandbox is a place to work FROM, and some of
+# that work is driving another sandbox: create a peer for a second experiment, `ls` what is running,
+# `fetch` a branch back. Its siblings come with it, so a sandbox can lint prose, keep a ledger and
+# trace a run without installing anything first. Each is a single static Go binary.
+#
+# The three siblings are installed at the versions THIS repository's go.mod pins, passed in by
+# `cs-sandbox build` from that manifest, so the image ships what `make versions` reports rather than
+# whatever each branch tip held the moment the image was built. `make repin` moves them, in a diff
+# somebody reviews. There is no default: an empty version means the image was built by something
+# other than `cs-sandbox build`, and guessing @latest there is the drift this replaced.
+#
+# cs-sandbox pins itself: its version is not in the manifest, because a module cannot name its own,
+# but the cs-sandbox running the build knows which revision built it and passes that. So the image
+# ships the cs-sandbox that made it, and a sandbox can drive a peer with the same binary it came
+# from. That revision has to be pushed for the install to resolve.
+#
+# LAST of the build steps, under even the Neovim pre-build (it needs only the Go toolchain above,
+# and nothing below needs it). CS_SANDBOX_VERSION moves on every commit, and buildah writes EVERY
+# in-scope build arg into each later step's cache key — an arg a step never reads still busts it,
+# so the ARG lines below matter as much as the RUN. Sitting where it used to, one version bump
+# invalidated the ~2.0 GB beneath it (the three agent CLIs, the py-tools venv, the 956 MB Neovim
+# pre-build) to change the ~31 MB of Go binaries it installs, and a registry would store and serve
+# that ~2.0 GB again for every version. Here it invalidates nothing: two images that differ only
+# by cs-sandbox version share every layer but this one. A stanza appended AFTER it pays that cost
+# all over again — new ones go above. image_slim_test guards the position.
+#
+# The module cache and build cache go in the same layer, or the ~400 MB they hold ships too. One
+# `go install` per tool: it refuses a command line naming packages from more than one module.
+# CS_GOPROXY/CS_GONOSUMDB are set only by `cs-sandbox build --local-sandbox`, which mounts a
+# file:// proxy holding this checkout's own module zip so a revision nobody has pushed can still be
+# installed by version. Empty on every other build, which leaves the toolchain defaults alone.
+ARG CS_GOPROXY=
+ARG CS_GONOSUMDB=
+ARG CS_SANDBOX_VERSION=
+ARG CS_LINT_VERSION=
+ARG CS_LEDGER_VERSION=
+ARG CS_TRACER_VERSION=
+RUN export GOBIN=/usr/local/bin GOTOOLCHAIN=local PATH=/opt/go/bin:$PATH \
+  && if [ -n "${CS_GOPROXY}" ]; then export GOPROXY="${CS_GOPROXY}" GONOSUMDB="${CS_GONOSUMDB}"; fi \
+  && for v in "${CS_SANDBOX_VERSION}" "${CS_LINT_VERSION}" "${CS_LEDGER_VERSION}" "${CS_TRACER_VERSION}"; do \
+       test -n "$v" || { echo "a cs- tool version is empty: build with 'cs-sandbox build', which passes the go.mod pins" >&2; exit 1; }; \
+     done \
+  && go install github.com/codesweep-ai/sandbox/cmd/cs-sandbox@${CS_SANDBOX_VERSION} \
+  && go install github.com/codesweep-ai/lint/cmd/cs-lint@${CS_LINT_VERSION} \
+  && go install github.com/codesweep-ai/ledger/cmd/cs-ledger@${CS_LEDGER_VERSION} \
+  && go install github.com/codesweep-ai/tracer/cmd/cs-tracer@${CS_TRACER_VERSION} \
+  && go clean -modcache -cache \
+  && for t in cs-sandbox cs-lint cs-ledger cs-tracer; do \
+       command -v "$t" >/dev/null || { echo "missing after install: $t" >&2; exit 1; }; \
+     done
 
 # Image metadata. Placed here — after the heavy toolchain/COPY layers — so editing a
 # label only rebuilds this cheap layer, not the build above. The :44 tag is a rolling

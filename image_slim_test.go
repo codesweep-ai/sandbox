@@ -212,3 +212,57 @@ func TestOptStanzasChmodInLayer(t *testing.T) {
 		}
 	}
 }
+
+// TestCSToolsStanzaIsLast: nothing that writes a layer comes after the codesweep
+// tools install.
+//
+// This is a churn guard, and it exists because of how buildah keys its cache.
+// CS_SANDBOX_VERSION is the version of the cs-sandbox running the build, so it
+// moves on every commit — and buildah writes EVERY in-scope build arg into each
+// later step's history entry, which is its cache key. A step that never reads
+// the arg still misses when it changes. That makes the ARG line's position, not
+// just the RUN's, decide how much a version bump rebuilds.
+//
+// Measured on the 6.04 GB image: this stanza is 31 MB, and where it used to sit
+// (right after the Go toolchain) it had ~2.0 GB under it — the three agent CLIs,
+// the py-tools venv, and the 956 MB Neovim pre-build. Every version bump
+// rebuilt all of that to change 31 MB, and a registry would store and serve a
+// separate copy per version. Last, two images that differ only by cs-sandbox
+// version share every layer but this one.
+//
+// Metadata instructions (LABEL/ENTRYPOINT/CMD) are fine after it: they add no
+// filesystem content and nothing follows them.
+func TestCSToolsStanzaIsLast(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("image", "Containerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := stanzas(string(src))
+
+	idx := -1
+	for i, b := range blocks {
+		if strings.Contains(b, "cmd/cs-sandbox@") {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("no stanza installs cs-sandbox — the churn guard below has nothing to anchor on")
+	}
+
+	// Continuation lines are indented; only a column-0 first token is an
+	// instruction, which keeps shell inside a RUN from matching.
+	for _, b := range blocks[idx+1:] {
+		for line := range strings.SplitSeq(b, "\n") {
+			if line == "" || line[0] == ' ' || line[0] == '\t' {
+				continue
+			}
+			switch verb, _, _ := strings.Cut(line, " "); verb {
+			case "RUN", "COPY", "ADD", "ARG", "ENV":
+				t.Errorf("%s comes after the codesweep tools stanza; that stanza must stay last "+
+					"so a cs-sandbox version bump rebuilds its 31 MB and nothing else. "+
+					"Put the new stanza above it", verb)
+			}
+		}
+	}
+}
