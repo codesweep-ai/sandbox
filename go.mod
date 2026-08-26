@@ -9,9 +9,9 @@ require (
 )
 
 require (
-	github.com/codesweep-ai/ledger v0.0.0-20260826052602-c645f1744ac6 // indirect
-	github.com/codesweep-ai/lint v0.0.0-20260826044750-ad09a633ab9d // indirect
-	github.com/codesweep-ai/tracer v0.0.0-20260826053241-2e45a0365d41 // indirect
+	github.com/codesweep-ai/ledger v0.0.0-20260826154712-f3d4cf8989eb // indirect
+	github.com/codesweep-ai/lint v0.0.0-20260826152054-3acef36b8e16 // indirect
+	github.com/codesweep-ai/tracer v0.0.0-20260826154852-c266382e4233 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
