@@ -26,60 +26,47 @@ By opening a pull request you agree that your contribution ships under the
 
 ## Before you push
 
+One command:
+
 ```bash
-make check            # gofmt, go vet, unit tests and the linters; must pass
-make test-smoke       # the subset of the live tests that CI runs, on every host
-make test-integration # live engine tests; run when you touch create, engine or seed paths
-make test-live-agents # the credential matrix against real providers; see below
+make ci
 ```
 
-`test-live-agents` is the one tier that is not part of any gate. For every supported credential
-combination, shared and lent, it drives a live agent inside a sandbox and asks the model for one
-word. Run it when you touch a credential path, and expect it to cost money: it spends provider quota
-on every member.
+That is every gate the CI workflow has, on this machine and in the order the workflow takes them,
+so a green run here is a green run there. `make check` is the faster subset to keep beside you
+while you work, and `make ci` is the one that has to pass.
 
-Its keys come from a git-ignored `.env` at the repository root. The suite writes them into a
-throwaway agent home, so it never touches your own profiles, and it skips any member whose key or
-host login is absent.
-
-`make check` needs three tools that do not come with Go. Install them once:
+It shells out to tools the Go distribution does not carry. Install them once:
 
 ```bash
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
 go install golang.org/x/tools/cmd/deadcode@latest
 go install github.com/codesweep-ai/lint/cmd/cs-lint@latest
-```
-
-`make ci` is the wider gate, every job the CI workflow runs on one Linux machine. It adds
-`actionlint`, which reads the workflow files themselves:
-
-```bash
+go install github.com/codesweep-ai/ledger/cmd/cs-ledger@latest
 go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 ```
 
-A sandbox built from this repository carries all of these already, along with goreleaser and
+`golangci-lint` is pinned to the version CI runs, so a release that gains checks reaches you when
+you move the pin rather than on an unrelated pull request. `cs-lint` is not pinned: CI installs it
+from source the same way you do, so a check it gains reaches you on the day it lands.
+
+Three tiers sit outside the gate, because each needs a host the workflow cannot assume.
+`make test-smoke` is the subset CI runs on every host. `make test-integration` covers the live
+engine, so run it when you touch create, engine or seed. `make test-live-agents` drives a real
+agent for every credential combination, shared and lent, and it spends provider quota on every
+member: run it when you touch a credential path.
+
+Its keys come from a git-ignored `.env` at the repository root. The suite writes them into a
+throwaway agent home, so it never touches your own profiles, and it skips any member whose key or
+host login is absent.
+
+A sandbox built from this repository carries every tool above already, along with goreleaser and
 `cs-sandbox` itself, so working on this project from inside one needs no setup.
 
-Pin `golangci-lint` to the version above, the one CI runs. A newer release gains checks, and you
-want to meet those when you upgrade the pin rather than on an unrelated pull request.
-
-`cs-lint` is not pinned. CI installs it from source the same way you do, so a check it gains reaches
-you on the day it lands.
-
-[`.golangci.yml`](.golangci.yml) is the Go counterpart to the prose rules below, and it records why
-each check is on or off. Two of them are off because their advice is wrong in this codebase. Read
-the reason before you turn one back on. When a check reports noise, fix the config rather than
-working around it. The prose linter earns its keep the same way: a linter that cries wolf gets
-ignored, and then it protects nothing.
-
-This repo keeps a **ledger** of open issues in `ledger/`. Read
+This repository keeps a **ledger** of open issues in `ledger/`. Read
 [`ledger/AGENTS.md`](ledger/AGENTS.md) before you start work, and follow it as you go. A commit
-that touches `ledger/` needs `cs-ledger render && cs-ledger check` to pass first. That tool is a
-sibling project, and `make ledger` runs it:
-
-```bash
-go install github.com/codesweep-ai/ledger/cmd/cs-ledger@latest
-```
+that touches `ledger/` needs `cs-ledger render && cs-ledger check` to pass first, and
+`make ledger` runs the check half.
 
 ## Design rules
 
