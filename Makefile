@@ -403,14 +403,12 @@ lint:
 ## lives in another package looks used). Drop -test and it answers a second,
 ## softer thing — what only a test keeps alive. That one wants a human, since a
 ## test fake is meant to have no production caller.
-##
-## Run through `go tool`, from the pin in go.mod, so it is compiled by the same
-## toolchain as the code it reads. A deadcode from PATH is built by whatever Go
-## installed it, and one built by an older Go cannot load a module that declares
-## a newer one: it reports "packages contain errors" per package, finds nothing,
-## and exits 0. The gate passes and analyses nothing.
 deadcode:
-	@out="$$(go tool deadcode -test ./...)"; \
+	@command -v deadcode >/dev/null 2>&1 || { \
+		echo "deadcode is not installed: go install golang.org/x/tools/cmd/deadcode@latest" >&2; \
+		exit 2; \
+	}
+	@out="$$(deadcode -test ./...)"; \
 	if [ -n "$$out" ]; then echo "$$out"; exit 1; fi
 
 ## snapshot: local release dry-run into dist/ (all platforms, archives, checksums).

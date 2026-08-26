@@ -133,17 +133,8 @@ func ImageDir(assetDir string) (dir string, cleanup func(), err error) {
 	return tmp, func() { _ = os.RemoveAll(tmp) }, nil
 }
 
-// pinnedToolModules are the module path prefixes whose versions the image
-// installs from this manifest. An allowlist rather than every require line: most
-// of the graph is there for the binary and has no business being installed into
-// a sandbox.
-var pinnedToolModules = []string{
-	"github.com/codesweep-ai/",
-	"golang.org/x/tools",
-}
-
-// ToolPins reports the versions this module pins for the tools the image builds
-// from source, as module path -> version. It prefers the checkout's go.mod over
+// ToolPins reports the versions this module pins for the sibling cs- tools the
+// image ships, as module path -> version. It prefers the checkout's go.mod over
 // the embedded copy, the same preference sourceFS applies to the image tree, so
 // a checkout that has moved a pin builds an image carrying it.
 //
@@ -160,14 +151,7 @@ func ToolPins(assetDir string) (map[string]string, error) {
 	pins := map[string]string{}
 	for line := range strings.SplitSeq(string(data), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		var wanted bool
-		for _, prefix := range pinnedToolModules {
-			wanted = wanted || strings.HasPrefix(fields[0], prefix)
-		}
-		if !wanted {
+		if len(fields) < 2 || !strings.HasPrefix(fields[0], "github.com/codesweep-ai/") {
 			continue
 		}
 		if strings.HasPrefix(fields[1], "v") {

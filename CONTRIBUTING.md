@@ -40,15 +40,14 @@ It shells out to tools the Go distribution does not carry. Install them once:
 
 ```bash
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+go install golang.org/x/tools/cmd/deadcode@latest
 go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 ```
 
 `golangci-lint` is pinned to the version CI runs, so a release that gains checks reaches you when
-you move the pin rather than on an unrelated pull request. `cs-lint`, `cs-ledger` and `deadcode`
-need no install: they are pinned in `go.mod` and run with `go tool`, which builds each one with this
-module's own toolchain. `make repin` moves the `cs-` pins to the branch tip; `deadcode` moves on its
-own, with `go get -tool golang.org/x/tools/cmd/deadcode@latest`. `make versions` says which builds
-the gates used.
+you move the pin rather than on an unrelated pull request. `cs-lint` and `cs-ledger` need no
+install: they are pinned in `go.mod` and run with `go tool`. `make repin` moves those pins to the
+branch tip, and `make versions` says which builds the gates used.
 
 Three tiers sit outside the gate, because each needs a host the workflow cannot assume.
 `make test-smoke` is the subset CI runs on every host. `make test-integration` covers the live

@@ -14,9 +14,6 @@ require (
 	github.com/codesweep-ai/tracer v0.0.0-20260826154852-c266382e4233 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/telemetry v0.0.0-20260811182544-a038080d80e5 // indirect
-	golang.org/x/tools v0.49.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
@@ -24,5 +21,4 @@ tool (
 	github.com/codesweep-ai/ledger/cmd/cs-ledger
 	github.com/codesweep-ai/lint/cmd/cs-lint
 	github.com/codesweep-ai/tracer/cmd/cs-tracer
-	golang.org/x/tools/cmd/deadcode
 )
