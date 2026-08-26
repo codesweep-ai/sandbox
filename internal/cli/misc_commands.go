@@ -133,6 +133,18 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim, withAgents b
 	// A missing pin is fatal here rather than in the middle of a long build: the
 	// Containerfile refuses an empty version, and saying so now costs seconds
 	// instead of minutes.
+	// cs-sandbox pins itself: a module cannot name its own version in its
+	// manifest, but the running binary knows which revision built it.
+	sbVersion, dirtyNote := sandboxPin()
+	switch {
+	case sbVersion == "":
+		sbVersion = "latest"
+		app.phase("this cs-sandbox reports no module version; the image will install cs-sandbox@latest")
+	case dirtyNote != "":
+		app.phase(dirtyNote)
+	}
+	args = append(args, "--build-arg", "CS_SANDBOX_VERSION="+sbVersion)
+
 	pins, err := assets.ToolPins(app.AssetDir)
 	if err != nil {
 		return err

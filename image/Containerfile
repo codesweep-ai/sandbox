@@ -296,19 +296,22 @@ RUN case "$(uname -m)" in \
 # somebody reviews. There is no default: an empty version means the image was built by something
 # other than `cs-sandbox build`, and guessing @latest there is the drift this replaced.
 #
-# cs-sandbox is the exception and stays @latest: a module cannot pin itself, so its version is not
-# in the manifest, and the build context holds no source tree to compile it from.
+# cs-sandbox pins itself: its version is not in the manifest, because a module cannot name its own,
+# but the cs-sandbox running the build knows which revision built it and passes that. So the image
+# ships the cs-sandbox that made it, and a sandbox can drive a peer with the same binary it came
+# from. That revision has to be pushed for the install to resolve.
 #
 # The module cache and build cache go in the same layer, or the ~400 MB they hold ships too. One
 # `go install` per tool: it refuses a command line naming packages from more than one module.
+ARG CS_SANDBOX_VERSION=
 ARG CS_LINT_VERSION=
 ARG CS_LEDGER_VERSION=
 ARG CS_TRACER_VERSION=
 RUN export GOBIN=/usr/local/bin GOTOOLCHAIN=local PATH=/opt/go/bin:$PATH \
-  && for v in "${CS_LINT_VERSION}" "${CS_LEDGER_VERSION}" "${CS_TRACER_VERSION}"; do \
+  && for v in "${CS_SANDBOX_VERSION}" "${CS_LINT_VERSION}" "${CS_LEDGER_VERSION}" "${CS_TRACER_VERSION}"; do \
        test -n "$v" || { echo "a cs- tool version is empty: build with 'cs-sandbox build', which passes the go.mod pins" >&2; exit 1; }; \
      done \
-  && go install github.com/codesweep-ai/sandbox/cmd/cs-sandbox@latest \
+  && go install github.com/codesweep-ai/sandbox/cmd/cs-sandbox@${CS_SANDBOX_VERSION} \
   && go install github.com/codesweep-ai/lint/cmd/cs-lint@${CS_LINT_VERSION} \
   && go install github.com/codesweep-ai/ledger/cmd/cs-ledger@${CS_LEDGER_VERSION} \
   && go install github.com/codesweep-ai/tracer/cmd/cs-tracer@${CS_TRACER_VERSION} \

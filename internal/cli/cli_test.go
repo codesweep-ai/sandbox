@@ -171,9 +171,10 @@ func TestBuildPassesToolPinsFromGoMod(t *testing.T) {
 		t.Fatalf("read Containerfile: %v", err)
 	}
 	for bin, arg := range map[string]string{
-		"cs-lint":   "CS_LINT_VERSION",
-		"cs-ledger": "CS_LEDGER_VERSION",
-		"cs-tracer": "CS_TRACER_VERSION",
+		"cs-sandbox": "CS_SANDBOX_VERSION",
+		"cs-lint":    "CS_LINT_VERSION",
+		"cs-ledger":  "CS_LEDGER_VERSION",
+		"cs-tracer":  "CS_TRACER_VERSION",
 	} {
 		want := "/cmd/" + bin + "@${" + arg + "}"
 		if !strings.Contains(string(cf), want) {
@@ -182,6 +183,41 @@ func TestBuildPassesToolPinsFromGoMod(t *testing.T) {
 		if strings.Contains(string(cf), "/cmd/"+bin+"@latest") {
 			t.Errorf("Containerfile still installs %s at @latest", bin)
 		}
+	}
+}
+
+// TestSandboxPinIsInstallable: the version cs-sandbox passes for itself has to
+// be one `go install` accepts. Go's build info appends +dirty to a binary built
+// from a modified tree and a module version cannot carry that, so it is trimmed
+// — the image gets the committed revision, which is the only one installable.
+func TestSandboxPinIsInstallable(t *testing.T) {
+	saved := Version
+	t.Cleanup(func() { Version = saved })
+
+	cases := []struct {
+		name, stamp, want string
+		wantNote          bool
+	}{
+		{"clean pseudo-version", "v0.0.0-20260826151729-1c4a9cc0fe4c", "v0.0.0-20260826151729-1c4a9cc0fe4c", false},
+		{"dirty tree", "v0.0.0-20260826151729-1c4a9cc0fe4c+dirty", "v0.0.0-20260826151729-1c4a9cc0fe4c", true},
+		{"tagged", "v1.2.3", "v1.2.3", false},
+		{"dirty at a tag", "v1.2.3+dirty", "v1.2.3", true},
+		{"no build info", devVersion, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			Version = c.stamp
+			got, note := sandboxPin()
+			if got != c.want {
+				t.Errorf("sandboxPin() = %q, want %q", got, c.want)
+			}
+			if (note != "") != c.wantNote {
+				t.Errorf("note = %q, want note=%v", note, c.wantNote)
+			}
+			if strings.Contains(got, "+") {
+				t.Errorf("%q still carries a build-info suffix; go install would reject it", got)
+			}
+		})
 	}
 }
 

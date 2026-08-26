@@ -44,6 +44,26 @@ func buildVersion() string {
 	return info.Main.Version
 }
 
+// sandboxPin is this binary's own version in the form `go install` accepts, so
+// the image can ship the cs-sandbox that built it rather than whatever the
+// branch tip holds. Go's build info appends +dirty to a version built from a
+// modified tree; a module version cannot carry that, so it is trimmed and the
+// caller says so — the image gets the committed revision, which is the only one
+// installable.
+//
+// Empty means the binary carries no module version at all (`go run` without
+// -buildvcs), the one case with no revision to name.
+func sandboxPin() (version, dirtyNote string) {
+	v := buildVersion()
+	if v == devVersion {
+		return "", ""
+	}
+	if trimmed, ok := strings.CutSuffix(v, "+dirty"); ok {
+		return trimmed, "working tree is dirty; the image gets cs-sandbox " + trimmed
+	}
+	return v, ""
+}
+
 // App holds process-wide dependencies resolved once at startup.
 type App struct {
 	Host     hostenv.Host

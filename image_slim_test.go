@@ -109,7 +109,7 @@ func TestCISlimKeepsAgentsWhenAsked(t *testing.T) {
 // builds the CLI, so it is the one sandbox without it, which means no live test
 // can notice the day the install stanza is deleted from the Containerfile.
 func TestCISlimShipsTheCLIOnlyInTheRealImage(t *testing.T) {
-	const marker = "cmd/cs-sandbox@latest"
+	const marker = "cmd/cs-sandbox@"
 	real, err := os.ReadFile(filepath.Join("image", "Containerfile"))
 	if err != nil {
 		t.Fatal(err)

@@ -117,7 +117,7 @@ BEGIN {
   DROP["temurin25-binaries"]              # jdk
   DROP["archive.apache.org/dist/maven"]   # maven
   DROP["go.dev/dl/go${GO_VERSION}"]       # go toolchain
-  DROP["cmd/cs-sandbox@latest"]           # the codesweep tools: need the go above
+  DROP["cmd/cs-sandbox@"]                 # the codesweep tools: need the go above
   DROP["golangci-lint/releases/download"] # the dev toolchain for this repo
   DROP["cmd/deadcode@latest"]             # deadcode, the one built from source
   DROP["python3 -m venv /opt/py-tools"]   # python CLI tools venv
