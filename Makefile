@@ -30,7 +30,7 @@ COVERDIR   ?= .coverage
 COVER_ABS  := $(abspath $(COVERDIR))
 COVERFLAGS := -covermode=atomic -coverpkg=./...
 
-.PHONY: help build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode snapshot release release-check clean
+.PHONY: help build build-go build-ci-image build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode snapshot release release-check clean
 
 .DEFAULT_GOAL := help
 
@@ -59,45 +59,47 @@ build-go:
 ## build-ci-image: the slimmed sandbox image the smoke profile's live tests run
 ## against in CI — 474 MB and ~70 seconds, against 6.04 GB and tens of minutes for
 ## the real one, which is what makes booting real sandboxes in CI affordable.
-## Derived from the real Containerfile, never a second copy of it: see
-## image/ci-slim.sh. Use it locally the same way test-smoke does:
+## Built by the shipped `cs-sandbox build --slim`, from a Containerfile derived
+## from the real one rather than duplicating it (image/ci-slim.sh). Locally:
 ##   make build-ci-image && make test-smoke
 ##
 ## Named for what it holds rather than for the package it is slimmed from. It is
 ## not a sandbox — ci-slim.sh strips every toolchain, the cs- tools included — so
 ## a tag reading `sandbox` would be the same trap the published packages were
-## split up to avoid (internal/cli/root.go). The two variants get two names for
-## the same reason and one more: CI_SLIM_KEEP_AGENTS=1 keeps the three agent
-## CLIs, 1.38 GB against 474 MB, and it is the only one of the two that can run
-## an agent — so a test that got the wrong one under a shared tag would fail at
-## `command -v claude`, nowhere near the setting that chose it.
+## split up to avoid (internal/cli/root.go).
 ##
-## Exported so the setting reaches ci-slim.sh whether it came from the
-## environment or from this make command line.
+## The two variants get two names for that reason and one more: with the agent
+## CLIs the image is 1.38 GB against 474 MB, and it is the only one of the two
+## that can run an agent. CI_SLIM_KEEP_AGENTS picks the flag that decides what
+## goes IN and the name it comes out under, in one place, so the two cannot
+## disagree — which under a shared tag is a test failing at `command -v claude`
+## nowhere near the setting that chose it. It is read here rather than exported
+## to ci-slim.sh: `--with-agents` is what the shipped command takes, and the
+## script hears about it from there.
 CI_SLIM_KEEP_AGENTS ?=
-export CI_SLIM_KEEP_AGENTS
 CI_AGENTS_IMAGE ?= localhost/sandbox-slim-agents:ci
 ifeq ($(filter 1 true yes on,$(CI_SLIM_KEEP_AGENTS)),)
 CI_IMAGE ?= localhost/sandbox-slim:ci
+CI_SLIM_FLAGS := --slim
 else
 CI_IMAGE ?= $(CI_AGENTS_IMAGE)
+CI_SLIM_FLAGS := --slim --with-agents
 endif
-build-ci-image:
-	@mkdir -p $(dir $(BIN))
-	./image/ci-slim.sh > bin/Containerfile.ci
-	podman build -q -t $(CI_IMAGE) -f bin/Containerfile.ci image/rootfs
 
-## build-ci-assets: an asset tree identical to image/ except that its
-## Containerfile is the slimmed one. Pointing CS_SANDBOX_ASSETS_DIR at it lets
-## the SHIPPED `cs-sandbox build` produce the CI image and, below, the microVM
-## artifacts — so CI exercises the real command rather than a bespoke path that
-## could drift from it.
-CI_ASSETS := bin/ci-assets
-build-ci-assets:
-	rm -rf $(CI_ASSETS)
-	@mkdir -p $(CI_ASSETS)
-	cp -r image $(CI_ASSETS)/
-	./image/ci-slim.sh > $(CI_ASSETS)/image/Containerfile
+# Through the SHIPPED command, which is the whole point of these two targets
+# having no build of their own any more. `publish-images` runs the same
+# `cs-sandbox build --slim` to make what consumers pull, so what CI tests and
+# what ghcr.io serves now differ in name and in nothing else. They did differ:
+# this used to reach podman directly, with no --build-arg, and left an image
+# whose version and revision labels were empty while the published one carried
+# both.
+#
+# Same recipe, not the same artifact. The image is not bit-for-bit reproducible
+# (SPEC §14) — it runs a package update at build time — so the copy CI boots and
+# the copy that is published are two builds of one commit, not one build used
+# twice. Testing the exact bytes that ship would mean publishing before testing.
+build-ci-image: build-go
+	CS_SANDBOX_IMAGE=$(CI_IMAGE) ./$(BIN) build --engine podman $(CI_SLIM_FLAGS)
 
 ## build-ci-fc: the Firecracker artifacts the microVM smoke test needs — the
 ## pinned firecracker binary, a guest kernel extracted from Fedora's kernel-core,
@@ -109,9 +111,11 @@ build-ci-assets:
 ## --engine firecracker`). Set CS_SANDBOX_FC_CACHE to keep them out of the
 ## developer's real cache:
 ##   CS_SANDBOX_FC_CACHE=/tmp/fc make build-ci-fc
-build-ci-fc: build-go build-ci-assets
-	CS_SANDBOX_ASSETS_DIR=$(CI_ASSETS) CS_SANDBOX_IMAGE=$(CI_IMAGE) \
-	  ./$(BIN) build --engine firecracker
+##
+## It builds the image too: one `cs-sandbox build` makes the image and then the
+## artifacts from it, which is why there is no dependency on build-ci-image here.
+build-ci-fc: build-go
+	CS_SANDBOX_IMAGE=$(CI_IMAGE) ./$(BIN) build --engine firecracker $(CI_SLIM_FLAGS)
 
 ## versions: what this build is made of — this repo's binary, every pinned tool,
 ## the Go toolchain, and whether a workspace is overriding the go.mod pins. Each
