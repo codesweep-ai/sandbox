@@ -78,7 +78,7 @@ func storeImage(t *testing.T) string {
 	if v := os.Getenv("CS_SANDBOX_IMAGE"); v != "" {
 		return v
 	}
-	const slim = "localhost/sandbox:ci"
+	const slim = "localhost/sandbox-slim:ci"
 	r := &run.Exec{}
 	if _, err := r.Run(context.Background(), run.Opts{ReadOnly: true}, "podman", "image", "exists", slim); err == nil {
 		return slim

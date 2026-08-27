@@ -144,7 +144,7 @@ func TestStoreKeyHash(t *testing.T) {
 // While it did, every run missed the cache and rebuilt a disk it already had —
 // 10 GB per run of the nested-VM test, kept for the TTL.
 func TestStoreKeyIgnoresSeedTimestamps(t *testing.T) {
-	const images = `[{"id":"img1","names":["localhost/sandbox:ci"]}]`
+	const images = `[{"id":"img1","names":["localhost/sandbox-slim:ci"]}]`
 	first := images + `[{"id":"l1","created":"2026-08-18T10:00:00Z"},
 	                    {"id":"l2","created":"2026-08-18T10:00:01Z","parent":"l1"}]`
 	again := images + `[{"id":"l1","created":"2026-08-19T22:31:04Z"},

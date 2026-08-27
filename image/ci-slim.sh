@@ -15,7 +15,7 @@
 # that lets CI pass on something the shipped image would fail.
 #
 #   ./image/ci-slim.sh > /tmp/Containerfile.ci
-#   podman build -f /tmp/Containerfile.ci -t localhost/sandbox:ci image/rootfs
+#   podman build -f /tmp/Containerfile.ci -t localhost/sandbox-slim:ci image/rootfs
 #
 # If a new toolchain stanza is added to the Containerfile and not listed here,
 # CI keeps working and just carries the extra weight. Add its marker below when

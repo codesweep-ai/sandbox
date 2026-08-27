@@ -365,7 +365,7 @@ func TestPullShowsProgressUnlessQuiet(t *testing.T) {
 // CI sets CS_SANDBOX_IMAGE to a local tag for every job that builds one, so
 // without this it pays that on every run.
 func TestBuildSkipsThePullForALocalImage(t *testing.T) {
-	t.Setenv("CS_SANDBOX_IMAGE", "localhost/sandbox:ci")
+	t.Setenv("CS_SANDBOX_IMAGE", "localhost/sandbox-slim:ci")
 	f, err := runRoot(t, &App{}, "build", "--engine", "podman")
 	if err != nil {
 		t.Fatalf("build: %v", err)

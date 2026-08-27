@@ -60,9 +60,28 @@ build-go:
 ## against in CI — 474 MB and ~70 seconds, against 6.04 GB and tens of minutes for
 ## the real one, which is what makes booting real sandboxes in CI affordable.
 ## Derived from the real Containerfile, never a second copy of it: see
-## image/ci-slim.sh. Use it locally the same way CI does:
-##   make build-ci-image && CS_SANDBOX_IMAGE=localhost/sandbox:ci make test-smoke
-CI_IMAGE ?= localhost/sandbox:ci
+## image/ci-slim.sh. Use it locally the same way test-smoke does:
+##   make build-ci-image && make test-smoke
+##
+## Named for what it holds rather than for the package it is slimmed from. It is
+## not a sandbox — ci-slim.sh strips every toolchain, the cs- tools included — so
+## a tag reading `sandbox` would be the same trap the published packages were
+## split up to avoid (internal/cli/root.go). The two variants get two names for
+## the same reason and one more: CI_SLIM_KEEP_AGENTS=1 keeps the three agent
+## CLIs, 1.38 GB against 474 MB, and it is the only one of the two that can run
+## an agent — so a test that got the wrong one under a shared tag would fail at
+## `command -v claude`, nowhere near the setting that chose it.
+##
+## Exported so the setting reaches ci-slim.sh whether it came from the
+## environment or from this make command line.
+CI_SLIM_KEEP_AGENTS ?=
+export CI_SLIM_KEEP_AGENTS
+CI_AGENTS_IMAGE ?= localhost/sandbox-slim-agents:ci
+ifeq ($(filter 1 true yes on,$(CI_SLIM_KEEP_AGENTS)),)
+CI_IMAGE ?= localhost/sandbox-slim:ci
+else
+CI_IMAGE ?= $(CI_AGENTS_IMAGE)
+endif
 build-ci-image:
 	@mkdir -p $(dir $(BIN))
 	./image/ci-slim.sh > bin/Containerfile.ci
@@ -363,7 +382,7 @@ test-integration:
 ## -p 1 and -v for the reasons test-integration gives. The timeout is generous
 ## because a member waits on a model rather than on this code.
 test-live-agents:
-	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-localhost/sandbox:ci-agents} \
+	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_AGENTS_IMAGE)} \
 	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run 'LiveAgent'
 
 ## coverage: merge every tier present under $(COVERDIR) and print the report

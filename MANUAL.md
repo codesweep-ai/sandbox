@@ -254,8 +254,8 @@ shipped image. None of the three images is interchangeable with another, and the
 test against a name of your own:
 
 ```
-CS_SANDBOX_IMAGE=localhost/sandbox:ci-agents cs-sandbox build --engine firecracker --slim --with-agents
-CS_SANDBOX_IMAGE=localhost/sandbox:ci-agents make test-smoke
+CS_SANDBOX_IMAGE=localhost/sandbox-slim-agents:ci cs-sandbox build --engine firecracker --slim --with-agents
+CS_SANDBOX_IMAGE=localhost/sandbox-slim-agents:ci make test-smoke
 ```
 
 ### Which image a sandbox runs
