@@ -36,18 +36,16 @@ That is every gate the CI workflow has, on this machine and in the order the wor
 so a green run here is a green run there. `make check` is the faster subset to keep beside you
 while you work, and `make ci` is the one that has to pass.
 
-It shells out to tools the Go distribution does not carry. Install them once:
+No linter needs installing. Every one the gates shell out to is pinned and built from the module
+cache on first use: `golangci-lint`, `deadcode`, `actionlint`, `cs-lint` and `cs-ledger`.
+`make repin` moves the `cs-` pins to the branch tip, and `make versions` says which builds the
+gates used.
 
-```bash
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
-go install golang.org/x/tools/cmd/deadcode@latest
-go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-```
+Moving a linter pin is an edit to `go.mod`, or to `go.golangci.mod` for `golangci-lint`. A linter
+release reaches you when you ask for it, not on an unrelated pull request.
 
-`golangci-lint` is pinned to the version CI runs, so a release that gains checks reaches you when
-you move the pin rather than on an unrelated pull request. `cs-lint` and `cs-ledger` need no
-install: they are pinned in `go.mod` and run with `go tool`. `make repin` moves those pins to the
-branch tip, and `make versions` says which builds the gates used.
+`goreleaser` is the one program still expected on the PATH. `make ci` validates the release
+manifest with it, and `make build` falls back to `go build` where it is absent.
 
 `make test-smoke` is the subset CI runs on every host, and `make ci` runs it last. A host that
 cannot boot a sandbox skips those members rather than failing, which is what lets the same command
@@ -62,8 +60,8 @@ Its keys come from a git-ignored `.env` at the repository root. The suite writes
 throwaway agent home, so it never touches your own profiles, and it skips any member whose key or
 host login is absent.
 
-A sandbox built from this repository carries every tool above already, along with goreleaser and
-`cs-sandbox` itself, so working on this project from inside one needs no setup.
+A sandbox built from this repository carries goreleaser and `cs-sandbox` itself as well, so
+working on this project from inside one needs no setup.
 
 This repository keeps a **ledger** of open issues in `ledger/`. Read
 [`ledger/AGENTS.md`](ledger/AGENTS.md) before you start work, and follow it as you go. A commit

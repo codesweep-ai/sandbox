@@ -176,18 +176,6 @@ jobs:
         if: matrix.os == 'ubuntu-latest' # formatting is platform-independent; check once
         run: make fmt-check
 
-      # An invalid workflow file fails the run with ZERO jobs and no annotation
-      # in the API — the least legible failure GitHub produces. Catch it here.
-      - name: actionlint
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          set -euo pipefail
-          # Pinned to the version this repo is validated against locally, so a
-          # clean `actionlint` on a laptop means a clean one here. Extra runner
-          # labels it does not know about live in .github/actionlint.yaml.
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-          "$(go env GOPATH)/bin/actionlint" -color
-
       - name: verify modules
         run: go mod verify
 
@@ -206,28 +194,19 @@ jobs:
       # Once, on ubuntu: what .golangci.yml checks is platform-independent, and
       # three copies of the same report is three times the log to read. Pinned
       # for the same reason actionlint is — a clean run on a laptop has to mean
-      # a clean run here, and these linters gain checks between releases. All
-      # three tag sets, matching the vet steps above: a build tag hides a file
-      # from the linter as surely as from the compiler.
+      # a clean run here, and these linters gain checks between releases. The
+      # target runs all three tag sets, matching the vet steps above: a build
+      # tag hides a file from the linter as surely as from the compiler.
       - name: golangci-lint
         if: matrix.os == 'ubuntu-latest'
-        run: |
-          set -euo pipefail
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
-          gcl="$(go env GOPATH)/bin/golangci-lint"
-          "$gcl" run
-          "$gcl" run --build-tags=integration
-          "$gcl" run --build-tags=smoke
+        run: make lint
 
       # Whole-program reachability, which golangci-lint's `unused` cannot do:
       # it reasons one package at a time, so a function whose only caller is in
       # another package still looks used. See the deadcode target in the Makefile.
       - name: deadcode
         if: matrix.os == 'ubuntu-latest'
-        run: |
-          set -euo pipefail
-          go install golang.org/x/tools/cmd/deadcode@latest
-          make deadcode
+        run: make deadcode
 
       - name: build
         run: go build ./... # compile-check every package
@@ -274,6 +253,22 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 7
+
+  # An invalid workflow file fails the run with zero jobs and no annotation in
+  # the API, which is the least legible failure the forge produces. actionlint
+  # is pinned as a Go tool in go.mod, so a clean `make actionlint` on a laptop
+  # means a clean one here. Extra runner labels it does not know about live in
+  # .github/actionlint.yaml.
+  actionlint:
+    name: workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: make actionlint
 
   # Both build products, from ONE image build. The microVM's rootfs is derived
   # from the image, and `cs-sandbox build --engine firecracker` builds the image

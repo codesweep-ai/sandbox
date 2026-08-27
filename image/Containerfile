@@ -286,10 +286,11 @@ RUN case "$(uname -m)" in \
   && chmod -R a+rX /opt/go \
   && /opt/go/bin/go version
 
-# The rest of what `make check` needs on top of Go, so this project can be worked on from inside one
-# of its own sandboxes: build it, lint it, vet the workflows. The versions are the ones
-# CONTRIBUTING.md and CI name — a newer golangci-lint gains checks, and those should be met on
-# purpose rather than on an unrelated change. actionlint carries CI's pin for the same reason.
+# The dev toolchain this project is worked on with, prebuilt so a sandbox is useful the moment it
+# boots: build it, lint it, vet the workflows. `make check` no longer needs any of it on the PATH,
+# because golangci-lint, actionlint and deadcode are pinned as Go tools and the gates build them
+# from the module cache; these copies are the same versions, ahead of time. Keep them in step with
+# go.mod and go.golangci.mod, or a sandbox reports something a laptop does not.
 #
 # goreleaser is here because `make build` prefers it and falls back to `go build` without it, which
 # would quietly produce a binary stamped differently from a released one.
@@ -331,9 +332,10 @@ RUN set -eu; \
       command -v "$t" >/dev/null || { echo "missing after install: $t" >&2; exit 1; }; \
     done
 
-# deadcode is the exception: golang.org/x/tools publishes no binaries, so this one is built.
+# deadcode is the exception: golang.org/x/tools publishes no binaries, so this one is built. The
+# version is the golang.org/x/tools pin in go.mod, which is where the gates get theirs.
 RUN GOBIN=/usr/local/bin GOTOOLCHAIN=local PATH=/opt/go/bin:$PATH \
-      go install golang.org/x/tools/cmd/deadcode@latest \
+      go install golang.org/x/tools/cmd/deadcode@v0.49.0 \
   && /opt/go/bin/go clean -modcache -cache \
   && command -v deadcode >/dev/null
 
