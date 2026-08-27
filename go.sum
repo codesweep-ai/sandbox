@@ -4,6 +4,8 @@ github.com/codesweep-ai/lint v0.0.0-20260826152054-3acef36b8e16 h1:obMSfhyOoYDGB
 github.com/codesweep-ai/lint v0.0.0-20260826152054-3acef36b8e16/go.mod h1:NWhvNuIRW2OylDAwBWTDCYV1SJQF8Lwqyv9CXh+K+yY=
 github.com/codesweep-ai/tracer v0.0.0-20260826154852-c266382e4233 h1:/SXKuAuEUIDuRu2zk1uzbC2rWpsmWKnKloP28KNil+Y=
 github.com/codesweep-ai/tracer v0.0.0-20260826154852-c266382e4233/go.mod h1:SUJJNt5cqDYfsSyCXU54LX5DPr0CqtO4nL+Lq934XcY=
+github.com/codesweep-ai/vcr v0.0.0-20260826160252-bd9e6f2b8ab6 h1:HhCmMgy5eSOi7yIV3rMdvIWxQNh2wuyNsmYyLTRjCig=
+github.com/codesweep-ai/vcr v0.0.0-20260826160252-bd9e6f2b8ab6/go.mod h1:bKKOed9iqYRsBePpFDLRji7X6y15X5oXg2uLJPn5ZHc=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=

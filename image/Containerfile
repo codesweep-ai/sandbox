@@ -564,21 +564,23 @@ ARG CS_SANDBOX_REVISION=
 ARG CS_LINT_VERSION=
 ARG CS_LEDGER_VERSION=
 ARG CS_TRACER_VERSION=
+ARG CS_VCR_VERSION=
 
 # The install itself, in a stanza of its own so ci-slim.sh can drop it and keep the
 # declarations above: the CI image ships no cs-sandbox, and is still tagged and
 # labelled with the version that built it.
 RUN export GOBIN=/usr/local/bin GOTOOLCHAIN=local PATH=/opt/go/bin:$PATH \
   && if [ -n "${CS_GOPROXY}" ]; then export GOPROXY="${CS_GOPROXY}" GONOSUMDB="${CS_GONOSUMDB}"; fi \
-  && for v in "${CS_SANDBOX_VERSION}" "${CS_LINT_VERSION}" "${CS_LEDGER_VERSION}" "${CS_TRACER_VERSION}"; do \
+  && for v in "${CS_SANDBOX_VERSION}" "${CS_LINT_VERSION}" "${CS_LEDGER_VERSION}" "${CS_TRACER_VERSION}" "${CS_VCR_VERSION}"; do \
        test -n "$v" || { echo "a cs- tool version is empty: build with 'cs-sandbox build', which passes the go.mod pins" >&2; exit 1; }; \
      done \
   && go install github.com/codesweep-ai/sandbox/cmd/cs-sandbox@${CS_SANDBOX_VERSION} \
   && go install github.com/codesweep-ai/lint/cmd/cs-lint@${CS_LINT_VERSION} \
   && go install github.com/codesweep-ai/ledger/cmd/cs-ledger@${CS_LEDGER_VERSION} \
   && go install github.com/codesweep-ai/tracer/cmd/cs-tracer@${CS_TRACER_VERSION} \
+  && go install github.com/codesweep-ai/vcr/cmd/cs-vcr@${CS_VCR_VERSION} \
   && go clean -modcache -cache \
-  && for t in cs-sandbox cs-lint cs-ledger cs-tracer; do \
+  && for t in cs-sandbox cs-lint cs-ledger cs-tracer cs-vcr; do \
        command -v "$t" >/dev/null || { echo "missing after install: $t" >&2; exit 1; }; \
      done
 

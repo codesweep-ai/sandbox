@@ -269,6 +269,7 @@ func buildImage(cmd *cobra.Command, app *App, slim, withAgents, localSandbox boo
 		{"CS_LINT_VERSION", "github.com/codesweep-ai/lint", "cs-lint"},
 		{"CS_LEDGER_VERSION", "github.com/codesweep-ai/ledger", "cs-ledger"},
 		{"CS_TRACER_VERSION", "github.com/codesweep-ai/tracer", "cs-tracer"},
+		{"CS_VCR_VERSION", "github.com/codesweep-ai/vcr", "cs-vcr"},
 	} {
 		v := pins[tool.module]
 		if v == "" {
