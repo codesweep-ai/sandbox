@@ -2,6 +2,7 @@ package fcdisk
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -64,9 +65,10 @@ func TestDefaultKVerPinFormat(t *testing.T) {
 func TestVerifyArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	c := Cache{Dir: dir}
+	const img = "localhost/sandbox-slim:ci"
 
 	// Nothing present yet -> error naming the firecracker binary (checked first).
-	if err := c.VerifyArtifacts(); err == nil {
+	if err := c.VerifyArtifacts(img); err == nil {
 		t.Fatal("VerifyArtifacts on empty cache = nil, want error")
 	}
 
@@ -76,8 +78,8 @@ func TestVerifyArtifacts(t *testing.T) {
 	writeFile(t, c.FirecrackerBin())
 	writeFile(t, c.Kernel())
 	writeFile(t, c.Initrd())
-	writeExt4(t, c.BaseRootfs())
-	if err := c.VerifyArtifacts(); err != nil {
+	writeExt4(t, c.BaseRootfs(img))
+	if err := c.VerifyArtifacts(img); err != nil {
 		t.Fatalf("VerifyArtifacts with all artifacts = %v, want nil", err)
 	}
 
@@ -85,7 +87,7 @@ func TestVerifyArtifacts(t *testing.T) {
 	if err := os.Remove(c.Initrd()); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.VerifyArtifacts(); err == nil {
+	if err := c.VerifyArtifacts(img); err == nil {
 		t.Error("VerifyArtifacts with missing initrd = nil, want error")
 	}
 }
@@ -128,12 +130,13 @@ func TestIsExt4(t *testing.T) {
 // garbage disk to a microVM must be caught here, not at boot.
 func TestVerifyArtifactsRejectsPlaceholderRootfs(t *testing.T) {
 	c := Cache{Dir: t.TempDir()}
+	const img = "localhost/sandbox-slim:ci"
 	writeFile(t, c.FirecrackerBin())
 	writeFile(t, c.Kernel())
 	writeFile(t, c.Initrd())
-	writeFile(t, c.BaseRootfs()) // present, but not a filesystem
+	writeFile(t, c.BaseRootfs(img)) // present, but not a filesystem
 
-	err := c.VerifyArtifacts()
+	err := c.VerifyArtifacts(img)
 	if err == nil {
 		t.Fatal("VerifyArtifacts with a placeholder base rootfs = nil, want error")
 	}
@@ -147,7 +150,7 @@ func TestVerifyArtifactsRejectsPlaceholderRootfs(t *testing.T) {
 // racing build and create left in a real cache.
 func TestEnsureBaseRootfsRejectsFreshStampOverPlaceholder(t *testing.T) {
 	c := Cache{Dir: t.TempDir()}
-	writeFile(t, c.BaseRootfs())
+	writeFile(t, c.BaseRootfs(""))
 	// Stamp for a zero BuildConfig: no image, no kver, no init hash.
 	if err := c.writeStamp("base-rootfs.stamp", "||fedora|"); err != nil {
 		t.Fatal(err)
@@ -625,5 +628,129 @@ func writeFile(t *testing.T, p string) {
 	}
 	if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestImageSlot: the filename key is the repository, with the tag or digest
+// dropped — so two variants never share a file, and two tags of one variant
+// always do.
+func TestImageSlot(t *testing.T) {
+	for _, tc := range []struct{ image, want string }{
+		{"localhost/sandbox-slim:ci", "localhost-sandbox-slim"},
+		{"localhost/sandbox-slim-agents:ci", "localhost-sandbox-slim-agents"},
+		{"ghcr.io/codesweep-ai/sandbox:v0.1.0", "ghcr.io-codesweep-ai-sandbox"},
+		{"ghcr.io/codesweep-ai/sandbox-slim:v0.1.0", "ghcr.io-codesweep-ai-sandbox-slim"},
+		// A registry port is not a tag: cutting at that colon would file every
+		// image on the host under the registry's own name.
+		{"myreg:5000/team/img:v2", "myreg-5000-team-img"},
+		{"ghcr.io/x/y@sha256:" + strings.Repeat("a", 64), "ghcr.io-x-y"},
+		// Untagged is already the repository.
+		{"localhost/sandbox-slim", "localhost-sandbox-slim"},
+	} {
+		if got := imageSlot(tc.image); got != tc.want {
+			t.Errorf("imageSlot(%q) = %q, want %q", tc.image, got, tc.want)
+		}
+	}
+	// A name that cannot serve as one falls back to a hash rather than to a path
+	// that collides or cannot be written.
+	if got := imageSlot(":::"); got == "" || strings.Trim(got, "-") != got {
+		t.Errorf("imageSlot(unusable) = %q, want a hash", got)
+	}
+	if got := imageSlot("reg.example.com/" + strings.Repeat("deep/", 40) + "img:v1"); len(got) != 16 {
+		t.Errorf("imageSlot(overlong) = %q (%d chars), want a 16-char hash", got, len(got))
+	}
+}
+
+// TestBaseRootfsIsPerImage: the whole point. Two image variants get two files,
+// two tags of one variant share one, and the pre-keying name is still what an
+// empty image resolves to.
+func TestBaseRootfsIsPerImage(t *testing.T) {
+	c := Cache{Dir: t.TempDir()}
+	slim := c.BaseRootfs("localhost/sandbox-slim:ci")
+	agents := c.BaseRootfs("localhost/sandbox-slim-agents:ci")
+	full := c.BaseRootfs("ghcr.io/codesweep-ai/sandbox:v0.1.0")
+	for _, pair := range [][2]string{{slim, agents}, {slim, full}, {agents, full}} {
+		if pair[0] == pair[1] {
+			t.Errorf("two image variants share one rootfs: %s", pair[0])
+		}
+	}
+	if a, b := c.BaseRootfs("ghcr.io/x/y:v1"), c.BaseRootfs("ghcr.io/x/y:v2"); a != b {
+		t.Errorf("two tags of one repository took separate files: %s and %s", a, b)
+	}
+	if got, want := c.BaseRootfs(""), filepath.Join(c.Dir, legacyBaseRootfs); got != want {
+		t.Errorf("BaseRootfs(\"\") = %s, want the pre-keying name %s", got, want)
+	}
+	// The stamp travels with the disk, or one could vouch for the other's image.
+	if baseRootfsStampName("localhost/sandbox-slim:ci") == baseRootfsStampName("localhost/sandbox-slim-agents:ci") {
+		t.Error("two image variants share one stamp")
+	}
+}
+
+// TestVerifyArtifactsNamesTheImage is the defect this keying exists for: a host
+// holding the slim rootfs used to pass verification for a create naming the
+// shipped image, and the microVM booted a filesystem nobody asked for.
+func TestVerifyArtifactsNamesTheImage(t *testing.T) {
+	c := Cache{Dir: t.TempDir()}
+	writeFile(t, c.FirecrackerBin())
+	writeFile(t, c.Kernel())
+	writeFile(t, c.Initrd())
+	writeExt4(t, c.BaseRootfs("localhost/sandbox-slim:ci"))
+
+	if err := c.VerifyArtifacts("localhost/sandbox-slim:ci"); err != nil {
+		t.Fatalf("the image whose rootfs is cached = %v, want nil", err)
+	}
+	const other = "ghcr.io/codesweep-ai/sandbox:v0.1.0"
+	err := c.VerifyArtifacts(other)
+	if err == nil {
+		t.Fatal("verified a create against another image's rootfs, which is the bug this keying removes")
+	}
+	if !strings.Contains(err.Error(), other) {
+		t.Errorf("error = %v, want it to name the image that has no rootfs", err)
+	}
+}
+
+// TestEnsureBaseRootfsAdoptsLegacyRootfs: a cache filled before this keying
+// holds one unnamed rootfs. Where its stamp says it came from the image being
+// asked for, it is renamed rather than rebuilt — the rebuild costs minutes and
+// gigabytes, and the bytes are already right.
+func TestEnsureBaseRootfsAdoptsLegacyRootfs(t *testing.T) {
+	c := Cache{Dir: t.TempDir()}
+	const img = "ghcr.io/codesweep-ai/sandbox:v0.1.0"
+	bc := BuildConfig{Image: img, InitPath: filepath.Join(t.TempDir(), "init"), Kernel: "fedora"}
+	writeFile(t, bc.InitPath)
+	r := run.NewFake().OnStdout("image inspect", "sha256:deadbeef")
+
+	// What the cache looked like before: one unkeyed disk and its stamp.
+	legacy := c.BaseRootfs("")
+	writeExt4(t, legacy)
+	// The same hash ensureBaseRootfs computes, read off the file rather than
+	// assumed, so this test cannot drift from what writeFile happens to write.
+	initData, err := os.ReadFile(bc.InitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inithash := sha256.Sum256(initData)
+	cur := baseRootfsStamp("sha256:deadbeef", "", "fedora", hex.EncodeToString(inithash[:])[:12], 0)
+	if err := c.writeStamp(legacyBaseRootfsStamp, cur); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.ensureBaseRootfs(context.Background(), r, bc); err != nil {
+		t.Fatalf("ensureBaseRootfs over an adoptable cache = %v, want nil", err)
+	}
+	if exists(legacy) {
+		t.Error("the unkeyed rootfs is still there; it was copied or ignored rather than renamed")
+	}
+	if !isExt4(c.BaseRootfs(img)) {
+		t.Error("no rootfs under the image's own name after adoption")
+	}
+	if got := c.readStamp(baseRootfsStampName(img)); got != cur {
+		t.Errorf("adopted stamp = %q, want %q", got, cur)
+	}
+	// Adoption is a rename, so nothing was exported or packed.
+	for _, call := range r.Calls {
+		if len(call) > 1 && call[0] == "podman" && call[1] == "export" {
+			t.Error("rebuilt the rootfs instead of adopting the one already there")
+		}
 	}
 }

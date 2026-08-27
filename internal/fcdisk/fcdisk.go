@@ -11,6 +11,8 @@ package fcdisk
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -50,16 +52,74 @@ func (c Cache) Kernel() string { return filepath.Join(c.Dir, "vmlinux.elf") }
 // Initrd is the cached initrd.img path.
 func (c Cache) Initrd() string { return filepath.Join(c.Dir, "initrd.img") }
 
-// BaseRootfs is the cached base rootfs ext4 path.
-func (c Cache) BaseRootfs() string { return filepath.Join(c.Dir, "base-rootfs.ext4") }
+// legacyBaseRootfs is the single unkeyed rootfs a cache written before this held.
+// ensureBaseRootfs adopts it where its stamp says it came from the image being
+// asked for; nothing else reads it.
+const legacyBaseRootfs = "base-rootfs.ext4"
+
+// BaseRootfs is the cached base rootfs ext4 path for one image.
+//
+// Per image, because the rootfs IS that image: it is a `podman export` of a
+// container made from it, so the slim image and the shipped one give different
+// filesystems. One shared file meant whoever built last decided what every later
+// create booted — and create only checks that the file is an ext4, never which
+// image it came from, so a host that last built the slim rootfs handed it to a
+// create naming the full image without a word. Keyed, that create finds no
+// rootfs for the image it asked for and says so.
+//
+// Keyed by REPOSITORY rather than by the whole reference, so a host keeps one
+// per image variant — three, here — instead of one per version ever built. Two
+// tags of one repository still share a slot and rebuild in place when the stamp
+// says the content moved, which is what the single file always did.
+func (c Cache) BaseRootfs(image string) string {
+	if image == "" {
+		return filepath.Join(c.Dir, legacyBaseRootfs)
+	}
+	return filepath.Join(c.Dir, "base-rootfs-"+imageSlot(image)+".ext4")
+}
+
+// imageSlot is the filename key for one image: its repository, with the tag or
+// digest dropped and whatever a filename cannot carry replaced.
+//
+// A readable name rather than a hash of one, because these files are gigabytes
+// and somebody clearing space has to see which is which. It falls back to a hash
+// only where the name cannot serve: an empty result, or one long enough to
+// threaten the 255-byte limit once the prefix and suffix are on it.
+func imageSlot(image string) string {
+	repo := image
+	if at := strings.IndexByte(repo, '@'); at >= 0 {
+		repo = repo[:at] // ref@sha256:…
+	}
+	// The tag separator is the last colon AFTER the last slash. A registry may
+	// carry a port (myreg:5000/img), and cutting at that colon instead would file
+	// every image on that host under the registry's own name.
+	if colon := strings.LastIndexByte(repo, ':'); colon > strings.LastIndexByte(repo, '/') {
+		repo = repo[:colon]
+	}
+	var b strings.Builder
+	for _, r := range repo {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	slot := strings.Trim(b.String(), "-")
+	if slot == "" || len(slot) > 100 {
+		sum := sha256.Sum256([]byte(image))
+		return hex.EncodeToString(sum[:])[:16]
+	}
+	return slot
+}
 
 // ReflinkRootfs makes the per-instance writable rootfs as a CoW copy of the base
-// (cp --reflink=auto -f base-rootfs.ext4 <idir>/rootfs.ext4). It takes the
-// artifact lock: a build rewriting the base in place while this copy runs would
-// hand the new instance a torn disk.
-func (c Cache) ReflinkRootfs(ctx context.Context, r run.Runner, dst string) error {
+// built from image (cp --reflink=auto -f base-rootfs-<image>.ext4
+// <idir>/rootfs.ext4). It takes the artifact lock: a build rewriting the base in
+// place while this copy runs would hand the new instance a torn disk.
+func (c Cache) ReflinkRootfs(ctx context.Context, r run.Runner, image, dst string) error {
 	return c.withArtifactLock(func() error {
-		_, err := r.Run(ctx, run.Opts{}, "cp", "--reflink=auto", "-f", c.BaseRootfs(), dst)
+		_, err := r.Run(ctx, run.Opts{}, "cp", "--reflink=auto", "-f", c.BaseRootfs(image), dst)
 		return err
 	})
 }

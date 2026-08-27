@@ -128,20 +128,31 @@ func isExt4(p string) bool {
 
 // VerifyArtifacts returns an actionable error if any cached artifact a microVM
 // boots from is missing — the firecracker binary, the guest kernel + initrd, and
-// the base rootfs. It never builds anything; `cs-sandbox build` does that.
-func (c Cache) VerifyArtifacts() error {
+// the base rootfs built from image. It never builds anything; `cs-sandbox build`
+// does that.
+//
+// The rootfs is asked for BY IMAGE, which is the check this could not make while
+// one file served every image: a host that had built the slim rootfs passed this
+// for a create naming the shipped one, and the microVM booted a filesystem
+// nobody asked for. Now the miss is named, and it names the image.
+func (c Cache) VerifyArtifacts(image string) error {
+	rootfs := c.BaseRootfs(image)
+	what := "base rootfs"
+	if image != "" {
+		what += " for " + image
+	}
 	for _, a := range []struct{ path, what string }{
 		{c.FirecrackerBin(), "firecracker binary"},
 		{c.Kernel(), "guest kernel"},
 		{c.Initrd(), "guest initrd"},
-		{c.BaseRootfs(), "base rootfs"},
+		{rootfs, what},
 	} {
 		if !exists(a.path) {
 			return fmt.Errorf("%s missing (%s) — run: cs-sandbox build", a.what, a.path)
 		}
 	}
-	if !isExt4(c.BaseRootfs()) {
-		return fmt.Errorf("base rootfs is not a filesystem (%s) — an interrupted build left a placeholder; run: cs-sandbox build", c.BaseRootfs())
+	if !isExt4(rootfs) {
+		return fmt.Errorf("base rootfs is not a filesystem (%s) — an interrupted build left a placeholder; run: cs-sandbox build", rootfs)
 	}
 	return nil
 }
@@ -520,6 +531,20 @@ func baseRootfsStamp(imgid, kver, kernelMode, inithash string, gb int) string {
 	return fmt.Sprintf("%s|%s|%s|%s|%dG", imgid, kver, kernelMode, inithash, gb)
 }
 
+// legacyBaseRootfsStamp vouched for the single unkeyed rootfs. Read only where
+// that file is being adopted; nothing writes it any more.
+const legacyBaseRootfsStamp = "base-rootfs.stamp"
+
+// baseRootfsStampName is the stamp beside one image's rootfs — the same key the
+// disk carries, so the two are removed and written as a pair and neither can end
+// up vouching for the other's image.
+func baseRootfsStampName(image string) string {
+	if image == "" {
+		return legacyBaseRootfsStamp
+	}
+	return "base-rootfs-" + imageSlot(image) + ".stamp"
+}
+
 // ensureBaseRootfs builds/refreshes the base rootfs ext4 when the stamp (see
 // baseRootfsStamp) changed or the disk is missing.
 func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfig) error {
@@ -539,10 +564,33 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 		}
 	}
 	cur := baseRootfsStamp(imgid, kver, bc.Kernel, inithash, bc.RootfsGB)
+	rootfs, stamp := c.BaseRootfs(bc.Image), baseRootfsStampName(bc.Image)
 	// The stamp alone is not enough: it can vouch for a placeholder left by an
 	// interrupted build, so require the disk to actually be a filesystem.
-	if exists(c.BaseRootfs()) && isExt4(c.BaseRootfs()) && c.readStamp("base-rootfs.stamp") == cur {
+	if exists(rootfs) && isExt4(rootfs) && c.readStamp(stamp) == cur {
 		return nil
+	}
+	// A cache filled before the rootfs was kept per image holds one unkeyed file.
+	// Where its stamp says it came from THIS image, take it: a rename costs
+	// nothing, and the rebuild it saves costs minutes and several gigabytes. One
+	// built from some other image is left where it is — this cannot say which, and
+	// deleting somebody's cache to tidy up is not this function's business. The
+	// line below says it is there so the space can be reclaimed deliberately.
+	if legacy := filepath.Join(c.Dir, legacyBaseRootfs); rootfs != legacy && exists(legacy) {
+		switch {
+		case isExt4(legacy) && c.readStamp(legacyBaseRootfsStamp) == cur:
+			if err := os.Rename(legacy, rootfs); err == nil {
+				if err := c.writeStamp(stamp, cur); err == nil {
+					_ = os.Remove(c.stampPath(legacyBaseRootfsStamp))
+					c.say("adopted the cached base filesystem for %s", bc.Image)
+					return nil
+				}
+				// Stamped nothing over a moved file: the next run rebuilds, which is
+				// the harmless direction. Fall through and build now instead.
+			}
+		default:
+			c.say("note: %s was built for another image and is no longer read; remove it to reclaim the space", legacy)
+		}
 	}
 	if bc.Image == "" || bc.InitPath == "" {
 		return errors.New("fc: base rootfs missing/stale and cannot build (need image + init path)")
@@ -552,8 +600,8 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 	// leaves "no stamp" (rebuild next time) rather than a stamp vouching for the
 	// empty truncate placeholder below — the state VerifyArtifacts would accept
 	// and a microVM would boot as garbage.
-	_ = os.Remove(c.stampPath("base-rootfs.stamp"))
-	_ = os.Remove(c.BaseRootfs())
+	_ = os.Remove(c.stampPath(stamp))
+	_ = os.Remove(rootfs)
 	tmp := filepath.Join(c.Dir, "build")
 	tarPath := filepath.Join(c.Dir, "rootfs.tar")
 	_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fcbuild")
@@ -569,7 +617,7 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 	if err := os.MkdirAll(tmp, 0o755); err != nil {
 		return err
 	}
-	if _, err := r.Run(ctx, run.Opts{}, "truncate", "-s", strconv.Itoa(bc.RootfsGB)+"G", c.BaseRootfs()); err != nil {
+	if _, err := r.Run(ctx, run.Opts{}, "truncate", "-s", strconv.Itoa(bc.RootfsGB)+"G", rootfs); err != nil {
 		return err
 	}
 	// The fedora path pulls guest /lib/modules from modules.tar; host mode copies
@@ -590,7 +638,7 @@ mke2fs -F -q -t ext4 -d "$FC_TMP" "$FC_ROOTFS_IMG"`
 	env := []string{
 		"FC_TMP=" + tmp,
 		"FC_ROOTFS_TAR=" + tarPath,
-		"FC_ROOTFS_IMG=" + c.BaseRootfs(),
+		"FC_ROOTFS_IMG=" + rootfs,
 		"FC_MOD_TAR=" + modTar,
 		"FC_KVER=" + kver,
 		"FC_INIT=" + bc.InitPath,
@@ -602,5 +650,5 @@ mke2fs -F -q -t ext4 -d "$FC_TMP" "$FC_ROOTFS_IMG"`
 	}
 	_ = os.RemoveAll(tmp)
 	_ = os.Remove(tarPath)
-	return c.writeStamp("base-rootfs.stamp", cur)
+	return c.writeStamp(stamp, cur)
 }

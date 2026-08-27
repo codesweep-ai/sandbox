@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
+	"github.com/codesweep-ai/sandbox/internal/fcdisk"
 	"github.com/codesweep-ai/sandbox/internal/fcnet"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/paths"
@@ -65,9 +66,10 @@ func image(t *testing.T) string {
 // the 9.3 GB image and 75s against the 693 MB one, for the same assertions.
 // `make test-smoke` already runs it this way.
 //
-// The microVM's own rootfs is unaffected — it is built from the shipped image by
-// `cs-sandbox build --engine firecracker` either way, so the guest is still the
-// real environment. Only the image the INNER sandbox is created from is slimmed,
+// The microVM's own rootfs is the one built for CS_SANDBOX_IMAGE, which the
+// cache keeps per image (SPEC R124) — so this member boots whichever variant the
+// run was pointed at. Only the image the INNER sandbox is created from is
+// chosen here,
 // and that needs podman, sshd and the dev user, all of which ci-slim.sh keeps.
 //
 // An explicit CS_SANDBOX_IMAGE still wins, which is how to put the store path
@@ -715,8 +717,13 @@ func TestCLINestedSandboxInVMLive(t *testing.T) {
 	if _, err := os.Stat("/dev/kvm"); err != nil {
 		t.Skipf("/dev/kvm unavailable: %v", err)
 	}
-	if !fileExists(filepath.Join(paths.FCCache(), "vmlinux.elf")) {
-		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
+	// Asked of the same function the engine asks, and asked about the image this
+	// microVM will boot: the base rootfs is kept per image (SPEC R124), so a host
+	// carrying one for some other variant has not built what this member needs.
+	// A guard naming only the kernel passed there and left the failure to
+	// `create`, which is a skip reported as a broken repository.
+	if err := (fcdisk.Cache{Dir: paths.FCCache()}).VerifyArtifacts(image(t)); err != nil {
+		t.Skipf("firecracker artifacts not built (run: cs-sandbox build --engine firecracker): %v", err)
 	}
 	img := storeImage(t)
 	bin := buildCLI(t)

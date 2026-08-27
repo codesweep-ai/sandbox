@@ -43,7 +43,7 @@ func (fe *Firecracker) Prepare(ctx context.Context) error {
 // Verify confirms the cached artifacts a microVM boots from are present, so
 // create fails cleanly (pointing at build) rather than mid-boot.
 func (fe *Firecracker) Verify(ctx context.Context) error {
-	return fe.cache().VerifyArtifacts()
+	return fe.cache().VerifyArtifacts(fe.d.Image)
 }
 
 // fabric builds the fcnet.Fabric from Deps.
@@ -229,7 +229,7 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 
 	// --- per-instance writable rootfs (CoW reflink; skipped when reusing a kept home) ---
 	if !reuseRootfs {
-		if err = fe.cache().ReflinkRootfs(ctx, d.Runner, rootfs); err != nil {
+		if err = fe.cache().ReflinkRootfs(ctx, d.Runner, fe.d.Image, rootfs); err != nil {
 			return nil, err
 		}
 	}

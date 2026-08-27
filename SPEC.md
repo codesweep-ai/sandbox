@@ -1056,7 +1056,8 @@ a single device-letter cursor in that same order.
 | `/dev/vdb` | seed | read-only |
 | `/dev/vdc…` | repo disks, then snapshots, then image stores | read-only |
 
-**R124.** Each sandbox's root disk **MUST** be a `cp --reflink=auto` copy of the base rootfs.
+**R124.** Each sandbox's root disk **MUST** be a `cp --reflink=auto` copy of the base rootfs built
+from that sandbox's image, and the cache **MUST** hold one base rootfs per image.
 
 **R125.** `--disk` **MUST** be grow-only, **MUST** apply to a kept disk, and **MUST** be a no-op when the disk
 already has that much.
@@ -1081,6 +1082,14 @@ capacity is fixed at boot, and the guest carries no `e2fsprogs` to resize itself
 R126 is a memory argument. The host page cache is per inode, so a per-sandbox copy of a disk would
 hold the same bytes in host RAM once for every sandbox reading it. Sharing one inode is safe
 because the guest mounts it read-only.
+
+R124 names the image because the base rootfs **is** that image, exported from a container made from
+it. One file for all of them let whoever built last decide what every later sandbox booted. `create`
+never noticed: it checks that the disk is a filesystem, not which image it came from. So a host
+that had built the slim rootfs served it to a sandbox asking for the shipped image, silently.
+Kept per image, that sandbox finds no rootfs under the name it asked for and is told to build one.
+The key is the repository rather than the whole reference, so a host holds one per variant instead
+of one per version it has ever built.
 
 ### 12.4 Returning and sharing memory
 

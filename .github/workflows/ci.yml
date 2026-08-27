@@ -414,7 +414,7 @@ jobs:
           # One command, both products: the image, then the artifacts from it.
           make build-ci-fc
           podman save --format oci-archive -o bin/cs-sandbox-ci.tar "$CS_SANDBOX_IMAGE"
-          # --sparse: base-rootfs.ext4 is ~4 GB of mostly holes, and reading them
+          # --sparse: the base rootfs is ~4 GB of mostly holes, and reading them
           # is the slow part of packing an otherwise ~456 MB archive.
           tar --sparse -C bin/fc-cache -czf bin/fc-artifacts.tar.gz .
           ls -lh bin/cs-sandbox-ci.tar bin/fc-artifacts.tar.gz

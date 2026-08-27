@@ -105,11 +105,16 @@ build-ci-image: build-go
 ## pinned firecracker binary, a guest kernel extracted from Fedora's kernel-core,
 ## and a base rootfs built from the CI image. Measured at ~1m35s cold and ~676 MB
 ## on disk (337 MB packed), which is what makes caching them in CI worthwhile.
-## `du --apparent-size` reports 33 GB instead: base-rootfs.ext4 is a sparse file,
+## `du --apparent-size` reports 33 GB instead: the base rootfs is a sparse file,
 ## which is why the CI job packs the cache with `tar --sparse`.
 ## Needs /dev/kvm writable and the FC host packages (see `cs-sandbox doctor
-## --engine firecracker`). Set CS_SANDBOX_FC_CACHE to keep them out of the
-## developer's real cache:
+## --engine firecracker`).
+##
+## It writes into the developer's own cache, and that is now safe: the cache
+## keeps one base rootfs per image (SPEC R124), so this leaves a full-image
+## rootfs beside the one it builds instead of over it. CS_SANDBOX_FC_CACHE still
+## moves the whole cache where a run wants its own — CI sets it so the artifacts
+## land somewhere it can pack:
 ##   CS_SANDBOX_FC_CACHE=/tmp/fc make build-ci-fc
 ##
 ## It builds the image too: one `cs-sandbox build` makes the image and then the
@@ -246,16 +251,20 @@ tools:
 ## passes down. Probing the default while the run boots an override is how a
 ## target builds an image nobody asked for and still leaves the run without one.
 ##
-## The image and nothing else. build-ci-fc would be the tempting second half —
-## it produces the microVM artifacts the heaviest member wants — but it builds
-## them by writing the base rootfs into the developer's real Firecracker cache,
-## from the CI image, and that cache holds one rootfs stamped with one image id.
-## A campaign or a sandbox booting the full image would find it replaced and
-## rebuild it back, 32 GiB at a time, every time the two were used in turn.
-## build-ci-fc's own note says to redirect CS_SANDBOX_FC_CACHE for exactly this
-## reason, so it stays a deliberate step rather than something a test target
-## does to a machine unasked. Without those artifacts the microVM member skips
-## itself, which is what it already does on the macOS and WSL2 legs.
+## Where the host has /dev/kvm it builds through build-ci-fc, which makes the
+## microVM artifacts as well as the image, so the nested-VM member has something
+## to run rather than skipping on the machine most able to run it.
+##
+## That was unsafe until the cache began keeping one base rootfs per image (SPEC
+## R124). It wrote the CI image's rootfs over the one a full-image sandbox boots
+## from, so the two rebuilt it out from under each other, 32 GiB at a time, every
+## time they were used in turn. Keyed, they sit side by side — measured at 6.2 GB
+## and 752 MB on disk against 64 GiB apparent, because both are sparse.
+##
+## Only when the image is missing, which is a machine's first setup. A host that
+## has the image but has lost its Firecracker cache does not rebuild here: the
+## microVM member skips itself and names the command, exactly as it does on the
+## macOS and WSL2 legs.
 ##
 ## Nothing here fails. The live members of this profile skip themselves on a host
 ## with no engine and the engine-free members still run, which is what makes the
@@ -270,6 +279,8 @@ setup-smoke: tools
 		image=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)}; \
 		if podman image exists "$$image"; then \
 			echo "setup-smoke: $$image is built"; \
+		elif [ -w /dev/kvm ]; then \
+			$(MAKE) --no-print-directory build-ci-fc; \
 		else \
 			$(MAKE) --no-print-directory build-ci-image; \
 		fi; \
