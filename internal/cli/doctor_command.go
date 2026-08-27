@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	assets "github.com/codesweep-ai/sandbox"
 	"github.com/codesweep-ai/sandbox/internal/doctor"
 	"github.com/codesweep-ai/sandbox/internal/fcdisk"
 	"github.com/spf13/cobra"
@@ -30,6 +31,15 @@ func newDoctorCmd(app *App) *cobra.Command {
 			}
 			fc := fcdisk.Cache{Dir: app.FCCache}
 			hr := app.hostRoute()
+			// Both prefer the checkout over the embedded copy, exactly as
+			// install-agent-tools and the image build do. Run from a checkout,
+			// doctor therefore answers "is PATH what this tree would install",
+			// which is the question a contributor editing a tool has.
+			//
+			// Best effort: a build that cannot read either leaves the check
+			// unmade rather than failing a diagnosis of everything else.
+			bundled, _ := assets.HostHelpers(app.AssetDir)
+			pins, _ := assets.ToolPins(app.AssetDir)
 			d := doctor.Deps{
 				Runner:  app.Runner,
 				User:    app.Host.User,
@@ -49,6 +59,9 @@ func newDoctorCmd(app *App) *cobra.Command {
 				InstDir:        app.InstDir,
 
 				Lend: app.lendState(),
+
+				BundledTools: bundled,
+				ToolPins:     pins,
 			}
 			rep := doctor.Diagnose(cmd.Context(), engine, d)
 			printReport(cmd.OutOrStdout(), rep)

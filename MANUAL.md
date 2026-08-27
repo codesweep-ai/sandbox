@@ -302,6 +302,13 @@ install path.
 `doctor` is the first thing to run when something does not work. It checks each prerequisite and
 prints the remedy for anything missing.
 
+Two of its checks are about identity rather than presence. The agent tools on your `PATH` are
+compared byte for byte against the ones this build ships. A host that installed them from another
+build runs a harness the source does not describe, and nothing else would say so. Every sibling
+`cs-` tool on your `PATH` is compared against the version this build's `go.mod` names. Neither has
+to be there. An operator who only boots sandboxes needs none of the siblings, and `doctor` says so
+rather than counting it against the host.
+
 `agent-tools` prints what `install-agent-tools` would install, each with the sha256 of the file this
 build carries. It is the reference a host or a sandbox is compared against, so it reports the
 shipped bytes rather than what is on the `PATH`. Read from the `PATH`, a drifted host would agree

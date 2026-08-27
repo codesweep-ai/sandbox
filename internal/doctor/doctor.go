@@ -4,6 +4,7 @@ package doctor
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,6 +65,14 @@ type Deps struct {
 
 	// Lend is what the CLI found out about credential lending on this host.
 	Lend LendState
+
+	// BundledTools are the agent tools this build ships
+	// (image/rootfs/home/.local/bin), the tree `install-agent-tools` copies
+	// onto PATH. nil skips the identity check and leaves the presence one.
+	BundledTools fs.FS
+	// ToolPins are the sibling cs- tool versions this build's go.mod names, as
+	// module path -> version. nil skips the sibling version checks.
+	ToolPins map[string]string
 }
 
 // Diagnose runs the checks for the given engine ("podman" | "firecracker").
@@ -222,7 +231,12 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 
 	// agent tooling (optional).
 	ag := Group{Title: "agent tooling (optional — host-side sign-in that instances inherit)"}
-	if have("cs-claude") && have("cs-codex") && have("cs-opencode") {
+	// Identity first, presence as the fallback. A host with the tools installed
+	// gets told whether they are THIS build's; a host with none gets told to
+	// install them, which is the only useful thing to say to it.
+	if checks, ok := bundledToolsGroup(d.BundledTools); ok {
+		ag.Checks = append(ag.Checks, checks...)
+	} else if have("cs-claude") && have("cs-codex") && have("cs-opencode") {
 		ag.add(OK, "agent tools on PATH (cs-claude, cs-codex, cs-opencode)")
 	} else {
 		ag.add(HM, "agent tools not on PATH — install them:  cs-sandbox install-agent-tools")
@@ -239,6 +253,7 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		ag.add(HM, "agent CLI(s) not found: "+strings.Join(agentMiss, " ")+" — or sign in inside an instance: cs-sandbox agent-login claude <name>")
 	}
 	r.addGroup(ag)
+	r.addGroup(siblingToolsGroup(ctx, d.Runner, d.ToolPins))
 
 	if g, ok := lendGroup(d.Lend); ok {
 		r.addGroup(g)
