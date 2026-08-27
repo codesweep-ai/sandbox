@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -64,6 +65,25 @@ func (a *App) notFound(ref, name, group string) error {
 	sort.Strings(elsewhere)
 	return fmt.Errorf("no such sandbox %q in group %q; it exists as %s — name the group",
 		name, group, strings.Join(elsewhere, ", "))
+}
+
+// noOrphan explains a `destroy` miss on a name with no sandbox AND no leftover
+// data. It is notFound's counterpart for the orphan path, and it points at
+// another group for the same reason: leftover data is invisible except through
+// `ls`, so a user who named it right and grouped it wrong has nothing to go on.
+func (a *App) noOrphan(ctx context.Context, ref, name, group string) error {
+	var elsewhere []string
+	for _, o := range a.engineDeps().Orphans(ctx) {
+		if on, og := SplitRef(o.Name); on == name && og != group {
+			elsewhere = append(elsewhere, o.Name)
+		}
+	}
+	if len(elsewhere) == 0 {
+		return fmt.Errorf("no such sandbox %q, and no data left over from one", ref)
+	}
+	sort.Strings(elsewhere)
+	return fmt.Errorf("no such sandbox %q in group %q, and no data left over from one; "+
+		"data is kept for %s — name the group", name, group, strings.Join(elsewhere, ", "))
 }
 
 // exists reports whether a reference already names a sandbox, for create's

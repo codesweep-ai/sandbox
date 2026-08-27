@@ -685,6 +685,71 @@ func TestDestroyUnknownNameSaysThereIsNoData(t *testing.T) {
 	}
 }
 
+// orphanApp builds an App whose `podman volume ls` reports one leftover home
+// volume, which is what `rm` leaves behind once it has dropped the state record.
+func orphanApp(t *testing.T, volumes string) (*App, *run.Fake) {
+	t.Helper()
+	return &App{InstDir: t.TempDir()}, run.NewFake().OnStdout("volume ls", volumes)
+}
+
+// TestDestroyOrphanTakesABareName: `rm` prints "cs-sandbox destroy <bare name> -f"
+// as the way to reclaim the data it kept, and that advice has to work.
+//
+// Orphans are keyed by the qualified reference, because that is what a podman
+// volume name carries — cs-sandbox-home-worker-01.default. destroy compared the
+// raw argument against it, so in the default group the advertised command
+// answered "no data left over from one" while the volumes sat there, and only
+// the fully-spelled worker-01.default worked. The data was then unreachable
+// through the CLI while `ls` went on listing it as removed.
+func TestDestroyOrphanTakesABareName(t *testing.T) {
+	app, f := orphanApp(t, "cs-sandbox-home-worker-01.default|2026-07-27 10:00:00.0 -0700 PDT\n")
+
+	if _, err := runRootWith(t, app, f, "destroy", "worker-01", "-f"); err != nil {
+		t.Fatalf("destroy by bare name: %v", err)
+	}
+	// Both volumes go, named by the qualified reference.
+	for _, want := range []string{
+		"podman volume rm -f cs-sandbox-home-worker-01.default",
+		"podman volume rm -f cs-sandbox-containers-worker-01.default",
+	} {
+		if !f.Contains(want) {
+			t.Errorf("want %q among:\n%s", want, f)
+		}
+	}
+}
+
+// TestDestroyOrphanQualifiedStillWorks: the bare-name fix must not cost the
+// spelled-out form, which is the only one that can reach another group.
+func TestDestroyOrphanQualifiedStillWorks(t *testing.T) {
+	app, f := orphanApp(t, "cs-sandbox-home-worker-01.team|2026-07-27 10:00:00.0 -0700 PDT\n")
+
+	if _, err := runRootWith(t, app, f, "destroy", "worker-01.team", "-f"); err != nil {
+		t.Fatalf("destroy by qualified name: %v", err)
+	}
+	if !f.Contains("podman volume rm -f cs-sandbox-home-worker-01.team") {
+		t.Errorf("want the team volume removed, among:\n%s", f)
+	}
+}
+
+// TestDestroyOrphanInAnotherGroupSaysWhere: a bare name is a default-group
+// reference and never a search (see SplitRef), so data kept in another group is
+// a miss — but leftover data is invisible except through `ls`, so the miss has
+// to name where it actually is rather than claim there is none.
+func TestDestroyOrphanInAnotherGroupSaysWhere(t *testing.T) {
+	app, f := orphanApp(t, "cs-sandbox-home-worker-01.team|2026-07-27 10:00:00.0 -0700 PDT\n")
+
+	_, err := runRootWith(t, app, f, "destroy", "worker-01", "-f")
+	if err == nil {
+		t.Fatal("a bare name must not reach another group's data")
+	}
+	if !strings.Contains(err.Error(), "worker-01.team") {
+		t.Errorf("error must name where the data is, got: %v", err)
+	}
+	if f.Contains("volume rm") {
+		t.Errorf("nothing may be deleted on a miss:\n%s", f)
+	}
+}
+
 // TestAgentToolsMatchesWhatInstallWrites: `agent-tools` is the reference the
 // campaign layer compares a member's ~/.local/bin against, and
 // `install-agent-tools` is what puts those files on a host. If the two ever

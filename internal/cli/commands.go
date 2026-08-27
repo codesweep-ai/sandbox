@@ -115,20 +115,34 @@ func newDestroyCmd(app *App) *cobra.Command {
 // the data and drops the state record, so this is the only way to reclaim it.
 // Reports plainly when there is nothing left to delete, rather than pretending
 // the name is unknown.
-func destroyOrphan(cmd *cobra.Command, app *App, name string, force bool) error {
-	o, ok := app.engineDeps().Orphan(cmd.Context(), name)
-	if !ok {
-		return fmt.Errorf("no such sandbox %q, and no data left over from one", name)
+//
+// The reference is qualified first. Orphans are keyed by the qualified name,
+// because that is what a podman volume carries, while `rm` tells the user to run
+// `destroy <bare name>` — so comparing the raw argument made that advice
+// un-followable in the default group: `destroy worker-01 -f` answered "no data
+// left over from one" with the volumes still there, and only the fully-spelled
+// `worker-01.default` worked. A bare name is a default-group reference here for
+// the same reason it is everywhere else (see SplitRef), never a search.
+func destroyOrphan(cmd *cobra.Command, app *App, ref string, force bool) error {
+	name, group := SplitRef(ref)
+	if group == "" {
+		group = state.DefaultGroup
 	}
+	o, ok := app.engineDeps().Orphan(cmd.Context(), state.ObjectName(group, name))
+	if !ok {
+		return app.noOrphan(cmd.Context(), ref, name, group)
+	}
+	// Both messages name the qualified reference rather than what was typed, so a
+	// bare argument still says which group's data is going.
 	if !force {
 		fmt.Fprintf(cmd.OutOrStdout(),
-			"destroying the data kept when %q was removed. Re-run with -f to confirm.\n", name)
+			"destroying the data kept when %q was removed. Re-run with -f to confirm.\n", o.Name)
 		return nil
 	}
 	if err := app.engineDeps().PurgeOrphan(cmd.Context(), o); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "destroyed %s (the data kept when it was removed)\n", name)
+	fmt.Fprintf(cmd.OutOrStdout(), "destroyed %s (the data kept when it was removed)\n", o.Name)
 	return nil
 }
 
