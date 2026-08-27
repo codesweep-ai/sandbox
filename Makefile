@@ -30,7 +30,7 @@ COVERDIR   ?= .coverage
 COVER_ABS  := $(abspath $(COVERDIR))
 COVERFLAGS := -covermode=atomic -coverpkg=./...
 
-.PHONY: help build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-race test-smoke test-integration coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode snapshot release release-check clean
+.PHONY: help build build-go build-ci-image build-ci-assets build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode snapshot release release-check clean
 
 .DEFAULT_GOAL := help
 
@@ -167,6 +167,91 @@ test-race:
 	@scripts/coverage.sh reset race
 	CS_COVERDIR=$(COVER_ABS)/race go test -race $(COVERFLAGS) ./... -args -test.gocoverdir=$(COVER_ABS)/race
 
+# The sibling tools a tier resolves from PATH at run time, in a directory of
+# this repository's own rather than on the developer's.
+#
+# `go tool` cannot serve this the way it serves the gates above: a tier that
+# reaches a tool does it by name, through PATH, and cs-vcr is also handed to a
+# container to run — so what it needs is a real file in a real directory.
+# doctor already holds this repository to the same standard, comparing the
+# cs-vcr on PATH against the go.mod pin, and this is what makes that comparison
+# something a test run cannot fail by accident.
+TOOLSDIR   := $(abspath bin/tools)
+WITH_TOOLS := PATH="$(TOOLSDIR):$$PATH"
+
+## tools: the sibling cs- tools a tier needs on PATH, at the go.mod pins
+##
+## `go install` with no @version resolves through go.mod, so what lands here is
+## the pin by construction and `make repin` moves it — the same pin the image
+## build reads out of the embedded manifest to put cs-vcr inside a guest, so the
+## host and the guest cannot end up on different builds of it. About a second
+## with a warm module cache, and near nothing when the binary is current, which
+## is what lets it be a prerequisite rather than a step somebody remembers.
+##
+## CGO_ENABLED=0 is load-bearing wherever this binary is handed to a container
+## to run: an image with no libc and no dynamic loader kills a cgo build at exec
+## with "No such file or directory" — the kernel reporting the missing ELF
+## interpreter, not a missing binary — and a proxy that dies there takes every
+## model call with it, so a run times out rather than saying what broke.
+##
+## Only cs-vcr for now. The gates run cs-lint, cs-ledger and cs-tracer with
+## `go tool`, which needs nothing installed; a tool joins this list when a tier
+## has to reach it by name.
+tools:
+	@mkdir -p $(TOOLSDIR)
+	@CGO_ENABLED=0 GOBIN=$(TOOLSDIR) go install github.com/codesweep-ai/vcr/cmd/cs-vcr
+
+## setup-smoke: the guest image the smoke profile boots, and the tools beside it
+##
+## A prerequisite of test-smoke rather than a line in a document, so a machine
+## that has never built the CI image reaches a running profile with one command.
+## `make build-ci-image && make test-smoke` still works and is still what the
+## target above spells out; this is the same two steps for somebody who did not
+## know there were two. CI reaches the same image by a third route — build-ci-fc
+## on one leg, a saved archive on the rest — and every leg names it in
+## CS_SANDBOX_IMAGE, so the probe below finds it there and builds nothing.
+##
+## Cheap when the host is already set up: podman is asked whether the image is
+## there, and only its absence builds one. The question goes to podman rather
+## than to this repository's own `doctor`, which is the obvious place for it and
+## the wrong one — doctor reports an unbuilt image as a warning and still exits
+## 0, so a probe reading its exit code would call every fresh machine ready and
+## build nothing, which is the one case this target exists for.
+##
+## The image asked about is the one the run will boot — CS_SANDBOX_IMAGE where it
+## is set, $(CI_IMAGE) otherwise — which is the same expression test-smoke below
+## passes down. Probing the default while the run boots an override is how a
+## target builds an image nobody asked for and still leaves the run without one.
+##
+## The image and nothing else. build-ci-fc would be the tempting second half —
+## it produces the microVM artifacts the heaviest member wants — but it builds
+## them by writing the base rootfs into the developer's real Firecracker cache,
+## from the CI image, and that cache holds one rootfs stamped with one image id.
+## A campaign or a sandbox booting the full image would find it replaced and
+## rebuild it back, 32 GiB at a time, every time the two were used in turn.
+## build-ci-fc's own note says to redirect CS_SANDBOX_FC_CACHE for exactly this
+## reason, so it stays a deliberate step rather than something a test target
+## does to a machine unasked. Without those artifacts the microVM member skips
+## itself, which is what it already does on the macOS and WSL2 legs.
+##
+## Nothing here fails. The live members of this profile skip themselves on a host
+## with no engine and the engine-free members still run, which is what makes the
+## same `make test-smoke` correct on every leg — a setup step that turned that
+## skip into a failure would take the profile away from the hosts it was written
+## for. A build that was actually attempted and then failed does fail, because a
+## host that got that far has a fault rather than a limitation.
+setup-smoke: tools
+	@if ! command -v podman >/dev/null 2>&1; then \
+		echo "setup-smoke: no podman on this host — the live members of the smoke profile will skip themselves"; \
+	else \
+		image=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)}; \
+		if podman image exists "$$image"; then \
+			echo "setup-smoke: $$image is built"; \
+		else \
+			$(MAKE) --no-print-directory build-ci-image; \
+		fi; \
+	fi
+
 ## test-smoke: the smoke profile — the subset of the live tests below that CI
 ## runs, on Linux, macOS and Windows/WSL2. Same command on every host: where an
 ## engine and a sandbox image are present the *Live members boot real sandboxes,
@@ -222,9 +307,9 @@ SMOKE_RUN := $(subst $(space),|,$(strip $(SMOKE_TESTS)))
 ## when a member wedges it is Go that ends the run. Go names the test and prints
 ## every goroutine; the job timeout above it kills the runner and reports only
 ## that time ran out. Raise the job first if this ever has to grow.
-test-smoke:
+test-smoke: setup-smoke
 	@scripts/coverage.sh reset smoke
-	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
+	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
 	  go test -tags smoke $(COVERFLAGS) -count=1 -p 1 -v -timeout 1200s -run '$(SMOKE_RUN)' ./... \
 	  -args -test.gocoverdir=$(COVER_ABS)/smoke
 
