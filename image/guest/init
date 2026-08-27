@@ -206,6 +206,26 @@ if [ "${CS_SANDBOX_YOLO:-0}" = "1" ]; then
 else
   rm -f "$CC_DIR/.yolo" 2>/dev/null || true
 fi
+# The rules have to match the marker. Claude Code enforces `permissions.deny` even under
+# --dangerously-skip-permissions — the flag suppresses PROMPTING, not rules — and a deny cannot
+# be lifted by an allow at any later settings layer. So --yolo needs a different FILE, not an
+# extra allow: with the shipped list standing, a "no prompts" sandbox still hard-blocks git
+# push/rebase/merge/reset, rm -rf and the SQL patterns, with no human present to escalate to.
+# Both variants ship in the image; install the one this instance wants, but ONLY over a pristine
+# copy of the other, so rules added inside the sandbox are never clobbered. Runs every boot and in
+# both directions because `rm` can keep a sandbox's data: recreating it with the marker flipped
+# has to flip these too. Content compare rather than `cmp` to avoid a diffutils dependency.
+_cc_yolo_settings=/sandbox/agent-profiles/cs-claude-settings-yolo.json
+_cc_guarded_settings=/sandbox/home/.cs-claude/settings.json
+if [ "${CS_SANDBOX_YOLO:-0}" = "1" ]; then
+  _cc_want="$_cc_yolo_settings"; _cc_other="$_cc_guarded_settings"
+else
+  _cc_want="$_cc_guarded_settings"; _cc_other="$_cc_yolo_settings"
+fi
+if [ -f "$_cc_want" ] && { [ ! -f "$CC_DIR/settings.json" ] \
+     || [ "$(cat "$CC_DIR/settings.json" 2>/dev/null)" = "$(cat "$_cc_other" 2>/dev/null)" ]; }; then
+  install -m644 "$_cc_want" "$CC_DIR/settings.json"
+fi
 chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CC_DIR" 2>/dev/null || true
 
 # --- Codex subscription auth (cs-codex profile), first boot only — mirrors Claude above ---

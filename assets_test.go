@@ -32,6 +32,9 @@ func TestImageDirFromEmbed(t *testing.T) {
 		"rootfs/home/.cs-claude/CLAUDE.md",
 		"rootfs/home/.cs-codex/config.toml",
 		"rootfs/home/.cs-opencode/opencode.json",
+		// The --yolo Claude profile. It sits outside the home skeleton on purpose (it is a
+		// build asset the boot paths select, not user config), so nothing else pulls it in.
+		"rootfs/agent-profiles/cs-claude-settings-yolo.json",
 	} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("expected extracted %s: %v", f, err)

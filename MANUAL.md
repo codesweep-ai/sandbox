@@ -85,7 +85,7 @@ Firecracker where the host has KVM, and to Podman otherwise.
 | `--cassette NAME` | Send this sandbox's model calls through a cs-vcr cassette of this name. |
 | `--vcr HOST:PORT` | Where that cs-vcr listens. Default: this host at port 8080. |
 | `--block-side-calls` | Refuse the sandbox a direct route to the hosts the lender fronts. Default true, and only meaningful with a loan. |
-| `--yolo` | Drop the agents' approval prompts. The sandbox is the boundary. |
+| `--yolo` | Drop the agents' approval prompts *and* the rules behind them. The sandbox is the boundary. |
 | `--solo` | Withhold the group's SSH key, so this agent sandbox can reach no peer while staying reachable itself. Agent type only. |
 | `-e`, `--env KEY=VALUE` | Inject an environment variable, or `KEY` alone to pass the host's value. Repeatable. |
 | `--env-file PATH` | Inject variables from a file. Repeatable. |
@@ -317,6 +317,24 @@ sandbox's tools from outside it.
 
 `agent-login` launches the agent inside the named sandbox so you can complete its login there. The
 login stays in that sandbox and goes when it does.
+
+### What `--yolo` changes in a profile
+
+`--yolo` writes a marker each wrapper reads, and the wrapper then launches its agent with approvals
+off: `claude --dangerously-skip-permissions`, `codex --dangerously-bypass-approvals-and-sandbox`,
+`opencode --auto`.
+
+For Claude that is only half of it. Claude Code enforces the `permissions.deny` list in
+`~/.cs-claude/settings.json` even under `--dangerously-skip-permissions`. The flag drops the prompt,
+not the rule, and no allow at any later settings layer can lift a deny. A sandbox created to run
+without approvals would still hard-block `git push`, `git rebase`, `rm -rf` and the rest of the
+shipped list, with nobody there to ask. So a `--yolo` sandbox is given a second profile instead,
+identical to the default but denying nothing. The other two agents need no equivalent: Codex has no
+deny-shaped setting, and every OpenCode permission is already `allow`.
+
+The swap happens at boot, in both directions. A sandbox `rm`'d with its data kept and recreated with
+the flag flipped gets the profile that matches. A `settings.json` you edited inside the sandbox is
+left alone, because only a pristine copy of the other profile is ever replaced.
 
 ### Pointing an agent somewhere else
 

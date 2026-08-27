@@ -13,6 +13,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1629,5 +1630,130 @@ esac
 					"calls no cassette recorded:\n%s", turns[1])
 			}
 		})
+	}
+}
+
+// imageFile reads a file from the shipped image tree, relative to image/.
+func imageFile(t *testing.T, rel string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "image", filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatalf("shipped image asset missing: %v", err)
+	}
+	return b
+}
+
+// canonJSON re-marshals parsed JSON so two documents compare by content, not formatting.
+func canonJSON(t *testing.T, raw []byte, what string) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("%s is not valid JSON: %v", what, err)
+	}
+	return m
+}
+
+// TestYoloClaudeSettingsDenyNothing: --yolo has to drop the deny RULES, not just the prompts.
+//
+// Claude Code enforces permissions.deny even under --dangerously-skip-permissions — the flag
+// suppresses prompting, not rules — and a deny cannot be lifted by an allow at any later
+// settings layer. So the guarded profile and the yolo profile have to be two different files,
+// and the only difference between them may be the deny list: everything else (the allow list,
+// defaultMode, and the three prompt-skipping keys the wrapper depends on) must stay identical,
+// or a yolo sandbox quietly drifts into a different Claude Code than a guarded one.
+func TestYoloClaudeSettingsDenyNothing(t *testing.T) {
+	guarded := canonJSON(t, imageFile(t, "rootfs/home/.cs-claude/settings.json"), "guarded settings.json")
+	yolo := canonJSON(t, imageFile(t, "rootfs/agent-profiles/cs-claude-settings-yolo.json"), "yolo settings")
+
+	denyOf := func(m map[string]any, what string) []any {
+		perms, ok := m["permissions"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s has no permissions object", what)
+		}
+		deny, ok := perms["deny"].([]any)
+		if !ok {
+			t.Fatalf("%s has no permissions.deny array", what)
+		}
+		return deny
+	}
+
+	// The guarded profile is the reason this test exists; if it ever stops denying anything,
+	// the two variants have collapsed and the yolo one is pointless.
+	if len(denyOf(guarded, "guarded settings.json")) == 0 {
+		t.Error("guarded settings.json denies nothing — the yolo variant is then redundant")
+	}
+	// The whole point: a --yolo sandbox must not carry a rule that hard-blocks a tool call
+	// with no human present to escalate to.
+	if got := denyOf(yolo, "yolo settings"); len(got) != 0 {
+		t.Errorf("yolo settings deny %v — under --dangerously-skip-permissions these are still "+
+			"enforced, so the sandbox is not actually going yolo", got)
+	}
+
+	// Identical apart from deny. Compared as canonical JSON so formatting cannot fake a match.
+	strip := func(m map[string]any) string {
+		clone := maps.Clone(m)
+		permClone := maps.Clone(m["permissions"].(map[string]any))
+		delete(permClone, "deny")
+		clone["permissions"] = permClone
+		b, err := json.Marshal(clone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if a, b := strip(guarded), strip(yolo); a != b {
+		t.Errorf("the two Claude profiles differ by more than the deny list:\n guarded: %s\n yolo:    %s", a, b)
+	}
+}
+
+// TestYoloSettingsInstalledByBothBootPaths: the asset is inert unless a boot path installs it,
+// and there are two of them — the podman entrypoint and the microVM guest init. Updating one
+// and forgetting the other ships a yolo microVM (or container) that still hard-blocks, which is
+// invisible until an unattended agent dies on a denied call.
+func TestYoloSettingsInstalledByBothBootPaths(t *testing.T) {
+	const assetPath = "/sandbox/agent-profiles/cs-claude-settings-yolo.json"
+	for _, script := range []string{"rootfs/entrypoint", "guest/init"} {
+		body := string(imageFile(t, script))
+		if !strings.Contains(body, assetPath) {
+			t.Errorf("%s never references %s, so a --yolo instance keeps the guarded deny list", script, assetPath)
+		}
+		// Both directions: `rm` can keep a sandbox's data, so recreating it without --yolo has
+		// to restore the guarded list rather than leaving the permissive one standing.
+		if !strings.Contains(body, "/sandbox/home/.cs-claude/settings.json") {
+			t.Errorf("%s never references the pristine guarded settings, so recreating a kept "+
+				"sandbox without --yolo would leave the yolo rules in place", script)
+		}
+	}
+}
+
+// TestYoloProfilesCarryNoBlockingRules: Claude is the only agent whose profile can hard-block a
+// call that --yolo was supposed to wave through, and this pins that it stays that way. Codex
+// carries no deny-shaped key (--dangerously-bypass-approvals-and-sandbox overrides the approval
+// and sandbox settings it does carry), and every OpenCode permission is "allow". Either one
+// growing a real deny would reintroduce the Claude bug in an agent nobody thinks to check.
+func TestYoloProfilesCarryNoBlockingRules(t *testing.T) {
+	codex := string(imageFile(t, "rootfs/home/.cs-codex/config.toml"))
+	for line := range strings.SplitSeq(codex, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, _, ok := strings.Cut(line, "=")
+		if ok && strings.Contains(strings.ToLower(strings.TrimSpace(key)), "deny") {
+			t.Errorf("cs-codex config.toml grew a deny-shaped key %q: --yolo passes "+
+				"--dangerously-bypass-approvals-and-sandbox, which may not override it", strings.TrimSpace(key))
+		}
+	}
+
+	oc := canonJSON(t, imageFile(t, "rootfs/home/.cs-opencode/opencode.json"), "opencode.json")
+	perms, ok := oc["permission"].(map[string]any)
+	if !ok {
+		t.Fatal("shipped opencode.json has no permission object")
+	}
+	for k, v := range perms {
+		if v != "allow" {
+			t.Errorf("opencode permission %q = %v, want \"allow\": a non-allow value survives "+
+				"--auto and hard-blocks a --yolo sandbox", k, v)
+		}
 	}
 }

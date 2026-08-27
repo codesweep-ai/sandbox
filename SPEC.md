@@ -599,7 +599,7 @@ its agent on a sandbox-local profile.
 
 | Wrapper | Profile | Launch defaults |
 |---|---|---|
-| `cs-claude` | `CLAUDE_CONFIG_DIR=~/.cs-claude` | `--permission-mode auto`, `--strict-mcp-config` |
+| `cs-claude` | `CLAUDE_CONFIG_DIR=~/.cs-claude` | `--permission-mode auto`, `--strict-mcp-config`; under `--yolo`, `--dangerously-skip-permissions` on a deny-free profile (R89) |
 | `cs-codex` | `CODEX_HOME=~/.cs-codex` | `approval_policy=on-request`, `sandbox_mode=workspace-write` |
 | `cs-opencode` | `OPENCODE_CONFIG_DIR=~/.cs-opencode` | pinned model, blanket-allow permissions, profile-scoped session database |
 
@@ -607,7 +607,9 @@ its agent on a sandbox-local profile.
 per sandbox through the seed.
 
 **R89.** `--yolo` **MUST** write a marker the wrappers read, and the wrappers **MUST** then skip all permission
-prompts.
+prompts. Dropping the prompts is not enough on its own. A `--yolo` instance **MUST** also get an agent
+profile that carries no rule able to block a tool call. Any other instance **MUST** get the guarded
+profile, including one recreated over data a previous sandbox kept.
 
 **R90.** Each settings hub **MUST** describe all three toolsets, so an agent of one kind can drive the
 others.
@@ -616,7 +618,18 @@ others.
 caller passes their own.
 
 The sandbox is the isolation boundary, which is what makes R89 safe: the thing an approval prompt
-protects is a host, and there is no host here to protect.
+protects is a host, and there is no host here to protect. The same reasoning is why R89 reaches past
+the prompts to the rules. Claude Code enforces `permissions.deny` even under
+`--dangerously-skip-permissions`. The flag suppresses prompting, not rules. A deny cannot be lifted
+by an allow at any later settings layer, so the guarded list would otherwise still stand in a sandbox
+created to have none. A denied call is worse there than a prompt. It is a hard block, and nobody is
+watching a `--yolo` sandbox, so there is no one to escalate to.
+
+Only Claude needs the second profile. Codex carries no deny-shaped setting, and
+`--dangerously-bypass-approvals-and-sandbox` overrides the approval and sandbox settings it does
+carry. Every OpenCode permission is already `allow`. The two profiles differ in the deny list and
+nothing else. The boot paths install whichever the marker calls for, replacing a pristine copy of the
+other profile only, so rules added inside a sandbox survive.
 
 R90a is R3 applied to a connector. An inherited Claude subscription carries the account's claude.ai
 connectors with it. Gmail, Calendar and Drive would otherwise attach inside the sandbox as tools,
