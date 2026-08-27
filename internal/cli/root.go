@@ -315,6 +315,7 @@ func newRootCmd(app *App) *cobra.Command {
 	root.AddCommand(newDoctorCmd(app))
 	root.AddCommand(newAgentLoginCmd(app))
 	root.AddCommand(newInstallAgentToolsCmd(app))
+	root.AddCommand(newAgentToolsCmd(app))
 	root.AddCommand(newHostRouteCmd(app))
 	root.AddCommand(newLenderCmd(app))
 	for _, c := range newInstanceCmds(app) {

@@ -29,6 +29,7 @@ cs-sandbox stores                      cs-sandbox rm-store [-f] <name>
 
 cs-sandbox build [--engine ENGINE]...  cs-sandbox doctor [--engine ENGINE]
 cs-sandbox agent-login <agent> <name>  cs-sandbox install-agent-tools [dir]
+cs-sandbox agent-tools [--json]
 cs-sandbox lender [--addr ADDR]
 cs-sandbox completion bash|zsh|fish|powershell
 cs-sandbox version [--images]
@@ -207,6 +208,7 @@ cs-sandbox build --slim [--with-agents]   # the CI image instead: no developer t
 cs-sandbox build --local-sandbox          # take cs-sandbox from this checkout, not the proxy
 cs-sandbox doctor [--engine ENGINE]       # check prerequisites, print the fix for each gap
 cs-sandbox install-agent-tools [dir]      # the agent tools onto your PATH
+cs-sandbox agent-tools [--json]           # what those tools are, with their sha256
 cs-sandbox agent-login <agent> <name>     # log an agent in inside a sandbox
 cs-sandbox lender [--addr ADDR]           # run the credential lender in the foreground
 cs-sandbox sync-ssh-config                # regenerate the SSH config fragment
@@ -299,6 +301,12 @@ install path.
 
 `doctor` is the first thing to run when something does not work. It checks each prerequisite and
 prints the remedy for anything missing.
+
+`agent-tools` prints what `install-agent-tools` would install, each with the sha256 of the file this
+build carries. It is the reference a host or a sandbox is compared against, so it reports the
+shipped bytes rather than what is on the `PATH`. Read from the `PATH`, a drifted host would agree
+with itself. `--json` emits the build version alongside the table, for a caller checking a
+sandbox's tools from outside it.
 
 `agent-login` launches the agent inside the named sandbox so you can complete its login there. The
 login stays in that sandbox and goes when it does.

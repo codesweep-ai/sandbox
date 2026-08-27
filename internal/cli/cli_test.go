@@ -3,7 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -679,5 +682,59 @@ func TestDestroyUnknownNameSaysThereIsNoData(t *testing.T) {
 	_, err := runRoot(t, app, "destroy", "never-existed", "-f")
 	if err == nil || !strings.Contains(err.Error(), "no data") {
 		t.Fatalf("err = %v, want it to say there is no leftover data either", err)
+	}
+}
+
+// TestAgentToolsMatchesWhatInstallWrites: `agent-tools` is the reference the
+// campaign layer compares a member's ~/.local/bin against, and
+// `install-agent-tools` is what puts those files on a host. If the two ever
+// name different bytes, every healthy member reads as deviating and the check
+// becomes noise nobody trusts — so this asserts them against each other rather
+// than against a recorded list.
+func TestAgentToolsMatchesWhatInstallWrites(t *testing.T) {
+	dest := t.TempDir()
+	if _, err := runRoot(t, &App{}, "install-agent-tools", dest); err != nil {
+		t.Fatalf("install-agent-tools: %v", err)
+	}
+
+	var out bytes.Buffer
+	app := &App{Runner: unpublished(), errW: io.Discard}
+	root := newRootCmd(app)
+	root.SetArgs([]string{"agent-tools", "--json"})
+	root.SetOut(&out)
+	root.SetErr(io.Discard)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("agent-tools --json: %v", err)
+	}
+
+	var got struct {
+		Version string            `json:"version"`
+		Tools   map[string]string `json:"tools"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("agent-tools --json did not emit JSON: %v\n%s", err, out.String())
+	}
+	if len(got.Tools) == 0 {
+		t.Fatal("agent-tools reported no tools at all")
+	}
+	for name, want := range got.Tools {
+		if strings.HasSuffix(name, ".md") {
+			t.Errorf("%s is a doc, not a tool — install writes it 0644 and nothing executes it", name)
+		}
+		data, err := os.ReadFile(filepath.Join(dest, name))
+		if err != nil {
+			t.Errorf("agent-tools names %s, which install-agent-tools did not write: %v", name, err)
+			continue
+		}
+		if sum := fmt.Sprintf("%x", sha256.Sum256(data)); sum != want {
+			t.Errorf("%s: agent-tools says %s, the installed file is %s", name, want, sum)
+		}
+	}
+	// The two families the campaign layer drives, spelled out: a rootfs rename
+	// that quietly dropped one would otherwise still pass the loop above.
+	for _, tool := range []string{"cs-claude-turn", "cs-codex-remote", "cs-opencode"} {
+		if got.Tools[tool] == "" {
+			t.Errorf("agent-tools does not name %s", tool)
+		}
 	}
 }

@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	assets "github.com/codesweep-ai/sandbox"
@@ -94,4 +97,69 @@ func hasBinary(name string) bool {
 		}
 	}
 	return false
+}
+
+// newAgentToolsCmd publishes what `install-agent-tools` would install, as
+// name -> sha256 of the file this build carries.
+//
+// It exists because the campaign layer needs those hashes and must not derive
+// them itself. A member's tools come from the image's home skeleton, which is
+// this same directory, so cs-sandbox is the only thing that can say what a
+// healthy member should be running — and the alternative, cs-campaign reaching
+// into this module for the bytes, makes every rootfs rearrangement here a
+// compile error there.
+//
+// The hashes are of the SHIPPED copy, never of what happens to be on PATH:
+// this is the reference a PATH or a member is compared against, so reading it
+// from PATH would make any drifted host agree with itself.
+func newAgentToolsCmd(app *App) *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "agent-tools",
+		Short: "List the agent tools this build ships, with their sha256",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			src, err := assets.HostHelpers(app.AssetDir)
+			if err != nil {
+				return fmt.Errorf("cannot find bundled tools: %w", err)
+			}
+			entries, err := fs.ReadDir(src, ".")
+			if err != nil {
+				return err
+			}
+			tools := map[string]string{}
+			var names []string
+			for _, e := range entries {
+				// Docs ship here too and install 0644; they are not the harness.
+				if e.IsDir() || strings.HasSuffix(e.Name(), ".md") {
+					continue
+				}
+				data, err := fs.ReadFile(src, e.Name())
+				if err != nil {
+					return fmt.Errorf("read %s: %w", e.Name(), err)
+				}
+				tools[e.Name()] = fmt.Sprintf("%x", sha256.Sum256(data))
+				names = append(names, e.Name())
+			}
+			sort.Strings(names)
+			out := cmd.OutOrStdout()
+			if asJSON {
+				encoded, err := json.MarshalIndent(struct {
+					Version string            `json:"version"`
+					Tools   map[string]string `json:"tools"`
+				}{buildVersion(), tools}, "", "  ")
+				if err != nil {
+					return err
+				}
+				_, err = fmt.Fprintln(out, string(encoded))
+				return err
+			}
+			for _, name := range names {
+				fmt.Fprintf(out, "%s  %s\n", tools[name], name)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON: the build version and every tool's sha256")
+	return cmd
 }
