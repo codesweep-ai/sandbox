@@ -237,23 +237,46 @@ tools:
 ## target above spells out; this is the same two steps for somebody who did not
 ## know there were two. CI reaches the same image by a third route — build-ci-fc
 ## on one leg, a saved archive on the rest — and every leg names it in
-## CS_SANDBOX_IMAGE, so the probe below finds it there and builds nothing.
+## CS_SANDBOX_IMAGE, which is the name the build below reads.
 ##
-## Cheap when the host is already set up: podman is asked whether the image is
-## there, and only its absence builds one. The question goes to podman rather
-## than to this repository's own `doctor`, which is the obvious place for it and
-## the wrong one — doctor reports an unbuilt image as a warning and still exits
-## 0, so a probe reading its exit code would call every fresh machine ready and
-## build nothing, which is the one case this target exists for.
+## The build runs UNCONDITIONALLY, and that is the point. This used to ask podman
+## whether the image existed and build only on its absence — an existence check
+## standing in for a freshness one. Nothing tied that image to the sources it came
+## from, so one built days ago satisfied it forever, and a change under image/
+## passed `make ci` locally without ever reaching the image the smoke profile
+## booted. A green run then proved nothing about the thing that changed. CI never
+## had that hole: it keys its artifact cache on hashFiles('image/**',
+## 'internal/fcdisk/**') and rebuilds on exactly those changes, so the local gate
+## advertised itself as what CI runs while being quietly weaker. Building every
+## time closes it, and errs toward work rather than toward a false pass.
 ##
-## The image asked about is the one the run will boot — CS_SANDBOX_IMAGE where it
-## is set, $(CI_IMAGE) otherwise — which is the same expression test-smoke below
-## passes down. Probing the default while the run boots an override is how a
+## Unconditional is affordable because both builders are already incremental, and
+## both key on content rather than on existence:
+##
+##   * podman's layer cache carries the image. The Containerfile defers
+##     `COPY . /sandbox` to the very bottom on purpose, so a change under image/
+##     invalidates that one small layer and nothing before it.
+##   * the firecracker cache carries the microVM artifacts. EnsureArtifacts
+##     rebuilds only what is missing or stale, and the base rootfs stamp is the
+##     podman image ID plus the kernel version and a hash of image/guest/init
+##     (internal/fcdisk/build.go), so a rebuilt image or an edited guest init
+##     invalidates it and an unchanged tree does not.
+##
+## Measured on this host: 3.1s for the image and 5.9s for the artifacts to pick up
+## a change under image/, 1.4s each for a no-op, against ~70s and ~1m35s cold.
+## Neither is a timestamp comparison, so a touched file or a skewed clock cannot
+## fake currency in either direction.
+##
+## The image built is the one the run will boot — CS_SANDBOX_IMAGE where it is
+## set, $(CI_IMAGE) otherwise — which is the same expression test-smoke below
+## passes down. Building the default while the run boots an override is how a
 ## target builds an image nobody asked for and still leaves the run without one.
 ##
 ## Where the host has /dev/kvm it builds through build-ci-fc, which makes the
 ## microVM artifacts as well as the image, so the nested-VM member has something
-## to run rather than skipping on the machine most able to run it.
+## to run rather than skipping on the machine most able to run it. A host that
+## kept the image but lost its Firecracker cache now rebuilds it here, where
+## before that member skipped itself and only named the command.
 ##
 ## That was unsafe until the cache began keeping one base rootfs per image (SPEC
 ## R124). It wrote the CI image's rootfs over the one a full-image sandbox boots
@@ -261,29 +284,20 @@ tools:
 ## time they were used in turn. Keyed, they sit side by side — measured at 6.2 GB
 ## and 752 MB on disk against 64 GiB apparent, because both are sparse.
 ##
-## Only when the image is missing, which is a machine's first setup. A host that
-## has the image but has lost its Firecracker cache does not rebuild here: the
-## microVM member skips itself and names the command, exactly as it does on the
-## macOS and WSL2 legs.
-##
-## Nothing here fails. The live members of this profile skip themselves on a host
-## with no engine and the engine-free members still run, which is what makes the
-## same `make test-smoke` correct on every leg — a setup step that turned that
-## skip into a failure would take the profile away from the hosts it was written
-## for. A build that was actually attempted and then failed does fail, because a
-## host that got that far has a fault rather than a limitation.
+## Nothing here fails on a host that cannot carry it. The live members of this
+## profile skip themselves on a host with no engine and the engine-free members
+## still run, which is what makes the same `make test-smoke` correct on every leg
+## — a setup step that turned that skip into a failure would take the profile away
+## from the hosts it was written for. A build that was actually attempted and then
+## failed does fail, because a host that got that far has a fault rather than a
+## limitation.
 setup-smoke: tools
 	@if ! command -v podman >/dev/null 2>&1; then \
 		echo "setup-smoke: no podman on this host — the live members of the smoke profile will skip themselves"; \
+	elif [ -w /dev/kvm ]; then \
+		$(MAKE) --no-print-directory build-ci-fc; \
 	else \
-		image=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)}; \
-		if podman image exists "$$image"; then \
-			echo "setup-smoke: $$image is built"; \
-		elif [ -w /dev/kvm ]; then \
-			$(MAKE) --no-print-directory build-ci-fc; \
-		else \
-			$(MAKE) --no-print-directory build-ci-image; \
-		fi; \
+		$(MAKE) --no-print-directory build-ci-image; \
 	fi
 
 ## test-smoke: the smoke profile — the subset of the live tests below that CI
