@@ -49,11 +49,14 @@ you move the pin rather than on an unrelated pull request. `cs-lint` and `cs-led
 install: they are pinned in `go.mod` and run with `go tool`. `make repin` moves those pins to the
 branch tip, and `make versions` says which builds the gates used.
 
-Three tiers sit outside the gate, because each needs a host the workflow cannot assume.
-`make test-smoke` is the subset CI runs on every host. `make test-integration` covers the live
-engine, so run it when you touch create, engine or seed. `make test-live-agents` drives a real
-agent for every credential combination, shared and lent, and it spends provider quota on every
-member: run it when you touch a credential path.
+`make test-smoke` is the subset CI runs on every host, and `make ci` runs it last. A host that
+cannot boot a sandbox skips those members rather than failing, which is what lets the same command
+be right everywhere.
+
+Two tiers still sit outside the gate, because each needs a host the workflow cannot assume.
+`make test-integration` covers the live engine, so run it when you touch create, engine or seed.
+`make test-live-agents` drives a real agent for every credential combination, shared and lent, and
+it spends provider quota on every member: run it when you touch a credential path.
 
 Its keys come from a git-ignored `.env` at the repository root. The suite writes them into a
 throwaway agent home, so it never touches your own profiles, and it skips any member whose key or

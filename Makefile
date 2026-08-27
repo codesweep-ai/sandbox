@@ -465,9 +465,14 @@ endef
 ## build-tag vets are here because a tag hides a file from the compiler as
 ## surely as from the linter, and only CI vetted behind them until now.
 ##
-## The smoke tiers are left out: each boots a real guest from an image another
-## job builds, and one of them needs /dev/kvm. Run them with
-## `make build-ci-image && make test-smoke`.
+## The smoke profile is in, because CI runs it and this target exists to be what
+## CI is. It provisions itself — setup-smoke builds the image where the host has
+## none — so it costs minutes on a cold machine and boots real sandboxes on a
+## capable one. Where the host cannot carry it the members skip themselves and
+## this stays green, which is the one thing a reader has to know about a pass
+## here: it is the gates, plus as much of the smoke profile as this machine can
+## run. The firecracker leg is not reproduced — CI selects a different set for
+## it (see the smoke-firecracker job).
 ci:
 	$(call say,the gate a contributor runs before pushing)
 	@$(MAKE) --no-print-directory check
@@ -490,8 +495,10 @@ ci:
 	@$(MAKE) --no-print-directory release-check
 	$(call say,ledger)
 	@$(MAKE) --no-print-directory ledger
+	$(call say,the smoke profile on real sandboxes)
+	@$(MAKE) --no-print-directory test-smoke
 	@printf '\nci: every gate ran. Not reproduced here: build-test on macOS and\n'
-	@printf 'WSL, the smoke tiers, and the coverage job that merges them.\n'
+	@printf 'WSL, the firecracker smoke leg, and the coverage job that merges tiers.\n'
 
 ## lint: the Go rules from .golangci.yml (see that file for what is on and why).
 ## Three passes for the same reason vet takes three: a build tag hides a file
