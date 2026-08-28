@@ -1343,10 +1343,14 @@ because packages share one rootless network namespace and one host SSH port pool
 The **smoke profile** (`make test-smoke`) is not a third tier. It is the subset of the integration
 tier that CI runs on every host, against a slimmed image. Keep it short.
 
-The **replay profiles** (`make test-agents-shared`, `make test-agents-lent`) drive a real agent
-inside a real sandbox, with its model turns served from a committed cassette. They boot sandboxes
-and run the agent binaries, so they need Podman and an image carrying the agents. They hold no
+The **replay members** are the second half of the smoke profile: they drive a real agent inside a
+real sandbox, with its model turns served from a committed cassette. `make test-smoke` runs them,
+and `make test-agents-shared` and `make test-agents-lent` run one half alone. They hold no
 credential and reach no provider, which is what separates them from the live matrix they replay.
+
+They boot an image carrying the agent CLIs rather than the one the members above boot, so the
+profile builds two. `setup-smoke` makes both. Where the second is absent the replay members skip,
+naming it, which is how every other live member behaves on a host that cannot carry it.
 
 The two differ by one hop, and it is the hop worth a second profile for. A shared case holds a copy
 of the credential and reaches the recorder itself. A lent case holds a loan token and reaches the

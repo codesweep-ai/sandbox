@@ -385,6 +385,7 @@ jobs:
         with:
           path: |
             bin/cs-sandbox-ci.tar
+            bin/cs-sandbox-ci-agents.tar
             bin/fc-artifacts.tar.gz
           key: cs-sandbox-artifacts-${{ hashFiles('image/**', 'internal/fcdisk/**') }}
 
@@ -409,16 +410,31 @@ jobs:
           # One command, both products: the image, then the artifacts from it.
           make build-ci-fc
           podman save --format oci-archive -o bin/cs-sandbox-ci.tar "$CS_SANDBOX_IMAGE"
+          # And the same image with the agent CLIs kept, which the replay half
+          # of the smoke profile boots. A second image rather than one serving
+          # both: it is 1.38 GB against 474 MB, and only the ubuntu smoke job
+          # below loads it, so the three other smoke jobs keep the small one.
+          # Every layer below the agents is shared, so this build is cheap.
+          make build-ci-agents-image
+          podman save --format oci-archive -o bin/cs-sandbox-ci-agents.tar localhost/sandbox-slim-agents:ci
           # --sparse: the base rootfs is ~4 GB of mostly holes, and reading them
           # is the slow part of packing an otherwise ~456 MB archive.
           tar --sparse -C bin/fc-cache -czf bin/fc-artifacts.tar.gz .
-          ls -lh bin/cs-sandbox-ci.tar bin/fc-artifacts.tar.gz
+          ls -lh bin/cs-sandbox-ci.tar bin/cs-sandbox-ci-agents.tar bin/fc-artifacts.tar.gz
 
       - name: share the image
         uses: actions/upload-artifact@v7
         with:
           name: cs-sandbox-ci-image
           path: bin/cs-sandbox-ci.tar
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: share the agents image
+        uses: actions/upload-artifact@v7
+        with:
+          name: cs-sandbox-ci-agents-image
+          path: bin/cs-sandbox-ci-agents.tar
           if-no-files-found: error
           retention-days: 1
 
@@ -454,12 +470,24 @@ jobs:
           name: cs-sandbox-ci-image
           path: bin
 
-      - name: load the image
+      # The replay half of the smoke profile boots this one. Only this job loads
+      # it: it is 1.38 GB against 474 MB, and what it covers is the same on every
+      # podman host, so paying for it on the WSL and macOS legs would buy a third
+      # copy of one answer. Where it is absent the replay members skip, naming
+      # the image.
+      - uses: actions/download-artifact@v7
+        with:
+          name: cs-sandbox-ci-agents-image
+          path: bin
+
+      - name: load the images
         run: |
           set -euo pipefail
           podman --version
           podman load -i bin/cs-sandbox-ci.tar
+          podman load -i bin/cs-sandbox-ci-agents.tar
           podman image exists "$CS_SANDBOX_IMAGE"
+          podman image exists localhost/sandbox-slim-agents:ci
 
       - name: smoke
         run: make test-smoke

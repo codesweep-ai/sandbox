@@ -60,11 +60,11 @@ Its keys come from a git-ignored `.env` at the repository root. The suite writes
 throwaway agent home, so it never touches your own profiles, and it skips any member whose key or
 host login is absent.
 
-`make test-agents-replay` runs that same matrix with the model turns served from committed
-cassettes. It spends nothing and holds no credential, so reach for it whenever you touch a
-credential path. Keep the live matrix for when you need to know a provider still accepts what this
-tool builds. `make test-agents-shared` and `make test-agents-lent` are its two halves, one per
-credential mode.
+`make test-smoke` runs that same matrix with the model turns served from committed cassettes, as its
+second half. It spends nothing and holds no credential, so the gate you already run covers the
+credential paths. Keep the live matrix for when you need to know a provider still accepts what this
+tool builds. `make test-agents-shared` and `make test-agents-lent` run one credential mode alone,
+and `make test-agents-replay` runs both without the rest of the profile.
 
 Re-record with `scripts/record-fixtures.sh`, which checks everything the matrix needs before it
 clears a single cassette. Replay them before you commit. A recording can come out truncated when an

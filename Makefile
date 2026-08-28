@@ -36,7 +36,7 @@ COVERDIR   ?= .coverage
 COVER_ABS  := $(abspath $(COVERDIR))
 COVERFLAGS := -covermode=atomic -coverpkg=./...
 
-.PHONY: help build build-go build-ci-image build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration test-live-agents fixtures fixtures-strict fixtures-check test-agents-replay test-agents-shared test-agents-lent coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode actionlint snapshot release release-check clean
+.PHONY: help build build-go build-ci-image build-ci-agents-image build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration test-live-agents fixtures fixtures-strict fixtures-check test-agents-replay test-agents-shared test-agents-lent coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode actionlint snapshot release release-check clean
 
 .DEFAULT_GOAL := help
 
@@ -306,9 +306,27 @@ setup-smoke: tools
 		echo "setup-smoke: no podman on this host — the live members of the smoke profile will skip themselves"; \
 	elif [ -w /dev/kvm ]; then \
 		$(MAKE) --no-print-directory build-ci-fc; \
+		$(MAKE) --no-print-directory build-ci-agents-image; \
 	else \
 		$(MAKE) --no-print-directory build-ci-image; \
+		$(MAKE) --no-print-directory build-ci-agents-image; \
 	fi
+
+## build-ci-agents-image: the slim image with the three agent CLIs kept, which
+## the replay members of the smoke profile boot.
+##
+## A second image rather than one that serves both halves. Slim is 474 MB and
+## slim-with-agents is 1.38 GB, and CI ships the first to four smoke jobs as a
+## tarball artifact — so making the profile need one image would triple that
+## transfer on every platform, to run a tier that adds nothing on three of them.
+## Locally the second build is nearly free: the two share every layer below the
+## agents, so podman's cache answers it in seconds.
+##
+## Where the host cannot build it, the replay members skip themselves on the
+## missing image, which is how every other live member behaves on a host that
+## cannot carry it.
+build-ci-agents-image: build-go
+	CS_SANDBOX_IMAGE=$(CI_AGENTS_IMAGE) ./$(BIN) build --engine podman --slim --with-agents
 
 ## test-smoke: the smoke profile — the subset of the live tests below that CI
 ## runs, on Linux, macOS and Windows/WSL2. Same command on every host: where an
@@ -365,10 +383,26 @@ SMOKE_RUN := $(subst $(space),|,$(strip $(SMOKE_TESTS)))
 ## when a member wedges it is Go that ends the run. Go names the test and prints
 ## every goroutine; the job timeout above it kills the runner and reports only
 ## that time ran out. Raise the job first if this ever has to grow.
+## The replay members are the second half of this profile, and they are a
+## separate `go test` for two reasons that are both real: a build tag ADDS files
+## to a package rather than selecting among them, so one invocation cannot carry
+## two tags; and they boot the agents image while the members above boot the
+## slim one.
+##
+## They hold no credential and reach no provider, which is what lets them sit in
+## the tier CI runs on every push. What they cost is the image: see
+## build-ci-agents-image. On a host without it they skip themselves, saying so.
+##
+## Their coverage lands in the same tier directory, appended rather than reset,
+## because `reset smoke` ran once above and both halves are this one profile.
 test-smoke: setup-smoke
 	@scripts/coverage.sh reset smoke
 	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
 	  go test -tags smoke $(COVERFLAGS) -count=1 -p 1 -v -timeout 1200s -run '$(SMOKE_RUN)' ./... \
+	  -args -test.gocoverdir=$(COVER_ABS)/smoke
+	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_AGENTS_IMAGE:-$(CI_AGENTS_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
+	  go test -tags agents_replay $(COVERFLAGS) -count=1 -p 1 -v -timeout 1200s \
+	  -run '$(AGENTS_REPLAY_CASES)' ./internal/cli/ \
 	  -args -test.gocoverdir=$(COVER_ABS)/smoke
 
 ## test-integration: live tests (real podman/firecracker on a Linux/KVM host);
@@ -466,6 +500,8 @@ fixtures-strict: tools
 ## what this bounds is a sandbox that wedged.
 AGENTS_REPLAY_CASES ?= TestAgentReplay
 
+## `make test-smoke` runs these too, as its second half. This target is the way
+## to run them alone, and the way to run one of them.
 test-agents-replay: tools
 	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_AGENTS_IMAGE)} \
 	  go test -tags agents_replay -count=1 -p 1 -v -timeout 1800s ./internal/cli/ \
