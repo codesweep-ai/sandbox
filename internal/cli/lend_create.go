@@ -37,6 +37,10 @@ type loanPlan struct {
 	// shape each agent's own sign-in leaves behind.
 	seeded []seed.LentCredential
 	notes  []string
+	// origins are the upstreams the caller named for the slots being lent,
+	// by slot id, and consumed the variables those values came out of.
+	origins  map[string]string
+	consumed []string
 }
 
 // resolveLoans validates the credential flags, checks the host holds what they
@@ -47,8 +51,8 @@ type loanPlan struct {
 // comes up looking healthy and reports itself signed out at the first model
 // call, which is the failure this whole feature exists to make impossible to
 // hit by accident.
-func (app *App) resolveLoans(f *createFlags, name string) (*loanPlan, error) {
-	plan := &loanPlan{}
+func (app *App) resolveLoans(f *createFlags, name, injected string) (*loanPlan, error) {
+	plan := &loanPlan{origins: map[string]string{}}
 	home := paths.AgentLoginHome(app.Host.Home)
 	keysDir := lend.KeysDir(home)
 
@@ -127,6 +131,29 @@ func (app *App) resolveLoans(f *createFlags, name string) (*loanPlan, error) {
 		}
 	}
 
+	// A base URL the caller set for a slot they are lending says where the
+	// lender should forward it: a recorder, or a gateway, in front of the
+	// provider. The variable is read here and re-used below for the lender's own
+	// address, which is the trade a lent credential already makes. What the host
+	// holds is spent on the sandbox's behalf, and the sandbox is handed
+	// something that only works through the lender.
+	//
+	// Read before anything is provisioned, so an address that is not one fails
+	// here rather than as a 502 on the sandbox's first model call.
+	for _, s := range lent {
+		u := envValue(injected, s.BaseEnv)
+		if u == "" {
+			continue
+		}
+		if err := checkUpstream(s.BaseEnv, u); err != nil {
+			return nil, err
+		}
+		plan.origins[s.ID] = u
+		plan.consumed = append(plan.consumed, s.BaseEnv)
+		plan.notes = append(plan.notes,
+			fmt.Sprintf("upstream: %s goes to %s (from %s, which the sandbox does not keep)", s.ID, u, s.BaseEnv))
+	}
+
 	guestBase, err := app.ensureLender()
 	if err != nil {
 		return nil, err
@@ -153,7 +180,9 @@ func (app *App) resolveLoans(f *createFlags, name string) (*loanPlan, error) {
 		if err != nil {
 			return nil, err
 		}
-		plan.loans = append(plan.loans, lend.Loan{Token: g.Wire, Label: g.Label, Slot: s.ID, Kind: s.Kind})
+		plan.loans = append(plan.loans, lend.Loan{
+			Token: g.Wire, Label: g.Label, Slot: s.ID, Kind: s.Kind, Origin: plan.origins[s.ID],
+		})
 		if g.File != "" {
 			// A login is seeded as the agent's own credential file, so the
 			// client stays on the code path it takes when it is signed in. Only
@@ -190,6 +219,32 @@ func (app *App) resolveLoans(f *createFlags, name string) (*loanPlan, error) {
 			" (--block-side-calls=false to allow them)")
 	}
 	return plan, nil
+}
+
+// envValue reads one variable out of an injected env block, or "" when it is
+// not there. The block is the same KEY=VALUE lines the seed writes.
+func envValue(block, key string) string {
+	for line := range strings.SplitSeq(block, "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if ok && strings.TrimSpace(k) == key {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// checkUpstream refuses an address the lender could not forward to, using the
+// same parser the request path uses, so what passes here is what forwards.
+func checkUpstream(name, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("--env %s=%q is not a URL: %w", name, raw, err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("--env %s=%q needs an http or https scheme and a host, "+
+			"as in http://127.0.0.1:8080/c/anthropic/build", name, raw)
+	}
+	return nil
 }
 
 // defaultVCRPort is where cs-vcr listens unless it was told otherwise.
@@ -313,13 +368,33 @@ func (app *App) ensureLender() (guestBase string, err error) {
 // A --env that shadowed a loan would point the agent somewhere else while
 // create reported a loan in place, which is the one failure this feature cannot
 // afford: the sandbox would look lent-to and be holding nothing.
-func mergeLoanEnv(block string, loanEnv []string) (string, error) {
+//
+// consumed are the variables the loans took over rather than collided with:
+// the base URLs whose values are now the loans' upstreams. They are dropped
+// here so the value the caller wrote never reaches the sandbox, and the
+// lender's own address takes the name.
+func mergeLoanEnv(block string, loanEnv, consumed []string) (string, error) {
+	drop := map[string]bool{}
+	for _, k := range consumed {
+		drop[k] = true
+	}
 	set := map[string]bool{}
+	var kept strings.Builder
 	for line := range strings.SplitSeq(block, "\n") {
-		if k, _, ok := strings.Cut(line, "="); ok {
+		k, _, ok := strings.Cut(line, "=")
+		if ok && drop[strings.TrimSpace(k)] {
+			continue
+		}
+		if ok {
 			set[strings.TrimSpace(k)] = true
 		}
+		if line != "" {
+			kept.WriteString(line)
+			kept.WriteByte('\n')
+		}
 	}
+	block = kept.String()
+
 	var b strings.Builder
 	b.WriteString(block)
 	for _, line := range loanEnv {

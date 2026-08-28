@@ -84,7 +84,7 @@ func TestLendFlagsFailBeforeAnythingIsProvisioned(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			app := lendApp(t, lendHome(t))
-			_, err := app.resolveLoans(&c.flags, "box")
+			_, err := app.resolveLoans(&c.flags, "box", "")
 			if err == nil {
 				t.Fatalf("resolveLoans(%+v) succeeded, want an error mentioning %q", c.flags, c.want)
 			}
@@ -99,7 +99,7 @@ func TestLendFlagsFailBeforeAnythingIsProvisioned(t *testing.T) {
 // command that gives it one.
 func TestLendingAKeyTheHostDoesNotHaveNamesTheRemedy(t *testing.T) {
 	app := lendApp(t, t.TempDir()) // an empty home
-	_, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}}, "box")
+	_, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}}, "box", "")
 	if err == nil {
 		t.Fatal("lending a key that does not exist should fail")
 	}
@@ -110,14 +110,14 @@ func TestLendingAKeyTheHostDoesNotHaveNamesTheRemedy(t *testing.T) {
 	}
 }
 
-// A --env that shadowed a loan would point the agent somewhere else while
-// create reported a loan in place.
-func TestEnvCannotShadowALoan(t *testing.T) {
-	_, err := mergeLoanEnv("ANTHROPIC_BASE_URL=http://elsewhere\n", []string{"ANTHROPIC_BASE_URL=http://lender"})
+// A --env that shadowed a lent credential would leave the sandbox holding
+// nothing while create reported a loan in place.
+func TestEnvCannotShadowALentCredential(t *testing.T) {
+	_, err := mergeLoanEnv("ANTHROPIC_AUTH_TOKEN=mine\n", []string{"ANTHROPIC_AUTH_TOKEN=loan_x"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "collides") {
 		t.Fatalf("merge = %v, want a collision error", err)
 	}
-	block, err := mergeLoanEnv("FOO=bar\n", []string{"ANTHROPIC_BASE_URL=http://lender", "ANTHROPIC_AUTH_TOKEN=loan_x"})
+	block, err := mergeLoanEnv("FOO=bar\n", []string{"ANTHROPIC_BASE_URL=http://lender", "ANTHROPIC_AUTH_TOKEN=loan_x"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,11 +128,33 @@ func TestEnvCannotShadowALoan(t *testing.T) {
 	}
 }
 
+// A base URL a loan took over is dropped rather than refused, and the lender's
+// own address takes the name. The sandbox must not keep the value: it is where
+// the LENDER forwards, and a sandbox that reached it directly would be holding
+// a token that host does not honour.
+func TestAConsumedBaseURLLeavesTheSandbox(t *testing.T) {
+	block, err := mergeLoanEnv(
+		"FOO=bar\nANTHROPIC_BASE_URL=http://recorder:8080/c/anthropic/build\n",
+		[]string{"ANTHROPIC_BASE_URL=http://lender:2500"},
+		[]string{"ANTHROPIC_BASE_URL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(block, "recorder") {
+		t.Errorf("the sandbox kept the upstream the caller named:\n%s", block)
+	}
+	for _, want := range []string{"FOO=bar", "ANTHROPIC_BASE_URL=http://lender:2500"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("merged block missing %q:\n%s", want, block)
+		}
+	}
+}
+
 // A copied key is a credential the sandbox holds: it needs no lender, no token
 // and no base URL, and the value must be the real one.
 func TestInheritedKeyIsCopiedInWithoutALender(t *testing.T) {
 	app := lendApp(t, lendHome(t))
-	plan, err := app.resolveLoans(&createFlags{inheritAPIKey: []string{"anthropic"}}, "box")
+	plan, err := app.resolveLoans(&createFlags{inheritAPIKey: []string{"anthropic"}}, "box", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +269,7 @@ func TestDryRunMintsNothingAndStartsNothing(t *testing.T) {
 	app.Exec = &run.Exec{DryRun: true}
 	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1") // nothing is listening there
 
-	plan, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}, blockSideCalls: true}, "box")
+	plan, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}, blockSideCalls: true}, "box", "")
 	if err != nil {
 		t.Fatalf("a dry run should still resolve the plan: %v", err)
 	}
@@ -263,6 +285,77 @@ func TestDryRunMintsNothingAndStartsNothing(t *testing.T) {
 	// And the environment it reports is the environment a real run would seed.
 	if got := strings.Join(plan.env, " "); !strings.Contains(got, "ANTHROPIC_BASE_URL=http://"+engine.HostReachableName+":") {
 		t.Errorf("env = %q, want the address a real run would use", got)
+	}
+}
+
+// A base URL the caller sets for a slot they are lending names where the lender
+// forwards it, and the sandbox is handed the lender instead.
+//
+// This is the same trade the credential itself makes. The host's key is read at
+// create and the sandbox is given a loan token in the variable that held it, so
+// reading the base URL and giving back the lender's address is one shape rather
+// than two. It is also what lets a recorder run somewhere only the host can
+// reach, since nothing between the sandbox and the lender changes.
+func TestALentSlotTakesTheBaseURLTheCallerNamed(t *testing.T) {
+	app := lendApp(t, lendHome(t))
+	app.Exec = &run.Exec{DryRun: true}
+	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
+
+	const upstream = "http://127.0.0.1:8080/c/anthropic/testcassette"
+	plan, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}}, "box",
+		"ANTHROPIC_BASE_URL="+upstream+"\n")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(plan.loans) != 1 || plan.loans[0].Origin != upstream {
+		t.Fatalf("loan origin = %q, want %q", plan.loans[0].Origin, upstream)
+	}
+	// The sandbox is pointed at the lender, and the variable it was given is
+	// the one it would have had without any of this.
+	if !slices.Contains(plan.env, "ANTHROPIC_BASE_URL=http://"+engine.HostReachableName+":1") {
+		t.Errorf("the sandbox was not pointed at the lender:\n%s", strings.Join(plan.env, "\n"))
+	}
+	if !slices.Contains(plan.consumed, "ANTHROPIC_BASE_URL") {
+		t.Errorf("the variable was not taken over: %v", plan.consumed)
+	}
+	if notes := strings.Join(plan.notes, "\n"); !strings.Contains(notes, upstream) {
+		t.Errorf("create does not report where the traffic goes:\n%s", notes)
+	}
+}
+
+// An address the lender could not forward to fails at create, not as a 502 on
+// the sandbox's first model call.
+func TestALentSlotsBaseURLMustBeAnAddress(t *testing.T) {
+	app := lendApp(t, lendHome(t))
+	app.Exec = &run.Exec{DryRun: true}
+	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
+
+	for _, bad := range []string{"api.anthropic.com", "://nonsense", "https://", "file:///etc/passwd"} {
+		_, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}}, "box",
+			"ANTHROPIC_BASE_URL="+bad+"\n")
+		if err == nil {
+			t.Errorf("--env ANTHROPIC_BASE_URL=%q was accepted", bad)
+		}
+	}
+}
+
+// A variable belonging to a slot this sandbox does not borrow is left alone. It
+// is the caller's to set, and nothing about it is the lender's business.
+func TestAnUnlentBaseURLIsNotTakenOver(t *testing.T) {
+	app := lendApp(t, lendHome(t))
+	app.Exec = &run.Exec{DryRun: true}
+	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
+
+	plan, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}}, "box",
+		"OPENAI_BASE_URL=http://somewhere.test\n")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(plan.consumed) != 0 {
+		t.Errorf("consumed %v, want nothing: openai is not lent here", plan.consumed)
+	}
+	if plan.loans[0].Origin != "" {
+		t.Errorf("the anthropic loan took another slot's variable: %q", plan.loans[0].Origin)
 	}
 }
 
@@ -284,7 +377,7 @@ func TestACassettePrefixNamesEachSlotsProvider(t *testing.T) {
 		lendAPIKey:     []string{"fireworks"},
 		cassette:       "build-auth",
 		vcr:            "vcr.test:8080",
-	}, "box")
+	}, "box", "")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -331,7 +424,7 @@ func TestAKeySeedsEveryVariableItsClientsRead(t *testing.T) {
 			app := lendApp(t, home)
 			app.Exec = &run.Exec{DryRun: true} // resolve the plan, start nothing
 			t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
-			plan, err := app.resolveLoans(&createFlags{lendAPIKey: []string{c.provider}}, "box")
+			plan, err := app.resolveLoans(&createFlags{lendAPIKey: []string{c.provider}}, "box", "")
 			if err != nil {
 				t.Fatal(err)
 			}

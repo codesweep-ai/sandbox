@@ -206,6 +206,17 @@ type Loan struct {
 	Slot  string `json:"slot"`
 	Kind  Kind   `json:"kind"`
 
+	// Origin is where this sandbox's traffic for the slot goes, when the
+	// caller named somewhere other than the provider. It is written here at
+	// create and read per request, so it dies with the instance directory the
+	// way the token does.
+	//
+	// Empty is the ordinary case: the slot's own upstream. A value is what a
+	// recorder or a gateway in front of the provider looks like, and it steers
+	// one sandbox rather than the host, which is the difference from the
+	// lender's own --origin.
+	Origin string `json:"origin,omitempty"`
+
 	// Group and Name are filled in by the store from the loan file's own
 	// location, so a loan cannot claim to belong to a sandbox other than the one
 	// whose directory holds it.

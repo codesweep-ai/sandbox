@@ -186,11 +186,11 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	// Credentials, before anything is provisioned: a flag naming a login the
 	// host does not hold, or a cs-vcr that is not answering, is a mistake to
 	// report now rather than one to discover from inside the sandbox.
-	plan, err := app.resolveLoans(f, name)
+	plan, err := app.resolveLoans(f, name, injected)
 	if err != nil {
 		return err
 	}
-	if injected, err = mergeLoanEnv(injected, plan.env); err != nil {
+	if injected, err = mergeLoanEnv(injected, plan.env, plan.consumed); err != nil {
 		return err
 	}
 

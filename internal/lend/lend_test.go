@@ -101,6 +101,54 @@ func newTestServer(t *testing.T, home string, loans Loans) *httptest.Server {
 	return srv
 }
 
+// A loan may carry an upstream of its own, and it is the most specific answer:
+// it steers one sandbox where the lender's --origin steers the host. Neither is
+// reachable from a request, which is what R147 turns on.
+func TestALoansOwnOriginBeatsTheLenders(t *testing.T) {
+	sandboxUp := newUpstream(t)
+	hostUp := newUpstream(t)
+	home := hostProfile(t)
+	slot := Slot{
+		ID: "anthropic", Kind: Key, Origin: "https://api.anthropic.com", Version: "/v1",
+		Header: "x-api-key", AuthEnvs: []string{"ANTHROPIC_API_KEY"}, BaseEnv: "ANTHROPIC_BASE_URL",
+		read: keyReader("anthropic"), where: keyPath("anthropic"),
+	}
+	withSlots(t, slot)
+
+	tok := TokenPrefix + "box_anthropic_deadbeef"
+	s := New(Config{
+		Home: home, KeysDir: KeysDir(home),
+		Loans: fixedLoans{tok: {
+			Token: tok, Slot: "anthropic", Kind: Key, Name: "box",
+			Origin: sandboxUp.URL + "/c/anthropic/testcassette",
+		}},
+		Origins: map[string]string{"anthropic": hostUp.URL},
+	})
+	srv := httptest.NewServer(s)
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Api-Key", tok)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+
+	if hostUp.calls != 0 {
+		t.Errorf("the host-wide origin took a request the loan had answered for")
+	}
+	if want := "/c/anthropic/testcassette/v1/messages"; sandboxUp.gotPath != want {
+		t.Errorf("upstream saw %q, want %q", sandboxUp.gotPath, want)
+	}
+	if got := sandboxUp.gotHeader.Get("X-Api-Key"); got != "the-hosts-real-key" {
+		t.Errorf("upstream key = %q, want the host's real one", got)
+	}
+}
+
 // An origin may carry a path, which is how a recorder is named. cs-vcr
 // addresses a cassette by /c/<provider>/<cassette>, so an operator putting one
 // in front of a provider gives the whole prefix as the slot's upstream.

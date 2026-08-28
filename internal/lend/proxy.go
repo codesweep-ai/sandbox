@@ -158,8 +158,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if o := s.cfg.Origins[slot.ID]; o != "" {
-		slot.Origin = o
+	// Most specific first: what this sandbox was created with, then what this
+	// host runs its lender with, then the slot's own. None of the three is
+	// reachable from a request, which is what R147 turns on.
+	switch {
+	case loan.Origin != "":
+		slot.Origin = loan.Origin
+	case s.cfg.Origins[slot.ID] != "":
+		slot.Origin = s.cfg.Origins[slot.ID]
 	}
 	secret, extra, err := slot.read(s.cfg.Home, s.cfg.KeysDir)
 	if err != nil {

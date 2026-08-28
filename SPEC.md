@@ -707,8 +707,13 @@ anywhere but on the host that minted it.
 **R146.** The lender **MUST** resolve a loan token to exactly one slot. It **MUST** replace the token with
 that slot's real credential, in that slot's own header shape, before forwarding.
 
-**R147.** The upstream **MUST** be a property of the slot. No part of a request **MUST** select or change
-it: not the host, not the path, not the query, not a header.
+**R147.** The upstream **MUST** be a property of the slot or of the loan. No part of a request **MUST**
+select or change it: not the host, not the path, not the query, not a header.
+
+**R147a.** A base URL the caller sets for a slot that is being lent **MUST** become that loan's
+upstream, and **MUST NOT** be seeded into the sandbox. The variable **MUST** carry the lender's own
+address there, and an upstream that is not an http or https address **MUST** fail before anything is
+provisioned.
 
 **R148.** A credential the lender did not mint **MUST** be refused, and **MUST NOT** be forwarded anywhere.
 
@@ -764,6 +769,19 @@ headers an API key does not. A sandbox holding a token cannot know which it stan
 R147 keeps this from becoming a way to steal a credential. A caller that could name its own upstream
 could aim the host's real credential at a machine of its choosing. It also keeps the lender free of
 any model of a provider's API. The lender joins an origin it was given to a path it did not read.
+Three places may name that origin, most specific first: the loan, the lender's own `--origin`, and
+the slot. A request is none of them.
+
+R147a is the same trade the credential makes, in the same variable. `ANTHROPIC_BASE_URL` says where
+this traffic goes, so a caller who sets it beside `--lend-api-key anthropic` has said where the
+lender should forward. What the sandbox is handed back is the lender, exactly as an API key is read
+on the host and handed back as a loan token. One shape rather than two, and a script that points an
+agent somewhere works the same inside a sandbox and outside one.
+
+The recorder or gateway it names sits BEHIND the lender, which is what `--cassette` does not do.
+Nothing is added between the sandbox and the lender, and the upstream only has to be reachable from
+the host, so it may run on another machine. The cost is that it is handed the real credential, and
+that a replay through it still needs the host to hold one.
 
 R150 is a deliberate limit. Whatever owns a login is the thing that renews it, in the way its vendor
 supports. The lender only ever reads the current value, so it holds no refresh token and implements

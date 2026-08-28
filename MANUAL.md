@@ -453,6 +453,23 @@ issues, prefix and length included, so the client stays on the code path it take
 Scanning a sandbox for a vendor prefix therefore matches. What says a value is a loan is the word
 `loan` just after that prefix, and `cs-sandbox-loan` where an account would be.
 
+**Sending a lent slot somewhere else.** Set the base URL the slot owns, and the lender forwards
+there instead of to the provider:
+
+```bash
+cs-sandbox create feature --lend-agent-login claude \
+  --env ANTHROPIC_BASE_URL=http://127.0.0.1:8080/c/anthropic/build-auth
+```
+
+That value is read at create and does not reach the sandbox. The sandbox is handed the lender's
+address in the same variable, exactly as a lent key is read on the host and handed back as a loan
+token. The upstream is recorded on the loan, so it steers this sandbox alone and goes when the
+sandbox does. Only the lender has to reach it, so it can be a recorder or a gateway on another
+machine.
+
+It sits behind the credential swap, so it is handed the real credential. `--cassette` is the
+opposite trade: a cs-vcr between the sandbox and the lender, which sees nothing but a loan token.
+
 **Revoking a loan** is destroying the sandbox. The record lives in the instance directory and goes
 when that does, and the lender stops honouring the token within seconds.
 
