@@ -106,8 +106,11 @@ if command -v cs-vcr >/dev/null; then ok "cs-vcr"; else bad "cs-vcr is not on PA
 # The recorder takes a fixed port, because that port is written into every
 # sandbox's environment and into the lender's upstream. Asking here costs
 # nothing and names it before fourteen sandboxes boot against a dead address.
-if command -v ss >/dev/null && ss -ltn 2>/dev/null | grep -q ':8080 '; then
-  bad "something is already listening on port 8080, which the recorder takes"
+# bash's own /dev/tcp rather than ss or lsof: this script already needs bash,
+# and neither of those is a prerequisite worth adding for one question.
+if (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null; then
+  exec 3>&-
+  bad "something is already answering on port 8080, which the recorder takes"
   missing=1
 else
   ok "port 8080 is free for the recorder"

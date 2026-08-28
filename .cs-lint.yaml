@@ -109,7 +109,14 @@ oss:
   # 4.4.0-19041-Microsoft (Microsoft@Microsoft.com)" — which the WSL detection
   # test matches character for character. It is a string Microsoft ships, not an
   # address anybody reads.
-  emailAllow: ["Microsoft.com"]
+  #
+  # anthropic.com is the same case, in the cassettes under test/. Claude Code's
+  # system prompt carries the vendor's own no-reply address, and a cassette
+  # records what the client sent character for character: one that edited the
+  # prompt would replay for nobody. The domain rather than the address, because
+  # this list matches domains, and writing the address here would be the very
+  # thing the rule is looking for.
+  emailAllow: ["Microsoft.com", "anthropic.com"]
 
   # The one job `make ci` does not mirror. Building the Firecracker artifacts
   # needs a writable /dev/kvm and 676 MB on disk, and it exists to feed the
