@@ -39,21 +39,19 @@ type CredentialCheck struct {
 	Err    string
 }
 
-// UpstreamCheck is one endpoint in front of a provider, and who reaches it.
+// UpstreamCheck is one endpoint the lender forwards a slot's traffic to on the
+// way to a provider: a recorder, or a gateway.
 //
-// Both sides of the lender can carry one, and they fail differently. A cs-vcr
-// in front is dialled by the sandbox, so it has to listen where a sandbox can
-// reach it. One behind is dialled by the lender, so it only has to answer on
-// this host.
+// It is dialled by the lender rather than by the sandbox, so it only has to
+// answer on this host — which is what the failure line below has to say, since
+// an address that works from a terminal here is not evidence either way.
 type UpstreamCheck struct {
 	Sandbox string
 	URL     string
-	// Slot is the credential whose traffic goes there, for an upstream the
-	// lender reaches. Empty for one the sandbox reaches, which carries every
-	// slot at once.
-	Slot     string
-	ByLender bool
-	Err      string
+	// Slot is the credential whose traffic goes there. An upstream steers one
+	// slot, because it is a property of that slot's loan.
+	Slot string
+	Err  string
 }
 
 // lendGroup renders the lending chain. Nothing is lent on most hosts, so the
@@ -88,20 +86,13 @@ func lendGroup(s LendState) (Group, bool) {
 		g.add(NO, fmt.Sprintf("%s: %s", c.Slot, c.Err))
 	}
 	for _, c := range s.Upstreams {
-		switch {
-		case c.Err == "" && c.ByLender:
+		if c.Err == "" {
 			g.add(OK, fmt.Sprintf("%s sends its %s traffic through %s", c.Sandbox, c.Slot, c.URL))
-		case c.Err == "":
-			g.add(OK, fmt.Sprintf("%s records through %s", c.Sandbox, c.URL))
-		case c.ByLender:
-			g.add(NO, fmt.Sprintf("%s sends its %s traffic to %s, which does not answer: %s\n"+
-				"      the lender dials it from this host, so it needs to be listening here",
-				c.Sandbox, c.Slot, c.URL, c.Err))
-		default:
-			g.add(NO, fmt.Sprintf("%s is pointed at %s, which does not answer: %s\n"+
-				"      a cs-vcr on this host needs --listen 0.0.0.0 for a sandbox to reach it",
-				c.Sandbox, c.URL, c.Err))
+			continue
 		}
+		g.add(NO, fmt.Sprintf("%s sends its %s traffic to %s, which does not answer: %s\n"+
+			"      the lender dials it from this host, so it needs to be listening here",
+			c.Sandbox, c.Slot, c.URL, c.Err))
 	}
 	return g, true
 }

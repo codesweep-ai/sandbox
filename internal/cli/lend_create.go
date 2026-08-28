@@ -2,13 +2,10 @@ package cli
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -158,23 +155,6 @@ func (app *App) resolveLoans(f *createFlags, name, injected string) (*loanPlan, 
 	if err != nil {
 		return nil, err
 	}
-	// Where a sandbox sends one slot's model calls. It is a property of the
-	// slot rather than of the run, because a cassette prefix names the provider
-	// the traffic is for and a sandbox can borrow two credentials at once.
-	baseFor := func(lend.Slot) string { return guestBase }
-	proxyBase := guestBase
-	if f.cassette != "" {
-		vcr := f.vcr
-		if vcr == "" {
-			vcr = fmt.Sprintf("%s:%d", engine.HostReachableName, defaultVCRPort)
-		}
-		baseFor = func(s lend.Slot) string {
-			return "http://" + vcr + "/c/" + vcrProvider(s) + "/" + f.cassette
-		}
-		proxyBase = "http://" + vcr
-		plan.notes = append(plan.notes, cassetteNotes(f.cassette, vcr, lenderLoopback(guestBase), lent)...)
-	}
-
 	for _, s := range lent {
 		g, err := s.MintGuest(name)
 		if err != nil {
@@ -188,9 +168,9 @@ func (app *App) resolveLoans(f *createFlags, name, injected string) (*loanPlan, 
 			// client stays on the code path it takes when it is signed in. Only
 			// the base URL is set, because there is no gateway variable in play.
 			plan.seeded = append(plan.seeded, seed.LentCredential{Agent: g.Agent, File: g.File, Doc: g.Doc})
-			plan.env = append(plan.env, s.BaseEnv+"="+baseFor(s))
+			plan.env = append(plan.env, s.BaseEnv+"="+guestBase)
 		} else {
-			plan.env = append(plan.env, s.Env(g.Wire, baseFor(s))...)
+			plan.env = append(plan.env, s.Env(g.Wire, guestBase)...)
 		}
 		what := "login"
 		if s.Kind == lend.Key {
@@ -205,7 +185,7 @@ func (app *App) resolveLoans(f *createFlags, name, injected string) (*loanPlan, 
 	// because it holds no credential that host accepts, and reports itself
 	// signed out while its model calls are working.
 	if f.blockSideCalls {
-		host := strings.TrimPrefix(proxyBase, "http://")
+		host := strings.TrimPrefix(guestBase, "http://")
 		for _, k := range []string{"HTTPS_PROXY", "https_proxy"} {
 			plan.env = append(plan.env, k+"=http://"+host)
 		}
@@ -245,67 +225,6 @@ func checkUpstream(name, raw string) error {
 			"as in http://127.0.0.1:8080/c/anthropic/build", name, raw)
 	}
 	return nil
-}
-
-// defaultVCRPort is where cs-vcr listens unless it was told otherwise.
-const defaultVCRPort = 8080
-
-// cassetteNotes is the wiring cs-sandbox cannot do for you.
-//
-// The cassette lives in a cs-vcr's configuration, in another repository, with
-// its own rules about unknown keys — so this prints the stanza rather than
-// writing it. The values are this run's own, which is what keeps the printed
-// line from going stale: the component that knows the address is the one
-// printing it.
-func cassetteNotes(cassette, vcrAddr, lenderURL string, lent []lend.Slot) []string {
-	seen := map[string]bool{}
-	var provs []string
-	for _, s := range lent {
-		p := vcrProvider(s)
-		if p != "" && !seen[p] {
-			seen[p] = true
-			provs = append(provs, p)
-		}
-	}
-	notes := []string{
-		fmt.Sprintf("cassette: %s (model calls go to /c/<provider>/%s on the cs-vcr at %s)", cassette, cassette, vcrAddr),
-		fmt.Sprintf("          that cs-vcr needs  listen: 0.0.0.0:%s  so a sandbox can reach it, and", portOf(vcrAddr)),
-	}
-	for _, p := range provs {
-		notes = append(notes, fmt.Sprintf("          providers.%s.base_url: %s", p, lenderURL))
-	}
-	return notes
-}
-
-// vcrProvider is the entry a cs-vcr serves this slot's upstream under, which is
-// the name the sandbox's base URL carries.
-//
-// Keyed on the slot rather than on its variable, because a provider with no
-// base-URL variable of its own borrows a client's. One vendor can have two
-// entries: a lent Codex login is a ChatGPT subscription, spent at the backend
-// cs-vcr reaches under `chatgpt`, while an OpenAI key is spent at
-// api.openai.com under `openai`.
-func vcrProvider(s lend.Slot) string {
-	switch s.ID {
-	case "claude", "anthropic":
-		return "anthropic"
-	case "codex":
-		return "chatgpt"
-	}
-	return s.ID
-}
-
-// lenderLoopback rewrites the sandbox's view of the lender into the host's own,
-// because a cs-vcr forwarding to it runs on the host rather than in a sandbox.
-func lenderLoopback(guestBase string) string {
-	return "http://127.0.0.1:" + portOf(strings.TrimPrefix(guestBase, "http://"))
-}
-
-func portOf(hostport string) string {
-	if _, port, err := net.SplitHostPort(hostport); err == nil {
-		return port
-	}
-	return strconv.Itoa(lend.DefaultPort)
 }
 
 func loginSlot(id string) (lend.Slot, error) {
@@ -464,19 +383,14 @@ func (app *App) lendState() doctor.LendState {
 		for _, l := range loans {
 			slots[l.Slot] = true
 		}
-		if u := cassetteURL(app.InstDir, in.Group, in.Name); u != "" {
-			st.Upstreams = append(st.Upstreams, doctor.UpstreamCheck{
-				Sandbox: in.Name, URL: u, Err: reachErr(u),
-			})
-		}
-		// The other side of the lender: an upstream one loan was created with.
-		// It is as dark a hop as a cassette in front, and reached from here.
+		// The upstream a loan was created with: a recorder or a gateway the
+		// lender forwards to. As dark a hop as any, and reached from here.
 		for _, l := range loans {
 			if l.Origin == "" {
 				continue
 			}
 			st.Upstreams = append(st.Upstreams, doctor.UpstreamCheck{
-				Sandbox: in.Name, URL: l.Origin, Slot: l.Slot, ByLender: true, Err: reachErr(l.Origin),
+				Sandbox: in.Name, URL: l.Origin, Slot: l.Slot, Err: reachErr(l.Origin),
 			})
 		}
 	}
@@ -509,23 +423,6 @@ func (app *App) lendState() doctor.LendState {
 		st.Credentials = append(st.Credentials, c)
 	}
 	return st
-}
-
-// cassetteURL is the cs-vcr endpoint a sandbox was pointed at, read back from
-// the environment create seeded. Empty when it goes straight to the lender.
-func cassetteURL(instDir, group, name string) string {
-	data, err := os.ReadFile(filepath.Join(state.Dir(instDir, group, name), "seed", "inject-env"))
-	if err != nil {
-		return ""
-	}
-	for line := range strings.SplitSeq(string(data), "\n") {
-		k, v, ok := strings.Cut(line, "=")
-		if !ok || !strings.HasSuffix(k, "_BASE_URL") || !strings.Contains(v, "/c/") {
-			continue
-		}
-		return v
-	}
-	return ""
 }
 
 // reachErr reports why an endpoint does not answer, or "" when it does. Any

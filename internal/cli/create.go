@@ -45,8 +45,6 @@ type createFlags struct {
 	lendAgentLogin    []string
 	inheritAPIKey     []string
 	lendAPIKey        []string
-	cassette          string
-	vcr               string
 	blockSideCalls    bool
 	cpus, mem, disk   int
 	repos             []string
@@ -88,8 +86,6 @@ func newCreateCmd(app *App) *cobra.Command {
 	fl.StringSliceVar(&f.lendAPIKey, "lend-api-key", nil,
 		"lend this provider's key: "+strings.Join(lend.SlotIDs(lend.Key), " | ")+
 			" — the sandbox gets a loan token, the key stays on the host (repeatable, comma-separated)")
-	fl.StringVar(&f.cassette, "cassette", "", "record or replay the sandbox's model calls through a cs-vcr cassette of this name")
-	fl.StringVar(&f.vcr, "vcr", "", "where that cs-vcr listens (default: the host at port 8080)")
 	fl.BoolVar(&f.blockSideCalls, "block-side-calls", true,
 		"refuse the sandbox a direct route to the hosts the lender fronts, so an agent cannot reach one around its loan")
 	fl.IntVar(&f.cpus, "cpus", 4, "firecracker: vCPUs")

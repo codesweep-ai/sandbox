@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -396,77 +394,5 @@ func TestCLILendFirecrackerLive(t *testing.T) {
 	got, _, _ := seen.snapshot()
 	if got.Get("X-Api-Key") != "REAL-HOST-KEY" {
 		t.Errorf("provider saw x-api-key %q, want the host's real key", got.Get("X-Api-Key"))
-	}
-}
-
-// standInVCR is a cs-vcr in shape rather than in substance: it strips the
-// /c/<provider>/<cassette> prefix its base URL carries and forwards the rest,
-// headers untouched, to the lender.
-//
-// The real recorder lives in another repository, and what is under test here is
-// this repository's half of the composition: that a sandbox pointed at a
-// cassette still reaches the lender, still carries its loan token there, and
-// needs no different environment than one pointed straight at it.
-func standInVCR(t *testing.T, lenderAddr string) string {
-	t.Helper()
-	target, err := url.Parse("http://" + lend.ProbeAddr(lenderAddr))
-	if err != nil {
-		t.Fatal(err)
-	}
-	rp := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) {
-		p := pr.In.URL.Path
-		// Two segments come off: the provider the base URL named, then the
-		// cassette. What is left is the client's own path.
-		if rest := strings.SplitN(strings.TrimPrefix(p, "/c/"), "/", 3); strings.HasPrefix(p, "/c/") && len(rest) == 3 {
-			pr.Out.URL.Path = "/" + rest[2]
-		}
-		pr.SetURL(target)
-		pr.Out.Host = target.Host
-	}}
-	l, err := net.Listen("tcp", "0.0.0.0:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := &http.Server{Handler: rp}
-	go func() { _ = srv.Serve(l) }()
-	t.Cleanup(func() { _ = srv.Close() })
-	_, port, _ := net.SplitHostPort(l.Addr().String())
-	return engine.HostReachableName + ":" + port
-}
-
-// TestCLILendThroughCassetteLive: a cassette in front of the lender changes one
-// thing about the sandbox — the base URL — and nothing about the credential.
-func TestCLILendThroughCassetteLive(t *testing.T) {
-	r, host := liveSetup(t)
-	home := lendingHost(t)
-	upstream, seen := standInProvider(t)
-	addr := startLender(t, home, upstream)
-	vcr := standInVCR(t, addr)
-
-	name := boxName("lendcass")
-	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
-	out := createBox(t, r, name, "--lend-api-key", "anthropic", "--cassette", "demo", "--vcr", vcr)
-	if !strings.Contains(out, "providers.anthropic.base_url") {
-		t.Errorf("create should print the cs-vcr stanza to paste:\n%s", out)
-	}
-
-	ctx := context.Background()
-	base := strings.TrimSpace(inBox(ctx, r, host, name, `printf '%s' "$ANTHROPIC_BASE_URL"`))
-	// The lent slot is the anthropic key, so the prefix names that provider.
-	if !strings.HasSuffix(base, "/c/anthropic/demo") {
-		t.Errorf("base URL = %q, want it to name the provider and the cassette", base)
-	}
-	body := inBox(ctx, r, host, name,
-		`curl -s --max-time 10 -X POST "$ANTHROPIC_BASE_URL/v1/messages" -H "x-api-key: $ANTHROPIC_API_KEY" -d '{}'`)
-	if !strings.Contains(body, "stand_in") {
-		t.Fatalf("the call did not reach the provider through the recorder and the lender: %q", body)
-	}
-	got, path, _ := seen.snapshot()
-	if got.Get("X-Api-Key") != "REAL-HOST-KEY" {
-		t.Errorf("provider saw x-api-key %q, want the host's real key", got.Get("X-Api-Key"))
-	}
-	// The cassette's addressing is stripped before the provider sees the path.
-	if path != "/v1/messages" {
-		t.Errorf("provider path = %q, want the client's own path", path)
 	}
 }

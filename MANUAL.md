@@ -11,7 +11,7 @@ cs-sandbox create <name> [--repo PATH] [--snapshot PATH] [--type agent|user]
                          [--engine podman|firecracker] [--group NAME]
                          [--inherit-agent-login AGENT] [--lend-agent-login AGENT]
                          [--inherit-api-key PROVIDER] [--lend-api-key PROVIDER]
-                         [--cassette NAME] [--yolo] [--solo] …
+                         [--yolo] [--solo] …
 cs-sandbox ls [--json] [-q]            cs-sandbox inspect <name> [--json]
 cs-sandbox ssh <name> [args...]        cs-sandbox exec <name> [cmd...]
 cs-sandbox fetch <name> [dir]          cs-sandbox push <name> [dir]
@@ -82,8 +82,6 @@ Firecracker where the host has KVM, and to Podman otherwise.
 | `--lend-api-key PROVIDER` | **Lend** an LLM API key from `~/.cs-keys/<provider>`: `anthropic`, `openai` or `fireworks`. Same trade. Repeatable and comma-separated. |
 | `--inherit-agent-login AGENT` | Copy a host agent login in: `claude`, `codex` or `opencode`. The sandbox then holds the real credential. Repeatable and comma-separated. |
 | `--inherit-api-key PROVIDER` | Copy an LLM API key in from `~/.cs-keys/<provider>`: `anthropic`, `openai` or `fireworks`. Repeatable and comma-separated. |
-| `--cassette NAME` | Send this sandbox's model calls through a cs-vcr cassette of this name. |
-| `--vcr HOST:PORT` | Where that cs-vcr listens. Default: this host at port 8080. |
 | `--block-side-calls` | Refuse the sandbox a direct route to the hosts the lender fronts. Default true, and only meaningful with a loan. |
 | `--yolo` | Drop the agents' approval prompts *and* the rules behind them. The sandbox is the boundary. |
 | `--solo` | Withhold the group's SSH key, so this agent sandbox can reach no peer while staying reachable itself. Agent type only. |
@@ -471,8 +469,9 @@ token. The upstream is recorded on the loan, so it steers this sandbox alone and
 sandbox does. Only the lender has to reach it, so it can be a recorder or a gateway on another
 machine.
 
-It sits behind the credential swap, so it is handed the real credential. `--cassette` is the
-opposite trade: a cs-vcr between the sandbox and the lender, which sees nothing but a loan token.
+It sits behind the credential swap, so it is handed the real credential. That is the thing to weigh
+before pointing one at a machine that is not this one. See
+[Recording a lent sandbox](#recording-a-lent-sandbox-with-cs-vcr) for what it buys.
 
 **Revoking a loan** is destroying the sandbox. The record lives in the instance directory and goes
 when that does, and the lender stops honouring the token within seconds.
@@ -487,31 +486,39 @@ failing with a message saying so. Run `cs-claude` once on the host to renew it.
 
 ### Recording a lent sandbox with cs-vcr
 
-`--cassette NAME` sends a sandbox's model calls through [cs-vcr](https://github.com/codesweep-ai/vcr)
-on the way to the lender, so a session can be recorded and replayed later.
+Point a lent slot's base URL at a [cs-vcr](https://github.com/codesweep-ai/vcr) instead of at a
+provider, and the lender forwards there. The session is recorded, and replayed later with no
+provider reached and nothing spent:
 
 ```bash
-cs-sandbox create feature --lend-agent-login claude --cassette build-auth --vcr host.containers.internal:8080
+cs-vcr record &                       # on this host, listening where the LENDER can reach it
+cs-sandbox create feature --lend-agent-login claude \
+  --env ANTHROPIC_BASE_URL=http://127.0.0.1:8080/c/anthropic/build-auth
 ```
 
-`create` prints the configuration that cs-vcr needs, with this host's own addresses filled in. Two
-things have to be true of that cs-vcr. It must listen on `0.0.0.0`, so a sandbox can reach it. And
-the provider entry the sandbox names must point back at the lender.
+Two things have to be true of that cs-vcr, and both follow from where it sits. It is dialled by the
+lender rather than by the sandbox, so `127.0.0.1` is enough. It never has to be reachable from a
+guest. And the provider entry the URL names points at the real provider, because the recorder is the
+last hop before one.
 
-The base URL carries `/c/<provider>/<name>`, and which provider it names follows from what the
-sandbox borrows:
+The `/c/<provider>/<cassette>` prefix is cs-vcr's own addressing, and which provider to name follows
+from what is being lent:
 
-| It borrows | The URL names |
+| The slot | Name the provider |
 |---|---|
-| a Claude login | `anthropic` |
-| a Codex login | `chatgpt`, the endpoint a ChatGPT subscription is spent at |
-| an API key | that key's own provider |
+| `--lend-agent-login claude`, `--lend-api-key anthropic` | `anthropic` |
+| `--lend-agent-login codex` | `chatgpt`, the endpoint a ChatGPT subscription is spent at |
+| `--lend-api-key openai` | `openai`, the versioned API a key is accepted at |
+| `--lend-api-key fireworks` | `fireworks` |
 
-A sandbox borrowing two credentials reaches two entries on one cassette, and `create` prints a line
-for each.
+One vendor can be two entries: a lent Codex login is a subscription, which the versioned API
+refuses. A sandbox borrowing two credentials sets two variables, each naming its own entry.
 
-The sandbox's own environment is identical either way. That is what makes a cassette free to add or
-drop, and it means a recording made against a lent credential replays without any credential at all.
+Nothing about the sandbox changes. It holds a loan token, it is handed the lender's address in that
+variable, and the lender refuses its side calls. That is true with a recorder and without one, which
+is what makes a recording free to add to a working setup and free to drop again.
+
+`cs-sandbox doctor` reports whether the recorder answers, as one hop of the lending chain.
 
 ### The lender
 

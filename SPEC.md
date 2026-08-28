@@ -737,9 +737,6 @@ host cannot supply. The failure **MUST** name the file it looked for, and the co
 **R155.** `create` **MUST** report what a sandbox borrows. `ls` and `inspect` **MUST** show it, without
 printing a loan token.
 
-**R156.** A sandbox's configuration **MUST** be identical whether it reaches the lender directly or
-through a cs-vcr cassette.
-
 R144 is the decision the rest of this section rests on, and it is about durability rather than
 about what works. A gateway variable would work today for both agents. The file is chosen because a
 client reading its own credential file takes the code path it always takes, whatever that path
@@ -778,10 +775,17 @@ lender should forward. What the sandbox is handed back is the lender, exactly as
 on the host and handed back as a loan token. One shape rather than two, and a script that points an
 agent somewhere works the same inside a sandbox and outside one.
 
-The recorder or gateway it names sits BEHIND the lender, which is what `--cassette` does not do.
-Nothing is added between the sandbox and the lender, and the upstream only has to be reachable from
-the host, so it may run on another machine. The cost is that it is handed the real credential, and
-that a replay through it still needs the host to hold one.
+The recorder or gateway it names sits BEHIND the lender, and that is the whole of the topology: one
+hop is added, past the swap rather than before it. Nothing changes between the sandbox and the
+lender. A sandbox reaching a recorder is configured exactly like one reaching a provider, which is
+what lets a recording be added and dropped again. The upstream only has to be reachable from the
+host, so it may run on another machine.
+
+Two costs come with that, and both are the price of the hop being past the swap. The upstream is
+handed the real credential, so a recorder on another machine is one the credential crosses a network
+to reach. And a replay through it still needs the host to hold a credential for the lender to read,
+even though nothing downstream will present it. A fabricated one serves, because a recorder replaying
+a cassette reaches no provider that could refuse it.
 
 R150 is a deliberate limit. Whatever owns a login is the thing that renews it, in the way its vendor
 supports. The lender only ever reads the current value, so it holds no refresh token and implements
@@ -813,15 +817,6 @@ direct route.
 R153 keeps an agent from confusing itself, and is not a boundary. It works through a variable
 clients honour. What makes a call around it pointless is R149: the sandbox holds no credential worth
 spending anywhere.
-
-R156 is what makes a cassette free to add or drop. `--cassette <name>` sends the sandbox's model
-calls to a cs-vcr instead, on a `/c/<provider>/<name>` prefix. The entry that prefix names points
-back at the lender, and which entry it is follows from the slot. A Codex login is spent at the
-ChatGPT backend and an OpenAI key at the versioned API, so one vendor is two entries and the URL
-says which. The sandbox's environment is byte-for-byte what it would be either way. A recording made through a lent credential
-therefore replays with no credential at all. cs-sandbox does not write that cs-vcr's configuration,
-which belongs to another tool with its own rules about unknown keys. `create` prints the stanza to
-paste instead, with this run's own addresses already in it.
 
 ### 10.3 Provider API keys
 
