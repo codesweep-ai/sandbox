@@ -50,6 +50,9 @@ archives:
       - SPEC.md
       - CONTRIBUTING.md
       - LICENSE
+      # Apache 2.0 section 4(d) obliges every redistributor to carry NOTICE, and
+      # a release archive is a redistribution.
+      - NOTICE
 
 checksum:
   name_template: checksums.txt
