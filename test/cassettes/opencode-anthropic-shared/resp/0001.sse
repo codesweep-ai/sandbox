@@ -1,0 +1,33 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-fable-5","id":"msg_011CeVXsFXWeRutUJSkbBVrP","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":11782,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":3,"service_tier":"standard","inference_geo":"global"}}     }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}    }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"delta":{"thinking":"","type":"thinking_delta"},"index":0,"type":"content_block_delta"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAIS/gEKjwEIERgCKkDkkLxxGL571Uy6IcOXBUyD/tCPQg1xk6sRzUQ05VIxV4U2axLEGBoRrS/53fbGYBTgLSmyXDI0XZtu+DRup8G6Mg5jbGF1ZGUtZmFibGUtNTgBQgh0aGlua2luZ1okYTYzM2U0MTQtYjEzZi00ZDEwLTk4YjItMjA0YWUzNTUwMmNjqAHRh8fUBhIMkDpFHSRUpoDC/oE7GgzndwmZZzgakM5u4xIiMPk372agguRx4fC3Bn0fOtX3SSagj4dH//kgI8gqVsM8wzDM1jkBVzmuPMPPaurwZSocRnLz8waAXanS/N9v9ADMRqv0OlSJu9NxqQl08xgB"}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0            }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"pong"}             }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1              }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":11782,"output_tokens":11,"output_tokens_details":{"thinking_tokens":7}}              }
+
+event: message_stop
+data: {"type":"message_stop"          }
+

@@ -1,4 +1,4 @@
-//go:build integration || smoke || live_agents
+//go:build integration || smoke || live_agents || agents_replay
 
 // Integration tests drive the real cobra command tree end-to-end against live
 // podman — proving the CLI wiring (flag parsing, the create/forward/destroy/ls

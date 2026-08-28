@@ -20,3 +20,9 @@
 # it would override the go.mod pins for anyone who cloned this.
 go.work
 go.work.sum
+
+# Diagnostics the proxied agent tiers keep past the run that made them: the
+# recorder's whole log, and the requests a replay could not serve. Outside the
+# test's own temp dir on purpose, because a diagnostic that goes away with the
+# test answers nothing. The cassettes under test/ are committed; these are not.
+/.tmp/

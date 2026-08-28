@@ -1343,6 +1343,22 @@ because packages share one rootless network namespace and one host SSH port pool
 The **smoke profile** (`make test-smoke`) is not a third tier. It is the subset of the integration
 tier that CI runs on every host, against a slimmed image. Keep it short.
 
+The **replay profiles** (`make test-agents-shared`, `make test-agents-lent`) drive a real agent
+inside a real sandbox, with its model turns served from a committed cassette. They boot sandboxes
+and run the agent binaries, so they need Podman and an image carrying the agents. They hold no
+credential and reach no provider, which is what separates them from the live matrix they replay.
+
+The two differ by one hop, and it is the hop worth a second profile for. A shared case holds a copy
+of the credential and reaches the recorder itself. A lent case holds a loan token and reaches the
+lender, which swaps in the host's credential and forwards. The lending path therefore runs on every
+replay instead of being bypassed.
+
+`make fixtures` records what they serve, against real providers, at a model turn per case. The
+recording and the replay come out of one driver, because a cassette is only replayable while the
+two agree on every byte the agent sends. `make fixtures-check` proves the committed cassettes still
+key under the recorder's current normalization ruleset. It asks in one process with no sandbox,
+which is what lets `make check` carry it.
+
 That image is `cs-sandbox build --slim`, derived from the shipped Containerfile rather than written
 twice. It drops the developer toolchains, which is most of the 6.04 GB and nearly all of the build
 time. `--with-agents` keeps the three agent CLIs, for a suite whose tests drive one inside the

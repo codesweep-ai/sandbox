@@ -1,0 +1,14 @@
+data: {"id":"chatcmpl-6c19bfbeb8c74a00bc1c6f9447bb49f5","object":"chat.completion.chunk","created":1787937807,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"choices":[{"delta":{"reasoning_content":"User wants single word: pong."},"finish_reason":null,"index":0,"raw_output":null}],"created":1787937807,"id":"chatcmpl-6c19bfbeb8c74a00bc1c6f9447bb49f5","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
+
+data: {"id":"chatcmpl-6c19bfbeb8c74a00bc1c6f9447bb49f5","object":"chat.completion.chunk","created":1787937807,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"p"},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-6c19bfbeb8c74a00bc1c6f9447bb49f5","object":"chat.completion.chunk","created":1787937807,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"ong"},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-6c19bfbeb8c74a00bc1c6f9447bb49f5","object":"chat.completion.chunk","created":1787937807,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-6c19bfbeb8c74a00bc1c6f9447bb49f5","object":"chat.completion.chunk","created":1787937807,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":7622,"total_tokens":7644,"completion_tokens":22,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":7},"output_tokens_details":{"reasoning_tokens":7}}}
+
+data: [DONE]
+

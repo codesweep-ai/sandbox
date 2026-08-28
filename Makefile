@@ -36,7 +36,7 @@ COVERDIR   ?= .coverage
 COVER_ABS  := $(abspath $(COVERDIR))
 COVERFLAGS := -covermode=atomic -coverpkg=./...
 
-.PHONY: help build build-go build-ci-image build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode actionlint snapshot release release-check clean
+.PHONY: help build build-go build-ci-image build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration test-live-agents fixtures fixtures-strict fixtures-check test-agents-replay test-agents-shared test-agents-lent coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode actionlint snapshot release release-check clean
 
 .DEFAULT_GOAL := help
 
@@ -422,7 +422,83 @@ test-integration:
 ## because a member waits on a model rather than on this code.
 test-live-agents:
 	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_AGENTS_IMAGE)} \
-	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run 'LiveAgent'
+	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ \
+	  -run 'TestLiveAgentCredentialMatrix'
+
+## fixtures: LIVE — record the cassettes the replay profiles serve.
+##
+## The same matrix as test-live-agents, driven through a cs-vcr in record mode,
+## writing test/cassettes/<case>/. Costs a real model turn per case and needs
+## that case's credential; one it cannot sign in for skips. Commit the result
+## with the code: the replay profiles serve what this records.
+##
+## Re-record one at a time when a client version moves, since each costs a turn:
+##   make fixtures FIXTURE_CASES='TestLiveAgentRecordsCassettes/codex-openai-lent'
+##
+## Re-record when a client version moves, when the pinned model moves, or when a
+## replay starts missing. `scripts/record-fixtures.sh` is the way in: it checks
+## what the whole matrix needs before it clears a single cassette.
+FIXTURE_CASES ?= TestLiveAgentRecordsCassettes
+
+fixtures: tools
+	$(WITH_TOOLS) CS_SANDBOX_RECORD=1 CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_AGENTS_IMAGE)} \
+	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run '$(FIXTURE_CASES)'
+
+## fixtures-strict: the same recording, with a skip treated as a failure. For a
+## host that holds every credential and means to re-record the whole matrix: a
+## missing one skips under `fixtures`, and a run that recorded nothing reports
+## the same green as one that recorded everything.
+fixtures-strict: tools
+	$(WITH_TOOLS) CS_SANDBOX_RECORD=1 CS_SANDBOX_STRICT=1 \
+	  CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_AGENTS_IMAGE)} \
+	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run '$(FIXTURE_CASES)'
+
+## test-agents-replay: the credential matrix with the model turns replayed.
+##
+## Boots real sandboxes and runs the real agent binaries, serving every model
+## call from a committed cassette through a cs-vcr on this host. It holds no
+## credential and reaches no provider, which is what makes it affordable to run
+## on every push. Needs podman and the agents image; a case with no cassette is
+## passed over, and a host with no engine skips the tier.
+##
+## -p 1 and -v for the reasons test-integration gives. The timeout is a deadlock
+## detector rather than a budget: a replayed turn answers in milliseconds, and
+## what this bounds is a sandbox that wedged.
+AGENTS_REPLAY_CASES ?= TestAgentReplay
+
+test-agents-replay: tools
+	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_AGENTS_IMAGE)} \
+	  go test -tags agents_replay -count=1 -p 1 -v -timeout 1800s ./internal/cli/ \
+	  -run '$(AGENTS_REPLAY_CASES)'
+
+## test-agents-shared: replay the cases that hold a copy of the credential
+##
+## The sandbox is pointed straight at the recorder and signs itself in with what
+## it was given. No lender is in the path.
+test-agents-shared:
+	@$(MAKE) --no-print-directory test-agents-replay AGENTS_REPLAY_CASES='TestAgentReplay/-shared$$'
+
+## test-agents-lent: replay the cases that borrow the credential
+##
+## The sandbox holds a loan token and reaches the lender, which swaps in the
+## host's credential and forwards to the recorder. The whole lending path runs
+## on every replay, which is the reason this profile exists beside the one above.
+test-agents-lent:
+	@$(MAKE) --no-print-directory test-agents-replay AGENTS_REPLAY_CASES='TestAgentReplay/-lent$$'
+
+## fixtures-check: prove the committed cassettes still replay under this cs-vcr
+##
+## A cassette is keyed by a normalization ruleset, and cs-vcr bumps that ruleset
+## when the meaning of a key changes. Replaying across such a bump does not miss
+## a few entries: every key means something else now, so every model call misses
+## at once, and what that looks like from the outside is a hang rather than an
+## error. The replay tier asks this per case before it boots anything, which is
+## the check that matters most — but that tier needs podman and the agents
+## image, so on most machines it never runs and the fixtures rot unobserved.
+## This asks the same question with one process and no sandbox, which is what
+## lets `make check` carry it.
+fixtures-check:
+	@scripts/fixtures-check.sh
 
 ## coverage: merge every tier present under $(COVERDIR) and print the report
 coverage:
@@ -482,7 +558,7 @@ ledger:
 	go tool cs-ledger check ledger
 
 ## check: the full local gate — fmt-check, vet, the linters, and unit tests
-check: fmt-check vet lint deadcode test coverage-check prose refs oss surface
+check: fmt-check vet lint deadcode test coverage-check fixtures-check prose refs oss surface
 
 # say prints a heading above each gate, so a long run reads as a list rather
 # than as a wall. Bold where a terminal is reading it and plain where a pipe
