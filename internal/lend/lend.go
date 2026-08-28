@@ -378,7 +378,3 @@ func (s Slot) Env(token, base string) []string {
 	}
 	return out
 }
-
-// EnvNames returns the variables a slot owns, so create can refuse to have them
-// set by hand as well.
-func (s Slot) EnvNames() []string { return append([]string{s.BaseEnv}, s.AuthEnvs...) }

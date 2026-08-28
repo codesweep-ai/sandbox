@@ -465,8 +465,18 @@ func (app *App) lendState() doctor.LendState {
 			slots[l.Slot] = true
 		}
 		if u := cassetteURL(app.InstDir, in.Group, in.Name); u != "" {
-			st.Cassettes = append(st.Cassettes, doctor.CassetteCheck{
+			st.Upstreams = append(st.Upstreams, doctor.UpstreamCheck{
 				Sandbox: in.Name, URL: u, Err: reachErr(u),
+			})
+		}
+		// The other side of the lender: an upstream one loan was created with.
+		// It is as dark a hop as a cassette in front, and reached from here.
+		for _, l := range loans {
+			if l.Origin == "" {
+				continue
+			}
+			st.Upstreams = append(st.Upstreams, doctor.UpstreamCheck{
+				Sandbox: in.Name, URL: l.Origin, Slot: l.Slot, ByLender: true, Err: reachErr(l.Origin),
 			})
 		}
 	}

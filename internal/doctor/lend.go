@@ -27,9 +27,9 @@ type LendState struct {
 	// Credentials are the slots the live loans name, with the reason each one
 	// cannot be read right now (empty reason: it can).
 	Credentials []CredentialCheck
-	// Cassettes are the cs-vcr endpoints sandboxes were pointed at, and whether
-	// each answers.
-	Cassettes []CassetteCheck
+	// Upstreams are the endpoints a sandbox's model calls pass through on the
+	// way to a provider, and whether each answers.
+	Upstreams []UpstreamCheck
 }
 
 // CredentialCheck is one lendable credential and whether the host can supply it.
@@ -39,11 +39,21 @@ type CredentialCheck struct {
 	Err    string
 }
 
-// CassetteCheck is one cs-vcr a sandbox was pointed at.
-type CassetteCheck struct {
+// UpstreamCheck is one endpoint in front of a provider, and who reaches it.
+//
+// Both sides of the lender can carry one, and they fail differently. A cs-vcr
+// in front is dialled by the sandbox, so it has to listen where a sandbox can
+// reach it. One behind is dialled by the lender, so it only has to answer on
+// this host.
+type UpstreamCheck struct {
 	Sandbox string
 	URL     string
-	Err     string
+	// Slot is the credential whose traffic goes there, for an upstream the
+	// lender reaches. Empty for one the sandbox reaches, which carries every
+	// slot at once.
+	Slot     string
+	ByLender bool
+	Err      string
 }
 
 // lendGroup renders the lending chain. Nothing is lent on most hosts, so the
@@ -77,13 +87,21 @@ func lendGroup(s LendState) (Group, bool) {
 		}
 		g.add(NO, fmt.Sprintf("%s: %s", c.Slot, c.Err))
 	}
-	for _, c := range s.Cassettes {
-		if c.Err == "" {
+	for _, c := range s.Upstreams {
+		switch {
+		case c.Err == "" && c.ByLender:
+			g.add(OK, fmt.Sprintf("%s sends its %s traffic through %s", c.Sandbox, c.Slot, c.URL))
+		case c.Err == "":
 			g.add(OK, fmt.Sprintf("%s records through %s", c.Sandbox, c.URL))
-			continue
+		case c.ByLender:
+			g.add(NO, fmt.Sprintf("%s sends its %s traffic to %s, which does not answer: %s\n"+
+				"      the lender dials it from this host, so it needs to be listening here",
+				c.Sandbox, c.Slot, c.URL, c.Err))
+		default:
+			g.add(NO, fmt.Sprintf("%s is pointed at %s, which does not answer: %s\n"+
+				"      a cs-vcr on this host needs --listen 0.0.0.0 for a sandbox to reach it",
+				c.Sandbox, c.URL, c.Err))
 		}
-		g.add(NO, fmt.Sprintf("%s is pointed at %s, which does not answer: %s\n"+
-			"      a cs-vcr on this host needs --listen 0.0.0.0 for a sandbox to reach it", c.Sandbox, c.URL, c.Err))
 	}
 	return g, true
 }

@@ -370,6 +370,10 @@ meant to run on its subscription should carry no `OPENAI_API_KEY`.
 Set any of these per sandbox with `create --env`, or write them into the agent's own profile
 env file inside the sandbox.
 
+One case reads the variable rather than passing it on. When the same slot is being lent, the address
+becomes the **lender's** upstream and the sandbox is handed the lender instead. See
+[Lending a credential](#lending-a-credential).
+
 ### Lending a credential
 
 A sandbox can call an LLM API without holding the credential that pays for it, and this is the
@@ -665,7 +669,9 @@ Everything runs in one podman-machine VM there, so `--repo` and `--snapshot` sou
 
 Run `cs-sandbox doctor`. It walks the lending chain and names the hop that is dark. The candidates
 are a lender that is not running, one bound where no sandbox can reach it, an expired host login,
-and a cs-vcr that does not answer.
+and an upstream that does not answer. It says which side of the lender that upstream is on, because
+the remedy differs. One in front has to listen where a sandbox can reach it. One behind only has to
+answer on this host.
 
 **`no loan matches the credential this request carried`**
 
