@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -262,6 +263,51 @@ func TestDryRunMintsNothingAndStartsNothing(t *testing.T) {
 	// And the environment it reports is the environment a real run would seed.
 	if got := strings.Join(plan.env, " "); !strings.Contains(got, "ANTHROPIC_BASE_URL=http://"+engine.HostReachableName+":") {
 		t.Errorf("env = %q, want the address a real run would use", got)
+	}
+}
+
+// A cassette prefix names the provider, and the provider follows the slot. A
+// sandbox borrowing two credentials therefore holds two base URLs, differing in
+// that segment and nowhere else.
+//
+// The pair that matters is codex and openai. Both are OpenAI's, and they are
+// spent at different endpoints: a lent Codex login is a ChatGPT subscription,
+// which the versioned API refuses. Sending both to one entry records one of
+// them against an upstream that cannot answer it.
+func TestACassettePrefixNamesEachSlotsProvider(t *testing.T) {
+	app := lendApp(t, lendHome(t))
+	app.Exec = &run.Exec{DryRun: true}
+	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
+
+	plan, err := app.resolveLoans(&createFlags{
+		lendAgentLogin: []string{"claude", "codex"},
+		lendAPIKey:     []string{"fireworks"},
+		cassette:       "build-auth",
+		vcr:            "vcr.test:8080",
+	}, "box")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	for _, want := range []string{
+		"ANTHROPIC_BASE_URL=http://vcr.test:8080/c/anthropic/build-auth",
+		"OPENAI_BASE_URL=http://vcr.test:8080/c/chatgpt/build-auth",
+		"OPENCODE_BASE_URL=http://vcr.test:8080/c/fireworks/build-auth",
+	} {
+		if !slices.Contains(plan.env, want) {
+			t.Errorf("env is missing %q:\n%s", want, strings.Join(plan.env, "\n"))
+		}
+	}
+	// And the stanza to paste names the same three entries, each pointed at the
+	// lender rather than at the provider.
+	notes := strings.Join(plan.notes, "\n")
+	for _, want := range []string{
+		"providers.anthropic.base_url: http://127.0.0.1:1",
+		"providers.chatgpt.base_url: http://127.0.0.1:1",
+		"providers.fireworks.base_url: http://127.0.0.1:1",
+	} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("the printed stanza is missing %q:\n%s", want, notes)
+		}
 	}
 }
 

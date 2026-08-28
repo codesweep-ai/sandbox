@@ -328,7 +328,9 @@ func TestOpenCodeWrapperForwardsABaseURL(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	const url = "http://vcr:8080/c/demo/v1"
+	// A cs-vcr base URL: the prefix names the provider the model runs on, then
+	// the cassette, and OpenCode appends nothing after the version.
+	const url = "http://vcr:8080/c/fireworks/demo/v1"
 
 	t.Run("unset leaves the invocation alone", func(t *testing.T) {
 		writeConfig(`{"model":"fireworks-ai/accounts/fireworks/models/kimi-k3"}`)
@@ -426,9 +428,9 @@ func TestCodexWrapperForwardsABaseURL(t *testing.T) {
 		},
 		{
 			name: "an API key names the variable holding it",
-			env:  []string{"OPENAI_BASE_URL=http://vcr:8080/c/demo/v1", "OPENAI_API_KEY=sk-not-a-real-key"},
+			env:  []string{"OPENAI_BASE_URL=http://vcr:8080/c/openai/demo/v1", "OPENAI_API_KEY=sk-not-a-real-key"},
 			wantArgv: `argv: -c model_provider="cs-proxy" -c model_providers.cs-proxy=` +
-				`{name="cs-proxy", base_url="http://vcr:8080/c/demo/v1", env_key="OPENAI_API_KEY", wire_api="responses"} exec do it`,
+				`{name="cs-proxy", base_url="http://vcr:8080/c/openai/demo/v1", env_key="OPENAI_API_KEY", wire_api="responses"} exec do it`,
 		},
 		{
 			// No key means the subscription path, which authenticates as codex
@@ -436,9 +438,9 @@ func TestCodexWrapperForwardsABaseURL(t *testing.T) {
 			// decoration: the test inherits the developer's environment, and a
 			// key there would otherwise decide this case for it.
 			name: "a subscription asks for codex's own auth",
-			env:  []string{"OPENAI_BASE_URL=http://vcr:8080/c/demo", "OPENAI_API_KEY="},
+			env:  []string{"OPENAI_BASE_URL=http://vcr:8080/c/chatgpt/demo", "OPENAI_API_KEY="},
 			wantArgv: `argv: -c model_provider="cs-proxy" -c model_providers.cs-proxy=` +
-				`{name="cs-proxy", base_url="http://vcr:8080/c/demo", requires_openai_auth=true, wire_api="responses"} exec do it`,
+				`{name="cs-proxy", base_url="http://vcr:8080/c/chatgpt/demo", requires_openai_auth=true, wire_api="responses"} exec do it`,
 			notWantArgv: "env_key",
 		},
 	} {

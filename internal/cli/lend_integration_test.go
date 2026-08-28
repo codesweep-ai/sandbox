@@ -400,8 +400,8 @@ func TestCLILendFirecrackerLive(t *testing.T) {
 }
 
 // standInVCR is a cs-vcr in shape rather than in substance: it strips the
-// /c/<name> prefix its base URL carries and forwards the rest, headers
-// untouched, to the lender.
+// /c/<provider>/<cassette> prefix its base URL carries and forwards the rest,
+// headers untouched, to the lender.
 //
 // The real recorder lives in another repository, and what is under test here is
 // this repository's half of the composition: that a sandbox pointed at a
@@ -415,8 +415,10 @@ func standInVCR(t *testing.T, lenderAddr string) string {
 	}
 	rp := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) {
 		p := pr.In.URL.Path
-		if rest := strings.SplitN(strings.TrimPrefix(p, "/c/"), "/", 2); strings.HasPrefix(p, "/c/") && len(rest) == 2 {
-			pr.Out.URL.Path = "/" + rest[1]
+		// Two segments come off: the provider the base URL named, then the
+		// cassette. What is left is the client's own path.
+		if rest := strings.SplitN(strings.TrimPrefix(p, "/c/"), "/", 3); strings.HasPrefix(p, "/c/") && len(rest) == 3 {
+			pr.Out.URL.Path = "/" + rest[2]
 		}
 		pr.SetURL(target)
 		pr.Out.Host = target.Host
@@ -450,8 +452,9 @@ func TestCLILendThroughCassetteLive(t *testing.T) {
 
 	ctx := context.Background()
 	base := strings.TrimSpace(inBox(ctx, r, host, name, `printf '%s' "$ANTHROPIC_BASE_URL"`))
-	if !strings.HasSuffix(base, "/c/demo") {
-		t.Errorf("base URL = %q, want it to name the cassette", base)
+	// The lent slot is the anthropic key, so the prefix names that provider.
+	if !strings.HasSuffix(base, "/c/anthropic/demo") {
+		t.Errorf("base URL = %q, want it to name the provider and the cassette", base)
 	}
 	body := inBox(ctx, r, host, name,
 		`curl -s --max-time 10 -X POST "$ANTHROPIC_BASE_URL/v1/messages" -H "x-api-key: $ANTHROPIC_API_KEY" -d '{}'`)

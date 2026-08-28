@@ -37,7 +37,6 @@ type loanPlan struct {
 	// shape each agent's own sign-in leaves behind.
 	seeded []seed.LentCredential
 	notes  []string
-	base   string // where the sandbox sends model calls
 }
 
 // resolveLoans validates the credential flags, checks the host holds what they
@@ -132,14 +131,19 @@ func (app *App) resolveLoans(f *createFlags, name string) (*loanPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	plan.base = guestBase
+	// Where a sandbox sends one slot's model calls. It is a property of the
+	// slot rather than of the run, because a cassette prefix names the provider
+	// the traffic is for and a sandbox can borrow two credentials at once.
+	baseFor := func(lend.Slot) string { return guestBase }
 	proxyBase := guestBase
 	if f.cassette != "" {
 		vcr := f.vcr
 		if vcr == "" {
 			vcr = fmt.Sprintf("%s:%d", engine.HostReachableName, defaultVCRPort)
 		}
-		plan.base = "http://" + vcr + "/c/" + f.cassette
+		baseFor = func(s lend.Slot) string {
+			return "http://" + vcr + "/c/" + vcrProvider(s) + "/" + f.cassette
+		}
 		proxyBase = "http://" + vcr
 		plan.notes = append(plan.notes, cassetteNotes(f.cassette, vcr, lenderLoopback(guestBase), lent)...)
 	}
@@ -155,9 +159,9 @@ func (app *App) resolveLoans(f *createFlags, name string) (*loanPlan, error) {
 			// client stays on the code path it takes when it is signed in. Only
 			// the base URL is set, because there is no gateway variable in play.
 			plan.seeded = append(plan.seeded, seed.LentCredential{Agent: g.Agent, File: g.File, Doc: g.Doc})
-			plan.env = append(plan.env, s.BaseEnv+"="+plan.base)
+			plan.env = append(plan.env, s.BaseEnv+"="+baseFor(s))
 		} else {
-			plan.env = append(plan.env, s.Env(g.Wire, plan.base)...)
+			plan.env = append(plan.env, s.Env(g.Wire, baseFor(s))...)
 		}
 		what := "login"
 		if s.Kind == lend.Key {
@@ -209,7 +213,7 @@ func cassetteNotes(cassette, vcrAddr, lenderURL string, lent []lend.Slot) []stri
 		}
 	}
 	notes := []string{
-		fmt.Sprintf("cassette: %s (model calls go through the cs-vcr at %s)", cassette, vcrAddr),
+		fmt.Sprintf("cassette: %s (model calls go to /c/<provider>/%s on the cs-vcr at %s)", cassette, cassette, vcrAddr),
 		fmt.Sprintf("          that cs-vcr needs  listen: 0.0.0.0:%s  so a sandbox can reach it, and", portOf(vcrAddr)),
 	}
 	for _, p := range provs {
@@ -218,15 +222,20 @@ func cassetteNotes(cassette, vcrAddr, lenderURL string, lent []lend.Slot) []stri
 	return notes
 }
 
-// vcrProvider maps a slot to the provider name a cs-vcr configuration uses for
-// the same upstream. Keyed on the slot rather than on its variable, because a
-// provider that has no base-URL variable of its own borrows a client's.
+// vcrProvider is the entry a cs-vcr serves this slot's upstream under, which is
+// the name the sandbox's base URL carries.
+//
+// Keyed on the slot rather than on its variable, because a provider with no
+// base-URL variable of its own borrows a client's. One vendor can have two
+// entries: a lent Codex login is a ChatGPT subscription, spent at the backend
+// cs-vcr reaches under `chatgpt`, while an OpenAI key is spent at
+// api.openai.com under `openai`.
 func vcrProvider(s lend.Slot) string {
 	switch s.ID {
 	case "claude", "anthropic":
 		return "anthropic"
-	case "codex", "openai":
-		return "openai"
+	case "codex":
+		return "chatgpt"
 	}
 	return s.ID
 }

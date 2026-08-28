@@ -474,8 +474,20 @@ cs-sandbox create feature --lend-agent-login claude --cassette build-auth --vcr 
 ```
 
 `create` prints the configuration that cs-vcr needs, with this host's own addresses filled in. Two
-things have to be true of that cs-vcr: it must listen on `0.0.0.0` so a sandbox can reach it, and
-its provider must point back at the lender.
+things have to be true of that cs-vcr. It must listen on `0.0.0.0`, so a sandbox can reach it. And
+the provider entry the sandbox names must point back at the lender.
+
+The base URL carries `/c/<provider>/<name>`, and which provider it names follows from what the
+sandbox borrows:
+
+| It borrows | The URL names |
+|---|---|
+| a Claude login | `anthropic` |
+| a Codex login | `chatgpt`, the endpoint a ChatGPT subscription is spent at |
+| an API key | that key's own provider |
+
+A sandbox borrowing two credentials reaches two entries on one cassette, and `create` prints a line
+for each.
 
 The sandbox's own environment is identical either way. That is what makes a cassette free to add or
 drop, and it means a recording made against a lent credential replays without any credential at all.

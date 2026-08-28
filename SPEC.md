@@ -797,8 +797,10 @@ clients honour. What makes a call around it pointless is R149: the sandbox holds
 spending anywhere.
 
 R156 is what makes a cassette free to add or drop. `--cassette <name>` sends the sandbox's model
-calls to a cs-vcr instead, and that cs-vcr's provider points back at the lender. The sandbox's
-environment is byte-for-byte what it would be either way. A recording made through a lent credential
+calls to a cs-vcr instead, on a `/c/<provider>/<name>` prefix. The entry that prefix names points
+back at the lender, and which entry it is follows from the slot. A Codex login is spent at the
+ChatGPT backend and an OpenAI key at the versioned API, so one vendor is two entries and the URL
+says which. The sandbox's environment is byte-for-byte what it would be either way. A recording made through a lent credential
 therefore replays with no credential at all. cs-sandbox does not write that cs-vcr's configuration,
 which belongs to another tool with its own rules about unknown keys. `create` prints the stanza to
 paste instead, with this run's own addresses already in it.
