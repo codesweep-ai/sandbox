@@ -37,6 +37,14 @@
 # everywhere. They still skip themselves where no engine is present, which is
 # what keeps the same `make test-smoke` correct on a developer's laptop.
 #
+# The profile's replay members need a second image, the slim one with the agent
+# CLIs kept, because they run a real agent inside the sandbox. It is 1.38 GB
+# against 474 MB, so two of the five smoke jobs load it: ubuntu and the arm64
+# Mac mini, which is one host per architecture. Whether those CLIs run is the
+# one thing that can differ between the two, and nothing else about the members
+# is host-specific. The WSL and Intel macOS legs keep the small image, and
+# their replay members skip, naming the one they wanted.
+#
 # Firecracker, the other engine, is covered by one job on Linux: it boots a real
 # microVM against artifacts built from the same slimmed image. macOS has no KVM,
 # and WSL2's /dev/kvm is nested virt inside an Azure VM, so neither is asked to.
@@ -470,11 +478,12 @@ jobs:
           name: cs-sandbox-ci-image
           path: bin
 
-      # The replay half of the smoke profile boots this one. Only this job loads
-      # it: it is 1.38 GB against 474 MB, and what it covers is the same on every
-      # podman host, so paying for it on the WSL and macOS legs would buy a third
-      # copy of one answer. Where it is absent the replay members skip, naming
-      # the image.
+      # The replay half of the smoke profile boots this one. Two jobs load it,
+      # this and the arm64 Mac mini, which is one host per ARCHITECTURE: the
+      # image carries the agent CLIs, and whether those run is the one thing
+      # that can differ between amd64 and arm64. It is 1.38 GB against 474 MB,
+      # so the WSL and Intel macOS legs keep the small one and their replay
+      # members skip, naming the image.
       - uses: actions/download-artifact@v7
         with:
           name: cs-sandbox-ci-agents-image
@@ -885,6 +894,15 @@ jobs:
           name: cs-sandbox-ci-image
           path: bin
 
+      # The image the replay half of the smoke profile boots. This is the only
+      # arm64 host with a real engine, so it is the only place the agent CLIs
+      # are exercised on that architecture. The runner is not ephemeral and
+      # keeps its layers, so the 1.38 GB lands once rather than every run.
+      - uses: actions/download-artifact@v7
+        with:
+          name: cs-sandbox-ci-agents-image
+          path: bin
+
       # launchd does not order jobs relative to each other and `podman machine
       # start` takes 20-30s, so after a reboot the runner can pick up a job
       # before the VM is ready. Guard on state rather than calling start
@@ -898,11 +916,13 @@ jobs:
           fi
           podman info --format '{{.Version.Version}} | {{.Host.Arch}} | rootless={{.Host.Security.Rootless}}'
 
-      - name: load the image
+      - name: load the images
         run: |
           set -euo pipefail
           podman load -i bin/cs-sandbox-ci.tar
+          podman load -i bin/cs-sandbox-ci-agents.tar
           podman image exists "$CS_SANDBOX_IMAGE"
+          podman image exists localhost/sandbox-slim-agents:ci
 
       - name: smoke
         run: make test-smoke
