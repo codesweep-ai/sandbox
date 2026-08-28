@@ -407,7 +407,7 @@ func TestMintGuestFabricatesTheAgentsOwnCredentialFile(t *testing.T) {
 	if g.File != "" || g.Doc != nil {
 		t.Errorf("a key slot seeded %s, want no file", g.File)
 	}
-	if g.Wire != g.Label || !IsToken(g.Wire) {
+	if g.Wire != g.Label || !strings.HasPrefix(g.Wire, TokenPrefix) {
 		t.Errorf("a key loan should travel as its own label, got %q", g.Wire)
 	}
 }

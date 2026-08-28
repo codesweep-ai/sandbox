@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
@@ -213,10 +212,6 @@ type Loan struct {
 	Group string `json:"-"`
 	Name  string `json:"-"`
 }
-
-// IsToken reports whether a credential value is one of ours. Used to pick the
-// loan token out of whichever header the client put it in.
-func IsToken(v string) bool { return strings.HasPrefix(v, TokenPrefix) }
 
 // loansFile is the per-instance record, written by create and removed with the
 // instance directory. Revocation is the sandbox lifecycle: there is no separate
