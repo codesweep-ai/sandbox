@@ -101,6 +101,57 @@ func newTestServer(t *testing.T, home string, loans Loans) *httptest.Server {
 	return srv
 }
 
+// An origin may carry a path, which is how a recorder is named. cs-vcr
+// addresses a cassette by /c/<provider>/<cassette>, so an operator putting one
+// in front of a provider gives the whole prefix as the slot's upstream.
+//
+// The path is a prefix rather than a replacement: what arrives is that prefix,
+// then the slot's version segment, then the client's own path. The swap is
+// unaffected, so the recorder is handed the host's real credential — which is
+// the difference from putting a cs-vcr in FRONT of the lender, where it only
+// ever sees a loan token.
+func TestAnOriginMayCarryAPathPrefix(t *testing.T) {
+	up := newUpstream(t)
+	home := hostProfile(t)
+	slot := Slot{
+		ID: "claude", Kind: Login, Origin: "https://api.anthropic.com", Version: "/v1",
+		Header: "authorization", Prefix: "Bearer ",
+		AuthEnvs: []string{"ANTHROPIC_AUTH_TOKEN"}, BaseEnv: "ANTHROPIC_BASE_URL",
+		read: readClaudeLogin, where: claudeWhere,
+	}
+	withSlots(t, slot)
+
+	tok := TokenPrefix + "box_claude_deadbeef"
+	s := New(Config{
+		Home: home, KeysDir: KeysDir(home),
+		Loans:   fixedLoans{tok: {Token: tok, Slot: "claude", Kind: Login, Name: "box"}},
+		Origins: map[string]string{"claude": up.URL + "/c/anthropic/testcassette"},
+	})
+	srv := httptest.NewServer(s)
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/messages", strings.NewReader(`{"hi":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(res.Body)
+		t.Fatalf("status %d: %s", res.StatusCode, b)
+	}
+	if want := "/c/anthropic/testcassette/v1/messages"; up.gotPath != want {
+		t.Errorf("upstream saw %q, want %q", up.gotPath, want)
+	}
+	if got := up.gotHeader.Get("Authorization"); got != "Bearer the-hosts-real-login" {
+		t.Errorf("the recorder was handed %q, want the host's real login", got)
+	}
+}
+
 // The core contract: the sandbox's worthless token goes in, the host's real
 // credential comes out, and the token never reaches the provider.
 func TestLoanTokenIsSwappedForTheRealCredential(t *testing.T) {
