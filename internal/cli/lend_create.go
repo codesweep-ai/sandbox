@@ -195,7 +195,7 @@ func (app *App) resolveLoans(f *createFlags, name, injected string) (*loanPlan, 
 		for _, k := range []string{"NO_PROXY", "no_proxy"} {
 			plan.env = append(plan.env, k+"="+noProxy)
 		}
-		plan.notes = append(plan.notes, "side calls: blocked to "+strings.Join(lend.Origins(), ", ")+
+		plan.notes = append(plan.notes, "side calls: blocked to "+strings.Join(lend.BlockedHosts(), ", ")+
 			" (--block-side-calls=false to allow them)")
 	}
 	return plan, nil

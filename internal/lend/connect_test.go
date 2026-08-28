@@ -49,13 +49,20 @@ func lenderListener(t *testing.T, home string, loans Loans) string {
 
 // The hosts the lender is the front for are exactly the hosts it will not
 // tunnel. A side call to one of them is a call that went around the swap.
+//
+// The last two are neither, and are here for the other reason a host is
+// refused: an agent reaches them on its own, and what they answer reaches the
+// prompt. They cannot be derived from the slot table, so a test is what keeps
+// them from being dropped by somebody reading only Origins().
 func TestConnectRefusesTheHostsTheLenderFronts(t *testing.T) {
 	addr := lenderListener(t, hostProfile(t), fixedLoans{})
 	for _, host := range []string{
 		"api.anthropic.com:443",
 		"chatgpt.com:443",
 		"api.openai.com:443",
+		"api.fireworks.ai:443",
 		"ab.chatgpt.com:443",
+		"models.opencode.ai:443",
 		"API.Anthropic.com.:443", // the same host, spelled to dodge a naive check
 	} {
 		code, conn := connectTo(t, addr, host)

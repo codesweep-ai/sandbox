@@ -288,6 +288,36 @@ func TestDryRunMintsNothingAndStartsNothing(t *testing.T) {
 	}
 }
 
+// The side-call refusal is reported in full, not just the part of it the slot
+// table can produce.
+//
+// Two of the refused hosts are nobody's upstream: an agent reaches them on its
+// own. They therefore cannot be derived, and a report built from the derived
+// half alone tells the reader that a host the sandbox cannot reach is
+// reachable, which sends them to debug the wrong hop.
+func TestCreateReportsEveryHostItRefuses(t *testing.T) {
+	app := lendApp(t, lendHome(t))
+	app.Exec = &run.Exec{DryRun: true}
+	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
+
+	plan, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}, blockSideCalls: true}, "box", "")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	notes := strings.Join(plan.notes, "\n")
+	for _, want := range lend.BlockedHosts() {
+		if !strings.Contains(notes, want) {
+			t.Errorf("create does not say it refuses %s:\n%s", want, notes)
+		}
+	}
+	// The named half specifically, since that is the half a refactor drops.
+	for _, want := range []string{"ab.chatgpt.com", "models.opencode.ai"} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("create's report is missing the phone-home host %s:\n%s", want, notes)
+		}
+	}
+}
+
 // A base URL the caller sets for a slot they are lending names where the lender
 // forwards it, and the sandbox is handed the lender instead.
 //

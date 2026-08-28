@@ -41,19 +41,30 @@ import (
 // slot table already names. Short on purpose: github.com is deliberately absent
 // — an agent's tools reach it constantly and nothing it answers has to do with
 // a credential this host lends.
-var phoneHome = []string{"ab.chatgpt.com"}
+//
+// Both entries are hosts no slot lends for, which is why they have to be
+// written down: Origins() derives the rest from the slot table, and a host that
+// is nobody's upstream cannot be derived. models.opencode.ai is OpenCode asking
+// what models exist. It answers differently over time and the answer reaches
+// the prompt, so a sandbox left free to call it is one whose recorded session
+// stops replaying the day that catalog moves.
+var phoneHome = []string{"ab.chatgpt.com", "models.opencode.ai"}
 
-// blockedHosts is the refusal list: every upstream this build fronts, plus the
+// BlockedHosts is the refusal list: every upstream this build fronts, plus the
 // phone-home hosts. Deriving most of it from the slot table is what keeps the
 // two in step — a provider added there is refused here on the same commit.
-func blockedHosts() []string {
+//
+// Exported because `create` reports it. Origins() alone would name four of the
+// six, and a sandbox told that two hosts it cannot reach are reachable is one
+// whose operator debugs the wrong thing.
+func BlockedHosts() []string {
 	out := append([]string{}, Origins()...)
 	return append(out, phoneHome...)
 }
 
 // tunnelRefusal reports why a host may not be tunnelled, or "" to allow it.
 func tunnelRefusal(host string) string {
-	if !slices.Contains(blockedHosts(), host) {
+	if !slices.Contains(BlockedHosts(), host) {
 		return ""
 	}
 	return "cs-sandbox does not tunnel " + host +

@@ -728,8 +728,9 @@ when that directory is removed, and there **MUST** be no other revocation.
 **R152.** The lender **MUST** listen on a non-loopback address, and **MUST** refuse any caller that is not
 this host.
 
-**R153.** The lender **MUST** answer `CONNECT`. It **MUST** refuse the hosts it is itself the front for, and
-tunnel every other host.
+**R153.** The lender **MUST** answer `CONNECT`. It **MUST** refuse the hosts it is itself the front for and
+the hosts these agents contact on their own, and **MUST** tunnel every other host. `create` **MUST** report
+which hosts it refused.
 
 **R154.** `create` **MUST** fail before anything is provisioned when a lend flag names a credential this
 host cannot supply. The failure **MUST** name the file it looked for, and the command that creates one.
@@ -809,10 +810,15 @@ their provider on their own, for analytics, for news about what the agent can do
 else a vendor adds over time. What those calls are for varies and is not this tool's to predict.
 What matters is that a sandbox holding a loan token has no credential any of them would be accepted
 with, so each one fails. A failure there can unsettle an agent whose model calls are working
-perfectly. So the sandbox's `HTTPS_PROXY` points at the lender too. It refuses exactly the hosts it
-fronts, and tunnels everything else, because an agent's tools share its environment. Blocking `git`,
-`curl` and every package manager would buy nothing. Pass `--block-side-calls=false` to allow the
-direct route.
+perfectly. So the sandbox's `HTTPS_PROXY` points at the lender too.
+
+Two kinds of host are refused, and only one of them can be derived. Every upstream the lender fronts
+comes from the slot table, so a provider added there is refused on the same commit. The rest are
+hosts no slot lends for, which an agent reaches anyway: Codex asks for an experiment assignment, and
+OpenCode asks what models exist. Those have to be written down, and `create` prints the whole list so
+that a name missing from it is visible rather than inferred. Everything else is tunnelled, because an
+agent's tools share its environment. Blocking `git`, `curl` and every package manager would buy
+nothing. Pass `--block-side-calls=false` to allow the direct route.
 
 R153 keeps an agent from confusing itself, and is not a boundary. It works through a variable
 clients honour. What makes a call around it pointless is R149: the sandbox holds no credential worth
