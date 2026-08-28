@@ -690,30 +690,25 @@ func recordedTruncated(t *testing.T, p *vcrProxy, cassette string) bool {
 	return false
 }
 
-// reportMisses says how much of this run the cassettes could not answer.
+// assertEveryTurnWasServed fails a replay that had to tell a client it had no
+// recording for something.
 //
-// Reported rather than asserted, and the reason is what makes the tier's other
-// assertion enough. A miss on the turn that carries the QUESTION cannot pass:
-// the agent has no answer to print, and the case fails on its word before this
-// is ever reached. What can pass is a miss on a bookkeeping call, and those are
-// not reproducible even in principle — whether a client makes one, how many
-// times, and on which model all vary with how fast the answer came back, and a
-// replay answers in a fraction of the time the recording took.
+// A miss is not caught by the agent's answer alone. One on the turn carrying
+// the QUESTION cannot pass: there is nothing to print, and the case fails on
+// its word before this is reached. One on a bookkeeping call can, because the
+// client shrugs and carries on, and the fixture drifts a little further each
+// time nobody looks.
 //
-// cs-vcr absorbs most of them: `auxiliary_turns` answers a bookkeeping call
-// from any recorded one, and `lookahead` absorbs the order they arrive in. The
-// gap this tier sits in is the one case that leaves: auxiliary_turns recognizes
-// a recorded turn as auxiliary only when it is ALSO on a model the cassette
-// does not otherwise use, and PINNING the model — which this matrix does, and
-// which any reproducible harness does — puts Claude Code's title generation on
-// the same model as the turn it is naming. Measured: one miss in twenty-nine
-// requests across the whole matrix, on claude-anthropic-lent, stable across
-// runs, with every case still answering and nothing spent.
+// Zero is a floor this tier can hold, which was not always true. cs-vcr
+// recognized a recorded step as bookkeeping only when it was on a model the
+// cassette did not otherwise use, and this matrix pins its models — so Claude
+// Code's title generation landed on the same model as the turn it was naming
+// and could not be recognized. That was one miss in twenty-nine, stable across
+// runs, on claude-anthropic-lent. It is cs-vcr VCR-018, and with it fixed the
+// same matrix serves 29 of 29.
 //
-// So the number is printed and watched rather than enforced. A jump in it is
-// the signal; a floor of zero is not one this tier can hold honestly. The
-// missed requests are dumped, and `cs-vcr calibrate` reads that directory.
-func reportMisses(t *testing.T, p *vcrProxy) {
+// The missed requests are dumped, and `cs-vcr calibrate` reads that directory.
+func assertEveryTurnWasServed(t *testing.T, p *vcrProxy) {
 	t.Helper()
 	summary := p.stop(t)
 	misses, err := countedAs(summary, "misses")
@@ -727,9 +722,9 @@ func reportMisses(t *testing.T, p *vcrProxy) {
 		return
 	}
 	t.Logf("cs-vcr served %d request(s) and missed %d", served, misses)
-	if misses > served/4 {
-		t.Errorf("replay missed %d of %d request(s), which is more than bookkeeping accounts for: "+
-			"the cassettes and this run are asking different things\n%s", misses, served+misses, tailLines(summary, 40))
+	if misses != 0 {
+		t.Errorf("replay missed %d of %d request(s): the cassettes and this run asked different things\n%s",
+			misses, served+misses, tailLines(summary, 40))
 	}
 }
 
@@ -826,26 +821,19 @@ func writeVCRConfig(t *testing.T) string {
 	}
 	user := regexp.QuoteMeta(me)
 
-	// The first two entries are cs-vcr's own shipped captures, restated.
-	//
-	// They have to be, and it is worth knowing why before editing this: a
-	// `capture:` block in a config file REPLACES the shipped list rather than
-	// adding to it, so declaring one rule silently drops the rest. Measured on
-	// the pinned build — a file declaring one `replace` rule took the resolved
-	// ruleset from ten to one. Dropping <SESSION> would leave Claude Code's
-	// per-run scratchpad path in the key, and every request of every session
-	// would miss.
+	// Under `extend`, which appends to the ruleset cs-vcr ships. The same names
+	// directly under `normalize` would stand in for it, and the shipped rules
+	// are what blank the date, the working directory, the platform and the
+	// per-run scratchpad path. Losing any of them makes every request of every
+	// session miss.
 	body := fmt.Sprintf(`# Written by internal/cli/agentmatrix_test.go. Not committed.
 normalize:
-  capture:
-    - pattern: '(?:/tmp/claude-\d+/[^/"]+/)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
-      as: '<SESSION>'
-    - pattern: '(?:chunk_id\\?":\\?")([^"\\]+)'
-      as: '<CHUNK>'
-    - pattern: '(?:/home/|-home-)(%[1]s)'
-      as: '<USER>'
-    - pattern: '(%[1]s %[1]s)'
-      as: '<USER_GROUP>'
+  extend:
+    capture:
+      - pattern: '(?:/home/|-home-)(%[1]s)'
+        as: '<USER>'
+      - pattern: '(%[1]s %[1]s)'
+        as: '<USER_GROUP>'
 `, user)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write the cs-vcr config: %v", err)

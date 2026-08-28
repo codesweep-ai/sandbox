@@ -55,10 +55,9 @@ func TestAgentReplay(t *testing.T) {
 	}
 	// After every cell, because one cs-vcr serves them all and its accounting
 	// is per session. A single statement about the whole tier is also the one
-	// worth making: nothing was spent, and the cassettes answered nearly all of
-	// what was asked.
+	// worth making: nothing was spent, and nothing went unserved.
 	assertSpentNothing(t, proxy)
-	reportMisses(t, proxy)
+	assertEveryTurnWasServed(t, proxy)
 }
 
 // assertCassetteRuleset fails a cell whose cassette was recorded under a
