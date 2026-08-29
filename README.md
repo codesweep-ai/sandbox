@@ -466,8 +466,8 @@ Bug reports and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) ha
 test coverage, commit shape and writing, and applies to coding agents as much as to people. It also
 covers how to report a security issue privately.
 
-**Testing.** `make check` must pass before you open a PR. It runs formatting, `go vet`, the unit
-tests and the prose linter. `make test-integration` runs the live tests against a real host, and each
+**Testing.** `make ci` must pass before you open a PR. It runs every gate CI runs, formatting,
+`go vet`, the unit tests and the prose linter among them. `make test-integration` runs the live tests against a real host, and each
 skips gracefully when Podman or the image is unavailable. See
 [SPEC.md](SPEC.md#16-conformance-and-testing).
 
