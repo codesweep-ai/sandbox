@@ -6,6 +6,29 @@
 # by a bad cutoff. Everything else goes ten days after it was last touched. A
 # deleted version is a deleted image: a host still naming one gets a pull failure
 # and falls back to building, which is why only dev tags are eligible.
+#
+# THE TIER PACKAGES ARE NOT AGE-PRUNED, and that is not a preference. Every test
+# above points the wrong way for a base image:
+#
+#   * It breaks BUILDS, not pulls, so nothing goes red at first. An OCI manifest
+#     lists every layer including inherited ones, so a published sandbox keeps
+#     working after its base is deleted. What dies is anything starting with
+#     FROM: this repository's own leaf builds, and every `cs-sandbox build` from
+#     a checkout.
+#   * The age test inverts. For a per-commit leaf, "older than MAX_AGE_DAYS" is
+#     a fair proxy for "unwanted". For a base it means the opposite — one that
+#     has not changed in two months is the most-used artifact in the registry.
+#   * And the release exemption does not cover it: KEEP_RECENT=5 against a
+#     WEEKLY base build is a five-week shelf life, and image/tiers.env is
+#     deliberately pinned to an older tier than the newest. Explicit pinning
+#     makes this worse than a floating tag would, because it holds us on exactly
+#     what the pruner is built to remove.
+#
+# So the tiers keep KEEP_TIERS versions by count and are never expired by age,
+# and the tags image/tiers.env names are pulled out of the checkout and kept
+# whatever their rank. Storage is not the reason to prune these anyway: these
+# packages are public, and GitHub bills neither storage nor bandwidth for public
+# packages. The reason was legibility, and one base a week adds 52 rows a year.
 name: prune-images
 
 on:
@@ -33,6 +56,8 @@ jobs:
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
       KEEP_RECENT: "5"
       MAX_AGE_DAYS: "10"
+      # Weekly builds, so 26 is about six months of tiers.
+      KEEP_TIERS: "26"
     steps:
       - name: prune
         run: |
@@ -40,8 +65,22 @@ jobs:
           owner='${{ github.repository_owner }}'
           cutoff=$(date -u -d "-${MAX_AGE_DAYS} days" +%s)
 
-          for pkg in sandbox sandbox-slim sandbox-slim-agents; do
+          # The tiers the checkout is pinned to. Never deleted, whatever their
+          # rank or age: deleting one breaks every build that starts with FROM,
+          # while every image already published keeps working — so nothing goes
+          # red until somebody tries to build.
+          pinned=$(sed -n "s/^[A-Z_]*REF=.*:\(v[^[:space:]]*\)$/\1/p" image/tiers.env | sort -u)
+          echo "pinned tier tags (never deleted): $pinned"
+
+          for pkg in sandbox sandbox-slim sandbox-base sandbox-agents sandbox-slim-base sandbox-slim-agents; do
             echo "== $pkg"
+            # Tier packages are kept by COUNT only — see the header. A weekly
+            # base that has not changed in two months is the most-used image in
+            # the registry, not the least.
+            case "$pkg" in
+              *-base|*-agents) keep=$KEEP_TIERS; by_age=0 ;;
+              *)               keep=$KEEP_RECENT; by_age=1 ;;
+            esac
             # An owner that is a user rather than an organisation answers on a
             # different path. Try the org one and say which failed, rather than
             # letting a 404 read as "nothing to prune".
@@ -58,15 +97,22 @@ jobs:
               updated=$(jq -r '.value.updated_at' <<<"$entry")
               tags=$(jq -r '.value.metadata.container.tags // [] | join(",")' <<<"$entry")
 
-              if [ "$rank" -lt "$KEEP_RECENT" ]; then
-                echo "  keep  ${tags:-<untagged>} (one of the $KEEP_RECENT most recent)"
+              if [ "$rank" -lt "$keep" ]; then
+                echo "  keep  ${tags:-<untagged>} (one of the $keep most recent)"
                 continue
+              fi
+              # The tier image/tiers.env names, at any rank and any age.
+              for t in $pinned; do
+                case ",$tags," in *",$t,"*) echo "  keep  $tags (pinned by image/tiers.env)"; continue 3 ;; esac
+              done
+              if [ "$by_age" = 0 ]; then
+                echo "  delete-eligible ${tags:-<untagged>} (tier, past the $keep newest)"
               fi
               if grep -qE '(^|,)v[0-9]+\.[0-9]+\.[0-9]+(,|$)' <<<"$tags"; then
                 echo "  keep  $tags (release)"
                 continue
               fi
-              if [ "$(date -u -d "$updated" +%s)" -ge "$cutoff" ]; then
+              if [ "$by_age" = 1 ] && [ "$(date -u -d "$updated" +%s)" -ge "$cutoff" ]; then
                 echo "  keep  ${tags:-<untagged>} ($updated, under $MAX_AGE_DAYS days)"
                 continue
               fi

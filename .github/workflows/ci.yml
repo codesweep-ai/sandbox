@@ -42,18 +42,16 @@
 # rather than skip. They still skip themselves where no engine is present, which
 # is what keeps the same `make test-smoke` correct on a developer's laptop.
 #
-# The profile's replay members need a second image, the slim one with the agent
-# CLIs kept, because they run a real agent inside the sandbox. setup-smoke
-# builds it, so nothing here ships it: an image tarball would be downloaded and
-# then rebuilt, which is what the first attempt at this did.
+# The profile's replay members run a real agent inside the sandbox, and the one
+# slim image carries the three CLIs — there is no agent-free variant any more,
+# so nothing here has to ship or build a second image for them.
 #
-# SMOKE_AGENTS is the switch, and it governs the build as well as the run. Two
-# of the five smoke jobs leave it on, ubuntu and the arm64 Mac mini, which is
-# one host per ARCHITECTURE. Whether those CLIs run is the one thing that can
-# differ between the two, and nothing else about the members is host-specific.
-# The other three turn it off: measured on the Intel macOS leg, the image costs
-# seven minutes to build and the members nine to run, against a 35-minute
-# budget.
+# SMOKE_AGENTS is the switch, and it now governs the run only. Two of the five
+# smoke jobs leave it on, ubuntu and the arm64 Mac mini, which is one host per
+# ARCHITECTURE. Whether those CLIs run is the one thing that can differ between
+# the two, and nothing else about the members is host-specific. The other three
+# turn it off: measured on the Intel macOS leg, the members cost nine minutes to
+# run against a 35-minute budget.
 #
 # Firecracker, the other engine, is covered by one job on Linux: it boots a real
 # microVM against artifacts built from the same slimmed image. macOS has no KVM,
@@ -919,17 +917,18 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      # No build cache here, deliberately. Caching the layer store cannot work:
-      # rootless podman's overlay layers hold files owned by mapped subuids with
-      # mode 000 (/etc/shadow and friends, inside every layer's diff/), the
-      # runner user cannot read them, and tar exits 2. actions/cache reports that
-      # as a warning, so the job stays green while caching nothing. Packing the
-      # store under `podman unshare` would get around it, and would cost about as
-      # long as the build: this one takes ~7 minutes cold, and a ~3 GB restore
-      # and repack is most of that, while evicting the artifacts cache the smoke
-      # jobs live on. A published image cannot seed a build cache either, because
-      # podman matches steps against per-step intermediate images and a pull
-      # carries none of them.
+      # No build cache here, and no longer any need for one. This job builds only
+      # the LEAF of each family — `COPY . /sandbox`, the env file and a ~25 MB Go
+      # install — on top of the tier images image/tiers.env pins. The 2.14 GB
+      # underneath is pulled, not rebuilt, so there is nothing worth caching.
+      #
+      # Caching the layer store could not have worked anyway: rootless podman's
+      # overlay layers hold files owned by mapped subuids with mode 000
+      # (/etc/shadow and friends, inside every layer's diff/), the runner user
+      # cannot read them, and tar exits 2. actions/cache reports that as a
+      # warning, so the job would stay green while caching nothing.
+      #
+      # The weekly rebuild of those tiers is .github/workflows/base-images.yml.
 
       - name: build the binary that names the images
         run: make build-go
@@ -956,9 +955,10 @@ jobs:
       # `build` pulls before it builds, so a re-run of this workflow finds the
       # image already published and pushes back the digest it just fetched.
       # The runner's root volume holds the whole layer store. The shipped image is
-      # ~6 GB and the store is larger while a build is in flight, so print the
-      # headroom either side: a job that dies at 90% for want of disk should say
-      # so here rather than in a podman error about a partial write.
+      # ~6 GB — pulled as two tiers rather than built, but it lands on the same
+      # disk — so print the headroom either side: a job that dies at 90% for want
+      # of disk should say so here rather than in a podman error about a partial
+      # write.
       - name: build and push the sandbox image
         run: |
           set -euo pipefail
@@ -967,13 +967,11 @@ jobs:
           df -h / | tail -1
           podman push '${{ steps.refs.outputs.image }}'
 
-      - name: build and push the CI images
+      - name: build and push the CI image
         run: |
           set -euo pipefail
           ./bin/cs-sandbox build --engine podman --slim
           podman push '${{ steps.refs.outputs.image_slim }}'
-          ./bin/cs-sandbox build --engine podman --slim --with-agents
-          podman push '${{ steps.refs.outputs.image_slim_agents }}'
 
       - name: what was published
         run: |

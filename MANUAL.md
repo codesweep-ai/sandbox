@@ -202,7 +202,8 @@ cs-sandbox rm-store [-f] <name>
 
 ```
 cs-sandbox build [--engine ENGINE]...     # the image, and the Firecracker artifacts
-cs-sandbox build --slim [--with-agents]   # the CI image instead: no developer toolchains
+cs-sandbox build --slim                   # the CI image instead: no developer toolchains
+cs-sandbox build --rebuild-base           # rebuild the OS/toolchain and agent tiers too
 cs-sandbox build --local-sandbox          # take cs-sandbox from this checkout, not the proxy
 cs-sandbox doctor [--engine ENGINE]       # check prerequisites, print the fix for each gap
 cs-sandbox install-agent-tools [dir]      # the agent tools onto your PATH
@@ -226,18 +227,31 @@ With no `--engine`, `build` sets up every engine the host supports, and fails on
 Firecracker-capable host whose Firecracker packages are missing. Restrict it with `--engine podman`
 for the image alone. The flag is repeatable, so `--engine podman --engine firecracker` names both.
 
-`--slim` builds the CI image instead of the shipped one: the same Containerfile with the developer
-toolchains removed. That drops Go, Node, Python, the JDK, Maven, Neovim and its language servers,
-and Chromium. The image weighs about 474 MB against 6.04 GB, and it builds in minutes against tens
-of them. That difference is what lets a job boot real sandboxes on a hosted runner. Building the
-full image on every push would cost more time and disk than such a job has. The derivation lives in
-`image/ci-slim.sh` and is applied to
-the real Containerfile, so the slim image can lag the shipped one in weight but never diverge from
+The image is built in **three tiers**, and `build` makes only the last of them. Two tiers are
+pulled at the tag `image/tiers.env` pins: the OS and the toolchains
+(`ghcr.io/codesweep-ai/sandbox-base`), then the agent CLIs on top of them
+(`ghcr.io/codesweep-ai/sandbox-agents`). What is built here is this repository on top, about 25 MB
+against 2.2 GB. Those two tiers are rebuilt weekly by `.github/workflows/base-images.yml`. That
+workflow publishes a candidate, proves it, and prints the two lines to paste into
+`image/tiers.env`.
+
+`--rebuild-base` builds all three tiers locally instead. An edit to `Containerfile.base` or
+`Containerfile.agents` needs it: without it the tier you changed still comes from the registry and
+the edit is silently ignored.
+
+`--slim` builds the CI image instead of the shipped one: the same three Containerfiles with the
+developer toolchains removed. That drops Go, Node, Python, the JDK, Maven, Neovim and its language
+servers, and Chromium. The image weighs about 474 MB against 6.04 GB, and it builds in minutes
+against tens of them. That difference is what lets a job boot real sandboxes on a hosted runner.
+Building the full image on every push would cost more time and disk than such a job has. The
+derivation lives in `image/ci-slim.sh` and is applied to
+the real Containerfiles, so the slim image can lag the shipped one in weight but never diverge from
 it in content.
 
-Add `--with-agents` when the tests being run drive `claude`, `codex` or `opencode` **inside** the
-sandbox. Those three CLIs are dropped with everything else otherwise, and a member without them
-fails its readback at `command -v`. They cost about 858 MB.
+It keeps `claude`, `codex` and `opencode`. They cost about 858 MB, and a suite whose members drive
+an agent **inside** the sandbox fails its readback at `command -v` without them. There is no
+agent-free variant. The saving was about 325 MB on a CI artifact. In exchange it cost a seventh
+package, and a name that meant a product in one family and a tier in the other.
 
 `--local-sandbox` installs `cs-sandbox` in the image from this checkout rather than from the module
 proxy. The image installs it by version, which needs that revision pushed. On one you have not, the
@@ -245,15 +259,14 @@ build stops at `unknown revision`. The flag writes the module zip the proxy woul
 of your git tree, and the build reads it over a temporary `file://` mount. The binary still reports
 its own version. It takes the commit rather than the working tree, and needs a checkout to read.
 
-A slim build goes to `ghcr.io/codesweep-ai/sandbox-slim`, or
-`ghcr.io/codesweep-ai/sandbox-slim-agents` with `--with-agents`, tagged with the same version as the
-shipped image. None of the three images is interchangeable with another, and the name is all a later
-`create` has to tell them apart. `CS_SANDBOX_IMAGE` names one directly, which is how to build and
-test against a name of your own:
+A slim build goes to `ghcr.io/codesweep-ai/sandbox-slim`, tagged with the same version as the
+shipped image. The two are not interchangeable, because a sandbox made from the slim one has no
+toolchains, and the name is all a later `create` has to tell them apart. `CS_SANDBOX_IMAGE` names
+one directly, which is how to build and test against a name of your own:
 
 ```
-CS_SANDBOX_IMAGE=localhost/sandbox-slim-agents:ci cs-sandbox build --engine firecracker --slim --with-agents
-CS_SANDBOX_IMAGE=localhost/sandbox-slim-agents:ci make test-smoke
+CS_SANDBOX_IMAGE=localhost/sandbox-slim:ci cs-sandbox build --engine firecracker --slim
+CS_SANDBOX_IMAGE=localhost/sandbox-slim:ci make test-smoke
 ```
 
 ### Which image a sandbox runs
@@ -277,8 +290,16 @@ images that `--slim` builds:
 $ cs-sandbox version --images
 image              ghcr.io/codesweep-ai/sandbox:v0.1.0
 image-slim         ghcr.io/codesweep-ai/sandbox-slim:v0.1.0
-image-slim-agents  ghcr.io/codesweep-ai/sandbox-slim-agents:v0.1.0
+tier-base          ghcr.io/codesweep-ai/sandbox-base
+tier-agents        ghcr.io/codesweep-ai/sandbox-agents
+tier-slim-base     ghcr.io/codesweep-ai/sandbox-slim-base
+tier-slim-agents   ghcr.io/codesweep-ai/sandbox-slim-agents
 ```
+
+The two products carry the version tag they are built under. The four tiers do not. A base is
+rebuilt weekly whether or not anything was committed, so a commit-derived tag would name two
+different images. GHCR tags are mutable, so the second would silently overwrite the first. Tier
+tags are stamped with the build time instead, and the pair in use is named in `image/tiers.env`.
 
 `build` looks for that image on the registry and builds it only when there is none. A released
 binary usually reaches a working image in the time a download takes. `create` does neither: when the

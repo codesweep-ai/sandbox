@@ -47,7 +47,7 @@ set -a
 . ./.env
 set +a
 
-image=${CS_SANDBOX_IMAGE:-localhost/sandbox-slim-agents:ci}
+image=${CS_SANDBOX_IMAGE:-localhost/sandbox-slim:ci}
 
 echo "Recording from:"
 echo "  repo             $repo"
@@ -98,7 +98,7 @@ if command -v podman >/dev/null; then ok "podman"; else bad "podman is not on PA
 if podman image exists "$image" 2>/dev/null; then
   ok "$image is built"
 else
-  bad "$image is not built -- run: make build-ci-image CI_SLIM_KEEP_AGENTS=1"
+  bad "$image is not built -- run: make build-ci-image"
   missing=1
 fi
 if command -v cs-vcr >/dev/null; then ok "cs-vcr"; else bad "cs-vcr is not on PATH"; missing=1; fi

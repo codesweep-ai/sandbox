@@ -161,6 +161,43 @@ func ToolPins(assetDir string) (map[string]string, error) {
 	return pins, nil
 }
 
+// TierPins reads image/tiers.env — the tier images the leaf Containerfile is
+// built ON, and the one place a bump happens.
+//
+// Two entries, one per family: AGENTS_REF for the shipped image and
+// SLIM_AGENTS_REF for the CI one. Both are pinned here rather than as ARG
+// defaults in the Containerfiles because the slim Containerfiles are DERIVED
+// (see image/ci-slim.sh) and a derived file cannot carry a pin of its own.
+//
+// Same fallback as everything else here: the checkout's copy when there is one,
+// the embedded copy otherwise, so a downloaded binary can still build.
+func TierPins(assetDir string) (map[string]string, error) {
+	var data []byte
+	if d, ok := onDiskImage(assetDir); ok {
+		if b, err := os.ReadFile(filepath.Join(d, "tiers.env")); err == nil {
+			data = b
+		}
+	}
+	if data == nil {
+		b, err := fs.ReadFile(image(), "tiers.env")
+		if err != nil {
+			return nil, err
+		}
+		data = b
+	}
+	pins := map[string]string{}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if k, v, ok := strings.Cut(line, "="); ok {
+			pins[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
+	return pins, nil
+}
+
 // GuestInitPath returns a host path to the guest init (image/guest/init): the
 // on-disk checkout copy when available, otherwise the embedded copy materialized
 // once into cacheDir (a stable path so its content hash — the base-rootfs stamp

@@ -33,10 +33,28 @@ import (
 // who found one under the sandbox package and pulled it would get a container
 // that boots and then has no go, no node and no agents. A package whose name
 // says slim cannot be mistaken that way.
+//
+// Six packages, two families of three. Within a family `-base` is tier 1 (the
+// OS and the toolchains), `-agents` is tier 2 (the three agent CLIs on top of
+// it) and the bare name is the product a person pulls. So `-base` always means
+// a build intermediate and never a product, and `-agents` always means "carries
+// the agent CLIs" — the two names mean the same thing in both families, which
+// the old sandbox-slim-agents did not: it was a product in one family and would
+// have been a tier in the other.
+//
+// The tier repos carry no version-derived tag. A product is named for the
+// commit that builds it, but a base is rebuilt weekly whether or not anything
+// was committed, so two runs off one commit would mint one tag for two
+// different images — and GHCR tags are mutable, so the second would silently
+// overwrite the first. Their tags are stamped with the BUILD time by whatever
+// publishes them; see .github/workflows/base-images.yml.
 const (
 	imageRepo           = "ghcr.io/codesweep-ai/sandbox"
+	baseImageRepo       = imageRepo + "-base"
+	agentsImageRepo     = imageRepo + "-agents"
 	slimImageRepo       = imageRepo + "-slim"
-	slimAgentsImageRepo = imageRepo + "-slim-agents"
+	slimBaseImageRepo   = slimImageRepo + "-base"
+	slimAgentsImageRepo = slimImageRepo + "-agents"
 )
 
 // devVersion marks a binary that carried no release stamp.
@@ -343,13 +361,24 @@ func newVersionCmd(app *App) *cobra.Command {
 				for _, r := range []struct{ label, repo string }{
 					{"image", imageRepo},
 					{"image-slim", slimImageRepo},
-					{"image-slim-agents", slimAgentsImageRepo},
 				} {
 					ref, err := imageRef(r.repo)
 					if err != nil {
 						return err
 					}
 					fmt.Fprintf(out, "%-18s %s\n", r.label, ref)
+				}
+				// The tiers those two are built on, repo only: their tags are
+				// stamped with the build time rather than derived from this
+				// binary's version, so naming one here would be a guess. The
+				// workflow that publishes them appends its own stamp.
+				for _, r := range []struct{ label, repo string }{
+					{"tier-base", baseImageRepo},
+					{"tier-agents", agentsImageRepo},
+					{"tier-slim-base", slimBaseImageRepo},
+					{"tier-slim-agents", slimAgentsImageRepo},
+				} {
+					fmt.Fprintf(out, "%-18s %s\n", r.label, r.repo)
 				}
 				return nil
 			}

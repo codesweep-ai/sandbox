@@ -183,11 +183,11 @@ The shipped image is 6.04 GB, more than a test job on a hosted runner wants to b
 For a suite that boots real sandboxes there, build the slimmed one instead:
 
 ```bash
-cs-sandbox build --slim                # no developer toolchains: ~474 MB, minutes
-cs-sandbox build --slim --with-agents  # and keep claude, codex and opencode
+cs-sandbox build --slim   # no developer toolchains: ~474 MB, minutes
 ```
 
-Each is tagged apart from the shipped image, so neither can be mistaken for it. See
+It carries `claude`, `codex` and `opencode`, which a suite that drives an agent inside the sandbox
+needs. It is tagged apart from the shipped image, so it cannot be mistaken for it. See
 [MANUAL.md](MANUAL.md#host-setup).
 
 `cs-sandbox create` assumes `build` has run: it **does not** build under the covers, and fails with a

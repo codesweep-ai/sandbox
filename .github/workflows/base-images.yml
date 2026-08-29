@@ -1,0 +1,179 @@
+# Rebuild and publish the two tiers the per-commit images are built ON.
+#
+# The image is three tiers, one published package each, because they change at
+# three different rates: the OS and toolchains weekly, the agent CLIs about
+# every eight days, this repository four times a day. Two consecutive builds of
+# the old single-file image shared NONE of their 26 layer blobs, so a commit put
+# 2167.8 MB on the wire to change 25 MB — and in the two dnf layers the only
+# package that had actually moved was one Bluetooth library, at 189 KB.
+#
+# None of that is fixable by making the build reproducible: any dnf transaction
+# rewrites a 29.5 MB rpm database keyed on install timestamps, plus 1.7 MB of
+# logs and a random /etc/machine-id. The fix is to stop re-running it, which is
+# what this workflow is for.
+#
+# IT PUBLISHES BUT DOES NOT ADOPT. Nothing downstream moves until somebody edits
+# image/tiers.env, because the leaf names its base by tag. What this job does is
+# publish a candidate, prove it, and print the two lines to paste. A base that
+# broke something is a red run here, not a red run on somebody else's commit.
+name: base-images
+
+on:
+  schedule:
+    # Mondays, 03:00 UTC. Fedora rebuilds its :44 tag DAILY at about 06:48 UTC,
+    # so consuming one rebuild in seven is what bounds the churn by our schedule
+    # rather than by their cron. That is also why the FROM in Containerfile.base
+    # is an unpinned tag: with a weekly cadence, pinning it would only buy the
+    # ability to rebuild an identical base later, and we never need to — the
+    # base is published and immutable by digest, so debugging means pulling it.
+    - cron: "0 3 * * 1"
+  push:
+    branches: [main]
+    # A change to a tier's own recipe rebuilds it now rather than next Monday.
+    # The Neovim config is in this list because the base pre-builds against it
+    # and the leaf refuses to ship a mismatch (see the config-hash guard): left
+    # to the schedule, a config edit would block every leaf build for a week.
+    paths:
+      - image/Containerfile.base
+      - image/Containerfile.agents
+      - image/ci-slim.sh
+      - image/rootfs/home/.config/nvim/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  # One publisher at a time: two runs would mint two stamps and race on which
+  # candidate the summary tells a human to adopt.
+  group: base-images
+  cancel-in-progress: false
+
+jobs:
+  base-images:
+    name: publish the base tiers (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the module version is derived from the VCS stamp
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: build the binary that names the packages
+        run: make build-go
+
+      # The tag every tier published by this run carries.
+      #
+      # A BUILD timestamp, not the commit one a product tag uses. This job runs
+      # weekly whether or not anything was committed, so two runs off one commit
+      # would mint one tag for two different images — Fedora moved, dnf update
+      # pulled new packages — and GHCR tags are mutable, so the second would
+      # silently overwrite the first. The commit is still in there, because it
+      # says which Containerfile.base produced the image.
+      - name: the tag this run publishes
+        id: stamp
+        run: |
+          set -euo pipefail
+          echo "tag=v0.0.0-$(date -u +%Y%m%d%H%M%S)-$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Repo names come from the binary so the naming rule stays in one place;
+      # the tags do not, for the reason above.
+      - name: the packages this run writes
+        id: repos
+        run: |
+          set -euo pipefail
+          ./bin/cs-sandbox version --images | while read -r label ref; do
+            case "$label" in tier-*) echo "${label//-/_}=$ref" >> "$GITHUB_OUTPUT" ;; esac
+          done
+
+      - name: log in to ghcr.io
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | podman login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      # podman directly rather than through `cs-sandbox build`: publishing a
+      # tier is not something a developer does, and the command's job is to
+      # build the LEAF on tiers a human has already adopted. What it needs from
+      # us is one build arg per tier — BUILD_VERBOSE for the Neovim pre-build,
+      # BASE_REF for the tier below.
+      - name: build and push the shipped tiers
+        env:
+          BASE: ${{ steps.repos.outputs.tier_base }}:${{ steps.stamp.outputs.tag }}
+          AGENTS: ${{ steps.repos.outputs.tier_agents }}:${{ steps.stamp.outputs.tag }}
+        run: |
+          set -euo pipefail
+          df -h / | tail -1
+          podman build -q -t "$BASE" -f image/Containerfile.base --build-arg BUILD_VERBOSE=0 image/rootfs
+          podman push "$BASE"
+          podman build -q -t "$AGENTS" -f image/Containerfile.agents --build-arg BASE_REF="$BASE" image/rootfs
+          podman push "$AGENTS"
+          df -h / | tail -1
+
+      - name: build and push the CI tiers
+        env:
+          BASE: ${{ steps.repos.outputs.tier_slim_base }}:${{ steps.stamp.outputs.tag }}
+          AGENTS: ${{ steps.repos.outputs.tier_slim_agents }}:${{ steps.stamp.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ./image/ci-slim.sh base   > /tmp/Containerfile.base.ci
+          ./image/ci-slim.sh agents > /tmp/Containerfile.agents.ci
+          podman build -q -t "$BASE" -f /tmp/Containerfile.base.ci --build-arg BUILD_VERBOSE=0 image/rootfs
+          podman push "$BASE"
+          podman build -q -t "$AGENTS" -f /tmp/Containerfile.agents.ci --build-arg BASE_REF="$BASE" image/rootfs
+          podman push "$AGENTS"
+
+      # Adopt the new tiers IN THE WORKING TREE ONLY, so everything below builds
+      # and tests exactly what a human would get after pasting. Not committed:
+      # the point of the pin is that adopting it is somebody's decision.
+      - name: adopt the candidate locally
+        env:
+          AGENTS: ${{ steps.repos.outputs.tier_agents }}:${{ steps.stamp.outputs.tag }}
+          SLIM_AGENTS: ${{ steps.repos.outputs.tier_slim_agents }}:${{ steps.stamp.outputs.tag }}
+        run: |
+          set -euo pipefail
+          sed -i "s|^AGENTS_REF=.*|AGENTS_REF=$AGENTS|" image/tiers.env
+          sed -i "s|^SLIM_AGENTS_REF=.*|SLIM_AGENTS_REF=$SLIM_AGENTS|" image/tiers.env
+          grep -v '^#' image/tiers.env
+
+      # The gate. A tier that breaks a sandbox fails HERE, on a run nobody is
+      # waiting on, instead of on the next commit somebody pushes.
+      - name: smoke the candidate
+        run: make test-smoke
+
+      # The shipped tiers get a readback rather than the suite: the live tests
+      # boot the slim image, so nothing above has touched the toolchains, and
+      # those are the part of the base that is not reproducible — pyenv compiles
+      # CPython from source and the Neovim pre-build fetches its language
+      # servers live, so a rebuild can differ in ways nobody asked for.
+      - name: read back the shipped image
+        run: |
+          set -euo pipefail
+          CS_SANDBOX_IMAGE=localhost/sandbox:candidate ./bin/cs-sandbox build --engine podman
+          podman run --rm --entrypoint sh localhost/sandbox:candidate -c '
+            set -e
+            for t in claude codex opencode go node nvim python3 java mvn tmux cs-sandbox cs-lint; do
+              command -v "$t" >/dev/null || { echo "missing from the candidate image: $t" >&2; exit 1; }
+            done
+            n=$(ls /sandbox/home/.local/share/nvim/lazy | wc -l)
+            [ "$n" -ge 20 ] || { echo "the Neovim pre-build produced only $n plugins" >&2; exit 1; }
+            echo "readback ok: $n nvim plugins, every toolchain and agent on PATH"'
+
+      - name: what to paste
+        run: |
+          set -euo pipefail
+          pins=$(grep -v '^#' image/tiers.env | grep .)
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ### Tiers published and proved
+
+          Paste these two lines into \`image/tiers.env\` to adopt them:
+
+          \`\`\`
+          $pins
+          \`\`\`
+          EOF

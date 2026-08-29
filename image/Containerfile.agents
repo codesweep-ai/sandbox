@@ -1,0 +1,110 @@
+# Tier 2 of three: the agent CLIs, on top of the tier-1 base.
+#
+# Their own image because they move faster than everything under them and slower than
+# everything over them: 7 version bumps in this repository's first 59 days, against 3 for every
+# toolchain pin combined. In the single-file image they sat above the Neovim pre-build, so one
+# bump re-created 654 MB of layers to change 324 MB of binaries; per-commit they would put that
+# 324 MB on the wire every time instead.
+#
+# Three checksum-verified downloads and nothing else. No dnf transaction, so no rpm-database
+# rewrite, which is what keeps this tier cheap to rebuild.
+#
+# BASE_REF is REQUIRED and deliberately has no default. The tier-1 image this builds on is
+# chosen by whatever builds it — `cs-sandbox build --rebuild-base` passes the base it just
+# built, the weekly workflow passes the one it just published — and is never guessed here.
+ARG BASE_REF
+FROM ${BASE_REF}
+
+# --- The agent CLIs ------------------------------------------------------------------------
+#
+# BELOW the Neovim pre-build, deliberately. These three move faster than anything else in the
+# image — 7 version bumps in this repository's first 59 days, against 3 for every toolchain pin
+# combined — and buildah re-creates every layer beneath the one it invalidates. Sitting above
+# the pre-build, one agent bump rebuilt 654 MB of layers to change 324 MB of binaries. Here it
+# rebuilds itself and the ~25 MB below it, and nothing else.
+#
+# Nothing above needs them: the Neovim config names no agent, so the pre-build never looks for
+# one on PATH, and the PATH stanza listing /opt/claude/bin and friends stays where it is — a
+# PATH entry for a directory that does not exist yet is inert, and these stanzas fill it.
+#
+# Claude Code — native single-binary install (no Node/npm runtime dependency). Anthropic's
+# install.sh normally drops a self-updating launcher in ~/.local/bin; instead we fetch the same
+# verified binary straight into root-owned /opt. /opt is read-only at runtime, so the version is
+# pinned and reproducible (no background auto-update fighting the read-only tree). The binary IS
+# the full CLI — the launcher is only convenience + auto-update, neither of which we want here.
+# Bump CLAUDE_CODE_VERSION (or pass --build-arg) to upgrade; checksum is verified from the manifest.
+# This pin tracks the `latest` channel rather than `stable` (2.1.231), so that the version in the
+# image is the same one the host drives sandboxes with — a sandbox whose agent is older than the
+# one that launched it is a confusing thing to debug. Two constraints on any bump:
+#   * >= 2.1.219. Below that the `opus` alias resolves to Opus 4.8 and Opus 5 never appears.
+#   * not 2.1.220, which showed issues in use.
+ARG CLAUDE_CODE_VERSION=2.1.245
+RUN base=https://downloads.claude.ai/claude-code-releases \
+  && case "$(uname -m)" in x86_64|amd64) arch=x64 ;; arm64|aarch64) arch=arm64 ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
+  && plat="linux-${arch}" \
+  && mkdir -p /opt/claude/bin \
+  && curl -fsSL -o /opt/claude/bin/claude "$base/$CLAUDE_CODE_VERSION/$plat/claude" \
+  && want=$(curl -fsSL "$base/$CLAUDE_CODE_VERSION/manifest.json" | jq -r ".platforms[\"$plat\"].checksum") \
+  && got=$(sha256sum /opt/claude/bin/claude | cut -d' ' -f1) \
+  && { [ "$want" = "$got" ] || { echo "claude checksum mismatch: want=$want got=$got" >&2; exit 1; }; } \
+  && chmod +x /opt/claude/bin/claude \
+  && chmod -R a+rX /opt/claude \
+  && /opt/claude/bin/claude --version
+
+# Claude Code's install-health check expects a "native"/npm install at ~/.local/bin or in
+# node_modules; ours is a pinned single binary in read-only /opt (externally managed), which
+# matches none of those, so it nags ("claude command at ~/.local/bin/claude missing or broken
+# · run claude install to repair") and `claude install` would shadow-install a second copy.
+# Disable the install checks and the auto-updater (it can't write /opt anyway). This covers
+# the container engine for any direct `claude`; the cs-claude wrapper exports the same
+# for the microVM engine (whose guest init doesn't inherit image ENV) and for either engine.
+# DISABLE_INSTALLATION_CHECKS / DISABLE_AUTOUPDATER are declared in
+# rootfs/etc/cs-sandbox/env (an image ENV reaches neither SSH sessions nor a microVM).
+
+# OpenAI Codex — the release package OpenAI's own installer uses
+# (https://chatgpt.com/codex/install.sh): the static musl build plus the helpers codex ships for
+# itself (its own ripgrep, bwrap, the code-mode host). It is also the only Linux asset with a
+# published checksum — codex-package_SHA256SUMS covers the codex-package-* archives, not the
+# bare-binary ones — so taking it is what lets this download be verified at all. Extracted whole
+# into /opt for the same reason as Claude Code above: pinned, read-only-friendly, no Node.
+# --no-same-owner because the archive carries a build-machine uid: preserving it would leave the
+# agent binaries owned by whichever sandbox user happens to share that uid, and writable by them.
+# Bump CODEX_VERSION (or pass --build-arg) to upgrade.
+ARG CODEX_VERSION=0.149.1
+RUN case "$(uname -m)" in x86_64|amd64) tgt=x86_64-unknown-linux-musl ;; arm64|aarch64) tgt=aarch64-unknown-linux-musl ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
+  && base="https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}" \
+  && asset="codex-package-${tgt}.tar.gz" \
+  && mkdir -p /opt/codex /tmp/codex-dl \
+  && curl -fsSL -o "/tmp/codex-dl/$asset" "$base/$asset" \
+  && want=$(curl -fsSL "$base/codex-package_SHA256SUMS" | awk -v a="$asset" '$2 == a { print $1 }') \
+  && got=$(sha256sum "/tmp/codex-dl/$asset" | cut -d' ' -f1) \
+  && { [ -n "$want" ] && [ "$want" = "$got" ] || { echo "codex checksum mismatch: want=$want got=$got" >&2; exit 1; }; } \
+  && tar -xzf "/tmp/codex-dl/$asset" -C /opt/codex --no-same-owner \
+  && chmod 0755 /opt/codex/bin/codex /opt/codex/bin/codex-code-mode-host /opt/codex/codex-path/rg \
+  && { [ ! -f /opt/codex/codex-resources/bwrap ] || chmod 0755 /opt/codex/codex-resources/bwrap; } \
+  && rm -rf /tmp/codex-dl \
+  && chmod -R a+rX /opt/codex \
+  && /opt/codex/bin/codex --version
+
+# OpenCode (anomalyco/opencode) — a single bun-compiled binary, installed into read-only /opt on
+# the same pinned model as Claude Code and Codex above. Upstream publishes NO SHA256SUMS for the
+# CLI tarballs (its minisign signatures cover only the desktop-app assets), so the digests below
+# were recorded from the release assets themselves; bumping OPENCODE_VERSION means re-recording
+# both. Its one external runtime dependency (ripgrep) is already installed from Fedora above.
+ARG OPENCODE_VERSION=1.18.22
+ARG OPENCODE_SHA256_X64=23eca6a892c6b53c0f9ba2333b6906bdc31902634631d54cf17500e7e8cbfa20
+ARG OPENCODE_SHA256_ARM64=7243e7a417d190efa1b7b0981dbf0d6c8aa78ba2fb0181ea23336fdbb51c5178
+RUN case "$(uname -m)" in \
+       x86_64|amd64)  arch=x64;   want=$OPENCODE_SHA256_X64 ;; \
+       arm64|aarch64) arch=arm64; want=$OPENCODE_SHA256_ARM64 ;; \
+       *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
+  && asset="opencode-linux-${arch}.tar.gz" \
+  && mkdir -p /opt/opencode/bin /tmp/opencode-dl \
+  && curl -fsSL -o "/tmp/opencode-dl/$asset" "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/$asset" \
+  && got=$(sha256sum "/tmp/opencode-dl/$asset" | cut -d' ' -f1) \
+  && { [ "$want" = "$got" ] || { echo "opencode checksum mismatch: want=$want got=$got" >&2; exit 1; }; } \
+  && tar -xzf "/tmp/opencode-dl/$asset" -C /opt/opencode/bin --no-same-owner \
+  && chmod 0755 /opt/opencode/bin/opencode \
+  && rm -rf /tmp/opencode-dl \
+  && chmod -R a+rX /opt/opencode \
+  && /opt/opencode/bin/opencode --version

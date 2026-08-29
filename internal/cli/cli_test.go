@@ -126,31 +126,36 @@ func TestBuildPodmanQuietFlag(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			args := append([]string{}, c.flags...)
-			args = append(args, "build", "--engine", "podman")
+			// --rebuild-base so all three tiers are built here: BUILD_VERBOSE is
+			// read by the Neovim pre-build, which lives in the OS/toolchain tier,
+			// and a default build pulls that tier rather than building it.
+			args = append(args, "build", "--engine", "podman", "--rebuild-base")
 			f, err := runRoot(t, &App{}, args...)
 			if err != nil {
 				t.Fatalf("build: %v", err)
 			}
-			var argv []string
+			var builds [][]string
 			for _, call := range f.Calls {
 				if len(call) >= 2 && call[0] == "podman" && call[1] == "build" {
-					argv = call
+					builds = append(builds, call)
 				}
 			}
-			if argv == nil {
-				t.Fatalf("no podman build call; calls=%s", f)
+			if len(builds) != 3 {
+				t.Fatalf("want three tier builds, got %d; calls=%s", len(builds), f)
 			}
-			hasQ := slices.Contains(argv, "-q")
-			if hasQ != c.wantQ {
-				t.Errorf("podman build -q present=%v, want %v (%v)", hasQ, c.wantQ, argv)
+			for _, argv := range builds {
+				hasQ := slices.Contains(argv, "-q")
+				if hasQ != c.wantQ {
+					t.Errorf("podman build -q present=%v, want %v (%v)", hasQ, c.wantQ, argv)
+				}
 			}
 			// BUILD_VERBOSE is the inverse of -q: quiet build -> quiet RUN steps.
 			wantBV := "BUILD_VERBOSE=1"
 			if c.wantQ {
 				wantBV = "BUILD_VERBOSE=0"
 			}
-			if !slices.Contains(argv, wantBV) {
-				t.Errorf("podman build missing %s (%v)", wantBV, argv)
+			if !slices.Contains(builds[0], wantBV) {
+				t.Errorf("base tier build missing %s (%v)", wantBV, builds[0])
 			}
 		})
 	}
@@ -441,9 +446,15 @@ func TestVersionImages(t *testing.T) {
 			t.Fatalf("version --images: %v", err)
 		}
 		for _, want := range []string{
+			// Products carry the version tag they are built under.
 			"image              " + imageRepo + ":" + testVersion,
 			"image-slim         " + slimImageRepo + ":" + testVersion,
-			"image-slim-agents  " + slimAgentsImageRepo + ":" + testVersion,
+			// Tiers do not: their tags are stamped with the build time by
+			// whatever publishes them, so naming one here would be a guess.
+			"tier-base          " + baseImageRepo,
+			"tier-agents        " + agentsImageRepo,
+			"tier-slim-base     " + slimBaseImageRepo,
+			"tier-slim-agents   " + slimAgentsImageRepo,
 		} {
 			if !strings.Contains(out.String(), want) {
 				t.Errorf("missing %q in:\n%s", want, out.String())
@@ -470,18 +481,16 @@ func TestVersionImages(t *testing.T) {
 // only the tag tells a later `create` which one it got.
 func TestBuildSlim(t *testing.T) {
 	cases := []struct {
-		name          string
-		flags         []string
-		env           string
-		wantImage     string
-		wantSlimFile  bool
-		wantKeepAgent bool
+		name         string
+		flags        []string
+		env          string
+		wantImage    string
+		wantSlimFile bool
 	}{
-		{"default", nil, "", imageRepo + ":" + testVersion, false, false},
-		{"slim", []string{"--slim"}, "", slimImageRepo + ":" + testVersion, true, false},
-		{"slim with agents", []string{"--slim", "--with-agents"}, "", slimAgentsImageRepo + ":" + testVersion, true, true},
+		{"default", nil, "", imageRepo + ":" + testVersion, false},
+		{"slim", []string{"--slim"}, "", slimImageRepo + ":" + testVersion, true},
 		// An explicit reference wins: it is how CI pins the build and the test run to one.
-		{"slim honours CS_SANDBOX_IMAGE", []string{"--slim"}, "localhost/pinned:7", "localhost/pinned:7", true, false},
+		{"slim honours CS_SANDBOX_IMAGE", []string{"--slim"}, "localhost/pinned:7", "localhost/pinned:7", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -526,14 +535,75 @@ func TestBuildSlim(t *testing.T) {
 	}
 }
 
-// TestBuildWithAgentsNeedsSlim: --with-agents alone is refused rather than
-// quietly ignored — the full image has the agents already, so a run that meant
-// --slim and lost it would otherwise build 9.3 GB and say nothing.
-func TestBuildWithAgentsNeedsSlim(t *testing.T) {
-	_, err := runRoot(t, &App{}, "build", "--engine", "podman", "--with-agents")
-	if err == nil || !strings.Contains(err.Error(), "--slim") {
-		t.Fatalf("err = %v, want a --slim-only error", err)
-	}
+// TestBuildTiers: a default build makes ONE image — the leaf — and leaves the
+// OS/toolchain and agent tiers to be pulled at the tag image/Containerfile
+// pins. --rebuild-base makes all three and wires each FROM to the one below it.
+//
+// This is the whole point of the split: two consecutive builds of the old
+// single-file image shared none of their 26 layer blobs, so a commit put
+// 2167.8 MB on the wire to change 25 MB. A leaf-only build puts 25 MB there.
+func TestBuildTiers(t *testing.T) {
+	t.Run("default builds only the leaf", func(t *testing.T) {
+		t.Setenv("CS_SANDBOX_IMAGE", "localhost/pinned:7")
+		f, err := runRoot(t, &App{}, "build", "--engine", "podman")
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		var builds [][]string
+		for _, call := range f.Calls {
+			if len(call) >= 2 && call[0] == "podman" && call[1] == "build" {
+				builds = append(builds, call)
+			}
+		}
+		if len(builds) != 1 {
+			t.Fatalf("want one build, got %d; calls=%s", len(builds), f)
+		}
+		if i := slices.Index(builds[0], "-f"); i < 0 || !strings.HasSuffix(builds[0][i+1], "Containerfile") {
+			t.Errorf("-f names %v, want the leaf Containerfile", builds[0])
+		}
+		// The tier it builds on comes from image/tiers.env — the one place a
+		// bump happens — and it is passed rather than defaulted, because the
+		// slim Containerfiles are derived and cannot carry a pin of their own.
+		pins, err := assets.TierPins("")
+		if err != nil {
+			t.Fatalf("TierPins: %v", err)
+		}
+		if want := "AGENTS_REF=" + pins["AGENTS_REF"]; !slices.Contains(builds[0], want) {
+			t.Errorf("leaf build missing %s (%v)", want, builds[0])
+		}
+	})
+
+	t.Run("rebuild-base builds all three, bottom up", func(t *testing.T) {
+		t.Setenv("CS_SANDBOX_IMAGE", "localhost/pinned:7")
+		f, err := runRoot(t, &App{}, "build", "--engine", "podman", "--rebuild-base")
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		var builds [][]string
+		for _, call := range f.Calls {
+			if len(call) >= 2 && call[0] == "podman" && call[1] == "build" {
+				builds = append(builds, call)
+			}
+		}
+		if len(builds) != 3 {
+			t.Fatalf("want three builds, got %d; calls=%s", len(builds), f)
+		}
+		wantBase, wantAgents := localTierRefs(false)
+		for i, want := range []string{"Containerfile.base", "Containerfile.agents", "Containerfile"} {
+			j := slices.Index(builds[i], "-f")
+			if j < 0 || !strings.HasSuffix(builds[i][j+1], want) {
+				t.Errorf("tier %d built from %v, want %s", i, builds[i], want)
+			}
+		}
+		// Each tier is handed the one below it, so a local rebuild never
+		// silently stacks on a registry image the edit did not touch.
+		if !slices.Contains(builds[1], "BASE_REF="+wantBase) {
+			t.Errorf("agent tier missing BASE_REF=%s (%v)", wantBase, builds[1])
+		}
+		if !slices.Contains(builds[2], "AGENTS_REF="+wantAgents) {
+			t.Errorf("leaf missing AGENTS_REF=%s (%v)", wantAgents, builds[2])
+		}
+	})
 }
 
 // TestInstallAgentToolsCopies: the command copies the tool set into the target

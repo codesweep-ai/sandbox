@@ -36,7 +36,7 @@ COVERDIR   ?= .coverage
 COVER_ABS  := $(abspath $(COVERDIR))
 COVERFLAGS := -covermode=atomic -coverpkg=./...
 
-.PHONY: help build build-go build-ci-image build-ci-agents-image build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration test-live-agents fixtures fixtures-strict fixtures-check test-agents-replay test-agents-shared test-agents-lent coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode actionlint snapshot release release-check clean
+.PHONY: help build build-go build-ci-image build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration test-live-agents fixtures fixtures-strict fixtures-check test-agents-replay test-agents-shared test-agents-lent coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode actionlint snapshot release release-check clean
 
 .DEFAULT_GOAL := help
 
@@ -62,35 +62,15 @@ build-go:
 	@mkdir -p $(dir $(BIN))
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN) $(PKG)
 
-## build-ci-image: the slimmed sandbox image the smoke profile's live tests run
-## against in CI — 474 MB and ~70 seconds, against 6.04 GB and tens of minutes for
-## the real one, which is what makes booting real sandboxes in CI affordable.
-## Built by the shipped `cs-sandbox build --slim`, from a Containerfile derived
-## from the real one rather than duplicating it (image/ci-slim.sh). Locally:
-##   make build-ci-image && make test-smoke
+## CI_IMAGE: the slimmed image CI builds and the live tests boot.
 ##
-## Named for what it holds rather than for the package it is slimmed from. It is
-## not a sandbox — ci-slim.sh strips every toolchain, the cs- tools included — so
-## a tag reading `sandbox` would be the same trap the published packages were
-## split up to avoid (internal/cli/root.go).
-##
-## The two variants get two names for that reason and one more: with the agent
-## CLIs the image is 1.38 GB against 474 MB, and it is the only one of the two
-## that can run an agent. CI_SLIM_KEEP_AGENTS picks the flag that decides what
-## goes IN and the name it comes out under, in one place, so the two cannot
-## disagree — which under a shared tag is a test failing at `command -v claude`
-## nowhere near the setting that chose it. It is read here rather than exported
-## to ci-slim.sh: `--with-agents` is what the shipped command takes, and the
-## script hears about it from there.
-CI_SLIM_KEEP_AGENTS ?=
-CI_AGENTS_IMAGE ?= localhost/sandbox-slim-agents:ci
-ifeq ($(filter 1 true yes on,$(CI_SLIM_KEEP_AGENTS)),)
+## One image, not two. There used to be an agent-free variant as well, ~325 MB
+## smaller on the CI artifact, and it cost a seventh published package plus a
+## name (sandbox-slim-agents) that meant a product in one family and a tier in
+## the other. Every slim image carries the three CLIs now, so nothing here has
+## to choose between them.
 CI_IMAGE ?= localhost/sandbox-slim:ci
 CI_SLIM_FLAGS := --slim
-else
-CI_IMAGE ?= $(CI_AGENTS_IMAGE)
-CI_SLIM_FLAGS := --slim --with-agents
-endif
 
 # Through the SHIPPED command, which is the whole point of these two targets
 # having no build of their own any more. `publish-images` runs the same
@@ -304,11 +284,12 @@ tools:
 ## SMOKE_AGENTS: whether the profile carries its replay members. On by default,
 ## which is what makes a bare `make test-smoke` cover the credential paths.
 ##
-## It governs the image as well as the run, and it has to: setup-smoke BUILDS
-## what the members boot, so a host that is not going to run them should not
-## spend the minutes making an image for them. CI turns it off on the two legs
-## that are not the one host per architecture the members need, where it was
-## measured costing seven minutes to build and nine to run.
+## It governs the run only. It used to govern an image as well — the replay
+## members booted a second, agent-carrying build that setup-smoke made just for
+## them — but there is one slim image now and it carries the agents, so a leg
+## with SMOKE_AGENTS=0 saves the minutes of running them and nothing else. CI
+## turns it off on the legs that are not the one host per architecture the
+## members need, where it was measured costing nine minutes to run.
 SMOKE_AGENTS ?= 1
 
 setup-smoke: tools
@@ -319,29 +300,6 @@ setup-smoke: tools
 	else \
 		$(MAKE) --no-print-directory build-ci-image; \
 	fi
-	@if ! command -v podman >/dev/null 2>&1; then \
-		: ; \
-	elif [ "$(SMOKE_AGENTS)" = 1 ]; then \
-		$(MAKE) --no-print-directory build-ci-agents-image; \
-	else \
-		echo "setup-smoke: SMOKE_AGENTS=0 — not building $(CI_AGENTS_IMAGE), and the replay members will not run"; \
-	fi
-
-## build-ci-agents-image: the slim image with the three agent CLIs kept, which
-## the replay members of the smoke profile boot.
-##
-## A second image rather than one that serves both halves. Slim is 474 MB and
-## slim-with-agents is 1.38 GB, and CI ships the first to four smoke jobs as a
-## tarball artifact — so making the profile need one image would triple that
-## transfer on every platform, to run a tier that adds nothing on three of them.
-## Locally the second build is nearly free: the two share every layer below the
-## agents, so podman's cache answers it in seconds.
-##
-## Where the host cannot build it, the replay members skip themselves on the
-## missing image, which is how every other live member behaves on a host that
-## cannot carry it.
-build-ci-agents-image: build-go
-	CS_SANDBOX_IMAGE=$(CI_AGENTS_IMAGE) ./$(BIN) build --engine podman --slim --with-agents
 
 ## test-smoke: the smoke profile — the subset of the live tests below that CI
 ## runs, on Linux, macOS and Windows/WSL2. Same command on every host: where an
@@ -405,9 +363,8 @@ SMOKE_RUN := $(subst $(space),|,$(strip $(SMOKE_TESTS)))
 ## slim one.
 ##
 ## They hold no credential and reach no provider, which is what lets them sit in
-## the tier CI runs on every push. What they cost is the image and the minutes:
-## SMOKE_AGENTS=0 leaves both unspent, and setup-smoke then builds no image for
-## them either.
+## the tier CI runs on every push. What they cost is the minutes: SMOKE_AGENTS=0
+## leaves them unspent. They boot the same image as the rest of the profile.
 ##
 ## Their coverage lands in the same tier directory, appended rather than reset,
 ## because `reset smoke` ran once above and both halves are this one profile.
@@ -418,7 +375,7 @@ test-smoke: setup-smoke
 	  -args -test.gocoverdir=$(COVER_ABS)/smoke
 	@if [ "$(SMOKE_AGENTS)" = 1 ]; then \
 		set -x; \
-		$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_AGENTS_IMAGE:-$(CI_AGENTS_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
+		$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
 		  go test -tags agents_replay $(COVERFLAGS) -count=1 -p 1 -v -timeout 1200s \
 		  -run '$(AGENTS_REPLAY_CASES)' ./internal/cli/ \
 		  -args -test.gocoverdir=$(COVER_ABS)/smoke; \
@@ -476,7 +433,7 @@ test-integration:
 ## -p 1 and -v for the reasons test-integration gives. The timeout is generous
 ## because a member waits on a model rather than on this code.
 test-live-agents:
-	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_AGENTS_IMAGE)} \
+	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
 	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ \
 	  -run 'TestLiveAgentCredentialMatrix'
 
@@ -496,7 +453,7 @@ test-live-agents:
 FIXTURE_CASES ?= TestLiveAgentRecordsCassettes
 
 fixtures: tools
-	$(WITH_TOOLS) CS_SANDBOX_RECORD=1 CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_AGENTS_IMAGE)} \
+	$(WITH_TOOLS) CS_SANDBOX_RECORD=1 CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
 	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run '$(FIXTURE_CASES)'
 
 ## fixtures-strict: the same recording, with a skip treated as a failure. For a
@@ -505,7 +462,7 @@ fixtures: tools
 ## the same green as one that recorded everything.
 fixtures-strict: tools
 	$(WITH_TOOLS) CS_SANDBOX_RECORD=1 CS_SANDBOX_STRICT=1 \
-	  CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_AGENTS_IMAGE)} \
+	  CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
 	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run '$(FIXTURE_CASES)'
 
 ## test-agents-replay: the credential matrix with the model turns replayed.
@@ -524,7 +481,7 @@ AGENTS_REPLAY_CASES ?= TestAgentReplay
 ## `make test-smoke` runs these too, as its second half. This target is the way
 ## to run them alone, and the way to run one of them.
 test-agents-replay: tools
-	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_AGENTS_IMAGE)} \
+	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
 	  go test -tags agents_replay -count=1 -p 1 -v -timeout 1800s ./internal/cli/ \
 	  -run '$(AGENTS_REPLAY_CASES)'
 
