@@ -301,15 +301,30 @@ tools:
 ## from the hosts it was written for. A build that was actually attempted and then
 ## failed does fail, because a host that got that far has a fault rather than a
 ## limitation.
+## SMOKE_AGENTS: whether the profile carries its replay members. On by default,
+## which is what makes a bare `make test-smoke` cover the credential paths.
+##
+## It governs the image as well as the run, and it has to: setup-smoke BUILDS
+## what the members boot, so a host that is not going to run them should not
+## spend the minutes making an image for them. CI turns it off on the two legs
+## that are not the one host per architecture the members need, where it was
+## measured costing seven minutes to build and nine to run.
+SMOKE_AGENTS ?= 1
+
 setup-smoke: tools
 	@if ! command -v podman >/dev/null 2>&1; then \
 		echo "setup-smoke: no podman on this host — the live members of the smoke profile will skip themselves"; \
 	elif [ -w /dev/kvm ]; then \
 		$(MAKE) --no-print-directory build-ci-fc; \
-		$(MAKE) --no-print-directory build-ci-agents-image; \
 	else \
 		$(MAKE) --no-print-directory build-ci-image; \
+	fi
+	@if ! command -v podman >/dev/null 2>&1; then \
+		: ; \
+	elif [ "$(SMOKE_AGENTS)" = 1 ]; then \
 		$(MAKE) --no-print-directory build-ci-agents-image; \
+	else \
+		echo "setup-smoke: SMOKE_AGENTS=0 — not building $(CI_AGENTS_IMAGE), and the replay members will not run"; \
 	fi
 
 ## build-ci-agents-image: the slim image with the three agent CLIs kept, which
@@ -390,8 +405,9 @@ SMOKE_RUN := $(subst $(space),|,$(strip $(SMOKE_TESTS)))
 ## slim one.
 ##
 ## They hold no credential and reach no provider, which is what lets them sit in
-## the tier CI runs on every push. What they cost is the image: see
-## build-ci-agents-image. On a host without it they skip themselves, saying so.
+## the tier CI runs on every push. What they cost is the image and the minutes:
+## SMOKE_AGENTS=0 leaves both unspent, and setup-smoke then builds no image for
+## them either.
 ##
 ## Their coverage lands in the same tier directory, appended rather than reset,
 ## because `reset smoke` ran once above and both halves are this one profile.
@@ -400,10 +416,15 @@ test-smoke: setup-smoke
 	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
 	  go test -tags smoke $(COVERFLAGS) -count=1 -p 1 -v -timeout 1200s -run '$(SMOKE_RUN)' ./... \
 	  -args -test.gocoverdir=$(COVER_ABS)/smoke
-	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_AGENTS_IMAGE:-$(CI_AGENTS_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
-	  go test -tags agents_replay $(COVERFLAGS) -count=1 -p 1 -v -timeout 1200s \
-	  -run '$(AGENTS_REPLAY_CASES)' ./internal/cli/ \
-	  -args -test.gocoverdir=$(COVER_ABS)/smoke
+	@if [ "$(SMOKE_AGENTS)" = 1 ]; then \
+		set -x; \
+		$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_AGENTS_IMAGE:-$(CI_AGENTS_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
+		  go test -tags agents_replay $(COVERFLAGS) -count=1 -p 1 -v -timeout 1200s \
+		  -run '$(AGENTS_REPLAY_CASES)' ./internal/cli/ \
+		  -args -test.gocoverdir=$(COVER_ABS)/smoke; \
+	else \
+		echo "test-smoke: SMOKE_AGENTS=0 — the replay members were not run"; \
+	fi
 
 ## test-integration: live tests (real podman/firecracker on a Linux/KVM host);
 ## each skips gracefully when podman or the sandbox image is unavailable.
