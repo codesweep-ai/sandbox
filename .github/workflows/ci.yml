@@ -18,10 +18,15 @@
 #                    (SPEC R52a), and this comment claimed 4.9.3 long after the
 #                    runner had moved on.
 #   windows/WSL2     podman inside the distro. Live tests run.
-#   macos-15-intel   podman 5.8.5 + applehv (kern.hv_support=1). Live tests run.
-#                    Homebrew has no x86_64 bottle, so podman comes from the
-#                    vendor pkg; v5.8.5 is the newest release still shipping an
-#                    Intel macOS build (6.0 dropped them).
+#   macos-15-intel   THE UNIT TIER ONLY. It ran the smoke profile until the
+#                    runner's cost stopped being worth what it added: a bare
+#                    `make test-smoke` there took 30 minutes of a 35-minute
+#                    budget, against 6 on ubuntu. What it uniquely covered was
+#                    podman on x86_64 macOS, and that platform is closing anyway
+#                    — v5.8.5 is the newest release still shipping an Intel
+#                    macOS build, since 6.0 dropped them. The macOS host paths
+#                    are covered by the arm64 machine below, on a runner that is
+#                    fast because it is ours.
 #   macos-arm64      SELF-HOSTED Mac mini (M4, macOS 26, kern.hv_support=1).
 #                    Live tests run. GitHub's own arm64 macOS runners cannot do
 #                    this and never will: they are "Apple M1 (Virtual)" VMs
@@ -33,9 +38,9 @@
 #                    LaunchDaemon (nobody logs into that box), so unlike the
 #                    Intel job nothing here installs podman or inits a machine.
 #
-# Every host above now has a real engine, so the profile's live members run
-# everywhere. They still skip themselves where no engine is present, which is
-# what keeps the same `make test-smoke` correct on a developer's laptop.
+# Every host that runs the profile has a real engine, so its live members run
+# rather than skip. They still skip themselves where no engine is present, which
+# is what keeps the same `make test-smoke` correct on a developer's laptop.
 #
 # The profile's replay members need a second image, the slim one with the agent
 # CLIs kept, because they run a real agent inside the sandbox. setup-smoke
@@ -103,6 +108,10 @@ jobs:
           - os: [self-hosted, macOS, ARM64]
             label: macos-arm64 / self-hosted
             covlabel: macos-arm64-self-hosted
+            shell: bash
+          - os: macos-15-intel
+            label: macos-15-intel
+            covlabel: macos-15-intel
             shell: bash
           - os: windows-2025
             label: windows-2025 / WSL2
@@ -747,99 +756,10 @@ jobs:
           retention-days: 7
 
 
-  # Intel macOS, because arm64 macOS cannot run a container engine at all. This
-  # is the only job that exercises the macOS host paths against a real engine:
-  # ~/Library/Application Support as a state root, and podman-machine.
-  smoke-macos-intel:
-    name: smoke (macos-15-intel)
-    needs: [build-test, build-artifacts]
-    runs-on: macos-15-intel
-    timeout-minutes: 35
-    env:
-      CS_SANDBOX_IMAGE: localhost/sandbox-slim:ci
-      PODMAN_VERSION: v5.8.5
-      # From https://github.com/containers/podman/releases/download/v5.8.5/shasums
-      PODMAN_PKG_SHA256: 2677be9fa3bf75f7dbd4dfe5f5039cf105806f102af15ee6c6d174c70dcda3b8
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          check-latest: true
-
-      - uses: actions/download-artifact@v7
-        with:
-          name: cs-sandbox-ci-image
-          path: bin
-
-      # The vendor's own macOS path. Homebrew has no x86_64 bottle for podman on
-      # macOS 15 (it calls the configuration Tier 3 and offers only
-      # --build-from-source), and this pkg additionally ships vfkit and gvproxy,
-      # which `podman machine` needs and a podman-remote zip would not give us.
-      - name: install podman ${{ env.PODMAN_VERSION }}
-        run: |
-          set -euo pipefail
-          curl -fsSL -o /tmp/podman.pkg \
-            "https://github.com/containers/podman/releases/download/${PODMAN_VERSION}/podman-installer-macos-amd64.pkg"
-          echo "${PODMAN_PKG_SHA256}  /tmp/podman.pkg" | shasum -a 256 -c -
-          sudo installer -pkg /tmp/podman.pkg -target /
-          echo /opt/podman/bin >> "$GITHUB_PATH"
-
-      # init and start are separated so the start can be retried. `podman machine
-      # start` returns a bare "Error: EOF" transiently here — the ssh/gvproxy
-      # handshake into the VM losing its connection — and with every job blocking
-      # a merge, one flaky VM boot must not be a red PR. `podman info` below is
-      # the real assertion: if all three attempts failed, it fails the step.
-      - name: start the podman machine
-        run: |
-          set -euo pipefail
-          podman machine init --cpus 2 --memory 4096 --disk-size 20
-          for attempt in 1 2 3; do
-            if podman machine start; then break; fi
-            echo "machine start attempt $attempt failed; retrying"
-            podman machine stop >/dev/null 2>&1 || true
-            sleep 15
-          done
-          podman info --format '{{.Version.Version}} | {{.Host.Arch}} | {{.Host.OS}}'
-
-      - name: load the image
-        run: |
-          set -euo pipefail
-          podman load -i bin/cs-sandbox-ci.tar
-          podman image exists "$CS_SANDBOX_IMAGE"
-
-      - name: smoke
-        run: make test-smoke SMOKE_AGENTS=0
-
-      - name: keep this job's coverage
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-smoke-macos-intel
-          path: .coverage/
-          if-no-files-found: error
-          include-hidden-files: true
-          retention-days: 7
-
-      - name: tear the machine down
-        if: always()
-        run: |
-          podman machine stop || true
-          podman machine rm -f || true
-
-  # arm64 macOS against a REAL engine — the coverage no GitHub-hosted runner can
-  # provide (see the host table at the top). This is a self-hosted Mac mini, and
-  # everything below assumes the differences that come with that:
-  #
-  #   * Its podman machine is started at system boot by a LaunchDaemon, so there
-  #     is no install-podman step and no `podman machine init`. The Intel job
-  #     above does both because its runner is a fresh VM every time.
-  #   * The machine is NOT thrown away at the end. A GitHub-hosted runner is
-  #     destroyed after the run; this one persists, so leftovers are inherited by
-  #     the next job and have to be cleaned up explicitly.
-  #
-  # No `concurrency:` group is needed: a self-hosted runner executes one job at a
-  # time, so two runs queue rather than colliding over the fabric and the host
-  # SSH port pool that `-p 1` exists to serialize.
+  # The only job that exercises the macOS host paths against a real engine:
+  # ~/Library/Application Support as a state root, and podman-machine. Intel
+  # macOS used to do this too and no longer runs the profile at all, so what is
+  # left of macOS coverage below the unit tier is this machine.
   smoke-macos-arm64:
     # The " / self-hosted" suffix follows "windows-2025 / WSL2": it flags a host
     # that is not what its first half suggests. It earns its keep when a check
@@ -920,9 +840,9 @@ jobs:
   #
   # Every tier above uploads its coverage rather than judging it, because no job
   # sees more than the slice it ran: build-test never boots an engine, and a
-  # smoke leg never runs the unit tier. The smoke tier alone arrives from five
-  # machines and three operating systems — merged here they are one picture,
-  # which is the only one worth reporting or gating on.
+  # smoke leg never runs the unit tier. The smoke tier alone arrives from four
+  # jobs and three operating systems — merged here they are one picture, which
+  # is the only one worth reporting or gating on.
   coverage:
     name: coverage
     runs-on: ubuntu-latest
@@ -931,7 +851,6 @@ jobs:
       - smoke-linux
       - smoke-firecracker
       - smoke-wsl
-      - smoke-macos-intel
       - smoke-macos-arm64
     timeout-minutes: 10
     steps:
