@@ -62,6 +62,12 @@ jobs:
       # multi-arch.
       KEEP_TIERS: "78"
     steps:
+      # For image/tiers.env, which names the tiers that must survive. This job
+      # read it without checking anything out and died at `sed: can't read
+      # image/tiers.env` — which failed CLOSED, deleting nothing, but left
+      # pruning broken until somebody noticed.
+      - uses: actions/checkout@v7
+
       - name: prune
         run: |
           set -euo pipefail
