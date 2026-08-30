@@ -56,8 +56,11 @@ jobs:
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
       KEEP_RECENT: "5"
       MAX_AGE_DAYS: "10"
-      # Weekly builds, so 26 is about six months of tiers.
-      KEEP_TIERS: "26"
+      # Weekly builds, and each run writes THREE versions per tier package: one
+      # manifest per architecture plus the list that joins them. So 78 is about
+      # six months of tiers, the same intent as 26 was before the tiers went
+      # multi-arch.
+      KEEP_TIERS: "78"
     steps:
       - name: prune
         run: |
@@ -69,8 +72,14 @@ jobs:
           # rank or age: deleting one breaks every build that starts with FROM,
           # while every image already published keeps working — so nothing goes
           # red until somebody tries to build.
+          # A pinned tag names a manifest LIST, and a list is only usable while
+          # the per-architecture manifests it points at are still there — so the
+          # arch tags are pinned by association. Deleting one leaves a list that
+          # resolves to nothing on that architecture, which is worse than a clean
+          # miss because only that architecture notices.
           pinned=$(sed -n "s/^[A-Z_]*REF=.*:\(v[^[:space:]]*\)$/\1/p" image/tiers.env | sort -u)
-          echo "pinned tier tags (never deleted): $pinned"
+          pinned=$(for t in $pinned; do echo "$t"; echo "$t-amd64"; echo "$t-arm64"; done)
+          printf 'pinned tier tags (never deleted):\n%s\n' "$pinned"
 
           for pkg in sandbox sandbox-slim sandbox-base sandbox-agents sandbox-slim-base sandbox-slim-agents; do
             echo "== $pkg"

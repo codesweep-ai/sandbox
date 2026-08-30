@@ -16,6 +16,16 @@
 # image/tiers.env, because the leaf names its base by tag. What this job does is
 # publish a candidate, prove it, and print the two lines to paste. A base that
 # broke something is a red run here, not a red run on somebody else's commit.
+#
+# EVERY TIER IS MULTI-ARCH, and that is not optional. Before the split each host
+# built the image from the Containerfile itself, which is what all those
+# `case "$(uname -m)"` stanzas are for — so every host got its own architecture
+# for free. A leaf built on a PULLED tier inherits the tier's architecture
+# instead, and the first single-arch run proved what that costs: the arm64 Mac
+# ran amd64 agent binaries, codex and opencode survived the emulation, and all
+# four claude replay members timed out at 10.5s against 5.5s native. So each
+# architecture is built on its own native runner and only combined into a
+# manifest list once BOTH have booted real sandboxes.
 name: base-images
 
 on:
@@ -46,20 +56,31 @@ permissions:
 
 concurrency:
   # One publisher at a time: two runs would mint two stamps and race on which
-  # candidate the summary tells a human to adopt.
+  # candidate the summary tells a human to adopt. It also keeps two runs off the
+  # one self-hosted arm64 machine, which can only build for one of them.
   group: base-images
   cancel-in-progress: false
 
 jobs:
-  base-images:
-    name: publish the base tiers (ubuntu-latest)
+  # Everything both architectures have to agree on, decided once.
+  #
+  # The tag especially: computed per-arch it would differ by however long the
+  # two runners took to reach that step, and the manifest list below joins the
+  # two by name.
+  plan:
+    name: name this run
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.stamp.outputs.tag }}
+      tier_base: ${{ steps.repos.outputs.tier_base }}
+      tier_agents: ${{ steps.repos.outputs.tier_agents }}
+      tier_slim_base: ${{ steps.repos.outputs.tier_slim_base }}
+      tier_slim_agents: ${{ steps.repos.outputs.tier_slim_agents }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the module version is derived from the VCS stamp
-
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -68,8 +89,6 @@ jobs:
       - name: build the binary that names the packages
         run: make build-go
 
-      # The tag every tier published by this run carries.
-      #
       # A BUILD timestamp, not the commit one a product tag uses. This job runs
       # weekly whether or not anything was committed, so two runs off one commit
       # would mint one tag for two different images — Fedora moved, dnf update
@@ -92,6 +111,81 @@ jobs:
             case "$label" in tier-*) echo "${label//-/_}=$ref" >> "$GITHUB_OUTPUT" ;; esac
           done
 
+  # One job per architecture, each on a runner of that architecture. Nothing is
+  # cross-built: the shipped base compiles CPython from source through pyenv and
+  # pre-installs ~900 MB of language servers through mason, and under qemu that
+  # is hours rather than minutes.
+  #
+  # Each pushes ARCH-SUFFIXED tags and then proves them. The manifest job below
+  # joins them, so an architecture that cannot boot a sandbox never reaches the
+  # list image/tiers.env would name.
+  tiers:
+    name: ${{ matrix.arch }} tiers
+    needs: plan
+    strategy:
+      fail-fast: false # one arch failing should still show the other's result
+      matrix:
+        include:
+          - arch: amd64
+            runner: '["ubuntu-latest"]'
+          - arch: arm64
+            runner: '["self-hosted", "macOS", "ARM64"]'
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    # The shipped base is the long pole and the arm64 machine has never built it
+    # before — the smoke image it used to make drops every toolchain.
+    timeout-minutes: 180
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}-${{ matrix.arch }}
+      BASE: ${{ needs.plan.outputs.tier_base }}
+      AGENTS: ${{ needs.plan.outputs.tier_agents }}
+      SLIM_BASE: ${{ needs.plan.outputs.tier_slim_base }}
+      SLIM_AGENTS: ${{ needs.plan.outputs.tier_slim_agents }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # cache: false on the self-hosted machine for the same reason the other
+      # jobs on it do it — its module cache persists between jobs and Go leaves
+      # it read-only, so the restore fails trying to unpack over it.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: ${{ matrix.arch != 'arm64' }}
+
+      # launchd does not order jobs relative to each other and `podman machine
+      # start` takes 20-30s, so after a reboot the runner can pick up a job
+      # before the VM is ready. Guard on state rather than calling start
+      # blindly: start exits 125 when the machine is already running.
+      - name: ensure the podman machine is up
+        if: matrix.arch == 'arm64'
+        run: |
+          set -euo pipefail
+          if [ "$(podman machine inspect --format '{{.State}}' podman-machine-default)" != "running" ]; then
+            echo "machine was down; starting it"
+            podman machine start
+          fi
+          podman info --format '{{.Version.Version}} | {{.Host.Arch}} | rootless={{.Host.Security.Rootless}}'
+
+      # The architecture this runner actually builds for, checked rather than
+      # assumed. On the Mac it is the podman MACHINE's architecture that decides,
+      # not the host's, and a machine restored from the wrong image would publish
+      # amd64 under an arm64 tag — which is exactly the failure this whole job
+      # layout exists to prevent, only harder to see.
+      - name: confirm the runner's architecture
+        run: |
+          set -euo pipefail
+          got=$(podman info --format '{{.Host.Arch}}')
+          [ "$got" = "${{ matrix.arch }}" ] || {
+            echo "this runner builds $got images, but it is the ${{ matrix.arch }} leg" >&2
+            exit 1
+          }
+          echo "building $got tiers as $TAG"
+
+      - name: build the binary
+        run: make build-go
+
       - name: log in to ghcr.io
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -103,46 +197,40 @@ jobs:
       # us is one build arg per tier — BUILD_VERBOSE for the Neovim pre-build,
       # BASE_REF for the tier below.
       - name: build and push the shipped tiers
-        env:
-          BASE: ${{ steps.repos.outputs.tier_base }}:${{ steps.stamp.outputs.tag }}
-          AGENTS: ${{ steps.repos.outputs.tier_agents }}:${{ steps.stamp.outputs.tag }}
         run: |
           set -euo pipefail
           df -h / | tail -1
-          podman build -q -t "$BASE" -f image/Containerfile.base --build-arg BUILD_VERBOSE=0 image/rootfs
-          podman push "$BASE"
-          podman build -q -t "$AGENTS" -f image/Containerfile.agents --build-arg BASE_REF="$BASE" image/rootfs
-          podman push "$AGENTS"
+          podman build -q -t "$BASE:$TAG" -f image/Containerfile.base --build-arg BUILD_VERBOSE=0 image/rootfs
+          podman push "$BASE:$TAG"
+          podman build -q -t "$AGENTS:$TAG" -f image/Containerfile.agents --build-arg BASE_REF="$BASE:$TAG" image/rootfs
+          podman push "$AGENTS:$TAG"
           df -h / | tail -1
 
       - name: build and push the CI tiers
-        env:
-          BASE: ${{ steps.repos.outputs.tier_slim_base }}:${{ steps.stamp.outputs.tag }}
-          AGENTS: ${{ steps.repos.outputs.tier_slim_agents }}:${{ steps.stamp.outputs.tag }}
         run: |
           set -euo pipefail
           ./image/ci-slim.sh base   > /tmp/Containerfile.base.ci
           ./image/ci-slim.sh agents > /tmp/Containerfile.agents.ci
-          podman build -q -t "$BASE" -f /tmp/Containerfile.base.ci --build-arg BUILD_VERBOSE=0 image/rootfs
-          podman push "$BASE"
-          podman build -q -t "$AGENTS" -f /tmp/Containerfile.agents.ci --build-arg BASE_REF="$BASE" image/rootfs
-          podman push "$AGENTS"
+          podman build -q -t "$SLIM_BASE:$TAG" -f /tmp/Containerfile.base.ci --build-arg BUILD_VERBOSE=0 image/rootfs
+          podman push "$SLIM_BASE:$TAG"
+          podman build -q -t "$SLIM_AGENTS:$TAG" -f /tmp/Containerfile.agents.ci --build-arg BASE_REF="$SLIM_BASE:$TAG" image/rootfs
+          podman push "$SLIM_AGENTS:$TAG"
 
-      # Adopt the new tiers IN THE WORKING TREE ONLY, so everything below builds
-      # and tests exactly what a human would get after pasting. Not committed:
-      # the point of the pin is that adopting it is somebody's decision.
+      # Adopt this architecture's candidate IN THE WORKING TREE ONLY, so
+      # everything below builds and tests exactly what a human would get after
+      # pasting. Not committed: the point of the pin is that adopting it is
+      # somebody's decision.
       - name: adopt the candidate locally
-        env:
-          AGENTS: ${{ steps.repos.outputs.tier_agents }}:${{ steps.stamp.outputs.tag }}
-          SLIM_AGENTS: ${{ steps.repos.outputs.tier_slim_agents }}:${{ steps.stamp.outputs.tag }}
         run: |
           set -euo pipefail
-          sed -i "s|^AGENTS_REF=.*|AGENTS_REF=$AGENTS|" image/tiers.env
-          sed -i "s|^SLIM_AGENTS_REF=.*|SLIM_AGENTS_REF=$SLIM_AGENTS|" image/tiers.env
+          sed -i.bak "s|^AGENTS_REF=.*|AGENTS_REF=$AGENTS:$TAG|" image/tiers.env
+          sed -i.bak "s|^SLIM_AGENTS_REF=.*|SLIM_AGENTS_REF=$SLIM_AGENTS:$TAG|" image/tiers.env
+          rm -f image/tiers.env.bak
           grep -v '^#' image/tiers.env
 
-      # The gate. A tier that breaks a sandbox fails HERE, on a run nobody is
-      # waiting on, instead of on the next commit somebody pushes.
+      # The gate, and it runs on BOTH architectures deliberately. The single-arch
+      # version of this workflow was green here and still shipped an image whose
+      # agents could not answer on arm64.
       - name: smoke the candidate
         run: make test-smoke
 
@@ -164,16 +252,59 @@ jobs:
             [ "$n" -ge 20 ] || { echo "the Neovim pre-build produced only $n plugins" >&2; exit 1; }
             echo "readback ok: $n nvim plugins, every toolchain and agent on PATH"'
 
-      - name: what to paste
+  # Join the per-architecture tags into one manifest list per package, under the
+  # bare tag image/tiers.env names. `needs: tiers` is what makes the list mean
+  # something: every architecture in it has booted a real sandbox and run an
+  # agent inside it.
+  manifest:
+    name: publish the manifest lists
+    needs: [plan, tiers]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - name: log in to ghcr.io
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | podman login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      # manifest add takes the arch tags straight from the registry, so nothing
+      # here pulls a layer — only the manifests and configs it needs to build
+      # the list.
+      - name: combine the architectures
+        env:
+          REPOS: >-
+            ${{ needs.plan.outputs.tier_base }}
+            ${{ needs.plan.outputs.tier_agents }}
+            ${{ needs.plan.outputs.tier_slim_base }}
+            ${{ needs.plan.outputs.tier_slim_agents }}
         run: |
           set -euo pipefail
-          pins=$(grep -v '^#' image/tiers.env | grep .)
+          for repo in $REPOS; do
+            echo "== $repo:$TAG"
+            podman manifest create "$repo:$TAG"
+            for arch in amd64 arm64; do
+              podman manifest add "$repo:$TAG" "docker://$repo:$TAG-$arch"
+            done
+            podman manifest push --all "$repo:$TAG" "docker://$repo:$TAG"
+            podman manifest inspect "$repo:$TAG" \
+              | jq -r '.manifests[] | "   \(.platform.os)/\(.platform.architecture)  \(.digest)"'
+          done
+
+      - name: what to paste
+        env:
+          AGENTS: ${{ needs.plan.outputs.tier_agents }}
+          SLIM_AGENTS: ${{ needs.plan.outputs.tier_slim_agents }}
+        run: |
+          set -euo pipefail
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ### Tiers published and proved
+          ### Tiers published and proved on amd64 and arm64
 
           Paste these two lines into \`image/tiers.env\` to adopt them:
 
           \`\`\`
-          $pins
+          AGENTS_REF=$AGENTS:$TAG
+          SLIM_AGENTS_REF=$SLIM_AGENTS:$TAG
           \`\`\`
           EOF
