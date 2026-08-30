@@ -584,6 +584,32 @@ func sshCaptureWithin(t *testing.T, host hostenv.Host, name string, d time.Durat
 // it stopped, which is the one thing a package-timeout panic never shows.
 func vmPostMortem(t *testing.T, host hostenv.Host, name string) {
 	t.Helper()
+
+	// Host-side FIRST, and unconditionally. When the guest stops answering,
+	// every ssh probe below returns the same silence, and silence cannot tell a
+	// wedged create from a dead VM — which is exactly what the first run of this
+	// post-mortem reported: eight probes, eight non-answers, no diagnosis.
+	//
+	// serial.log is the guest's console, written by firecracker on THIS side of
+	// the boundary, so it answers when nothing in the guest will. An OOM kill, a
+	// kernel panic, or PID 1 dying ("Attempted to kill init!", which is what
+	// happens when the socat that bridges vsock to sshd goes away) all land there
+	// and nowhere else. Its mtime is half the evidence: a console that stopped
+	// writing minutes ago dates the death.
+	serial := filepath.Join(state.Dir(paths.Instances(), state.DefaultGroup, name), "serial.log")
+	if fi, err := os.Stat(serial); err != nil {
+		t.Logf("post-mortem / serial.log: cannot stat %s: %v", serial, err)
+	} else if data, err := os.ReadFile(serial); err != nil {
+		t.Logf("post-mortem / serial.log: %v", err)
+	} else {
+		lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		if n := len(lines); n > 80 {
+			lines = lines[n-80:]
+		}
+		t.Logf("post-mortem / serial.log (%d bytes, last write %s ago), tail:\n%s",
+			fi.Size(), time.Since(fi.ModTime()).Round(time.Second), strings.Join(lines, "\n"))
+	}
+
 	argv := append([]string{"ssh"}, sshArgv(t, host, name)...)
 	for _, probe := range []struct{ what, sh string }{
 		{"containers", "podman ps -a 2>&1"},
