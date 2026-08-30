@@ -77,7 +77,7 @@ jobs:
   # two runners took to reach that step, and the manifest list below joins the
   # two by name.
   plan:
-    name: name this run
+    name: plan the tags and packages (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -129,15 +129,19 @@ jobs:
   # joins them, so an architecture that cannot boot a sandbox never reaches the
   # list image/tiers.env would name.
   tiers:
-    name: ${{ matrix.arch }} tiers
+    # `on` is the display half of `runner`: ci.yml names every job for the
+    # machine it lands on, and a matrix cannot render a label array as one.
+    name: build the ${{ matrix.arch }} tiers (${{ matrix.on }})
     needs: plan
     strategy:
       fail-fast: false # one arch failing should still show the other's result
       matrix:
         include:
           - arch: amd64
+            on: ubuntu-latest
             runner: '["ubuntu-latest"]'
           - arch: arm64
+            on: macos-arm64 / self-hosted
             runner: '["self-hosted", "macOS", "ARM64"]'
     runs-on: ${{ fromJSON(matrix.runner) }}
     # The shipped base is the long pole and the arm64 machine has never built it
@@ -266,7 +270,7 @@ jobs:
   # something: every architecture in it has booted a real sandbox and run an
   # agent inside it.
   manifest:
-    name: publish the manifest lists
+    name: publish the manifest lists (ubuntu-latest)
     needs: [plan, tiers]
     runs-on: ubuntu-latest
     timeout-minutes: 30
