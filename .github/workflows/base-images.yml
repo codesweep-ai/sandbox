@@ -265,6 +265,17 @@ jobs:
             [ "$n" -ge 20 ] || { echo "the Neovim pre-build produced only $n plugins" >&2; exit 1; }
             echo "readback ok: $n nvim plugins, every toolchain and agent on PATH"'
 
+      # The credential above is a GITHUB_TOKEN scoped to this run, and the arm64
+      # runner is PERSISTENT — so leaving it in auth.json means the next job on
+      # that machine sends an expired token to ghcr and gets 403 where an
+      # anonymous pull would have worked. That is exactly how the first
+      # multi-arch run broke the macOS smoke leg an hour after it finished.
+      #
+      # always(), because a failed run leaves the same landmine as a green one.
+      - name: log out of ghcr.io
+        if: always()
+        run: podman logout ghcr.io || true
+
   # Join the per-architecture tags into one manifest list per package, under the
   # bare tag image/tiers.env names. `needs: tiers` is what makes the list mean
   # something: every architecture in it has booted a real sandbox and run an
