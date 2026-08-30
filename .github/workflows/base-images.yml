@@ -43,7 +43,16 @@ on:
     # The Neovim config is in this list because the base pre-builds against it
     # and the leaf refuses to ship a mismatch (see the config-hash guard): left
     # to the schedule, a config edit would block every leaf build for a week.
+    #
+    # This file watches ITSELF for the same reason ci-slim.sh is here: it decides
+    # how the tiers are built, so an edit to it means the published tiers were
+    # made the old way. That is not free — a run is now two architectures and
+    # hours of it, with the shipped base compiling CPython on each — so an edit
+    # here is a deliberate thing to make. It is also what stops the tiers and the
+    # workflow that builds them from silently drifting apart, which is how the
+    # first multi-arch gap went unnoticed until an agent timed out on the Mac.
     paths:
+      - .github/workflows/base-images.yml
       - image/Containerfile.base
       - image/Containerfile.agents
       - image/ci-slim.sh
