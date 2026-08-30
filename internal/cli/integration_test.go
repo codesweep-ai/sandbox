@@ -546,6 +546,67 @@ func sshCapture(t *testing.T, host hostenv.Host, name, sh string) string {
 	return run.Output(context.Background(), &run.Exec{}, append(argv, sh)...)
 }
 
+// sshCaptureWithin is sshCapture with a deadline, and a post-mortem when it
+// expires.
+//
+// It exists for one step: the nested create in TestCLINestedSandboxInVMLive.
+// That step passes in well under a minute and has twice stalled for the whole
+// 20-minute PACKAGE timeout in CI — silently, because the package timeout kills
+// the test process rather than the step, so the panic carries a goroutine dump
+// and nothing at all about the guest. A bounded step fails while the microVM is
+// still up, which is the only moment anything inside it can be read.
+//
+// The deadline reaches the ssh process: run.Exec builds every command with
+// exec.CommandContext, so an expired context kills it rather than leaking it
+// for the rest of the run.
+func sshCaptureWithin(t *testing.T, host hostenv.Host, name string, d time.Duration, sh string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	argv := append([]string{"ssh"}, sshArgv(t, host, name)...)
+	out := run.Output(ctx, &run.Exec{}, append(argv, sh)...)
+	if ctx.Err() != nil {
+		vmPostMortem(t, host, name)
+		t.Fatalf("%q did not answer within %s; see the post-mortem above", sh, d)
+	}
+	return out
+}
+
+// vmPostMortem reports what the guest was doing when a step gave up on it.
+//
+// Best-effort by construction: the VM is in a bad state by the time this runs,
+// so every probe carries its own short deadline and a probe that cannot answer
+// says so. That silence is itself the finding — it separates "the create is
+// wedged" from "the guest or its ssh is gone", which the outer symptom cannot.
+//
+// The container logs are the point of the list. Everything the entrypoint does
+// on first boot lands there, so they say how far the inner sandbox got before
+// it stopped, which is the one thing a package-timeout panic never shows.
+func vmPostMortem(t *testing.T, host hostenv.Host, name string) {
+	t.Helper()
+	argv := append([]string{"ssh"}, sshArgv(t, host, name)...)
+	for _, probe := range []struct{ what, sh string }{
+		{"containers", "podman ps -a 2>&1"},
+		{"container logs", "for c in $(podman ps -aq); do echo \"== $c\"; podman logs --tail 40 \"$c\" 2>&1; done"},
+		{"images", "podman images --format '{{.Repository}}:{{.Tag}}\t{{.Size}}'"},
+		{"sandboxes", "~/bin/cs-sandbox ls 2>&1"},
+		{"disk", "df -h / /var/lib/containers 2>&1 | tail -5"},
+		{"memory", "free -m 2>&1 | head -3"},
+		{"busy processes", "ps -eo pid,etime,stat,args | grep -E 'cs-sandbox|podman|conmon|fuse' | grep -v grep"},
+		// sudo: the sandbox user cannot read the kernel buffer, and this probe
+		// answered "Operation not permitted" when it was tried without.
+		{"kernel ring", "sudo dmesg 2>&1 | tail -20"},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		got := strings.TrimSpace(run.Output(ctx, &run.Exec{}, append(argv, probe.sh)...))
+		cancel()
+		if got == "" {
+			got = "(no answer within 20s — the guest is not responding, not merely busy)"
+		}
+		t.Logf("post-mortem / %s:\n%s", probe.what, got)
+	}
+}
+
 // sshArgv is sshCapture's argument vector without the trailing snippet — shared
 // so a caller that needs to stream something into the sandbox's stdin (see
 // sshPipe) reaches it over exactly the same port, key and options.
@@ -781,7 +842,11 @@ func TestCLINestedSandboxInVMLive(t *testing.T) {
 	step(t, "creating the inner sandbox…")
 	start = time.Now()
 	const inner = "inner" // safe unqualified: its whole world is this throwaway VM
-	out := sshCapture(t, host, outer,
+	// Bounded, unlike every other step here: this is the one that stalls. It
+	// takes 14s on bare metal and under a minute on a green CI run, so five
+	// minutes is generous by an order of magnitude and still leaves the package
+	// timeout (20m, under the job's 25) far enough away to collect evidence.
+	out := sshCaptureWithin(t, host, outer, 5*time.Minute,
 		fmt.Sprintf("CS_SANDBOX_IMAGE=%s ~/bin/cs-sandbox create %s --engine podman", img, inner))
 	if !strings.Contains(out, "created "+inner) {
 		t.Fatalf("nested create did not report success:\n%s", out)
