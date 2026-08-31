@@ -1,0 +1,14 @@
+# What this file is for: getting two documents rendered at all.
+#
+# The plugin that turns a .md file carrying no YAML header into a page refuses
+# a fixed list of names — README, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT and a
+# few more — on the grounds that GitHub renders those itself. That left these
+# two served as raw text/markdown while every other document became a page, and
+# the README linking to them as .md while it linked to everything else as .html.
+# Naming them here is the plugin's own way out: it consults this before the list.
+#
+# README.md is deliberately absent. A different plugin already makes it
+# index.html, and naming it here would add a second copy at README.html.
+include:
+  - CONTRIBUTING.md
+  - CODE_OF_CONDUCT.md
