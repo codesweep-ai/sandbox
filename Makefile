@@ -19,6 +19,24 @@ VERSION    := $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 LDFLAGS    := -s -w
 GO_FILES   := $(shell git ls-files '*.go')
 
+# What $(BIN) is made of. It is a real target rather than a phony one, so make
+# skips the build when the binary is already newer than every input — which is
+# what stops `make install` from repeating the `make build` that just ran.
+#
+# `find` rather than $(GO_FILES): a source file that is new and not yet added to
+# the index is still an input. $(GIT_DIR)/HEAD is one because the version is the
+# VCS stamp Go embeds, so a commit changes the binary even when no source did.
+# The embedded files are listed because //go:embed makes them compile-time
+# inputs; the whole of image/ is one of them (`//go:embed all:image`), so a
+# guest-image edit rebuilds the host binary that carries it.
+GIT_DIR    := $(shell git rev-parse --git-dir 2>/dev/null)
+EMBED_DEPS := $(shell find image -type f)
+# //go:embed inputs deliberately left out of $(EMBED_DEPS). Nothing belongs here
+# yet; `make embed-check` allows exactly this list and nothing else.
+EMBED_EXEMPT :=
+BUILD_DEPS := $(shell find . \( -name bin -o -name dist -o -name node_modules -o -name .git \) -prune -o -name '*.go' -print) \
+              go.mod go.sum .goreleaser.yaml Makefile $(EMBED_DEPS) $(wildcard $(GIT_DIR)/HEAD)
+
 # Coverage is not a separate mode: every test target below writes Go binary
 # coverage data into its own tier directory under $(COVERDIR), and `make
 # coverage` merges whichever tiers are present. That is what lets
@@ -36,7 +54,7 @@ COVERDIR   ?= .coverage
 COVER_ABS  := $(abspath $(COVERDIR))
 COVERFLAGS := -covermode=atomic -coverpkg=./...
 
-.PHONY: help build build-go build-ci-image build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration test-live-agents fixtures fixtures-strict fixtures-check test-agents-replay test-agents-shared test-agents-lent coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode actionlint snapshot release release-check clean
+.PHONY: help tidy-check embed-check build build-go build-ci-image build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration test-live-agents fixtures fixtures-strict fixtures-check test-agents-replay test-agents-shared test-agents-lent coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode actionlint snapshot release release-check clean
 
 .DEFAULT_GOAL := help
 
@@ -48,10 +66,21 @@ help:
 	@echo "  PREFIX=$(PREFIX) (install location; override with make install PREFIX=/usr/local)"
 
 ## build: host binary at bin/cs-sandbox via goreleaser (single target)
-build:
-	@mkdir -p $(dir $(BIN))
+##
+## A phony alias for $(BIN), so the work sits on a file target and make can skip
+## it. `make build install`, and an `install` after a build, then copy what is
+## already there instead of building the same binary a second time.
+##
+## --skip=before, because .goreleaser.yaml's before hooks are `go mod tidy`,
+## `go vet ./...` and `go test ./...`: release gates that `make check` runs in
+## its own right, and that made every build pay for the whole suite and rewrite
+## go.mod as a side effect. `make snapshot` and `make release` still run them.
+build: $(BIN)
+
+$(BIN): $(BUILD_DEPS)
+	@mkdir -p $(dir $@)
 	@if command -v $(GORELEASER) >/dev/null 2>&1; then \
-		VERSION='$(VERSION)' $(GORELEASER) build --single-target --snapshot --clean --output $(BIN); \
+		VERSION='$(VERSION)' $(GORELEASER) build --single-target --snapshot --clean --skip=before --output $@; \
 	else \
 		echo "goreleaser not found; using go build (run 'make build-go' explicitly to force)"; \
 		$(MAKE) build-go; \
@@ -543,6 +572,52 @@ fmt-check:
 		echo "$$unformatted"; \
 		exit 1; \
 	fi
+
+## tidy-check: go.mod and go.sum are what `go mod tidy` would write
+##
+## The build no longer runs `go mod tidy`. It used to, as a goreleaser before
+## hook, so every `make build` rewrote the module files as a side effect and
+## nothing ever reported the drift. This gate replaces it and is the stronger of
+## the two: it says what moved instead of quietly absorbing it, and it puts the
+## originals back before failing, so a red gate leaves the tree as it found it.
+## GOWORK=off, so a workspace serving local checkouts cannot make an untidy
+## go.mod look tidy.
+tidy-check:
+	@t="$$(mktemp -d)"; cp go.mod go.sum "$$t/"; \
+	GOWORK=off go mod tidy || { cp "$$t/go.mod" go.mod; cp "$$t/go.sum" go.sum; rm -rf "$$t"; exit 1; }; \
+	if cmp -s go.mod "$$t/go.mod" && cmp -s go.sum "$$t/go.sum"; then \
+		rm -rf "$$t"; echo "tidy: go.mod and go.sum are what \`go mod tidy\` writes"; \
+	else \
+		echo "go.mod/go.sum are not tidy; \`go mod tidy\` would apply:" >&2; \
+		diff -u "$$t/go.mod" go.mod >&2; diff -u "$$t/go.sum" go.sum >&2; \
+		cp "$$t/go.mod" go.mod; cp "$$t/go.sum" go.sum; rm -rf "$$t"; \
+		exit 1; \
+	fi
+
+## embed-check: every //go:embed input is a prerequisite of the binary
+##
+## $(EMBED_DEPS) is written by hand, and an embed added without a line there
+## leaves make holding a binary it calls current while the bytes inside it have
+## moved -- the one kind of staleness no other gate can see. `go list` resolves
+## the patterns itself, so this compares against what the toolchain actually
+## embeds rather than re-reading the directives and reimplementing their globs.
+embed-check:
+	@deps="$$(mktemp)"; embeds="$$(mktemp)"; raw="$$(mktemp)"; \
+	printf '%s\n' $(patsubst ./%,%,$(BUILD_DEPS)) $(EMBED_EXEMPT) | LC_ALL=C sort -u >"$$deps"; \
+	if ! go list -f '{{range .EmbedFiles}}{{$$.Dir}}/{{.}}{{"\n"}}{{end}}' ./... >"$$raw"; then \
+		rm -f "$$deps" "$$embeds" "$$raw"; \
+		echo "embed-check: go list failed, so the embed set is unknown" >&2; exit 1; \
+	fi; \
+	grep -v '/node_modules/' "$$raw" | sed "s|^$$PWD/||" | grep . | LC_ALL=C sort -u >"$$embeds"; \
+	missing="$$(LC_ALL=C comm -23 "$$embeds" "$$deps")"; n="$$(wc -l <"$$embeds")"; \
+	rm -f "$$deps" "$$embeds" "$$raw"; \
+	if [ -n "$$missing" ]; then \
+		echo "//go:embed reads these, and no prerequisite of $(BIN) covers them:" >&2; \
+		printf '  %s\n' $$missing >&2; \
+		echo "add each to EMBED_DEPS, or a change to one will not rebuild the binary" >&2; \
+		exit 1; \
+	fi; \
+	echo "embed: all $$n //go:embed inputs are prerequisites of $(notdir $(BIN))"
 ## prose: check how this repository's documents are written
 prose:
 	$(CS_LINT) prose
@@ -572,7 +647,7 @@ ledger:
 	go tool cs-ledger check ledger
 
 ## check: the full local gate — fmt-check, vet, the linters, and unit tests
-check: fmt-check vet lint deadcode test coverage-check fixtures-check prose refs oss surface
+check: fmt-check tidy-check embed-check vet lint deadcode test coverage-check fixtures-check prose refs oss surface
 
 # say prints a heading above each gate, so a long run reads as a list rather
 # than as a wall. Bold where a terminal is reading it and plain where a pipe
