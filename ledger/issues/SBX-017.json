@@ -13,10 +13,10 @@
       "0f0025a"
     ],
     "integrated": [],
-    "verified": "`grep -rhoE '\"CS_SANDBOX_[A-Z_]+\"' internal/ cmd/` lists 25 names. Every one a user can set is now in MANUAL.md's Environment section; the two left out are CS_SANDBOX_COVERAGE_LOG and CS_SANDBOX_IT_HOSTROUTE, which are test instrumentation, and CS_SANDBOX_SSH_BIND, which SBX-005 holds open on purpose."
+    "verified": "`grep -rhoE '\"CS_SANDBOX_[A-Z_]+\"' internal/ cmd/` lists 25 names. Every one a user can set is now in MANUAL.md's Environment section. Two are left out as test instrumentation: CS_SANDBOX_COVERAGE_LOG and CS_SANDBOX_IT_HOSTROUTE. CS_SANDBOX_SSH_BIND is left out too, because SBX-005 holds it open on purpose."
   },
   "resolution": null,
-  "details": "MANUAL.md's Environment section listed `CS_SANDBOX_ENGINE` with a default of `podman`. `internal/cli/create.go` reads it as `envOr(\"CS_SANDBOX_ENGINE\", \"\")`, and the flag's own help says \"default: firecracker on Linux/KVM, else podman\". A reader on a Linux host with KVM would expect Podman and get Firecracker.\n\nTwo more variables the code reads were absent from the same tables: `CS_SANDBOX_GROUP`, which is `create`'s default group, and `CS_SANDBOX_TZ`, which sets the timezone a sandbox boots with and defaults to America/Los_Angeles.\n\n`-f` also has a long form, `--force`, which appeared only in `--help`.",
+  "details": "MANUAL.md's Environment section gave `CS_SANDBOX_ENGINE` a default of `podman`. `internal/cli/create.go` reads it as `envOr(\"CS_SANDBOX_ENGINE\", \"\")`, and the flag's own help says \"default: firecracker on Linux/KVM, else podman\". A reader on a Linux host with KVM would expect Podman and get Firecracker.\n\nTwo more variables the code reads were absent from the same tables. `CS_SANDBOX_GROUP` is `create`'s default group, and `CS_SANDBOX_TZ` sets the timezone a sandbox boots with, defaulting to America/Los_Angeles.\n\n`-f` also has a long form, `--force`, which appeared only in `--help`.",
   "notes": [],
   "links": [
     "SBX-006",

@@ -13,10 +13,10 @@
       "4281690"
     ],
     "integrated": [],
-    "verified": "`grep -rn CS_SANDBOX_SSH_BIND *.md` returned nothing before and now returns two lines: MANUAL.md's second Environment table, with the 127.0.0.1 default, and SPEC.md \u00a713, where the paragraph beside R142 gives the cost. `grep -c CS_SANDBOX_SSH_BIND .cs-lint.yaml` returned 1 before and returns 0 now, and `make walkthrough` passes without the waiver: 0 error(s), 0 warning(s), 3 skipped."
+    "verified": "`grep -rn CS_SANDBOX_SSH_BIND *.md` returned nothing before and now returns two lines: MANUAL.md's second Environment table, with the 127.0.0.1 default, and SPEC.md \u00a713, where the paragraph beside R142 gives the cost. `grep -c CS_SANDBOX_SSH_BIND .cs-lint.yaml` returned 1 before and returns 0 now, and `make walkthrough` passes without the waiver: `0 error(s), 0 warning(s), 3 skipped`."
   },
   "resolution": "Documented rather than validated, which is the first of the two options this record asked for. R142 stated an absolute the code did not hold; it now states the loopback default and the opt-in the way R143 states --privileged, with the cost beside the rule. `create` still accepts any bind, so the override is a documented choice rather than a rejected one.",
-  "details": "R142 in SPEC.md \u00a713 states that SSH ports must bind `127.0.0.1` only. `internal/cli/root.go:174` reads `CS_SANDBOX_SSH_BIND`, defaulting it to `127.0.0.1`, and passes the value through unvalidated. It reaches podman's publish flag at `internal/engine/podman.go:95` and the microVM's host forwarder at `internal/engine/firecracker.go:285`, and a group's gateway takes the same value.\n\nSo `CS_SANDBOX_SSH_BIND=0.0.0.0 cs-sandbox create web` puts that sandbox's SSH port on every interface of the host, on both engines. Confirm it with `ss -ltnp | grep <port>` after the create.\n\nNo document mentions the variable. Sandboxes accept key authentication only, so this is not an open door, but it moves a boundary the spec states as a requirement, and it does so through a name a reader can only find in the source.\n\nDecide which one is true. Either the spec should describe the override and what it costs, following the rule that a flag with a cost says so where the reader meets it, or `create` should reject a non-loopback value.",
+  "details": "R142 in SPEC.md \u00a713 states that SSH ports must bind `127.0.0.1` only. `internal/cli/root.go:174` reads `CS_SANDBOX_SSH_BIND`, defaulting it to `127.0.0.1`, and passes the value through unvalidated. It reaches podman's publish flag at `internal/engine/podman.go:95` and the microVM's host forwarder at `internal/engine/firecracker.go:285`, and a group's gateway takes the same value.\n\nSo `CS_SANDBOX_SSH_BIND=0.0.0.0 cs-sandbox create web` puts that sandbox's SSH port on every interface of the host, on both engines. Confirm it with `ss -ltnp | grep <port>` after the create.\n\nNo document mentions the variable. Sandboxes accept key authentication only, so this is not an open door. It moves a boundary the spec states as a requirement, and it does so through a name a reader can only find in the source.\n\nDecide which one is true. Either the spec should describe the override and what it costs, or `create` should reject a non-loopback value. The rule is that a flag with a cost says so where the reader meets it.",
   "notes": [
     {
       "date": "2026-08-16",
@@ -28,11 +28,11 @@
     },
     {
       "date": "2026-08-17",
-      "text": "`cs-lint walkthrough` would report the variable as read and undocumented, which is what this record says. .cs-lint.yaml waives it under walkthrough.envInternal, naming this record as the reason, so the waiver goes when the decision is made."
+      "text": "`cs-lint walkthrough` would report the variable as read and undocumented, which is what this record says. The waiver sits in .cs-lint.yaml under walkthrough.envInternal and names this record as the reason, so it goes when the decision is made."
     },
     {
       "date": "2026-08-22",
-      "text": "Decision made: the spec describes the override. R54 gained the same treatment in the same pass, because `forward --bind` has the shape R142's override has and its cost differs: a forwarded port carries whatever authentication the sandbox service has, which is often none."
+      "text": "Decision made: the spec describes the override. R54 gained the same treatment in the same pass, because `forward --bind` has the shape R142's override has. Its cost differs: a forwarded port carries whatever authentication the sandbox service has, which is often none."
     }
   ],
   "links": [

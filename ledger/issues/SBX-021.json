@@ -16,7 +16,7 @@
     "verified": "`grep -rn CS_SANDBOX.md *.md` returned one hit, inside a code block comment. The README's \"What's in a sandbox\" list and INSTALL.md's install step now both introduce it."
   },
   "resolution": null,
-  "details": "`image/rootfs/home/.local/bin/CS_SANDBOX.md` is a reference written for an agent driving cs-sandbox: what the tool is, the create-work-fetch-destroy loop, and what to do from inside a sandbox, where the CLI is deliberately absent. `make install` puts it on the host beside the binary, and the image bakes it into every sandbox.\n\nThe document set mentioned it once, in a comment on the `make install` line in INSTALL.md, and never said what it was. The reader it was written for could not find it.",
+  "details": "`image/rootfs/home/.local/bin/CS_SANDBOX.md` is a reference written for an agent driving cs-sandbox. It covers what the tool is, the create-work-fetch-destroy loop, and what to do from inside a sandbox, where the CLI is deliberately absent. `make install` puts it on the host beside the binary, and the image bakes it into every sandbox.\n\nThe document set mentioned it once, in a comment on the `make install` line in INSTALL.md, and never said what it was. The reader it was written for could not find it.",
   "notes": [],
   "links": []
 }

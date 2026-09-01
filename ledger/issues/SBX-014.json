@@ -18,7 +18,7 @@
   "notes": [
     {
       "date": "2026-08-26",
-      "text": "Publishing by version answers the part of this that bites. The image is now named after the cs-sandbox that built it and is published per commit, so two hosts that pull the same tag hold the same digest and can be compared by name. What this record asks for is still open for the case that remains: a host that builds its own image gets different bytes from CI's for the same commit, because `dnf update` still floats, and neither image records what it installed. The package manifest and the digest-pinned base would close that."
+      "text": "Publishing by version answers the part of this that bites. The image is now named after the cs-sandbox that built it, and is published per commit. Two hosts that pull the same tag hold the same digest and can be compared by name. What this record asks for is still open for the case that remains. A host that builds its own image gets different bytes from CI's for the same commit, because `dnf update` still floats, and neither image records what it installed. The package manifest and the digest-pinned base would close that."
     }
   ],
   "links": [

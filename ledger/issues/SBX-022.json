@@ -13,7 +13,7 @@
       "a65f06a"
     ],
     "integrated": [],
-    "verified": "ledger/ledger.json carries \"project\": \"sandbox\", and the rendered page's title reads \"sandbox \u00b7 ledger\" where it read \". \u00b7 ledger\"."
+    "verified": "`ledger/ledger.json` carries \"project\": \"sandbox\", and the rendered page's title reads \"sandbox \u00b7 ledger\" where it read \". \u00b7 ledger\"."
   },
   "resolution": null,
   "details": "`ledger/ledger.json` carries `\"project\": \".\"`, so every render titles the page `. \u00b7 ledger` and the masthead names the project `.`. The sibling repositories carry `ledger`, `tracer` and `vcr`.\n\nThe page is published, so the name is the first thing a reader sees.",
