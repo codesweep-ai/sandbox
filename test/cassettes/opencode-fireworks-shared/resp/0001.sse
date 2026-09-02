@@ -1,18 +1,18 @@
-data: {"id":"chatcmpl-d2a56c1447904936a5a86be6afdf8d3a","object":"chat.completion.chunk","created":1787937807,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-7ebc74c6e06e43dcae377bc8c473cbb2","object":"chat.completion.chunk","created":1788311453,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"choices":[{"delta":{"reasoning_content":"Pong reply request"},"finish_reason":null,"index":0,"raw_output":null}],"created":1787937807,"id":"chatcmpl-d2a56c1447904936a5a86be6afdf8d3a","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
+data: {"choices":[{"delta":{"reasoning_content":"User wants title for 'Reply with single word: pong'. Same language English. Need title ≤50 chars. Likely 'Pong reply request' or 'Ping-pong reply'. Must only output title. Ensure no explanation. Final only line."},"finish_reason":null,"index":0,"raw_output":null}],"created":1788311453,"id":"chatcmpl-7ebc74c6e06e43dcae377bc8c473cbb2","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
 
-data: {"id":"chatcmpl-d2a56c1447904936a5a86be6afdf8d3a","object":"chat.completion.chunk","created":1787937807,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"P"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-7ebc74c6e06e43dcae377bc8c473cbb2","object":"chat.completion.chunk","created":1788311453,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"P"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-d2a56c1447904936a5a86be6afdf8d3a","object":"chat.completion.chunk","created":1787937807,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"ong"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-7ebc74c6e06e43dcae377bc8c473cbb2","object":"chat.completion.chunk","created":1788311453,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"ong"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-d2a56c1447904936a5a86be6afdf8d3a","object":"chat.completion.chunk","created":1787937807,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" reply"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-7ebc74c6e06e43dcae377bc8c473cbb2","object":"chat.completion.chunk","created":1788311453,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" reply"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-d2a56c1447904936a5a86be6afdf8d3a","object":"chat.completion.chunk","created":1787937807,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" request"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-7ebc74c6e06e43dcae377bc8c473cbb2","object":"chat.completion.chunk","created":1788311453,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" request"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-d2a56c1447904936a5a86be6afdf8d3a","object":"chat.completion.chunk","created":1787937807,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-7ebc74c6e06e43dcae377bc8c473cbb2","object":"chat.completion.chunk","created":1788311453,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-d2a56c1447904936a5a86be6afdf8d3a","object":"chat.completion.chunk","created":1787937807,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":624,"total_tokens":645,"completion_tokens":21,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":4},"output_tokens_details":{"reasoning_tokens":4}}}
+data: {"id":"chatcmpl-7ebc74c6e06e43dcae377bc8c473cbb2","object":"chat.completion.chunk","created":1788311453,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":624,"total_tokens":691,"completion_tokens":67,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":50},"output_tokens_details":{"reasoning_tokens":50}}}
 
 data: [DONE]
 

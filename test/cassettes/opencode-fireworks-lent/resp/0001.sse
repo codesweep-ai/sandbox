@@ -1,18 +1,16 @@
-data: {"id":"chatcmpl-c3392d6ef2384c63a56cf2ca1cbeb368","object":"chat.completion.chunk","created":1787937793,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-5a13f3c45b6b434781b140069a84f5a5","object":"chat.completion.chunk","created":1788311442,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"choices":[{"delta":{"reasoning_content":"Single-word reply test"},"finish_reason":null,"index":0,"raw_output":null}],"created":1787937793,"id":"chatcmpl-c3392d6ef2384c63a56cf2ca1cbeb368","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
+data: {"choices":[{"delta":{"reasoning_content":"Ping pong reply"},"finish_reason":null,"index":0,"raw_output":null}],"created":1788311442,"id":"chatcmpl-5a13f3c45b6b434781b140069a84f5a5","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
 
-data: {"id":"chatcmpl-c3392d6ef2384c63a56cf2ca1cbeb368","object":"chat.completion.chunk","created":1787937793,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"P"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-5a13f3c45b6b434781b140069a84f5a5","object":"chat.completion.chunk","created":1788311442,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"Ping"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-c3392d6ef2384c63a56cf2ca1cbeb368","object":"chat.completion.chunk","created":1787937793,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"ong"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-5a13f3c45b6b434781b140069a84f5a5","object":"chat.completion.chunk","created":1788311442,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" pong"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-c3392d6ef2384c63a56cf2ca1cbeb368","object":"chat.completion.chunk","created":1787937793,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" reply"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-5a13f3c45b6b434781b140069a84f5a5","object":"chat.completion.chunk","created":1788311442,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" reply"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-c3392d6ef2384c63a56cf2ca1cbeb368","object":"chat.completion.chunk","created":1787937793,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" test"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-5a13f3c45b6b434781b140069a84f5a5","object":"chat.completion.chunk","created":1788311442,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-c3392d6ef2384c63a56cf2ca1cbeb368","object":"chat.completion.chunk","created":1787937793,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c3392d6ef2384c63a56cf2ca1cbeb368","object":"chat.completion.chunk","created":1787937793,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":624,"total_tokens":645,"completion_tokens":21,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":4},"output_tokens_details":{"reasoning_tokens":4}}}
+data: {"id":"chatcmpl-5a13f3c45b6b434781b140069a84f5a5","object":"chat.completion.chunk","created":1788311442,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":624,"total_tokens":643,"completion_tokens":19,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":3},"output_tokens_details":{"reasoning_tokens":3}}}
 
 data: [DONE]
 
