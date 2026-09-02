@@ -1,0 +1,20 @@
+{
+  "id": "SBX-033",
+  "title": "Fifteen companion documents describe shell scripts that no linter can check",
+  "type": "improvement",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent, reviewing the cs-* companion documents on 2026-09-02",
+  "opened": "2026-09-02",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`cs-lint surface` checks a documented interface against the binary the repository builds. It asks one tool, named by `toolPath` in `.cs-lint.yaml`, and that tool is `bin/cs-sandbox`.\n\nFifteen companion documents under `image/rootfs/home/.local/bin` describe shell scripts instead. They cover `cs-claude-remote`, `cs-codex-remote` and `cs-opencode-remote`, each with its `_STATUS`, `_OUTPUT`, `_SESSIONS` and `_FORGET` companion. The scripts sit beside them in that same directory. No linter reads either side, so nothing compares the two.\n\nThe drift this allows has already happened. The OpenCode sandbox profile documented `cs-opencode-remote-status <name>` without the `-t` flag, while the script had parsed `-t` since it was written. A manual read on 2026-09-02 found it. Nothing else would have.\n\nA Go test in `internal/cli` can close the gap. Each script parses its flags in a `case` block a test can read. The test can compare that set against the flags the matching document names, in both directions. It can also assert that every `cs-*` tool in the directory has a document, and every document a tool.\n\nNaming `CS_SANDBOX.md` in `docs.extraDocs` on 2026-09-02 brought that one document under `surface`. The fifteen cannot follow, because `surface` needs a binary to ask and these describe scripts.",
+  "notes": [],
+  "links": []
+}
