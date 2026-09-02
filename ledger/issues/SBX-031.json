@@ -1,0 +1,20 @@
+{
+  "id": "SBX-031",
+  "title": "A nested sandbox create inside a microVM stalls, and the guest stops answering ssh",
+  "type": "defect",
+  "severity": "high",
+  "status": "open",
+  "foundBy": "session agent, reviewing failed CI run 33581884555 on 2026-09-02",
+  "opened": "2026-09-02",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`TestCLINestedSandboxInVMLive` boots a microVM and creates a podman sandbox inside it. In CI run 33581884555 that nested create never answered. The step is bounded at five minutes and it spent all five.\n\nThe guest was healthy until the create started. The store seeded in 20s and the microVM booted in 27s. The test then shipped its CLI over ssh, ran `cs-sandbox ls` in the guest, and read `podman images` there. Every one of those commands returned what the test expected. The create began at 02:12:01 UTC and nothing answered again.\n\nThe console says nothing at all. `serial.log` stopped writing at the boot marker and stayed silent for the whole five minutes. An out of memory kill, a kernel panic and a dead PID 1 all print there, and the log holds none of them.\n\nThe post-mortem that runs on the stall could not name the fault either. It reported all eight of its probes as `no answer within 20s`, which the timing contradicts. The test ran 401 seconds, and the probes shared about fifty of them. Eight real deadlines would have taken 160. The probes had failed in about a second each and were reported as a stall.\n\nThat reporting is fixed as of this record. A probe now reports a deadline, an ssh failure and a non-zero exit apart from each other, because they point at different faults. A fast ssh 255 is the vsock bridge or sshd being gone, and the guest may be fine. Whether this run was a wedged guest or a lost ssh path is still unknown, and the next occurrence should say which.\n\nThis is the third occurrence and the first since the step was bounded. The two before it ran out the 20 minute package timeout and left only a goroutine dump, which is what the bound was added to prevent. Every occurrence is a GitHub `ubuntu-latest` runner. The same step takes 14 seconds on bare metal. The commit under test changed only ledger files, so nothing in the shipped code explains it.\n\nA guest that stops answering is a lost sandbox rather than a slow one. The same nested create is what an agent runs inside a microVM, so a user would meet this as a VM that never comes back. CI meets it as an intermittent red on main with no diagnosis.",
+  "notes": [],
+  "links": []
+}

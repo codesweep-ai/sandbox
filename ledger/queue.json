@@ -1,7 +1,11 @@
 {
-  "recommendedBy": "session agent, from the 2026-08-22 spec/code alignment pass",
-  "updated": "2026-08-22",
+  "recommendedBy": "session agent, re-triaging after the CI failure of 2026-09-02",
+  "updated": "2026-09-02",
   "items": [
+    {
+      "id": "SBX-031",
+      "why": "An intermittent stall reds main CI, and nothing yet says whether the guest or its ssh died."
+    },
     {
       "id": "SBX-002",
       "why": "A stale pid file can send SIGKILL to another of your processes after a host reboot."
