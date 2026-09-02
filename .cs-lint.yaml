@@ -11,6 +11,16 @@
 # The documentation block: the set of documents the checks read, then one
 # section per documentation linter.
 docs:
+  # The page this repository ships beside its binary rather than inside the
+  # tree: `make install` copies it to $PREFIX/bin next to cs-sandbox, and every
+  # sandbox image carries it. Naming it here puts its fenced blocks under
+  # `surface`, so a renamed flag is caught in the brief an agent drives the CLI
+  # from, not just in the manual. The other companions under
+  # image/rootfs/home/.local/bin are payload `install-agent-tools` places, and
+  # describe shell scripts `surface` has no binary to ask about.
+  extraDocs:
+    - image/rootfs/home/.local/bin/CS_SANDBOX.md
+
   prose:
     # Directories holding fixtures, corpora or generated Markdown, added to the
     # linter's own list. image/ is embedded in the binary (assets.go) and shipped
@@ -97,6 +107,12 @@ oss:
     - SPEC.md
     - CONTRIBUTING.md
     - AGENTS.md
+
+  # The same page, declared to the publication checks: the router has to name it
+  # and the release archive has to carry it, because `make install` gives it to
+  # everyone who installs from a checkout.
+  extraDocs:
+    - image/rootfs/home/.local/bin/CS_SANDBOX.md
 
   # Home names that are a placeholder or a shipped account rather than a person.
   # dev is the account inside every sandbox image; seeder is the helper account

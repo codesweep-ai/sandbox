@@ -49,6 +49,7 @@ archives:
       - MANUAL.md
       - SPEC.md
       - CONTRIBUTING.md
+      - image/rootfs/home/.local/bin/CS_SANDBOX.md
       - LICENSE
       # Apache 2.0 section 4(d) obliges every redistributor to carry NOTICE, and
       # a release archive is a redistribution.
