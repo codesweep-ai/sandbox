@@ -436,6 +436,9 @@ resolved path, overridable with `:NAME`. Both **MUST** be repeatable, and a name
 **R60.** On macOS every shared path **MUST** resolve under a podman-machine-shared root, by default under
 `$HOME`, and `create` **MUST** reject anything else with a remedy.
 
+**R163.** Every entry of a directory shared at `~/<name>` **MUST** appear owned by the sandbox user under
+both engines, whatever owns it on the host. The host source **MUST** keep the ownership it had.
+
 ### 7.1 The `--repo` checkout
 
 **R61.** The checkout **MUST** be a `git clone --shared` off a read-only copy of the source, borrowing

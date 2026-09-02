@@ -97,6 +97,9 @@ Firecracker where the host has KVM, and to Podman otherwise.
 assumption. Prefer the `--lend-…` pair: they give an agent everything it needs while your credential
 stays on the host. [Lending a credential](#lending-a-credential) is the whole of that story.
 
+A directory shared with `--repo` or `--snapshot` arrives owned by your user inside the sandbox,
+whoever owns it on the host. The host source keeps the ownership it has.
+
 `create` also carries your Claude Code theme in, so `cs-claude` opens looking the way claude does on
 your host. Pick a different theme inside the sandbox and that choice wins from then on.
 

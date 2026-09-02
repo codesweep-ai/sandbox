@@ -1,0 +1,22 @@
+{
+  "id": "SBX-032",
+  "title": "A shared directory arrives owned by root under Firecracker and by you under Podman",
+  "type": "defect",
+  "severity": "med",
+  "status": "closed",
+  "foundBy": "user report (host): \"snapshots mounted in firecracker sandboxes are mounted as root. This seems different in podman containers where they're mounted as the current user\"",
+  "opened": "2026-09-02",
+  "resolved": "2026-09-02",
+  "stint": "2026-09-02 one ownership for a shared directory",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": "go test ./internal/fcdisk/ ./internal/engine/ -count=1: TestBuildExt4DirOwnedByRecordsTheOwner, TestBuildExt4DirOwnedByLeavesTheSourceAlone and TestSnapshotSharesLandOwnedByTheUser PASS. Removing each of the four lines they cover failed a test. The live member passes as well: go test -tags integration -run TestCLISnapshotShareLive. Without the podman chown it reports \"snapshot owner in sandbox = 1000 65534\". A microVM and a container built from the same three sources, one of them /etc/skel, now list every entry as the calling user."
+  },
+  "resolution": "Both engines hand the share to the sandbox user, which is SPEC R163. Firecracker chowns the tree inside its fakeroot, names the filesystem root with mke2fs -E root_owner, and points lost+found at the same owner with debugfs. Podman chowns the copy it bind-mounts. That also settles a file in one of the caller's other groups. A copy keeps such a gid, the container maps no id for it, and the file arrived owned by nobody. The fakeroot chown runs under FAKEROOTDONTTRYCHOWN, so it records the ownership without applying it to the source.",
+  "details": "A directory shared with `--snapshot` arrives owned by root in a microVM and by you in a container. One flag, one host directory, two different `ls -l`.\n\nThe Firecracker share is an ext4 image, packed with `fakeroot mke2fs -d`. That tool reports a file it holds no record of as root's, so every entry lands in the image owned by root. So does the filesystem root the guest mounts at `~/<name>`, and so does the lost+found mke2fs writes for itself.\n\nPodman copies the directory and bind-mounts the copy. An unprivileged `cp -a` may not set the source's uid, so the copy stays the caller's, and that is what the container shows.\n\nReproduce it with `cs-sandbox create x --engine firecracker --snapshot ~/anydir`, then `ls -l ~/anydir` inside the sandbox.\n\nA rootless container maps the caller's own ids and nothing else. A root-owned host directory bind-mounted into one lists as uid 65534, measured on a podman 5.8 host. Podman can still make an entry read as root, by giving the copy the subuid that backs the container's own root. That was measured as well, and it leaves files in the instance directory the user cannot delete. On macOS there is no equivalent, so the ownership both engines can show on every host is the user's own.",
+  "notes": [],
+  "links": [
+    "SBX-003"
+  ]
+}

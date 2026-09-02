@@ -184,6 +184,8 @@ func DiskMiB(dir string, margin int) (int, error) {
 
 // BuildExt4Dir packs a directory into a fresh ext4 image via fakeroot mke2fs -d
 // (truncate -s <mib>M <img>; fakeroot -- mke2fs -F -q -t ext4 -d <dir> <img>).
+// Every entry lands owned by root, which is what fakeroot reports for a file the
+// caller owns.
 //
 // mke2fs reads the tree as the real user, so one file the source ships unreadable
 // stops the build dead — and an image store holds container image layers, which means
@@ -191,6 +193,27 @@ func DiskMiB(dir string, margin int) (int, error) {
 // base rootfs uses clears that, inside the one fakeroot so the ownership recorded in
 // the image stays fakeroot's rather than the caller's.
 func BuildExt4Dir(ctx context.Context, r run.Runner, dir, img string, margin int) error {
+	return buildExt4Dir(ctx, r, dir, img, margin, -1, -1)
+}
+
+// BuildExt4DirOwnedBy packs the directory the way BuildExt4Dir does and records
+// every entry as uid:gid, whoever owns the source on the host: the tree, the
+// filesystem root the guest mounts, and the lost+found mke2fs writes itself.
+//
+// The chown is fakeroot's, so it changes what the image records rather than the
+// source — but only under FAKEROOTDONTTRYCHOWN. Without that, fakeroot tries the
+// real syscall first and keeps whatever the caller was allowed to do, which for
+// their own files is a move to any group they belong to. mke2fs takes the root
+// inode from -E root_owner rather than from the source directory, and writes
+// lost+found as root whatever the tree says, so those two need saying separately
+// (debugfs sif edits an inode in place).
+func BuildExt4DirOwnedBy(ctx context.Context, r run.Runner, dir, img string, margin, uid, gid int) error {
+	return buildExt4Dir(ctx, r, dir, img, margin, uid, gid)
+}
+
+// buildExt4Dir is both of the above: a negative uid records whatever fakeroot
+// reports for each entry.
+func buildExt4Dir(ctx context.Context, r run.Runner, dir, img string, margin, uid, gid int) error {
 	mib, err := DiskMiB(dir, margin)
 	if err != nil {
 		return err
@@ -199,10 +222,22 @@ func BuildExt4Dir(ctx context.Context, r run.Runner, dir, img string, margin int
 	if _, err := r.Run(ctx, run.Opts{}, "truncate", "-s", strconv.Itoa(mib)+"M", img); err != nil {
 		return err
 	}
-	script := `set -e
+	script := fmt.Sprintf(`set -e
+FC_UID=%d; FC_GID=%d
 find "$FC_DIR" ! -readable -exec chmod u+rX {} + 2>/dev/null || true
-mke2fs -F -q -t ext4 -d "$FC_DIR" "$FC_IMG"`
+if [ "$FC_UID" -ge 0 ]; then
+  chown -Rh "$FC_UID:$FC_GID" "$FC_DIR"
+  set -- -E "root_owner=$FC_UID:$FC_GID"
+fi
+mke2fs -F -q -t ext4 "$@" -d "$FC_DIR" "$FC_IMG"
+if [ "$FC_UID" -ge 0 ]; then
+  printf 'sif /lost+found uid %%d\nsif /lost+found gid %%d\n' "$FC_UID" "$FC_GID" \
+    | debugfs -w -f - "$FC_IMG" >/dev/null
+fi`, uid, gid)
 	env := []string{"FC_DIR=" + dir, "FC_IMG=" + img}
+	if uid >= 0 {
+		env = append(env, "FAKEROOTDONTTRYCHOWN=1") // see BuildExt4DirOwnedBy
+	}
 	if _, err := r.Run(ctx, run.Opts{Env: env}, "fakeroot", "--", "bash", "-c", script); err != nil {
 		return err
 	}

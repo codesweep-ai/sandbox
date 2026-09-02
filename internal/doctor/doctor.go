@@ -276,6 +276,7 @@ var hostPackages = []hostPackage{
 	{"fakeroot", "fakeroot", "fakeroot"},
 	{"mke2fs", "e2fsprogs", "e2fsprogs"},
 	{"e2fsck", "e2fsprogs", "e2fsprogs"},
+	{"debugfs", "e2fsprogs", "e2fsprogs"},
 	{"socat", "socat", "socat"},
 	{"python3", "python3", "python3"},
 	{"newuidmap", "shadow-utils", "uidmap"},

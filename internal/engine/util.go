@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +48,20 @@ func (d Deps) reservedPorts(ctx context.Context) map[int]bool {
 // frozen-snapshot semantics.
 func (d Deps) copyTree(ctx context.Context, src, dst string) error {
 	_, err := d.Runner.Run(ctx, run.Opts{}, copyTreeArgv(d.Host.IsMacOS, src, dst)...)
+	return err
+}
+
+// ownTree hands a tree to the host user, so a share the sandbox mounts belongs
+// to whoever works in it (SPEC R163).
+//
+// cp -a keeps what of the source's ownership it can, and as an unprivileged
+// caller that is the group: a uid it may not set the copy simply inherits from
+// the caller, but a gid the caller belongs to it does set. That gid is outside
+// the container's user namespace, which maps the caller's own ids and nothing
+// else, so such a file arrives in the sandbox owned by "nobody".
+func (d Deps) ownTree(ctx context.Context, dir string) error {
+	owner := fmt.Sprintf("%d:%d", d.Host.UID, d.Host.GID)
+	_, err := d.Runner.Run(ctx, run.Opts{}, "chown", "-Rh", owner, dir)
 	return err
 }
 

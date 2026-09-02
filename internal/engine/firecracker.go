@@ -604,6 +604,9 @@ func cacheTTLDays() int {
 
 // buildSnapshotDisks builds one RO ext4 disk per --snapshot (frozen at create)
 // and the snapshots manifest (one name per line).
+//
+// The disk is built owned by the sandbox user (SPEC R163), which is what the
+// podman engine's copy of the same directory ends up as.
 func (fe *Firecracker) buildSnapshotDisks(ctx context.Context, idir string, s CreateSpec) ([]string, string, error) {
 	if len(s.Snapshots) == 0 {
 		return nil, "", nil
@@ -613,7 +616,7 @@ func (fe *Firecracker) buildSnapshotDisks(ctx context.Context, idir string, s Cr
 	for i, sn := range s.Snapshots {
 		fmt.Fprintf(&man, "%s\n", sn.Name)
 		disk := filepath.Join(idir, fmt.Sprintf("snap%d.ext4", i+1))
-		if err := fcdisk.BuildExt4Dir(ctx, fe.d.Runner, sn.HostPath, disk, 64); err != nil {
+		if err := fcdisk.BuildExt4DirOwnedBy(ctx, fe.d.Runner, sn.HostPath, disk, 64, fe.d.Host.UID, fe.d.Host.GID); err != nil {
 			return nil, "", fmt.Errorf("fc: snapshot disk %s: %w", sn.Name, err)
 		}
 		disks = append(disks, disk)

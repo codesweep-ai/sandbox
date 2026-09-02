@@ -564,6 +564,11 @@ func (d Deps) materializeShares(ctx context.Context, idir, seedDir string, s Cre
 			if err := d.copyTree(ctx, sn.HostPath, dst); err != nil {
 				return nil, fmt.Errorf("--snapshot: failed to copy %q: %w", sn.HostPath, err)
 			}
+			// The copy is what the container mounts, so it is the copy that has to
+			// belong to the user (SPEC R163).
+			if err := d.ownTree(ctx, dst); err != nil {
+				return nil, fmt.Errorf("--snapshot: failed to own the copy of %q: %w", sn.HostPath, err)
+			}
 			mounts = append(mounts, fmt.Sprintf("%s:%s/%s:ro", dst, home, sn.Name))
 		}
 	}

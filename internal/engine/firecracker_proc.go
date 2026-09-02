@@ -193,7 +193,7 @@ func (fe *Firecracker) preflight() error {
 		_ = f.Close()
 	}
 	// `ip` brings up the tap/bridge fabric; `ssh` is how you reach the booted VM.
-	for _, tool := range []string{"dnsmasq", "socat", "fakeroot", "mke2fs", "pasta", "newuidmap", "python3", "ip", "ssh", "curl", "git"} {
+	for _, tool := range []string{"dnsmasq", "socat", "fakeroot", "mke2fs", "debugfs", "pasta", "newuidmap", "python3", "ip", "ssh", "curl", "git"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			return errMissingTool(tool)
 		}

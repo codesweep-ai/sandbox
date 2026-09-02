@@ -1348,6 +1348,16 @@ func TestCLISnapshotShareLive(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(snap, "hello.txt"), []byte("frozen-hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Put the source in another of the caller's groups where the host offers one.
+	// cp -a keeps a gid an unprivileged caller is allowed to set, and that gid has
+	// no place in the container's user namespace, so a copy left as cp made it
+	// arrives owned by "nobody". Hosts where the caller has one group only still
+	// exercise everything else here.
+	if gid, ok := secondaryGID(); ok {
+		if err := os.Chown(filepath.Join(snap, "hello.txt"), -1, gid); err != nil {
+			t.Fatal(err)
+		}
+	}
 	name := boxName("snap")
 	createBox(t, r, name, "--snapshot", snap)
 	waitInBox(t, r, host, name, "test -f ~/snapdata/hello.txt", 90*time.Second)
@@ -1355,6 +1365,31 @@ func TestCLISnapshotShareLive(t *testing.T) {
 	if got := inBox(ctx, r, host, name, "cat ~/snapdata/hello.txt"); !strings.Contains(got, "frozen-hi") {
 		t.Errorf("snapshot content in sandbox = %q, want frozen-hi", got)
 	}
+	// The copy belongs to the user working in the sandbox (SPEC R163). Asked in
+	// numbers rather than names because that is what the mount carries: a uid the
+	// container cannot map has no name to print, and shows up as "nobody".
+	want := fmt.Sprintf("%d %d", host.UID, host.GID)
+	owners := inBox(ctx, r, host, name, `stat -c '%u %g' ~/snapdata ~/snapdata/hello.txt`)
+	for line := range strings.SplitSeq(strings.TrimSpace(owners), "\n") {
+		if strings.TrimSpace(line) != want {
+			t.Errorf("snapshot owner in sandbox = %q, want %q (all of %q)", line, want, owners)
+		}
+	}
+}
+
+// secondaryGID returns a group the caller belongs to that is not their primary
+// one, and whether the host has one to offer.
+func secondaryGID() (int, bool) {
+	groups, err := os.Getgroups()
+	if err != nil {
+		return 0, false
+	}
+	for _, g := range groups {
+		if g != os.Getgid() {
+			return g, true
+		}
+	}
+	return 0, false
 }
 
 // TestCLIFirecrackerCrossEngineLive: create a real microVM via the CLI, prove its
