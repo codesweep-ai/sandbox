@@ -1366,6 +1366,14 @@ two agree on every byte the agent sends. `make fixtures-check` proves the commit
 key under the recorder's current normalization ruleset. It asks in one process with no sandbox,
 which is what lets `make check` carry it.
 
+A recording also writes `recorded.json` beside the cassette, naming the agent CLI and the version
+that made it. The replay members read it, compare it with the image they are about to boot, and skip
+a cassette whose agent has moved. A bump rewrites every request that agent sends, so the cassette
+misses on all of them at once. That is a stale fixture rather than a broken one. Only the image a
+cassette was recorded against can judge it. The CLI versions are pinned in one commit, and reach a
+checkout only when a new tier is published and adopted. The agents that did not move replay as
+before.
+
 That image is `cs-sandbox build --slim`, derived from the shipped Containerfiles rather than written
 twice. It drops the developer toolchains, which are most of the 6.04 GB and nearly all of the build
 time. It keeps the three agent CLIs, for a suite whose tests drive one inside the sandbox. A

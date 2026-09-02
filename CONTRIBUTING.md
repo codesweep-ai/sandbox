@@ -70,6 +70,12 @@ Re-record with `scripts/record-fixtures.sh`, which checks everything the matrix 
 clears a single cassette. Replay them before you commit. A recording can come out truncated when an
 agent prints its answer and exits mid-response, and the replay is what says whether that mattered.
 
+A recording writes `recorded.json` beside the cassette, naming the agent CLI and the version that
+made it. The replay members compare that with the image they are about to boot. A cassette whose
+agent has moved is skipped rather than failed. The CLI carries its own system prompt and tool list,
+so a bump rewrites every request and the cassette can no longer match. The skip names both versions
+and the command that re-records it. Cases whose agent did not move still run.
+
 A sandbox built from this repository carries goreleaser and `cs-sandbox` itself as well, so
 working on this project from inside one needs no setup.
 

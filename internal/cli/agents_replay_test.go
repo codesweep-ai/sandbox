@@ -38,6 +38,9 @@ func TestAgentReplay(t *testing.T) {
 	startLiveLender(t, fabricatedAgentHome(t))
 	store := cassetteStore(t)
 	proxy := startVCR(t, "replay", store)
+	// Asked once, of the image every cell is about to boot, and compared with
+	// what each cassette says it was recorded against.
+	versions := agentCLIVersions(t, r, image(t))
 
 	replayed := 0
 	for _, c := range liveCases() {
@@ -46,6 +49,7 @@ func TestAgentReplay(t *testing.T) {
 		}
 		replayed++
 		t.Run(c.name(), func(t *testing.T) {
+			assertCassetteAgent(t, c, store, versions)
 			assertCassetteRuleset(t, c, store)
 			runAgentCase(t, r, host, c, true)
 		})
@@ -58,6 +62,53 @@ func TestAgentReplay(t *testing.T) {
 	// worth making: nothing was spent, and the cassettes answered what was asked.
 	assertSpentNothing(t, proxy)
 	reportMisses(t, proxy)
+}
+
+// assertCassetteAgent settles what a cell's cassette can still be asked to
+// prove, from the claim the recording left beside it.
+//
+// A SKIP for a cassette recorded against a different build of its agent CLI,
+// and that is the whole reason the claim exists. An agent carries its own
+// system prompt and tool list, so a bump rewrites every request it sends: the
+// cassette misses on all of them, and the tier reports a dozen prompt diffs and
+// a miss ratio instead of the one version that moved. Worse, it reports them
+// after booting every sandbox, which is where the minutes are.
+//
+// Skipped rather than failed because the fixture is STALE, not broken. The one
+// gesture that fixes it — re-recording against the new image — cannot be made
+// by the run that wants it, and a bump is a deliberate two-step here: the pins
+// move in one commit, the tier that carries them is published by another, and
+// the cassettes can only be re-recorded once that tier is adopted. Failing in
+// between would make the whole matrix red for the duration of a procedure that
+// is going exactly to plan. What must not happen is failing SILENTLY, so the
+// skip names both versions and the command that ends it.
+//
+// A version the claim does not carry, or one this image does not report, skips
+// the comparison rather than guessing: a cassette from before the claim existed
+// replays perfectly well, and refusing it would fail on a working fixture.
+//
+// The outcome is checked after, and fails: a recording that never finished is a
+// broken fixture rather than a stale one. Second because when the agent has
+// moved the cassette is stale by construction and nothing else about it is
+// worth asserting.
+func assertCassetteAgent(t *testing.T, c liveCase, store string, versions map[string]string) {
+	t.Helper()
+	claim, ok := readRecordingClaim(t, store, c)
+	if !ok {
+		return // recorded before the claim existed
+	}
+	if was, now := claim.CLIVersion, versions[c.cli]; was != "" && now != "" && was != now {
+		t.Skipf("this cassette was recorded against %s %s and the image carries %s, "+
+			"so every request in it would miss\n"+
+			"re-record it with: make fixtures FIXTURE_CASES='TestLiveAgentRecordsCassettes/%s'",
+			c.cli, was, now, c.name())
+	}
+	if claim.Outcome != recordingSettled {
+		t.Fatalf("this cassette came out of a recording that ended %q, and the replay below "+
+			"asserts a completed turn\n"+
+			"re-record it with: make fixtures FIXTURE_CASES='TestLiveAgentRecordsCassettes/%s'",
+			claim.Outcome, c.name())
+	}
 }
 
 // assertCassetteRuleset fails a cell whose cassette was recorded under a

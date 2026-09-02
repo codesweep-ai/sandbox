@@ -67,6 +67,11 @@ func TestLiveAgentRecordsCassettes(t *testing.T) {
 	startLiveLender(t, liveAgentHome(t, env))
 	store := cassetteStore(t)
 	proxy := startVCR(t, "record", store)
+	// Asked once, of the image every case is about to boot, and written into
+	// each cassette's claim. This is the fact the replay tier cannot recover
+	// afterwards: a cassette carries the requests an agent sent but not which
+	// build of the agent sent them.
+	versions := agentCLIVersions(t, r, image(t))
 
 	recorded := 0
 	var truncated []string
@@ -92,7 +97,26 @@ func TestLiveAgentRecordsCassettes(t *testing.T) {
 			if err := os.RemoveAll(dir); err != nil {
 				t.Fatalf("clear %s before re-recording: %v", dir, err)
 			}
+			// Claim the cassette before recording into it, and settle the claim
+			// only once the run has come back.
+			//
+			// The window between the two is where a recording is lost without
+			// looking lost: cs-vcr writes entries as it serves them, so a run
+			// that dies partway leaves a cassette that is complete in every way
+			// a reader can check — keyed under the current ruleset, entries
+			// well-formed, `cassette verify` clean. Written first rather than at
+			// the end because absence proves nothing, a cassette recorded before
+			// this file existed having no claim either. An unsettled claim is
+			// unambiguous: this run started and did not finish.
+			//
+			// The directory is made here because cs-vcr would otherwise make it
+			// on the first request, and the claim goes in before that.
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				t.Fatalf("make %s for the recording claim: %v", dir, err)
+			}
+			claimRecording(t, store, c, versions[c.cli])
 			runAgentCase(t, r, host, c, true)
+			settleRecording(t, store, c, versions[c.cli])
 			if recordedTruncated(t, proxy, c.name()) {
 				truncated = append(truncated, c.name())
 			}

@@ -24,6 +24,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -76,6 +77,15 @@ const (
 type pairing struct {
 	// agent names the pairing, and run is what the sandbox is asked to do.
 	agent, run string
+	// cli is the agent BINARY this pairing drives, and the one whose version
+	// its cassette is bound to.
+	//
+	// Distinct from agent, which names the pairing and carries the credential
+	// too: claude-login and claude-anthropic are two credential paths through
+	// one Claude Code. That is the distinction the replay gate needs — a Claude
+	// Code bump invalidates the cassettes of both, and leaves codex's and
+	// opencode's alone.
+	cli string
 	// slot is the lend.Slot this credential is. It decides the flag, the
 	// variable the base URL travels in, and which file the host holds.
 	slot string
@@ -121,27 +131,27 @@ func pairings() []pairing {
 	}
 	return []pairing{
 		// An agent login, which only its own agent can spend.
-		{agent: "claude-login", run: claude, slot: "claude", provider: "anthropic", login: "claude"},
+		{agent: "claude-login", cli: "claude", run: claude, slot: "claude", provider: "anthropic", login: "claude"},
 		{
-			agent: "codex-login", slot: "codex", provider: "chatgpt", login: "codex",
+			agent: "codex-login", cli: "codex", slot: "codex", provider: "chatgpt", login: "codex",
 			run: `cd ~ && cs-codex exec --skip-git-repo-check ` + shellQuote(pongPrompt),
 			// No suffix: the subscription transport has no version segment.
 		},
 
 		// An Anthropic key, which Claude Code and OpenCode can both spend.
-		{agent: "claude-anthropic", run: claude, slot: "anthropic", provider: "anthropic", key: "ANTHROPIC_API_KEY"},
+		{agent: "claude-anthropic", cli: "claude", run: claude, slot: "anthropic", provider: "anthropic", key: "ANTHROPIC_API_KEY"},
 		{
-			agent: "opencode-anthropic", run: opencode(anthropicModel), slot: "anthropic",
+			agent: "opencode-anthropic", cli: "opencode", run: opencode(anthropicModel), slot: "anthropic",
 			provider: "anthropic", suffix: "/v1", key: "ANTHROPIC_API_KEY",
 		},
 
 		// An OpenAI key, which Codex and OpenCode can both spend.
 		{
-			agent: "codex-openai", slot: "openai", provider: "openai", suffix: "/v1", key: "OPENAI_API_KEY",
+			agent: "codex-openai", cli: "codex", slot: "openai", provider: "openai", suffix: "/v1", key: "OPENAI_API_KEY",
 			run: `cd ~ && cs-codex exec --skip-git-repo-check -m ` + codexAPIModel + ` ` + shellQuote(pongPrompt),
 		},
 		{
-			agent: "opencode-openai", run: opencode(openaiModel), slot: "openai",
+			agent: "opencode-openai", cli: "opencode", run: opencode(openaiModel), slot: "openai",
 			provider: "openai", suffix: "/v1", key: "OPENAI_API_KEY",
 		},
 
@@ -149,7 +159,7 @@ func pairings() []pairing {
 		// pinned model's own provider. No -m: this is the path OPENCODE_BASE_URL
 		// governs, and the image already pins a Fireworks model.
 		{
-			agent: "opencode-fireworks", run: opencode(""), slot: "fireworks",
+			agent: "opencode-fireworks", cli: "opencode", run: opencode(""), slot: "fireworks",
 			provider: "fireworks", suffix: "/v1", key: "FIREWORKS_API_KEY",
 		},
 	}
@@ -807,6 +817,128 @@ func cassetteStore(t *testing.T) string {
 func hasCassette(t *testing.T, c liveCase) bool {
 	t.Helper()
 	return fileExists(filepath.Join(cassetteStore(t), c.name(), "index.jsonl"))
+}
+
+// recordingClaimName is what a cassette was recorded FROM, written at the
+// cassette's own root beside cassette.yaml.
+//
+// Inside a directory cs-vcr owns, which was checked rather than assumed:
+// `cassette ls` stats cassette.yaml to decide what is a cassette, `prune` walks
+// only req/ and resp/, and `verify` reads the index. None of them enumerates
+// the root, so a file cs-vcr did not write is one it does not see.
+//
+// The alternative was a sibling file next to the directory, and the record path
+// decides against it: re-recording does RemoveAll on the cassette directory, so
+// a claim inside it is destroyed and rewritten with the cassette it describes
+// and cannot be left behind describing one that is gone.
+const recordingClaimName = "recorded.json"
+
+// The two outcomes a claim carries. Written started before the first request
+// and settled once the run has come back, so a recording that died on the way
+// leaves a claim that says so — absence proves nothing, because a cassette
+// recorded before this file existed has no claim either.
+const (
+	recordingStarted = "in-progress"
+	recordingSettled = "recorded"
+)
+
+// recordingClaim is which agent CLI recorded this cassette, at which version,
+// and whether the recording finished.
+//
+// The version is the half that decides whether a replay can still pass. An
+// agent CLI carries its own system prompt and tool list, so a bump rewrites
+// every request the agent sends and the cassette misses on all of them at once.
+// That failure reads as a dozen unrelated prompt diffs rather than as the one
+// version that moved, and it costs a full tier of booted sandboxes to reach.
+// Recorded here, the replay tier says it in one line before it boots anything.
+//
+// Shaped as campaign's test/cassettes/<scenario>/recorded.json, which came
+// first and answers the same question about the same agents.
+type recordingClaim struct {
+	Case       string `json:"case"`
+	CLI        string `json:"cli"`
+	CLIVersion string `json:"cli_version"`
+	Outcome    string `json:"outcome"`
+	At         string `json:"at"`
+}
+
+func claimRecording(t *testing.T, store string, c liveCase, version string) {
+	t.Helper()
+	writeRecordingClaim(t, store, recordingClaim{
+		Case: c.name(), CLI: c.cli, CLIVersion: version,
+		Outcome: recordingStarted, At: time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func settleRecording(t *testing.T, store string, c liveCase, version string) {
+	t.Helper()
+	writeRecordingClaim(t, store, recordingClaim{
+		Case: c.name(), CLI: c.cli, CLIVersion: version,
+		Outcome: recordingSettled, At: time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func writeRecordingClaim(t *testing.T, store string, claim recordingClaim) {
+	t.Helper()
+	encoded, err := json.MarshalIndent(claim, "", "  ")
+	if err != nil {
+		t.Fatalf("encode the recording claim: %v", err)
+	}
+	path := filepath.Join(store, claim.Case, recordingClaimName)
+	if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
+		t.Fatalf("write the recording claim: %v", err)
+	}
+}
+
+// readRecordingClaim reads a cassette's claim, and reports false for one that
+// has none. Those predate the file, and refusing them would fail on fixtures
+// that replay perfectly well.
+func readRecordingClaim(t *testing.T, store string, c liveCase) (recordingClaim, bool) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(store, c.name(), recordingClaimName))
+	if err != nil {
+		return recordingClaim{}, false
+	}
+	var claim recordingClaim
+	if err := json.Unmarshal(raw, &claim); err != nil {
+		t.Fatalf("unreadable %s for %s: %v", recordingClaimName, c.name(), err)
+	}
+	return claim, true
+}
+
+// agentCLIVersions asks the IMAGE which version of each agent CLI it carries.
+//
+// The image rather than the pins in image/Containerfile.agents, and the
+// difference between the two is the whole reason this exists: the pins move in
+// one commit and the tier that carries them is published by another, so a
+// checkout routinely names versions its image does not hold yet. What a
+// cassette was recorded against is what booted, never what was pinned.
+//
+// One container for all three, because it costs a second and the alternative
+// costs three. A CLI the image does not carry gets an empty string rather than
+// an error: each case compares only the one it runs.
+func agentCLIVersions(t *testing.T, r *run.Exec, img string) map[string]string {
+	t.Helper()
+	const probe = `for a in claude codex opencode; do ` +
+		`v=$("$a" --version 2>/dev/null | head -1); printf '%s %s\n' "$a" "$v"; done`
+	res, err := r.Run(context.Background(), run.Opts{ReadOnly: true},
+		"podman", "run", "--rm", "--pull=never", "--entrypoint", "sh", img, "-c", probe)
+	if err != nil {
+		t.Fatalf("ask %s which agent CLIs it carries: %v\n%s", img, err, tail(res.Stderr, 400))
+	}
+	// The first dotted triple on the line. The three say it differently —
+	// `2.1.258 (Claude Code)`, `codex-cli 0.152.1`, a bare `1.18.22` — and the
+	// number is the shape they agree on.
+	semver := regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+`)
+	out := map[string]string{}
+	for line := range strings.SplitSeq(strings.TrimSpace(res.Stdout), "\n") {
+		name, rest, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok {
+			continue
+		}
+		out[name] = semver.FindString(rest)
+	}
+	return out
 }
 
 // writeVCRConfig writes the recorder's configuration into scratch, and returns
