@@ -95,6 +95,10 @@ interactive TUI use on that host; cs-sandbox creates the marker for `--yolo` age
 
 ## Background tasks & polling
 
+Default to **foreground** for delegation: the turn is finished when the command returns, and
+the user can background a running command themselves with Ctrl+B. Use `-b` only when they ask
+for async, and then report completion yourself rather than waiting to be asked.
+
 `-b` dispatches the turn locally in the background and logs to
 `~/.cs-opencode-remote-logs/<name>.log`. You are responsible for reporting completion:
 

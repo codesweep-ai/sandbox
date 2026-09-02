@@ -740,7 +740,9 @@ firecracker` to check a specific engine.
   `would create <name>` rather than `created <name>`.
 - **`destroy` is irreversible.** Confirm with the user first, and check for unfetched commits.
   Prefer `rm` when the data might still be wanted.
-- `cs-sandbox` does not exist inside a sandbox. If it is missing from PATH, use `ssh` and `git`.
+- Every sandbox carries `cs-sandbox` too, so one sandbox can drive a peer: create it, `ls` what
+  is running, `fetch` a branch back. The slim CI image is the exception and ships none. If it is
+  missing from PATH, use `ssh` and `git`.
 
 ## Examples
 

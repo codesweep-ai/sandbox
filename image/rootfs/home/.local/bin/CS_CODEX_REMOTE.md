@@ -102,6 +102,10 @@ The launch directory is auto-trusted, so the directory-trust prompt does not app
 
 ## Background tasks & polling
 
+Default to **foreground** for delegation: the turn is finished when the command returns, and
+the user can background a running command themselves with Ctrl+B. Use `-b` only when they ask
+for async, and then report completion yourself rather than waiting to be asked.
+
 `-b` dispatches the turn locally in the background and logs to
 `~/.cs-codex-remote-logs/<name>.log`. You are responsible for reporting completion:
 
