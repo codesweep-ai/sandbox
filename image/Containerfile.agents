@@ -33,12 +33,12 @@ FROM ${BASE_REF}
 # pinned and reproducible (no background auto-update fighting the read-only tree). The binary IS
 # the full CLI — the launcher is only convenience + auto-update, neither of which we want here.
 # Bump CLAUDE_CODE_VERSION (or pass --build-arg) to upgrade; checksum is verified from the manifest.
-# This pin tracks the `latest` channel rather than `stable` (2.1.231), so that the version in the
+# This pin tracks the `latest` channel rather than `stable` (2.1.236), so that the version in the
 # image is the same one the host drives sandboxes with — a sandbox whose agent is older than the
 # one that launched it is a confusing thing to debug. Two constraints on any bump:
 #   * >= 2.1.219. Below that the `opus` alias resolves to Opus 4.8 and Opus 5 never appears.
 #   * not 2.1.220, which showed issues in use.
-ARG CLAUDE_CODE_VERSION=2.1.245
+ARG CLAUDE_CODE_VERSION=2.1.258
 RUN base=https://downloads.claude.ai/claude-code-releases \
   && case "$(uname -m)" in x86_64|amd64) arch=x64 ;; arm64|aarch64) arch=arm64 ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
   && plat="linux-${arch}" \
@@ -70,7 +70,7 @@ RUN base=https://downloads.claude.ai/claude-code-releases \
 # --no-same-owner because the archive carries a build-machine uid: preserving it would leave the
 # agent binaries owned by whichever sandbox user happens to share that uid, and writable by them.
 # Bump CODEX_VERSION (or pass --build-arg) to upgrade.
-ARG CODEX_VERSION=0.149.1
+ARG CODEX_VERSION=0.152.1
 RUN case "$(uname -m)" in x86_64|amd64) tgt=x86_64-unknown-linux-musl ;; arm64|aarch64) tgt=aarch64-unknown-linux-musl ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
   && base="https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}" \
   && asset="codex-package-${tgt}.tar.gz" \
