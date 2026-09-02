@@ -575,9 +575,10 @@ func sshCaptureWithin(t *testing.T, host hostenv.Host, name string, d time.Durat
 // vmPostMortem reports what the guest was doing when a step gave up on it.
 //
 // Best-effort by construction: the VM is in a bad state by the time this runs,
-// so every probe carries its own short deadline and a probe that cannot answer
-// says so. That silence is itself the finding — it separates "the create is
-// wedged" from "the guest or its ssh is gone", which the outer symptom cannot.
+// so every probe carries its own short deadline and reports how it ended. That
+// ending is itself the finding, and probeReport exists to keep it accurate: it
+// separates "the create is wedged" from "the guest or its ssh is gone", which
+// the outer symptom cannot.
 //
 // The container logs are the point of the list. Everything the entrypoint does
 // on first boot lands there, so they say how far the inner sandbox got before
@@ -623,14 +624,67 @@ func vmPostMortem(t *testing.T, host hostenv.Host, name string) {
 		// answered "Operation not permitted" when it was tried without.
 		{"kernel ring", "sudo dmesg 2>&1 | tail -20"},
 	} {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		got := strings.TrimSpace(run.Output(ctx, &run.Exec{}, append(argv, probe.sh)...))
+		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+		res, err := (&run.Exec{}).Run(ctx, run.Opts{ReadOnly: true}, append(argv, probe.sh)...)
+		timedOut := ctx.Err() != nil
 		cancel()
-		if got == "" {
-			got = "(no answer within 20s — the guest is not responding, not merely busy)"
-		}
-		t.Logf("post-mortem / %s:\n%s", probe.what, got)
+		t.Logf("post-mortem / %s:\n%s", probe.what, probeReport(res, err, timedOut))
 	}
+}
+
+// probeTimeout bounds one post-mortem probe. Shared with probeReport so the
+// line it prints cannot claim a deadline the loop did not set.
+const probeTimeout = 20 * time.Second
+
+// probeReport says what a probe actually returned, and how it ended.
+//
+// run.Output cannot do this job: it discards Stderr and the exit code and
+// returns "" for every failure, which collapses three different faults into one
+// silence. The caller then has to name that silence, and the first bounded run
+// named it "not responding" eight times over. The timing said otherwise. Eight
+// probes shared about fifty seconds, so they averaged six, and a probe that
+// waits out this deadline takes twenty. Most had failed in about a second and
+// were reported as a stall.
+//
+// The three endings point in different directions, which is the whole reason to
+// tell them apart. A deadline is the guest too wedged to answer. A fast ssh 255
+// is the connection, so the vsock bridge or sshd is gone while the guest may be
+// fine. A non-zero exit from the probe itself is an answer: it ran, and the
+// 2>&1 above already put the reason on stdout.
+func probeReport(res run.Result, err error, timedOut bool) string {
+	body := strings.TrimSpace(res.Stdout)
+	if e := strings.TrimSpace(res.Stderr); e != "" {
+		if body != "" {
+			body += "\n"
+		}
+		body += e
+	}
+	var status string
+	switch {
+	case timedOut:
+		status = fmt.Sprintf("(no answer within %s — the guest is not responding, not merely busy)", probeTimeout)
+	case err == nil:
+		if body == "" {
+			status = "(exit 0, no output)"
+		}
+	case res.ExitCode == 255:
+		// 255 is ssh's own code rather than the probe's, so the connection
+		// failed and the command never ran. Reported apart from every other
+		// exit because it moves the fault out of the guest's userspace.
+		status = "(ssh failed, exit 255 — the connection, not the command)"
+	case res.ExitCode != 0:
+		status = fmt.Sprintf("(probe exited %d)", res.ExitCode)
+	default:
+		// No exit code to report: ssh never started.
+		status = fmt.Sprintf("(probe did not run: %v)", err)
+	}
+	switch {
+	case status == "":
+		return body
+	case body == "":
+		return status
+	}
+	return status + "\n" + body
 }
 
 // sshArgv is sshCapture's argument vector without the trailing snippet — shared
