@@ -1,4 +1,14 @@
-data: {"id":"chatcmpl-879ee1315bc5402085d7f3dfdcbb5055","object":"chat.completion.chunk","created":1788378479,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-87c362fccc5d46e1b62ac4a764c9791d","object":"chat.completion.chunk","created":1788383802,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"choices":[{"delta":{"reasoning_content":"The user wants a title for a conversation whose content is: \"Reply with the single word: pong\". Need output only title, ≤50 chars, same language English. Need meaningful. Could be \"Pong reply request\" or \"Single-word pong reply\". Must not answer pong. Final only title. Ensure no extra. Need consider instruction from user in prompt says Generate title; the conversation to title is quoted. Title should reflect intent: user requested a single-word pong response. Good title: \"Single-word pong reply\". That's 22 chars, grammatical. Final only that."},"finish_reason":null,"index":0,"raw_output":null}],"created":1788378479,"id":"chatcmpl-879ee1315bc5402085d7f3dfdcbb5055","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
+data: {"choices":[{"delta":{"reasoning_content":"The user wants a single word reply: pong. Just output \"pong\"."},"finish_reason":null,"index":0,"raw_output":null}],"created":1788383802,"id":"chatcmpl-87c362fccc5d46e1b62ac4a764c9791d","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
+
+data: {"id":"chatcmpl-87c362fccc5d46e1b62ac4a764c9791d","object":"chat.completion.chunk","created":1788383802,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"p"},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-87c362fccc5d46e1b62ac4a764c9791d","object":"chat.completion.chunk","created":1788383802,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"ong"},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-87c362fccc5d46e1b62ac4a764c9791d","object":"chat.completion.chunk","created":1788383802,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-87c362fccc5d46e1b62ac4a764c9791d","object":"chat.completion.chunk","created":1788383802,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":7122,"total_tokens":7153,"completion_tokens":31,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":16},"output_tokens_details":{"reasoning_tokens":16}}}
+
+data: [DONE]
 

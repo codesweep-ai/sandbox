@@ -1,14 +1,4 @@
-data: {"id":"chatcmpl-fde281309e0f489486924a9a6f89bbbb","object":"chat.completion.chunk","created":1788378490,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-9754bdfe555446c7b103607e1108d5a3","object":"chat.completion.chunk","created":1788383812,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"choices":[{"delta":{"reasoning_content":"We need answer to user request. They request exactly \"Reply with the single word: pong\". Need same language? User English. Output should be single word pong, no extra. Need consider whether to use tools? Simple greeting no. Ensure no quotes."},"finish_reason":null,"index":0,"raw_output":null}],"created":1788378490,"id":"chatcmpl-fde281309e0f489486924a9a6f89bbbb","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
-
-data: {"id":"chatcmpl-fde281309e0f489486924a9a6f89bbbb","object":"chat.completion.chunk","created":1788378490,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"p"},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-fde281309e0f489486924a9a6f89bbbb","object":"chat.completion.chunk","created":1788378490,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"ong"},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-fde281309e0f489486924a9a6f89bbbb","object":"chat.completion.chunk","created":1788378490,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-fde281309e0f489486924a9a6f89bbbb","object":"chat.completion.chunk","created":1788378490,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":7622,"total_tokens":7688,"completion_tokens":66,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":51},"output_tokens_details":{"reasoning_tokens":51}}}
-
-data: [DONE]
+data: {"choices":[{"delta":{"reasoning_content":"Reply with single word title? User asks generate title for conversation whose content is \"Reply with the single word: pong\". Need output only title \u003c=50 chars same language English. Need meaningful. Likely \"Pong reply\" or \"Single-word pong response\". Must not respond pong. Final only title"},"finish_reason":null,"index":0,"raw_output":null}],"created":1788383812,"id":"chatcmpl-9754bdfe555446c7b103607e1108d5a3","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
 
