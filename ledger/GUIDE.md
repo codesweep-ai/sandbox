@@ -105,6 +105,11 @@ actually run: a pre-drafted claim is a lie waiting for a probe to find it. And l
 before you close the record, because you have to cite a sha that exists. Never predict one, and
 never amend the fix to contain its own closure.
 
+`check` resolves every sha you cite against the repository, so a predicted one fails the gate
+rather than sitting in the ledger as a claim nobody rechecks. Write them as git prints them:
+lower-case hexadecimal, seven characters or more. A sha you name in `details`, a note or
+`verified` is checked the same way and reported as a warning.
+
 Abandonment is honest too. Use `wont-fix` or `moved-to-roadmap`, set `resolved`, and write a
 `resolution` saying why. The ID stays dead.
 

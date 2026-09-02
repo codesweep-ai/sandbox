@@ -1,0 +1,22 @@
+{
+  "id": "SBX-030",
+  "title": "The lender presents an expired agent login, so a lent sandbox gets a bare 401",
+  "type": "improvement",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent, re-recording the cassette matrix on 2026-09-01: codex-login-lent failed while codex-login-shared passed",
+  "opened": "2026-09-01",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`readCodexLogin` in internal/lend/cred.go reads `tokens.access_token` and the account id. It does not read `tokens.refresh_token`, and it does not look at the token's expiry. An access token that has passed its `exp` is handed to the guest and spent, and chatgpt.com answers 401.\n\nThe two credential modes diverge here, and only one of them can recover. A shared sandbox receives a copy of the whole auth.json, so the Codex CLI inside refreshes the token itself and the session proceeds. A lent sandbox holds a loan token instead, and the lender swaps in the access token alone, so nothing on the path is able to refresh.\n\nThe matrix was re-recorded on 2026-09-01, when the host's Codex access token had already expired on 2026-08-30. Every request of codex-login-lent came back 401. That was three GETs of /models and two POSTs of /responses. The paired codex-login-shared cell passed in the same run, against the same profile. A new login on the host cleared it, and the cell then recorded a clean session.\n\nWhat reaches the person is the part worth fixing. The agent prints a model error, the recording writes a cassette of five 401s, and nothing names the cause. A stale cassette of refusals is worse than a failure, because it replays green until somebody reads it.\n\nTwo things would help, and they are independent. The lender could refuse to lend a login whose `exp` has passed, and say which profile to renew. It could also refresh the token itself, since the refresh token is in the file it already opens. The first is small and turns an opaque 401 into a sentence; the second removes the failure.",
+  "notes": [],
+  "links": [
+    "SBX-026"
+  ]
+}
