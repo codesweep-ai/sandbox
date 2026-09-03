@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 
 	assets "github.com/codesweep-ai/sandbox"
 	"github.com/codesweep-ai/sandbox/internal/doctor"
@@ -16,6 +17,7 @@ var ErrChecksFailed = errors.New("host checks failed")
 
 func newDoctorCmd(app *App) *cobra.Command {
 	engine := ""
+	slim := false
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check host prerequisites",
@@ -23,6 +25,26 @@ func newDoctorCmd(app *App) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if engine == "" {
 				engine = autoEngine(app.Host.IsMacOS) // same default `create` would pick
+			}
+			// Retarget exactly as `build --slim` does, and for the same reason
+			// the flag exists there: the two variants are separate images with
+			// separate artifacts, and a report is about one of them.
+			//
+			// Without this the flag did not exist and the default answered for
+			// the shipped image, so somebody working on the slim tier was told
+			// their host was ready while the rootfs their sandboxes would boot
+			// was missing. That is the diagnosis this command exists to give,
+			// delivered about the wrong image.
+			//
+			// An explicit CS_SANDBOX_IMAGE still wins, as it does for build:
+			// naming a reference is how CI pins a run to one, and a flag must
+			// not quietly report on something else.
+			if slim && os.Getenv("CS_SANDBOX_IMAGE") == "" {
+				ref, err := imageRef(slimImageRepo)
+				if err != nil {
+					return err
+				}
+				app.Image = ref
 			}
 			switch engine {
 			case "podman", "firecracker":
@@ -72,6 +94,8 @@ func newDoctorCmd(app *App) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&engine, "engine", "", "engine to check: podman | firecracker (default: same as create)")
+	cmd.Flags().BoolVar(&slim, "slim", false,
+		"check the slimmed CI image and its artifacts instead of the shipped ones")
 	return cmd
 }
 

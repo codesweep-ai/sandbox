@@ -161,7 +161,10 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 	} else if _, err := d.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "image", "exists", d.Image); err == nil {
 		cg.add(OK, "image present ("+d.Image+")")
 	} else {
-		cg.add(HM, "image not built yet — build it with:  cs-sandbox build")
+		// Named in full, for the reason buildHint gives: a bare `cs-sandbox
+		// build` makes the shipped image, so on a report about the slim one it
+		// leaves this line saying exactly what it said before.
+		cg.add(HM, "image not built yet — build it with:  "+buildHint(d.Image, engine))
 	}
 	if fileExists(d.TierDir + "/id_cs-sandbox_user") {
 		cg.add(OK, "tier keys generated")
@@ -214,13 +217,21 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		switch {
 		case d.FCBinPath == "" || !isExecutable(d.FCBinPath):
 			fg.add(HM, "firecracker binary not downloaded yet — fetched (SHA256-verified) on first 'create'")
+		// The binary is version-pinned and shared, so neither the image nor the
+		// variant decides which one lands. The full command anyway, because a
+		// build is image-scoped whatever it was run for: a bare one would fetch
+		// this binary and rebuild the OTHER variant's image and rootfs on the
+		// way past, which is a lot of work nobody asked for.
 		case d.FCVersionCache == "":
-			fg.add(HM, "firecracker binary cached, version unrecorded (downloaded before it was tracked) — re-fetched and digest-verified by:  cs-sandbox build")
+			fg.add(HM, "firecracker binary cached, version unrecorded (downloaded before it was tracked) — re-fetched and digest-verified by:  "+buildHint(d.Image, "firecracker"))
 		case d.FCVersionCache != d.FCVersionPin:
-			fg.add(HM, "firecracker binary cached ("+d.FCVersionCache+") but pinned to "+d.FCVersionPin+" — refreshed by:  cs-sandbox build")
+			fg.add(HM, "firecracker binary cached ("+d.FCVersionCache+") but pinned to "+d.FCVersionPin+" — refreshed by:  "+buildHint(d.Image, "firecracker"))
 		default:
 			fg.add(OK, "firecracker binary cached ("+d.FCVersionCache+")")
 		}
+		// Before the reflink line, which is about copying this file: whether it
+		// exists at all is the question that decides whether create runs.
+		fg.add(baseRootfsCheck(d))
 		fg.add(reflinkCheck(ctx, d))
 		r.addGroup(fg)
 		// Directly after the engine's own section, so it reads as a continuation

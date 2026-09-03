@@ -27,7 +27,7 @@ cs-sandbox group create|ls|rm <group> [-f]
 cs-sandbox create-store <name>         cs-sandbox seed-store [--from-host] <name> <image>...
 cs-sandbox stores                      cs-sandbox rm-store [-f] <name>
 
-cs-sandbox build [--engine ENGINE]...  cs-sandbox doctor [--engine ENGINE]
+cs-sandbox build [--engine ENGINE]...  cs-sandbox doctor [--engine ENGINE] [--slim]
 cs-sandbox agent-login <agent> <name>  cs-sandbox install-agent-tools [dir]
 cs-sandbox agent-tools [--json]
 cs-sandbox lender [--addr ADDR]
@@ -209,6 +209,7 @@ cs-sandbox build --slim                   # the CI image instead: no developer t
 cs-sandbox build --rebuild-base           # rebuild the OS/toolchain and agent tiers too
 cs-sandbox build --local-sandbox          # take cs-sandbox from this checkout, not the proxy
 cs-sandbox doctor [--engine ENGINE]       # check prerequisites, print the fix for each gap
+cs-sandbox doctor --slim                  # check the CI image and its artifacts instead
 cs-sandbox install-agent-tools [dir]      # the agent tools onto your PATH
 cs-sandbox agent-tools [--json]           # what those tools are, with their sha256
 cs-sandbox agent-login <agent> <name>     # log an agent in inside a sandbox
@@ -243,8 +244,10 @@ workflow publishes a candidate, proves it, and prints the two lines to paste int
 the edit is silently ignored.
 
 `--slim` builds the CI image instead of the shipped one: the same three Containerfiles with the
-developer toolchains removed. That drops Go, Node, Python, the JDK, Maven, Neovim and its language
-servers, and Chromium. The image weighs about 474 MB against 6.04 GB, and it builds in minutes
+developer toolchains removed. That drops Go, Node, the JDK, Maven, Neovim and its language
+servers, and Chromium. It drops the Python toolchain as well, meaning pyenv and the `/opt/py-tools`
+venv, but keeps the distro `python3` and the bare `python` name beside it. A sandbox has to run the
+scripts an agent writes, and agents write `python`. The image weighs about 474 MB against 6.04 GB, and it builds in minutes
 against tens of them. That difference is what lets a job boot real sandboxes on a hosted runner.
 Building the full image on every push would cost more time and disk than such a job has. The
 derivation lives in `image/ci-slim.sh` and is applied to
@@ -323,6 +326,13 @@ install path.
 
 `doctor` is the first thing to run when something does not work. It checks each prerequisite and
 prints the remedy for anything missing.
+
+On a Firecracker host it also asks whether the base rootfs exists for the image the report is
+about. That artifact is the one prerequisite `create` does not supply for itself. The Firecracker binary
+is fetched on first use and the tier keys are made on first create; the rootfs comes from
+`cs-sandbox build` and from nothing else. The cache holds one per image, so this is where `--slim`
+earns its place. A host that has built the shipped rootfs and never the slim one is ready for the
+first and cannot boot the second. Only a report naming the right image says so.
 
 Two of its checks are about identity rather than presence. The agent tools on your `PATH` are
 compared byte for byte against the ones this build ships. A host that installed them from another
@@ -724,7 +734,9 @@ charged to the shell that launched it. Under WSL2, enable systemd as
 **Anything about a missing prerequisite**
 
 Run `cs-sandbox doctor`, which names the gap and the fix. Add `--engine podman` or `--engine
-firecracker` to check a specific engine.
+firecracker` to check a specific engine, and `--slim` to ask about the CI image rather than the
+shipped one. The report is about one image, so a host ready for one variant can be reported as
+ready while the other cannot boot at all.
 
 ## Notes for agents
 

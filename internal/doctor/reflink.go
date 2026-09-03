@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
@@ -23,7 +22,7 @@ func reflinkCheck(ctx context.Context, d Deps) (Status, string) {
 		return OK, "instance disks share extents with the base (reflink)"
 	}
 	size := ""
-	if n := baseRootfsRealBytes(d.FCCache); n > 0 {
+	if n := baseRootfsRealBytes(d.FCCache, d.Image); n > 0 {
 		size = fmt.Sprintf(" (~%.1f GiB)", float64(n)/(1<<30))
 	}
 	return HM, "no reflink to the instances dir — each microVM copies the base" + size
@@ -108,20 +107,4 @@ func ensureDir(dir string) (undo func(), err error) {
 			_ = os.Remove(p)
 		}
 	}, nil
-}
-
-// baseRootfsRealBytes is the disk a non-reflink host pays per sandbox: the base
-// rootfs's *allocated* size, not its apparent one. The fallback copy preserves
-// holes (GNU cp defaults to --sparse=auto), so a 32 GiB disk holding 6 GiB costs
-// 6, and quoting the apparent size would overstate it fivefold. Zero when the
-// base has not been built yet, in which case the caller omits the figure.
-func baseRootfsRealBytes(fcCache string) int64 {
-	fi, err := os.Stat(filepath.Join(fcCache, "base-rootfs.ext4"))
-	if err != nil {
-		return 0
-	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Blocks > 0 {
-		return st.Blocks * 512 // st_blocks is always 512-byte units
-	}
-	return fi.Size()
 }

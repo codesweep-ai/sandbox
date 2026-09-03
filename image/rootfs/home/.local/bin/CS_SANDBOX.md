@@ -153,7 +153,7 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
 | "pause it" / "free the resources" | `cs-sandbox stop <name>` (then `start` later) |
 | "keep these separate from my other sandboxes" / "two experiments at once" / "they must not interfere" | `cs-sandbox create <name> --group <group>` — each group gets its own network, keys and gateway |
 | "it says the name exists in several groups" | Address it in full: `<name>.<group>`. A bare name only ever means the `default` group |
-| "why doesn't this work?" / "check my setup" | `cs-sandbox doctor` (add `--engine podman` to check that engine) |
+| "why doesn't this work?" / "check my setup" | `cs-sandbox doctor` (add `--engine podman` for that engine, `--slim` for the CI image) |
 | "set it up" / "first run" | `cs-sandbox build`, then `cs-sandbox install-agent-tools` |
 
 ## When to use proactively

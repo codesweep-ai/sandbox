@@ -1125,6 +1125,7 @@ it. One file for all of them let whoever built last decide what every later sand
 never noticed: it checks that the disk is a filesystem, not which image it came from. So a host
 that had built the slim rootfs served it to a sandbox asking for the shipped image, silently.
 Kept per image, that sandbox finds no rootfs under the name it asked for and is told to build one.
+`doctor` reports the same gap for the image it is asked about, before a create reaches it.
 The key is the repository rather than the whole reference, so a host holds one per variant instead
 of one per version it has ever built.
 

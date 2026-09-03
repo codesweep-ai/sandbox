@@ -191,7 +191,8 @@ needs. It is tagged apart from the shipped image, so it cannot be mistaken for i
 [MANUAL.md](MANUAL.md#host-setup).
 
 `cs-sandbox create` assumes `build` has run: it **does not** build under the covers, and fails with a
-"run: cs-sandbox build" message if the image or Firecracker artifacts are missing.
+"run: cs-sandbox build" message if the image or Firecracker artifacts are missing. `cs-sandbox
+doctor` reports the same gap first, and names the build command for the image it was asked about.
 
 The image bundles a broad toolchain: podman, skopeo and buildah, tmux, chromium, java and maven, Go,
 pyenv with Python, nvm with Node, and Neovim. It adds the usual CLI helpers, and the Claude Code,

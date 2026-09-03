@@ -475,6 +475,40 @@ func TestVersionImages(t *testing.T) {
 	})
 }
 
+// TestDoctorSlim: --slim points the report at the slim image, the way the same
+// flag points a build at it.
+//
+// The two commands have to agree about what the word names. They did not: build
+// took --slim and doctor had no such flag, so the only report a slim host could
+// get was one it had to ask for by reference. A contributor running the obvious
+// command was told about the shipped image — including that its base rootfs was
+// built, while the slim one their sandboxes boot was missing.
+func TestDoctorSlim(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		flags     []string
+		env       string
+		wantImage string
+	}{
+		{"default", nil, "", imageRepo + ":" + testVersion},
+		{"slim", []string{"--slim"}, "", slimImageRepo + ":" + testVersion},
+		// An explicit reference wins, exactly as it does for build.
+		{"slim honours CS_SANDBOX_IMAGE", []string{"--slim"}, "localhost/pinned:7", "localhost/pinned:7"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("CS_SANDBOX_IMAGE", c.env)
+			app := &App{}
+			args := append([]string{"doctor", "--engine", "podman"}, c.flags...)
+			// The report finds issues on a fake host, and that is fine: what is
+			// under test is which image it was asked about.
+			_, _ = runRoot(t, app, args...)
+			if app.Image != c.wantImage {
+				t.Errorf("reported on %q, want %q", app.Image, c.wantImage)
+			}
+		})
+	}
+}
+
 // TestBuildSlim: --slim derives a Containerfile with ci-slim.sh and builds from
 // that one, under a tag of its own; the default build is untouched. The tag
 // matters as much as the file — three images that are not interchangeable, and
