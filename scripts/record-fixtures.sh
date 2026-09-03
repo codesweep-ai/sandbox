@@ -49,10 +49,16 @@ set +a
 
 image=${CS_SANDBOX_IMAGE:-localhost/sandbox-slim:ci}
 
+# The tier that image is built FROM, which is what decides the agent CLI
+# versions the cassettes end up keyed to. Printed because it is the one input to
+# a recording that nothing on the command line names.
+tier=$(sed -n 's/^SLIM_AGENTS_REF=//p' "$repo/image/tiers.env")
+
 echo "Recording from:"
 echo "  repo             $repo"
 echo "  branch           $(git rev-parse --abbrev-ref HEAD)"
 echo "  agents image     $image"
+echo "  agents tier      ${tier:-MISSING from image/tiers.env}"
 echo "  cs-vcr           $(cs-vcr version 2>/dev/null | head -1 || echo MISSING)"
 echo "  cassettes        $repo/test/cassettes"
 echo
@@ -95,10 +101,15 @@ fi
 echo
 echo "Host prerequisites:"
 if command -v podman >/dev/null; then ok "podman"; else bad "podman is not on PATH"; missing=1; fi
-if podman image exists "$image" 2>/dev/null; then
-  ok "$image is built"
+# Deliberately not `podman image exists`. That is what stood here, and an
+# existence check cannot see staleness: an image built before a tier bump
+# satisfies it forever, and a recording made against one is committed rather
+# than failed. `make fixtures-strict` now rebuilds the image through
+# setup-fixtures before it records, so presence is no longer the question.
+if [[ -n $tier ]]; then
+  ok "$image is rebuilt from $tier before recording"
 else
-  bad "$image is not built -- run: make build-ci-image"
+  bad "image/tiers.env names no SLIM_AGENTS_REF, so the image has no tier to build on"
   missing=1
 fi
 if command -v cs-vcr >/dev/null; then ok "cs-vcr"; else bad "cs-vcr is not on PATH"; missing=1; fi

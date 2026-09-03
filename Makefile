@@ -54,7 +54,7 @@ COVERDIR   ?= .coverage
 COVER_ABS  := $(abspath $(COVERDIR))
 COVERFLAGS := -covermode=atomic -coverpkg=./...
 
-.PHONY: help tidy-check embed-check build build-go build-ci-image build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration test-live-agents fixtures fixtures-strict fixtures-check test-agents-replay test-agents-shared test-agents-lent coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode actionlint snapshot release release-check clean
+.PHONY: help tidy-check embed-check build build-go build-ci-image build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration test-live-agents setup-fixtures fixtures fixtures-strict fixtures-check test-agents-replay test-agents-shared test-agents-lent coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode actionlint snapshot release release-check clean
 
 .DEFAULT_GOAL := help
 
@@ -481,7 +481,37 @@ test-live-agents:
 ## what the whole matrix needs before it clears a single cassette.
 FIXTURE_CASES ?= TestLiveAgentRecordsCassettes
 
-fixtures: tools
+## setup-fixtures: the image the recording boots, and the tools beside it
+##
+## The guarantee setup-smoke makes for the replay tier, made here for the
+## recording one, and for a stronger reason. A replay against a stale image
+## FAILS, which is a bad afternoon. A recording against one succeeds, writes
+## fourteen cassettes keyed to agents nobody is running any more, and commits
+## them. This is the path where being wrong is paid for in model turns.
+##
+## What stood here was `podman image exists` in scripts/record-fixtures.sh, and
+## an existence check cannot see staleness: an image built before a tier bump
+## satisfies it forever. That is exactly how the cassettes came to be recorded
+## against agent CLIs the pins had already moved past — the recording was green,
+## the cassettes were well-formed, and only the base-image workflow ever saw it.
+##
+## build-ci-image rather than setup-smoke, which would build the Firecracker
+## artifacts as well. This matrix boots podman sandboxes and never a microVM, and
+## those artifacts cost ~1m35s and 6.2 GB on a cold cache — real work for a
+## recording that cannot use any of it.
+##
+## A host without podman is reported and passed over rather than failed, which is
+## how every other live target behaves: the cases skip themselves there, and a
+## setup step that turned that skip into a failure would take the target away
+## from the hosts it was written for.
+setup-fixtures: tools
+	@if command -v podman >/dev/null 2>&1; then \
+		$(MAKE) --no-print-directory build-ci-image; \
+	else \
+		echo "setup-fixtures: no podman on this host — every case will skip itself"; \
+	fi
+
+fixtures: setup-fixtures
 	$(WITH_TOOLS) CS_SANDBOX_RECORD=1 CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
 	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run '$(FIXTURE_CASES)'
 
@@ -489,7 +519,7 @@ fixtures: tools
 ## host that holds every credential and means to re-record the whole matrix: a
 ## missing one skips under `fixtures`, and a run that recorded nothing reports
 ## the same green as one that recorded everything.
-fixtures-strict: tools
+fixtures-strict: setup-fixtures
 	$(WITH_TOOLS) CS_SANDBOX_RECORD=1 CS_SANDBOX_STRICT=1 \
 	  CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
 	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run '$(FIXTURE_CASES)'
