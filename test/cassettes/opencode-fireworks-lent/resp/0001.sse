@@ -1,20 +1,14 @@
-data: {"id":"chatcmpl-c0583fb6e7384777aedeb9f1ef18b946","object":"chat.completion.chunk","created":1788383802,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-7f9706bdbac94b7bb5952b3ffbfb26cf","object":"chat.completion.chunk","created":1788393552,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"choices":[{"delta":{"reasoning_content":"Reply pong? Title same language English."},"finish_reason":null,"index":0,"raw_output":null}],"created":1788383802,"id":"chatcmpl-c0583fb6e7384777aedeb9f1ef18b946","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
+data: {"choices":[{"delta":{"reasoning_content":"pong"},"finish_reason":null,"index":0,"raw_output":null}],"created":1788393552,"id":"chatcmpl-7f9706bdbac94b7bb5952b3ffbfb26cf","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
 
-data: {"id":"chatcmpl-c0583fb6e7384777aedeb9f1ef18b946","object":"chat.completion.chunk","created":1788383802,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"Ping"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-7f9706bdbac94b7bb5952b3ffbfb26cf","object":"chat.completion.chunk","created":1788393552,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"p"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-c0583fb6e7384777aedeb9f1ef18b946","object":"chat.completion.chunk","created":1788383802,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"-p"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-7f9706bdbac94b7bb5952b3ffbfb26cf","object":"chat.completion.chunk","created":1788393552,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"ong"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-c0583fb6e7384777aedeb9f1ef18b946","object":"chat.completion.chunk","created":1788383802,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"ong"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-7f9706bdbac94b7bb5952b3ffbfb26cf","object":"chat.completion.chunk","created":1788393552,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-c0583fb6e7384777aedeb9f1ef18b946","object":"chat.completion.chunk","created":1788383802,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" reply"},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c0583fb6e7384777aedeb9f1ef18b946","object":"chat.completion.chunk","created":1788383802,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" request"},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c0583fb6e7384777aedeb9f1ef18b946","object":"chat.completion.chunk","created":1788383802,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c0583fb6e7384777aedeb9f1ef18b946","object":"chat.completion.chunk","created":1788383802,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":624,"total_tokens":650,"completion_tokens":26,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":8},"output_tokens_details":{"reasoning_tokens":8}}}
+data: {"id":"chatcmpl-7f9706bdbac94b7bb5952b3ffbfb26cf","object":"chat.completion.chunk","created":1788393552,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":7122,"total_tokens":7139,"completion_tokens":17,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":2},"output_tokens_details":{"reasoning_tokens":2}}}
 
 data: [DONE]
 

@@ -1,7 +1,7 @@
 {
   "case": "claude-login-shared",
   "cli": "claude",
-  "cli_version": "2.1.245",
+  "cli_version": "2.1.258",
   "outcome": "recorded",
-  "at": "2026-09-02T21:14:45Z"
+  "at": "2026-09-02T23:57:20Z"
 }
