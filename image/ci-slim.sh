@@ -96,7 +96,7 @@ test -f "$src" || { echo "ci-slim: no Containerfile at $src" >&2; exit 1; }
 # A live test that needs more than this list belongs in `make test-integration`
 # against the real image, or the package belongs here. Adding one is cheap
 # relative to the toolchain layers, which are what the size is really about.
-BASE_PACKAGES='openssh-server openssh-clients sudo shadow-utils git jq curl socat python3 procps-ng hostname iproute iputils findutils tar podman fuse-overlayfs slirp4netns passt containers-common tmux ncurses-term'
+BASE_PACKAGES='openssh-server openssh-clients sudo shadow-utils git jq curl socat python3 python-unversioned-command procps-ng hostname iproute iputils findutils tar podman fuse-overlayfs slirp4netns passt containers-common tmux ncurses-term'
 
 out=$(awk -v tier="$tier" -v base="$BASE_PACKAGES" '
 BEGIN {

@@ -218,7 +218,7 @@ func TestCISlimKeepsWhatASandboxBootsWith(t *testing.T) {
 	out := slimmed(t, "base")
 	for _, pkg := range []string{
 		"openssh-server", "sudo", "git", "jq", "curl", "socat", "python3", "podman",
-		"tmux", "ncurses-term",
+		"python-unversioned-command", "tmux", "ncurses-term",
 	} {
 		if !strings.Contains(out, pkg) {
 			t.Errorf("the slim base layer lost %q", pkg)
