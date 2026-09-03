@@ -1,0 +1,22 @@
+{
+  "id": "SBX-034",
+  "title": "The doctor calls a firecracker host ready when the base rootfs for its image is missing",
+  "type": "defect",
+  "severity": "med",
+  "status": "closed",
+  "foundBy": "session agent, from a campaign recording run that died on every scenario, 2026-09-03",
+  "opened": "2026-09-03",
+  "resolved": "2026-09-03",
+  "stint": "2026-09-03 base rootfs readiness",
+  "evidence": {
+    "commits": [
+      "38ae59b"
+    ],
+    "integrated": [],
+    "verified": "go test ./internal/doctor/ -count=1: PASS. TestReflinkCostReadsTheKeyedRootfs fails against the previous code, which stat'ed the unkeyed name. On the host that met this, cs-sandbox doctor --engine firecracker now reports NO and exits 1 for the slim image, where it reported ok image present and exited 0."
+  },
+  "resolution": "The firecracker group now checks the base rootfs for the image the report is about, keyed the way the cache keys it. A missing one is reported as an issue. The reflink cost reads that same keyed path.",
+  "details": "`cs-sandbox doctor --engine firecracker` reported `ok image present` and exited 0 on a host where `create` could not boot a member.\n\nThe base rootfs is a separate artifact from the podman image. It is a `podman export` of a container made from that image. It is also the one firecracker prerequisite that create does not supply for itself. The binary is fetched on first use, and the tier keys are made on first create. The rootfs comes from `cs-sandbox build` and from nothing else.\n\nNothing in internal/doctor read it. The only mention of the file was a disk-cost estimate inside the reflink line. So the report answered a question next to the one that mattered. The image was present, and that was all anybody asked.\n\nThis was met downstream. A campaign checkout moved its smoke and recording tiers onto the slim build. That host had pulled it, and had built the shipped rootfs long before. Its setup step saw the image, ran the doctor, was told the host was ready, and started five real campaigns. Each campaign took a group, a network and a gateway port. Each one died on its first member and leaked the group behind it.\n\nThe keying is what makes the gap reachable. A host keeps one slot per variant, so a rootfs built for the shipped build says nothing about the slim one. A machine can be ready for either and unable to boot the other. The report gave the same answer for both.\n\nA second defect sat beside it. baseRootfsRealBytes stat'ed an unkeyed `base-rootfs.ext4`, the name that per-image slots (SPEC R124) replaced. On every host since that change it found nothing and returned zero. The reflink warning then dropped the size figure it exists to carry. Its only test wrote the legacy name too, so nothing caught it.",
+  "notes": [],
+  "links": []
+}
