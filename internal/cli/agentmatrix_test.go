@@ -231,10 +231,33 @@ func matrixSetup(t *testing.T) (*run.Exec, hostenv.Host) {
 // lets one cassette serve both engines.
 func runInBox(ctx context.Context, t *testing.T, r *run.Exec, host hostenv.Host, name, sh string) string {
 	t.Helper()
+	var argv []string
 	if matrixEngine() == "firecracker" {
-		return sshCapture(t, host, name, sh)
+		argv = append([]string{"ssh"}, sshArgv(t, host, name)...)
+	} else {
+		argv = []string{"podman", "exec", "--user", host.User,
+			"--workdir", "/home/" + host.User, objName(name), "bash", "-lc"}
 	}
-	return inBox(ctx, r, host, name, sh)
+	res, err := r.Run(ctx, run.Opts{ReadOnly: true}, append(argv, sh)...)
+	// Everything the driver said, INCLUDING when it failed, and including
+	// stderr. run.Output would have been the obvious call and is the wrong one
+	// here: it returns "" on any non-zero exit, and these drivers exit 2 when a
+	// turn stalls and 3 when the client will not start. Both are exactly the
+	// cases worth reading, and both are where its diagnosis goes -- to stderr,
+	// which run.Output drops even on success.
+	//
+	// Measured, on a CI leg where every firecracker cell failed: the harness
+	// could report only "the model did not answer", with an empty output block
+	// under it, because the one sentence naming the cause had been thrown away
+	// twice over.
+	out := res.Stdout
+	if e := strings.TrimSpace(res.Stderr); e != "" {
+		out += "\n" + e
+	}
+	if err != nil {
+		out += fmt.Sprintf("\n(the command exited %d: %v)", res.ExitCode, err)
+	}
+	return out
 }
 
 // pairings is the matrix. Every combination is listed whether or not this host
@@ -715,10 +738,36 @@ func runAgentCase(t *testing.T, r *run.Exec, host hostenv.Host, c liveCase, prox
 	step(t, "asking the model, through %s…", strings.Join(flags, " "))
 	got := stripANSI(runInBox(context.Background(), t, r, host, name, c.run(c)))
 	if !strings.Contains(strings.ToLower(got), pongWord) {
-		t.Fatalf("the model did not answer through this credential.\ncommand: %s\noutput:\n%s",
-			c.run(c), tail(got, 900))
+		t.Fatalf("the model did not answer through this credential.\ncommand: %s\noutput:\n%s\n%s",
+			c.run(c), tail(got, 900), reachedRecorder(t, r, host, c, name))
 	}
 	return got
+}
+
+// reachedRecorder asks the guest what it can see of the recorder, for a turn
+// that produced no answer.
+//
+// Only on the failure path, so it costs nothing on a green run. It exists
+// because "the model did not answer" has several causes that look identical
+// from the host and are told apart in one line from inside the sandbox: a name
+// that does not resolve, a route that is not there, a port that refuses, and a
+// port that hangs. A CI leg where every microVM cell failed could distinguish
+// none of them, and the whole tier reported one sentence and an empty block.
+//
+// Best-effort by construction. The sandbox is in a bad state by the time this
+// runs, so it asks for everything at once, bounds the curl, and reports whatever
+// comes back -- including nothing, which is itself an answer about the guest.
+func reachedRecorder(t *testing.T, r *run.Exec, host hostenv.Host, c liveCase, name string) string {
+	t.Helper()
+	base := "$" + c.baseEnv(t)
+	probe := `echo "base: ` + base + `"; ` +
+		`getent ahosts ` + engine.HostReachableName + ` || echo "(does not resolve)"; ` +
+		`curl -s -o /dev/null -w 'healthz: HTTP %{http_code} in %{time_total}s\n' --max-time 10 ` +
+		`"` + base + `/healthz"; echo "curl exit $?"; ` +
+		`ip route 2>&1 | head -5`
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return "what the guest sees of the recorder:\n" + runInBox(ctx, t, r, host, name, probe)
 }
 
 // Where the recorder listens. Fixed rather than drawn from the ephemeral range:
