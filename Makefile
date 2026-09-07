@@ -586,11 +586,15 @@ AGENTS_REPLAY_CASES ?= TestAgentReplay
 ## without the coverage plumbing here that fan-out would quietly take the
 ## matrix's coverage out of the aggregate.
 ##
-## The tier is reset first, so a standalone run stands on its own. `make
-## test-smoke` does not come through here for exactly that reason: it resets
-## once and then appends both of its halves.
+## It APPENDS, and does not reset the tier. Resetting looks tidy and is wrong:
+## this target is how somebody runs one cell, and wiping the smoke tier to run
+## one cell makes the next `make ci` fail on a package that stopped being
+## covered by a run nobody meant to replace. Measured that way -- one
+## `make test-agents-replay` left internal/store unreached and coverage-check
+## called it a regression. `make test-smoke` owns the reset, because it owns
+## the whole tier. CI needs none of it: every fan-out job is a fresh checkout.
 test-agents-replay: tools
-	@scripts/coverage.sh reset smoke
+	@mkdir -p $(COVER_ABS)/smoke
 	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
 	  CS_SANDBOX_AGENTS_ENGINE=$(AGENTS_ENGINE) \
 	  go test -tags agents_replay $(COVERFLAGS) -count=1 -p 1 -parallel $(AGENTS_PARALLEL) \
