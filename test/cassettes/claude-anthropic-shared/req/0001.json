@@ -28,11 +28,11 @@
   "stream": true,
   "system": [
     {
-      "text": "x-anthropic-billing-header: cc_version=2.1.258; cc_entrypoint=sdk-cli;",
+      "text": "x-anthropic-billing-header: cc_version=2.1.258; cc_entrypoint=cli;",
       "type": "text"
     },
     {
-      "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "text": "You are Claude Code, Anthropic's official CLI for Claude.",
       "type": "text"
     },
     {

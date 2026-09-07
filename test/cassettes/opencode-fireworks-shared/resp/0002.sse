@@ -1,14 +1,4 @@
-data: {"id":"chatcmpl-4f73978d175e4a4ab486283c3c78b07e","object":"chat.completion.chunk","created":1788393563,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-718be7553e5a403cb38f30132f82869e","object":"chat.completion.chunk","created":1788751298,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"choices":[{"delta":{"reasoning_content":"Reply with the single word: pong\" — this is a simple request. Just reply \"pong\". No tools needed."},"finish_reason":null,"index":0,"raw_output":null}],"created":1788393563,"id":"chatcmpl-4f73978d175e4a4ab486283c3c78b07e","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
-
-data: {"id":"chatcmpl-4f73978d175e4a4ab486283c3c78b07e","object":"chat.completion.chunk","created":1788393563,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"p"},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-4f73978d175e4a4ab486283c3c78b07e","object":"chat.completion.chunk","created":1788393563,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"ong"},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-4f73978d175e4a4ab486283c3c78b07e","object":"chat.completion.chunk","created":1788393563,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-4f73978d175e4a4ab486283c3c78b07e","object":"chat.completion.chunk","created":1788393563,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":7122,"total_tokens":7162,"completion_tokens":40,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":25},"output_tokens_details":{"reasoning_tokens":25}}}
-
-data: [DONE]
+data: {"choices":[{"delta":{"reasoning_content":"Single word reply: pong"},"finish_reason":null,"index":0,"raw_output":null}],"created":1788751298,"id":"chatcmpl-718be7553e5a403cb38f30132f82869e","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
 
