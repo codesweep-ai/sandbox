@@ -271,6 +271,17 @@ new = lines[pre_lines:]
 if fmt == "json":
     sys.stdout.write("".join(new)); sys.exit(0)
 # text: concatenate the agent's final-answer messages from this turn.
+#
+# Two shapes, because the rollout schema moved and this driver has to read both.
+# Codex used to emit the answer as its own `agent_message` event carrying a
+# plain string. 0.152 stopped: the answer now arrives as an ordinary rollout
+# `response_item` -- an assistant message whose content array holds the
+# output_text parts -- and the agent_message event is gone.
+#
+# Reading only the old shape does not fail, which is what makes it worth
+# spelling out. task_complete is still written, so the turn is detected as
+# finished, the driver exits 0, and it prints NOTHING. The caller sees a
+# successful turn with an empty answer, and nothing anywhere says why.
 chunks = []
 for line in new:
     line = line.strip()
@@ -278,8 +289,15 @@ for line in new:
     try: o = json.loads(line)
     except Exception: continue
     p = o.get("payload")
-    if isinstance(p, dict) and p.get("type") == "agent_message":
+    if not isinstance(p, dict): continue
+    if p.get("type") == "agent_message":
         t = (p.get("message") or "").rstrip()
+        if t: chunks.append(t)
+        continue
+    if p.get("type") == "message" and p.get("role") == "assistant":
+        parts = [c.get("text") or "" for c in (p.get("content") or [])
+                 if isinstance(c, dict) and c.get("type") == "output_text"]
+        t = "".join(parts).rstrip()
         if t: chunks.append(t)
 print("\n\n".join(chunks))
 PY
