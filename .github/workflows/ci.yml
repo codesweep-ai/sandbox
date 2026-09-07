@@ -11,12 +11,18 @@
 #
 # Which hosts can do what was measured, not assumed:
 #
-#   ubuntu-latest    rootless podman from the runner image. Live tests run. The
-#                    version moves with that image and is printed by the job
-#                    rather than pinned here, because it is not cosmetic: which
-#                    podman a host runs decides how a sandbox reaches the host
-#                    (SPEC R52a), and this comment claimed 4.9.3 long after the
-#                    runner had moved on.
+#   ubuntu-26.04     rootless podman from the runner image. Live tests run.
+#                    PINNED to 26.04 rather than ubuntu-latest, and the reason is
+#                    the podman it carries. A microVM reaches the host at the
+#                    address pasta publishes (SPEC R52a), and podman below 5.0
+#                    will not put pasta on its rootless network namespace at all
+#                    — the setting exists there and governs a container's own
+#                    network mode, while the shared namespace stays slirp4netns.
+#                    ubuntu-latest is 24.04, whose podman GitHub DOWNGRADED from
+#                    5.8.4 to 4.9.3 on 2026-08-31 to match the distro, and every
+#                    firecracker job went red the same day. 26.04 carries podman
+#                    5.7.0. The label is in preview, which is the cost of this.
+#                    The version is printed by the jobs rather than trusted.
 #   windows/WSL2     podman inside the distro. Live tests run.
 #   macos-15-intel   THE UNIT TIER ONLY. It ran the smoke profile until the
 #                    runner's cost stopped being worth what it added: a bare
@@ -103,11 +109,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            label: ubuntu-latest
+          - os: ubuntu-26.04
+            label: ubuntu-26.04
             # Artifact names take neither "/" nor a space, both of which
             # matrix.label carries, so the coverage artifact is named with this.
-            covlabel: ubuntu-latest
+            covlabel: ubuntu-26.04
             shell: bash
           # An array, not a label string: self-hosted runners are selected by
           # ANDing labels, and these three are the ones the runner registers
@@ -203,7 +209,7 @@ jobs:
           go version
 
       - name: gofmt
-        if: matrix.os == 'ubuntu-latest' # formatting is platform-independent; check once
+        if: matrix.os == 'ubuntu-26.04' # formatting is platform-independent; check once
         run: make fmt-check
 
       - name: verify modules
@@ -228,14 +234,14 @@ jobs:
       # target runs all three tag sets, matching the vet steps above: a build
       # tag hides a file from the linter as surely as from the compiler.
       - name: golangci-lint
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-26.04'
         run: make lint
 
       # Whole-program reachability, which golangci-lint's `unused` cannot do:
       # it reasons one package at a time, so a function whose only caller is in
       # another package still looks used. See the deadcode target in the Makefile.
       - name: deadcode
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-26.04'
         run: make deadcode
 
       - name: build
@@ -262,7 +268,7 @@ jobs:
       # can be cut. The manifest is platform-independent, so check it once —
       # without this nothing reads .goreleaser.yaml until a release is cut.
       - name: goreleaser check
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-26.04'
         uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
@@ -291,7 +297,7 @@ jobs:
   # .github/actionlint.yaml.
   actionlint:
     name: workflows
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
@@ -324,7 +330,7 @@ jobs:
   # targets run it with `go tool`, so CI and a laptop use the same build.
   prose:
     name: docs prose
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
@@ -343,7 +349,7 @@ jobs:
   # the build.
   refs:
     name: docs refs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
@@ -359,7 +365,7 @@ jobs:
   # them pass by seeing nothing.
   oss:
     name: open-source readiness
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
@@ -376,7 +382,7 @@ jobs:
   # command prints. It builds first, because every check here asks the binary.
   surface:
     name: docs surface
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -391,7 +397,7 @@ jobs:
   # this job did.
   ledger:
     name: ledger check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -402,8 +408,8 @@ jobs:
       - run: make ledger
 
   build-artifacts:
-    name: build-artifacts (ubuntu-latest)
-    runs-on: ubuntu-latest
+    name: build-artifacts (ubuntu-26.04)
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     env:
       CS_SANDBOX_IMAGE: localhost/sandbox-slim:ci
@@ -468,14 +474,14 @@ jobs:
           retention-days: 1
 
   smoke-linux:
-    name: smoke (ubuntu-latest)
+    name: smoke (ubuntu-26.04)
     # Both, so the fast checks gate the slow ones: no point booting sandboxes on
     # four hosts for a branch that does not vet or whose unit tests fail. The
     # matrix's WSL leg is the slowest of the three — it builds its environment
     # from a bare distro rather than a curated runner image — so on a build-image
     # cache hit it is what these wait on.
     needs: [build-test, build-artifacts]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     env:
       CS_SANDBOX_IMAGE: localhost/sandbox-slim:ci
@@ -519,9 +525,9 @@ jobs:
   # it. Linux only: macOS has no KVM at all, and WSL2's /dev/kvm is nested virt
   # inside an Azure VM, which is not something to assume.
   smoke-firecracker:
-    name: smoke firecracker (ubuntu-latest)
+    name: smoke firecracker (ubuntu-26.04)
     needs: [build-test, build-artifacts]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     env:
       CS_SANDBOX_IMAGE: localhost/sandbox-slim:ci
@@ -619,7 +625,7 @@ jobs:
   agents-podman:
     name: agents podman (${{ matrix.case }})
     needs: [build-test, build-artifacts]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     strategy:
       # One cell says nothing about the next: a run that stopped at the first
@@ -718,7 +724,7 @@ jobs:
   agents-firecracker:
     name: agents firecracker (${{ matrix.case }})
     needs: [build-test, build-artifacts]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -1123,7 +1129,7 @@ jobs:
   # is the only one worth reporting or gating on.
   coverage:
     name: coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs:
       - build-test
       - smoke-linux
@@ -1178,12 +1184,12 @@ jobs:
   # It runs after the tests, because every sandbox anybody creates runs what this
   # pushes. It does not gate them: nothing waits on this job.
   publish-images:
-    name: publish images (ubuntu-latest)
+    name: publish images (ubuntu-26.04)
     if: >-
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: [build-test, smoke-linux]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     permissions:
       contents: read

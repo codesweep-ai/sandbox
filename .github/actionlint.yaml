@@ -10,6 +10,14 @@
 # rejects the workflow outright, which is how this was found. The key is
 # `self-hosted-runner` because that is where actionlint reads extra labels from;
 # this runner is GitHub-hosted, not self-hosted.
+#
+# ubuntu-26.04 is the same case and the reason the Ubuntu jobs moved there: it
+# carries podman 5.7.0, and podman below 5.0 will not put pasta on its rootless
+# network namespace — which is the only stack that publishes the address a
+# microVM reaches the host at. GitHub's ubuntu-latest went the other way, back
+# to 24.04's podman 4.9.3, so the firecracker engine cannot run there at all.
+# The label is a preview one, which is why no actionlint release knows it yet.
 self-hosted-runner:
   labels:
     - macos-15-intel
+    - ubuntu-26.04

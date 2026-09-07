@@ -177,6 +177,19 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	if err = fab.Up(ctx); err != nil {
 		return nil, err
 	}
+	// The host hop, asked HERE and nowhere earlier. The fabric is up, so the
+	// keepalive holds podman's rootless netns and pasta is running in it: this
+	// asks the namespace the guest is about to use, rather than one the question
+	// itself created. Both halves of that matter — a probe before this point
+	// races podman starting pasta, and a probe in preflight would fail
+	// `cs-sandbox build`, which reaches no network at all.
+	//
+	// Before the boot, which is the whole point. What this replaces is a guest
+	// that comes up, finds nobody at the address its seed pins, and times out
+	// ten seconds later inside whatever was running in it.
+	if err = fe.ensurePasta(ctx); err != nil {
+		return nil, err
+	}
 	unlock()
 
 	// --- per-instance seed (built unlocked) ---

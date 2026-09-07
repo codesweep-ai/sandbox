@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 
+	// Aliased: this file has a local `engine` string naming the engine under
+	// report, and the package would be shadowed by it exactly where it is used.
+	eng "github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
 
@@ -211,6 +214,19 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 			fg.add(OK, "host packages present (passt, dnsmasq, fakeroot, e2fsprogs, socat, python3, newuidmap, iproute, curl)")
 		} else {
 			fg.add(NO, "missing host packages — install:  "+sudo+pkg+" "+strings.Join(miss, " "))
+		}
+		// passt on the PATH is not the same as podman USING it, and only pasta
+		// publishes the address a microVM reaches the host at. Asked by DOING
+		// it: everything else — which stack podman names, what the namespace
+		// looks like — was wrong on some real host, and a report that
+		// enumerated the ways of failing took longer to read than to act on.
+		if eng.PastaIsSetUp(ctx, d.Runner) {
+			fg.add(OK, "podman's rootless network answers at "+eng.HostReachableIP+
+				", where a microVM looks for the host")
+		} else {
+			fg.add(NO, "nothing answers at "+eng.HostReachableIP+" from podman's rootless network, "+
+				"where a microVM looks for the host — firecracker needs podman 5.0 or later with "+
+				"pasta networking:  podman --version  ("+sudo+pkg+" passt)")
 		}
 		// Report what is actually on disk, not the pin — they diverge after a
 		// version bump, and the refresh only happens on the next build.

@@ -77,8 +77,8 @@ jobs:
   # two runners took to reach that step, and the manifest list below joins the
   # two by name.
   plan:
-    name: plan the tags and packages (ubuntu-latest)
-    runs-on: ubuntu-latest
+    name: plan the tags and packages (ubuntu-26.04)
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     outputs:
       tag: ${{ steps.stamp.outputs.tag }}
@@ -138,8 +138,8 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            on: ubuntu-latest
-            runner: '["ubuntu-latest"]'
+            on: ubuntu-26.04
+            runner: '["ubuntu-26.04"]'
           - arch: arm64
             on: macos-arm64 / self-hosted
             runner: '["self-hosted", "macOS", "ARM64"]'
@@ -281,9 +281,9 @@ jobs:
   # something: every architecture in it has booted a real sandbox and run an
   # agent inside it.
   manifest:
-    name: publish the manifest lists (ubuntu-latest)
+    name: publish the manifest lists (ubuntu-26.04)
     needs: [plan, tiers]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     env:
       TAG: ${{ needs.plan.outputs.tag }}

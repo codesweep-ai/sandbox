@@ -1,0 +1,24 @@
+{
+  "id": "SBX-036",
+  "title": "The cheapest proof a microVM boots has been skipping itself everywhere",
+  "type": "defect",
+  "severity": "med",
+  "status": "closed",
+  "foundBy": "session agent, reviewing a firecracker CI leg for what else it was not running, 2026-09-07",
+  "opened": "2026-09-07",
+  "resolved": "2026-09-07",
+  "stint": "2026-09-07 microVM host reachability",
+  "evidence": {
+    "commits": [
+      "4ee94f8"
+    ],
+    "integrated": [],
+    "verified": "make test-smoke SMOKE_AGENTS=0 SMOKE_TESTS=TestFirecrackerCreateLive: the test now RUNS and passes in 24.97s, where it reported SKIP in 0.00s on the same host and the same artifacts."
+  },
+  "resolution": "hasArtifacts globs base-rootfs*.ext4 instead of stat'ing the unkeyed name. It only decides whether the engine has been built here at all. Create still asks for the rootfs its own image names, and says so itself when that is the file missing.",
+  "details": "TestFirecrackerCreateLive is the cheapest statement the suite makes about the microVM engine. It says that a guest boots, gets its disks, answers ssh over the vsock bridge and registers with the fabric's DNS. It has not run in a long time, and reported the green of a test that never executed.\n\nThe gate was hasArtifacts, which stat'ed base-rootfs.ext4. The cache stopped writing that name when it began keeping one base rootfs per image (SPEC R124). It writes base-rootfs-<image>.ext4 now. So the check answered false on every host that had built the artifacts, and the test skipped with 'holds no built artifacts' while the artifacts sat beside it.\n\nCI showed it plainly once looked at. The firecracker leg listed base-rootfs-localhost-sandbox-slim.ext4 in its cache and skipped the test in the same run. That held in the passing run of 2026-09-03 and in the failing one of 2026-09-07. The leg has been carrying two members rather than three.\n\nThis is the same legacy name that SBX-034 found in the doctor's reflink estimate, in a second place nobody looked. That one silently reported a size of zero; this one silently reported a pass.",
+  "notes": [],
+  "links": [
+    "SBX-034"
+  ]
+}
