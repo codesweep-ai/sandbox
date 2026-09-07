@@ -1,4 +1,16 @@
-data: {"id":"chatcmpl-718be7553e5a403cb38f30132f82869e","object":"chat.completion.chunk","created":1788751298,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-ff840304e31741afb7e0d275e6468d25","object":"chat.completion.chunk","created":1788760582,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"choices":[{"delta":{"reasoning_content":"Single word reply: pong"},"finish_reason":null,"index":0,"raw_output":null}],"created":1788751298,"id":"chatcmpl-718be7553e5a403cb38f30132f82869e","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
+data: {"choices":[{"delta":{"reasoning_content":"User asks to generate title for conversation where user said 'Reply with the single word: pong'. Need output only title. Must same language as user message summarizing (English). Need meaningful, \u003c=50 chars. The conversation content is a ping/pong test. Title could be \"Ping pong test\". Ensure only title final. Need not say pong. Since title generator. Final single line."},"finish_reason":null,"index":0,"raw_output":null}],"created":1788760582,"id":"chatcmpl-ff840304e31741afb7e0d275e6468d25","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
+
+data: {"id":"chatcmpl-ff840304e31741afb7e0d275e6468d25","object":"chat.completion.chunk","created":1788760582,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"Ping"},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-ff840304e31741afb7e0d275e6468d25","object":"chat.completion.chunk","created":1788760582,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" pong"},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-ff840304e31741afb7e0d275e6468d25","object":"chat.completion.chunk","created":1788760582,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" test"},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-ff840304e31741afb7e0d275e6468d25","object":"chat.completion.chunk","created":1788760582,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-ff840304e31741afb7e0d275e6468d25","object":"chat.completion.chunk","created":1788760582,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":624,"total_tokens":718,"completion_tokens":94,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":78},"output_tokens_details":{"reasoning_tokens":78}}}
+
+data: [DONE]
 
