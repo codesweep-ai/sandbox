@@ -24,6 +24,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -60,8 +62,12 @@ const (
 	// Claude Code names a model bare; OpenCode names the provider too.
 	claudeModel    = "claude-opus-5"
 	anthropicModel = "anthropic/" + claudeModel
-	openaiModel    = "openai/gpt-5-nano"
-	codexAPIModel  = "gpt-5-nano"
+	// One slug for every OpenAI-side pairing, subscription and key alike.
+	// cs-campaign records both its codex scenarios on it — the ChatGPT backend
+	// and the versioned API — which is the evidence that both surfaces address
+	// it. OpenCode names the provider too.
+	codexModel  = "gpt-5.6-sol"
+	openaiModel = "openai/" + codexModel
 	// The image already pins a Fireworks model, and the Fireworks pairing uses
 	// it rather than overriding: that is the path a lent Fireworks key travels,
 	// via OPENCODE_BASE_URL and the pinned model's own provider.
@@ -75,7 +81,10 @@ const (
 // they can drift apart.
 type pairing struct {
 	// agent names the pairing, and run is what the sandbox is asked to do.
-	agent, run string
+	agent string
+	// run builds the command for one case: the session names are per case,
+	// so the command cannot be a constant string.
+	run func(liveCase) string
 	// cli is the agent BINARY this pairing drives, and the one whose version
 	// its cassette is bound to.
 	//
@@ -110,12 +119,123 @@ type pairing struct {
 	// key is the .env variable this pairing needs, or "" when it needs a login.
 	// login is the host agent whose real profile it needs, or "".
 	key, login string
+	// memMiB is what this case's sandbox is given. Zero takes matrixMemMiB.
+	// OpenCode is the heaviest client here and does not get a turn started in
+	// the default, so its pairings ask for more.
+	memMiB int
 }
 
-// claudeTurnUUID names the tmux session cs-claude-turn drives. Fixed rather
-// than generated: a recording and its replay must produce the same session, and
-// the name reaches nothing the provider sees.
-const claudeTurnUUID = "00000000-0000-4000-8000-00000000cafe"
+// The tmux sessions the turn drivers work in, named per case.
+//
+// Derived rather than fixed, because these cells run in parallel and one token
+// would have every one of them driving the same session. Derived rather than
+// random, because a recording and its replay must reach the same session — and
+// the name reaches nothing a provider sees, so a stable function of the case
+// name satisfies both.
+func (c liveCase) turnToken() string {
+	return "csvcr" + strings.Map(func(r rune) rune {
+		if r == '-' {
+			return -1
+		}
+		return r
+	}, c.name())
+}
+
+// turnUUID is the same name in the shape cs-claude-turn wants: it takes a UUID
+// rather than a token, so the case name is hashed into one. Version 4 in shape
+// only; nothing here checks it.
+func (c liveCase) turnUUID() string {
+	x := sha256.Sum256([]byte(c.name()))
+	h := hex.EncodeToString(x[:])
+	return fmt.Sprintf("%s-%s-4%s-8%s-%s", h[0:8], h[8:12], h[12:15], h[15:18], h[18:30])
+}
+
+// What a case's microVM gets. Small on purpose: these cases ask one question,
+// and the budget is about proving the clients work in the room a caller
+// actually gives them. cs-campaign runs its members at exactly these sizes.
+//
+// OpenCode is the outlier and gets twice as much. It is the heaviest client
+// here, and at 1 GB it does not get a turn started at all — measured, in a
+// campaign whose orchestrator ran fine beside it in the same budget.
+//
+// Only firecracker enforces either number: --mem is a microVM's RAM, and a
+// container is left to the host's. That is one of the reasons the matrix runs
+// on both engines rather than on the fast one — a client that only works with
+// the whole machine behind it passes every podman cell.
+const (
+	matrixMemMiB   = 1024
+	opencodeMemMiB = 2048
+)
+
+// matrixEngine is the engine this run boots its cells on.
+//
+// Both are worth running and neither subsumes the other. Podman is fast and is
+// what a developer reaches for; firecracker is what a caller actually ships —
+// cs-campaign's members are microVMs — and it is the only engine that honours
+// the memory budget above, so a client that only works with the host's whole
+// RAM behind it fails there and nowhere else.
+//
+// One cassette serves both. What a client sends is its own business and should
+// not depend on what it is boxed in, so a miss on one engine and not the other
+// is a finding rather than a fixture problem.
+func matrixEngine() string {
+	if e := os.Getenv("CS_SANDBOX_AGENTS_ENGINE"); e != "" {
+		return e
+	}
+	return "podman"
+}
+
+// matrixSetup is liveSetup plus whatever the engine above needs before a cell
+// can boot on it.
+//
+// The firecracker half is not optional decoration. A microVM copies the base
+// rootfs per cell, and liveSetup's instance root is a t.TempDir() — a tmpfs on
+// most hosts, where that copy dies with "Disk quota exceeded" before anything
+// under test runs. It is also asked for BEFORE the caller starts a lender: the
+// lender reads its loan records out of the instance root, so a root that moves
+// afterwards leaves it reading an empty one.
+//
+// A host that cannot boot a microVM skips rather than fails, which is what
+// every other live tier here does: the artifacts are a limitation of the
+// machine, not a fault in the change.
+func matrixSetup(t *testing.T) (*run.Exec, hostenv.Host) {
+	t.Helper()
+	r, host := liveSetup(t)
+	if matrixEngine() != "firecracker" {
+		return r, host
+	}
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		t.Skipf("CS_SANDBOX_AGENTS_ENGINE=firecracker, and /dev/kvm is unavailable: %v", err)
+	}
+	if !fileExists(filepath.Join(paths.FCCache(), "vmlinux.elf")) {
+		t.Skip("CS_SANDBOX_AGENTS_ENGINE=firecracker, and the artifacts are not built " +
+			"(run: cs-sandbox build --engine firecracker)")
+	}
+	fcInstancesDir(t, host)
+	return r, host
+}
+
+// runInBox runs one command inside a cell's sandbox, by the route its engine
+// answers on.
+//
+// A container is reached with `podman exec`, which is both faster and the way
+// every other podman member here reaches one. A microVM has no container to
+// exec into: it answers ssh over its vsock bridge, under the name create wrote
+// into ~/.ssh/config.d, and that is the only way in.
+//
+// Both arrive as the dev user, in their home, holding the environment create
+// gave the sandbox — which is everything an agent reads. What differs between
+// them is the shell's own initialisation, and nothing asked here comes from it:
+// the turn drivers are on the image's PATH and the credentials arrive as
+// environment. So what the agent sends is the same either way, which is what
+// lets one cassette serve both engines.
+func runInBox(ctx context.Context, t *testing.T, r *run.Exec, host hostenv.Host, name, sh string) string {
+	t.Helper()
+	if matrixEngine() == "firecracker" {
+		return sshCapture(t, host, name, sh)
+	}
+	return inBox(ctx, r, host, name, sh)
+}
 
 // pairings is the matrix. Every combination is listed whether or not this host
 // can sign in for it: a case that skips says which credential is missing, and
@@ -143,23 +263,58 @@ func pairings() []pairing {
 	// on the wrapper. Pinned for the reason above and not for the cost — the
 	// TUI takes Claude Code's own default otherwise, and a cassette keyed on
 	// whatever that happens to be stops matching the day it moves.
-	claude := `cd ~ && printf %s ` + shellQuote(pongPrompt) +
-		` | cs-claude-turn --uuid ` + claudeTurnUUID +
-		` --wrapper ` + shellQuote("cs-claude --model "+claudeModel) +
-		` --workdir "$HOME" --timeout 300`
-	opencode := func(model string) string {
-		m := ""
+	claude := func(c liveCase) string {
+		return `cd ~ && printf %s ` + shellQuote(pongPrompt) +
+			` | cs-claude-turn --uuid ` + c.turnUUID() +
+			` --wrapper ` + shellQuote("cs-claude --model "+claudeModel) +
+			` --workdir "$HOME" --timeout 300`
+	}
+	// Codex and OpenCode go through their own turn drivers for the same reason
+	// claude does: that is the client a caller drives, and a matrix that proves
+	// the credential paths against a different one proves them for nobody.
+	//
+	// Neither driver takes a model flag, so the pin goes where each CLI reads
+	// it from — the channel cs-campaign uses when it configures a member.
+	// Without it a session takes the client's default, and a cassette keyed on
+	// a default that moves stops matching for a reason no diff explains.
+	codex := func(model string) func(liveCase) string {
+		pin := ""
 		if model != "" {
-			m = "-m " + model + " "
+			// Prepended, not appended: a bare key after a [table] header
+			// belongs to that table, so appending would land the model in
+			// whatever section codex wrote last.
+			pin = `mkdir -p ~/.cs-codex && touch ~/.cs-codex/config.toml && ` +
+				`{ printf 'model = "%s"\n' ` + shellQuote(model) + `; ` +
+				`grep -v '^model = ' ~/.cs-codex/config.toml; } > ~/.cs-codex/config.toml.new && ` +
+				`mv ~/.cs-codex/config.toml.new ~/.cs-codex/config.toml && `
 		}
-		return `cd ~ && cs-opencode run ` + m + shellQuote(pongPrompt)
+		return func(c liveCase) string {
+			return `cd ~ && ` + pin + `printf %s ` + shellQuote(pongPrompt) +
+				` | cs-codex-turn --tmux ` + c.turnToken() + ` --workdir "$HOME" --timeout 300`
+		}
+	}
+	opencode := func(model string) func(liveCase) string {
+		pin := ""
+		if model != "" {
+			// opencode resolves its model from opencode.json. The image already
+			// pins a Fireworks one, which is why that pairing passes no model
+			// and overrides nothing.
+			pin = `mkdir -p ~/.cs-opencode && python3 -c '` +
+				`import json,pathlib,sys; p=pathlib.Path.home()/".cs-opencode/opencode.json"; ` +
+				`c=json.loads(p.read_text()) if p.exists() else {}; c["model"]=sys.argv[1]; ` +
+				`p.write_text(json.dumps(c,indent=2)+"\n")' ` + shellQuote(model) + ` && `
+		}
+		return func(c liveCase) string {
+			return `cd ~ && ` + pin + `printf %s ` + shellQuote(pongPrompt) +
+				` | cs-opencode-turn --tmux ` + c.turnToken() + ` --workdir "$HOME" --timeout 300`
+		}
 	}
 	return []pairing{
 		// An agent login, which only its own agent can spend.
 		{agent: "claude-login", cli: "claude", run: claude, slot: "claude", provider: "anthropic", login: "claude"},
 		{
 			agent: "codex-login", cli: "codex", slot: "codex", provider: "chatgpt", login: "codex",
-			run: `cd ~ && cs-codex exec --skip-git-repo-check ` + shellQuote(pongPrompt),
+			run: codex(codexModel),
 			// No suffix: the subscription transport has no version segment.
 		},
 
@@ -167,17 +322,17 @@ func pairings() []pairing {
 		{agent: "claude-anthropic", cli: "claude", run: claude, slot: "anthropic", provider: "anthropic", key: "ANTHROPIC_API_KEY"},
 		{
 			agent: "opencode-anthropic", cli: "opencode", run: opencode(anthropicModel), slot: "anthropic",
-			provider: "anthropic", suffix: "/v1", key: "ANTHROPIC_API_KEY",
+			provider: "anthropic", suffix: "/v1", key: "ANTHROPIC_API_KEY", memMiB: opencodeMemMiB,
 		},
 
 		// An OpenAI key, which Codex and OpenCode can both spend.
 		{
 			agent: "codex-openai", cli: "codex", slot: "openai", provider: "openai", suffix: "/v1", key: "OPENAI_API_KEY",
-			run: `cd ~ && cs-codex exec --skip-git-repo-check -m ` + codexAPIModel + ` ` + shellQuote(pongPrompt),
+			run: codex(codexModel),
 		},
 		{
 			agent: "opencode-openai", cli: "opencode", run: opencode(openaiModel), slot: "openai",
-			provider: "openai", suffix: "/v1", key: "OPENAI_API_KEY",
+			provider: "openai", suffix: "/v1", key: "OPENAI_API_KEY", memMiB: opencodeMemMiB,
 		},
 
 		// A Fireworks key, which only OpenCode reaches, and only through the
@@ -185,7 +340,7 @@ func pairings() []pairing {
 		// governs, and the image already pins a Fireworks model.
 		{
 			agent: "opencode-fireworks", cli: "opencode", run: opencode(""), slot: "fireworks",
-			provider: "fireworks", suffix: "/v1", key: "FIREWORKS_API_KEY",
+			provider: "fireworks", suffix: "/v1", key: "FIREWORKS_API_KEY", memMiB: opencodeMemMiB,
 		},
 	}
 }
@@ -529,21 +684,39 @@ func runAgentCase(t *testing.T, r *run.Exec, host hostenv.Host, c liveCase, prox
 	_, _ = execRoot(t, "destroy", name, "-f")
 	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
 
-	flags := c.flags(t)
+	// --yolo, because every case here drives the agent's INTERACTIVE client and
+	// an interactive agent that has to ask permission never finishes a turn.
+	//
+	// It did not matter while this matrix ran headless one-shots: `cs-codex
+	// exec` asks nobody. The TUI is governed by the image's own defaults
+	// instead — approval_policy = "on-request" — and cs-codex only passes
+	// --dangerously-bypass-approvals-and-sandbox when the instance is yolo.
+	// Without it codex sat on an approval prompt and the driver tore the
+	// session down mid-stream, which the recorder saw as "the client closed
+	// the connection before the response ended".
+	//
+	// Uniform across the matrix rather than added to the case that exposed it:
+	// a caller driving these clients unattended runs them all this way, and
+	// cs-campaign creates every member yolo for exactly this reason.
+	mem := c.memMiB
+	if mem == 0 {
+		mem = matrixMemMiB
+	}
+	flags := append([]string{"--yolo", "--mem", strconv.Itoa(mem)}, c.flags(t)...)
 	if proxied {
 		flags = append(flags, c.proxyEnv(t)...)
 	}
-	out := createBox(t, r, name, flags...)
+	out := createBoxOn(t, r, name, matrixEngine(), flags...)
 	if !strings.Contains(out, "lent:") && !strings.Contains(out, "agent login:") &&
 		!strings.Contains(out, "api key:") {
 		t.Fatalf("create reported no credential:\n%s", out)
 	}
 
 	step(t, "asking the model, through %s…", strings.Join(flags, " "))
-	got := stripANSI(inBox(context.Background(), r, host, name, c.run))
+	got := stripANSI(runInBox(context.Background(), t, r, host, name, c.run(c)))
 	if !strings.Contains(strings.ToLower(got), pongWord) {
 		t.Fatalf("the model did not answer through this credential.\ncommand: %s\noutput:\n%s",
-			c.run, tail(got, 900))
+			c.run(c), tail(got, 900))
 	}
 	return got
 }

@@ -321,6 +321,42 @@ tools:
 ## members need, where it was measured costing nine minutes to run.
 SMOKE_AGENTS ?= 1
 
+## AGENTS_ENGINE: which engine the agent matrix boots its cells on.
+##
+## Podman by default: it is what a developer has, it needs no /dev/kvm and no
+## artifact build, and it boots in a second where a microVM takes thirty.
+##
+## firecracker is the other half, and it is not redundant. It is what a caller
+## actually ships — cs-campaign's members are microVMs — and it is the only
+## engine that honours a memory budget, so an agent that only works with the
+## host's whole RAM behind it fails there and nowhere else. CI runs the matrix
+## on both, one engine per fan-out.
+##
+## The cassettes do not move with it. What an agent sends is its own business
+## and has nothing to do with what it is boxed in, so both engines replay the
+## same fourteen recordings, and a miss on one and not the other is a finding
+## rather than a fixture problem.
+##
+## What DOES move with the engine is where the guest's own tools come from. A
+## container runs the image; a microVM runs a base rootfs built FROM that image
+## and cached beside it, and nothing in the replay path rebuilds that. So a
+## firecracker run on a stale cache boots yesterday's agent wrappers against
+## today's cassettes, and fails for a reason no diff shows. `make build-ci-fc`
+## refreshes it, and setup-smoke runs that wherever /dev/kvm is writable.
+AGENTS_ENGINE ?= podman
+
+## AGENTS_PARALLEL: how many cells of the matrix run at once.
+##
+## They are independent — own sandbox, own cassette, own tmux session — and the
+## short race-sensitive part of a create (ssh port, VM IP, the one-per-host
+## fabric) serializes itself on the host-wide create lock. What bounds this is
+## the machine: each cell is a sandbox with an agent inside it, and the default
+## `go test -parallel` of GOMAXPROCS would try to boot all fourteen at once.
+##
+## Four fits a laptop and a 4-vCPU runner alike. Set it to 1 to read a log in
+## order; CI sets nothing, because there each cell is its own job.
+AGENTS_PARALLEL ?= 4
+
 setup-smoke: tools
 	@if ! command -v podman >/dev/null 2>&1; then \
 		echo "setup-smoke: no podman on this host — the live members of the smoke profile will skip themselves"; \
@@ -405,7 +441,9 @@ test-smoke: setup-smoke
 	@if [ "$(SMOKE_AGENTS)" = 1 ]; then \
 		set -x; \
 		$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
-		  go test -tags agents_replay $(COVERFLAGS) -count=1 -p 1 -v -timeout 1200s \
+		  CS_SANDBOX_AGENTS_ENGINE=$(AGENTS_ENGINE) \
+		  go test -tags agents_replay $(COVERFLAGS) -count=1 -p 1 -parallel $(AGENTS_PARALLEL) \
+		  -v -timeout 1200s \
 		  -run '$(AGENTS_REPLAY_CASES)' ./internal/cli/ \
 		  -args -test.gocoverdir=$(COVER_ABS)/smoke; \
 	else \
@@ -513,6 +551,7 @@ setup-fixtures: tools
 
 fixtures: setup-fixtures
 	$(WITH_TOOLS) CS_SANDBOX_RECORD=1 CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
+	  CS_SANDBOX_AGENTS_ENGINE=$(AGENTS_ENGINE) \
 	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run '$(FIXTURE_CASES)'
 
 ## fixtures-strict: the same recording, with a skip treated as a failure. For a
@@ -522,6 +561,7 @@ fixtures: setup-fixtures
 fixtures-strict: setup-fixtures
 	$(WITH_TOOLS) CS_SANDBOX_RECORD=1 CS_SANDBOX_STRICT=1 \
 	  CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
+	  CS_SANDBOX_AGENTS_ENGINE=$(AGENTS_ENGINE) \
 	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run '$(FIXTURE_CASES)'
 
 ## test-agents-replay: the credential matrix with the model turns replayed.
@@ -539,10 +579,24 @@ AGENTS_REPLAY_CASES ?= TestAgentReplay
 
 ## `make test-smoke` runs these too, as its second half. This target is the way
 ## to run them alone, and the way to run one of them.
+##
+## It writes into the SMOKE tier, because that is the tier it belongs to — the
+## second half of `make test-smoke` is this same run. CI reaches the matrix
+## through this target rather than through test-smoke (one cell per job), and
+## without the coverage plumbing here that fan-out would quietly take the
+## matrix's coverage out of the aggregate.
+##
+## The tier is reset first, so a standalone run stands on its own. `make
+## test-smoke` does not come through here for exactly that reason: it resets
+## once and then appends both of its halves.
 test-agents-replay: tools
-	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
-	  go test -tags agents_replay -count=1 -p 1 -v -timeout 1800s ./internal/cli/ \
-	  -run '$(AGENTS_REPLAY_CASES)'
+	@scripts/coverage.sh reset smoke
+	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
+	  CS_SANDBOX_AGENTS_ENGINE=$(AGENTS_ENGINE) \
+	  go test -tags agents_replay $(COVERFLAGS) -count=1 -p 1 -parallel $(AGENTS_PARALLEL) \
+	  -v -timeout 1800s ./internal/cli/ \
+	  -run '$(AGENTS_REPLAY_CASES)' \
+	  -args -test.gocoverdir=$(COVER_ABS)/smoke
 
 ## test-agents-shared: replay the cases that hold a copy of the credential
 ##

@@ -157,15 +157,23 @@ func step(t *testing.T, format string, args ...any) {
 // createBox creates a podman sandbox via the CLI and registers teardown — the
 // container plus its named volumes, so no test leaks the home/containers volumes.
 func createBox(t *testing.T, r *run.Exec, name string, extra ...string) string {
+	return createBoxOn(t, r, name, "podman", extra...)
+}
+
+// createBoxOn is createBox for a caller that needs the other engine. The
+// teardown is the same either way: firecracker keeps its rootfs under the
+// instance directory, which `destroy` reclaims, and the volume removals below
+// are simply no-ops for it.
+func createBoxOn(t *testing.T, r *run.Exec, name, engine string, extra ...string) string {
 	t.Helper()
 	t.Cleanup(func() {
 		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", objName(name))
 		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "volume", "rm", "-f",
 			"cs-sandbox-home-"+objName(name), "cs-sandbox-containers-"+objName(name))
 	})
-	step(t, "creating podman sandbox %s…", name)
+	step(t, "creating %s sandbox %s…", engine, name)
 	start := time.Now()
-	args := append([]string{"create", name, "--engine", "podman"}, extra...)
+	args := append([]string{"create", name, "--engine", engine}, extra...)
 	out, err := execRoot(t, args...)
 	if err != nil {
 		t.Fatalf("create %s: %v (out=%q)", name, err, out)

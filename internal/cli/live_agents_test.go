@@ -32,7 +32,7 @@ import (
 // the real provider, with nothing in between.
 func TestLiveAgentCredentialMatrix(t *testing.T) {
 	env := liveEnv(t)
-	r, host := liveSetup(t)
+	r, host := matrixSetup(t)
 	startLiveLender(t, liveAgentHome(t, env))
 
 	for _, c := range liveCases() {
@@ -63,7 +63,7 @@ func TestLiveAgentRecordsCassettes(t *testing.T) {
 		t.Skip("recording spends tokens and overwrites a committed cassette: set CS_SANDBOX_RECORD=1")
 	}
 	env := liveEnv(t)
-	r, host := liveSetup(t)
+	r, host := matrixSetup(t)
 	startLiveLender(t, liveAgentHome(t, env))
 	store := cassetteStore(t)
 	proxy := startVCR(t, "record", store)

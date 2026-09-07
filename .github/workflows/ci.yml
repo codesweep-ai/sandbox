@@ -46,12 +46,22 @@
 # slim image carries the three CLIs — there is no agent-free variant any more,
 # so nothing here has to ship or build a second image for them.
 #
-# SMOKE_AGENTS is the switch, and it now governs the run only. Two of the five
-# smoke jobs leave it on, ubuntu and the arm64 Mac mini, which is one host per
-# ARCHITECTURE. Whether those CLIs run is the one thing that can differ between
-# the two, and nothing else about the members is host-specific. The other three
-# turn it off: measured on the Intel macOS leg, the members cost nine minutes to
-# run against a 35-minute budget.
+# SMOKE_AGENTS is the switch, and it now governs the run only. EVERY smoke job
+# turns it off. The replay members are their own fan-out below (agents-podman
+# and agents-firecracker, one job per cell), so running them here as well would
+# only buy a second, slower copy of the same answer: measured on the Intel macOS
+# leg, they cost nine minutes against a 35-minute budget.
+#
+# What that fan-out cannot buy is another ARCHITECTURE. It is x86_64 Linux only,
+# because hosted runners are the whole point of it, so no arm64 host runs the
+# agent matrix today. The arm64 Mac mini could — it is the only machine that
+# can — but it is a single self-hosted runner, and a runner takes one job at a
+# time. A matrix pointed at it would queue fourteen jobs onto one box and pay
+# the setup fourteen times over to run them in the same order they run now.
+# Parallelism there has to come from inside one job, and this tier cannot yet be
+# run twice at once on a host anyway: cs-vcr binds a fixed 8080/8081, and the
+# create lock that serializes host-wide resources lives under the instance root,
+# which is per process. Both are fixable, and neither is fixed here.
 #
 # Firecracker, the other engine, is covered by one job on Linux: it boots a real
 # microVM against artifacts built from the same slimmed image. macOS has no KVM,
@@ -289,6 +299,12 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make actionlint
+      # The agent matrix fans out over a case list written by hand in this file.
+      # This is the test that keeps it in step with liveCases(); it boots
+      # nothing and needs no engine, so it belongs with the workflow checks
+      # rather than with the jobs it is about.
+      - name: the agent matrix fan-out covers every cell
+        run: go test -tags agents_replay -count=1 -run TestCIRunsEveryCellAsItsOwnJob ./internal/cli/
 
   # Both build products, from ONE image build. The microVM's rootfs is derived
   # from the image, and `cs-sandbox build --engine firecracker` builds the image
@@ -482,8 +498,13 @@ jobs:
           podman load -i bin/cs-sandbox-ci.tar
           podman image exists "$CS_SANDBOX_IMAGE"
 
+      # SMOKE_AGENTS=0: the agent matrix used to be the second half of this
+      # job, fourteen sandboxes booted one after another in a single log. It is
+      # its own fan-out now (agents-podman below, one job per cell), which is
+      # where its coverage comes from too. What is left here is the host-side
+      # half of the profile, which is what this job was for.
       - name: smoke
-        run: make test-smoke
+        run: make test-smoke SMOKE_AGENTS=0
 
       - name: keep this job's coverage
         uses: actions/upload-artifact@v7
@@ -567,6 +588,179 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: coverage-smoke-firecracker
+          path: .coverage/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+  # The agent matrix: every pairing of an agent with a credential, in both
+  # credential modes, each one driving a real agent inside a real sandbox and
+  # replaying a committed cassette at it. No credential, no provider, no money —
+  # which is what lets the credential paths be covered on every push.
+  #
+  # ONE JOB PER CELL, on its own runner. Serially this was fourteen sandboxes in
+  # a single log: one wedged agent spent the job's whole budget and took the
+  # other thirteen down with it, and the log said only that time ran out. Fanned
+  # out, a failing cell is a red line in the job list with its own name on it,
+  # the rest still report, and the wall clock is one cell rather than fourteen.
+  #
+  # The `case:` list is written by hand and kept honest by a test:
+  # TestCIRunsEveryCellAsItsOwnJob compares it with liveCases() and fails when a
+  # pairing has been added without a job. The workflows job runs it.
+  #
+  # Podman here and firecracker below, on the same fourteen cassettes. What an
+  # agent sends does not depend on what it is boxed in, so a miss on one engine
+  # and not the other is a finding rather than a fixture problem.
+  agents-podman:
+    name: agents podman (${{ matrix.case }})
+    needs: [build-test, build-artifacts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # One cell says nothing about the next: a run that stopped at the first
+      # failure would hide the other thirteen answers it had already paid for.
+      fail-fast: false
+      matrix:
+        case:
+          - claude-login-lent
+          - claude-login-shared
+          - codex-login-lent
+          - codex-login-shared
+          - claude-anthropic-lent
+          - claude-anthropic-shared
+          - opencode-anthropic-lent
+          - opencode-anthropic-shared
+          - codex-openai-lent
+          - codex-openai-shared
+          - opencode-openai-lent
+          - opencode-openai-shared
+          - opencode-fireworks-lent
+          - opencode-fireworks-shared
+    env:
+      CS_SANDBOX_IMAGE: localhost/sandbox-slim:ci
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: cs-sandbox-ci-image
+          path: bin
+
+      - name: load the image
+        run: |
+          set -euo pipefail
+          podman load -i bin/cs-sandbox-ci.tar
+          podman image exists "$CS_SANDBOX_IMAGE"
+
+      # A cell with no cassette is passed over by the tier, which is right when
+      # fourteen share a job and wrong when each one IS a job: this job would
+      # then boot nothing, assert nothing and report green. Asked before the
+      # run, so the answer is about the fixture rather than about the minutes.
+      - name: a cell with no cassette is not a pass
+        run: test -d "test/cassettes/${{ matrix.case }}"
+
+      - name: replay
+        run: make test-agents-replay AGENTS_REPLAY_CASES='TestAgentReplay/${{ matrix.case }}$$'
+
+      - name: keep this cell's coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-agents-podman-${{ matrix.case }}
+          path: .coverage/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+  # The same fourteen cells on the engine a caller actually ships. cs-campaign's
+  # members are microVMs, and a microVM is also the only engine that honours the
+  # 1 GB budget the matrix creates its cells with — so an agent that only works
+  # with the host's whole RAM behind it fails here and nowhere else.
+  #
+  # Linux only, for the reason the smoke-firecracker job gives: macOS has no KVM
+  # and WSL2's is nested virt inside an Azure VM.
+  agents-firecracker:
+    name: agents firecracker (${{ matrix.case }})
+    needs: [build-test, build-artifacts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - claude-login-lent
+          - claude-login-shared
+          - codex-login-lent
+          - codex-login-shared
+          - claude-anthropic-lent
+          - claude-anthropic-shared
+          - opencode-anthropic-lent
+          - opencode-anthropic-shared
+          - codex-openai-lent
+          - codex-openai-shared
+          - opencode-openai-lent
+          - opencode-openai-shared
+          - opencode-fireworks-lent
+          - opencode-fireworks-shared
+    env:
+      CS_SANDBOX_IMAGE: localhost/sandbox-slim:ci
+      CS_SANDBOX_FC_CACHE: ${{ github.workspace }}/bin/fc-cache
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # /dev/kvm is present on these runners but root:kvm, and the runner user
+      # is not in that group — so it reads as absent, the tier skips itself, and
+      # a skip here looks exactly like a pass.
+      - name: firecracker host prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            fakeroot e2fsprogs dnsmasq-base passt socat uidmap iproute2 curl
+          sudo chmod 0666 /dev/kvm
+          test -w /dev/kvm || { echo "/dev/kvm still not writable" >&2; exit 1; }
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: cs-sandbox-ci-image
+          path: bin
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: cs-sandbox-fc-artifacts
+          path: bin
+
+      # `create` verifies the image exists before it boots anything, so the
+      # microVM path needs it present even though it boots from the rootfs.
+      - name: load the image and the artifacts
+        run: |
+          set -euo pipefail
+          podman load -i bin/cs-sandbox-ci.tar
+          podman image exists "$CS_SANDBOX_IMAGE"
+          mkdir -p bin/fc-cache
+          tar -C bin/fc-cache -xzf bin/fc-artifacts.tar.gz
+
+      - name: a cell with no cassette is not a pass
+        run: test -d "test/cassettes/${{ matrix.case }}"
+
+      # AGENTS_ENGINE on the command line rather than in this job's env: the
+      # target exports CS_SANDBOX_AGENTS_ENGINE from this variable, so an
+      # environment variable of that name would be overwritten by the default
+      # on its way through.
+      - name: replay
+        run: make test-agents-replay AGENTS_ENGINE=firecracker AGENTS_REPLAY_CASES='TestAgentReplay/${{ matrix.case }}$$'
+
+      - name: keep this cell's coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-agents-firecracker-${{ matrix.case }}
           path: .coverage/
           if-no-files-found: error
           include-hidden-files: true
@@ -808,8 +1002,22 @@ jobs:
           podman load -i bin/cs-sandbox-ci.tar
           podman image exists "$CS_SANDBOX_IMAGE"
 
+      # SMOKE_AGENTS=0, like every other smoke job now. This leg used to carry
+      # the agent matrix as the second half of the profile, and it was the only
+      # arm64 host that ran it. It could not run it in parallel: one self-hosted
+      # runner takes one job at a time, and everything on the box shares one
+      # podman machine with a fixed slice of the host, so fourteen cells cost
+      # fourteen cells' wall clock inside a 35-minute budget.
+      #
+      # What this job is FOR is the macOS host paths against a real engine — the
+      # state root, the ssh config the host's own ssh must parse, a sandbox in a
+      # podman machine — and none of that is what the replay members test. They
+      # are covered on Linux, on both engines, one job per cell.
+      #
+      # The cost is named rather than hidden: the agent matrix now has no arm64
+      # coverage at all. What would restore it is in the header above.
       - name: smoke
-        run: make test-smoke
+        run: make test-smoke SMOKE_AGENTS=0
 
       - name: keep this job's coverage
         uses: actions/upload-artifact@v7

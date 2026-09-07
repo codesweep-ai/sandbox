@@ -66,6 +66,12 @@ credential paths. Keep the live matrix for when you need to know a provider stil
 tool builds. `make test-agents-shared` and `make test-agents-lent` run one credential mode alone,
 and `make test-agents-replay` runs both without the rest of the profile.
 
+That matrix boots podman sandboxes and runs four cells at once. `AGENTS_ENGINE=firecracker` boots
+microVMs instead, from the same cassettes. What an agent sends does not depend on what it is boxed
+in. A miss on one engine and not the other is therefore a finding, not a fixture problem.
+`AGENTS_PARALLEL=1` puts the log back in order when you are reading one. CI runs both engines, with
+each cell in a job of its own.
+
 Re-record with `scripts/record-fixtures.sh`, which checks everything the matrix needs before it
 clears a single cassette. Replay them before you commit. A recording can come out truncated when an
 agent prints its answer and exits mid-response, and the replay is what says whether that mattered.

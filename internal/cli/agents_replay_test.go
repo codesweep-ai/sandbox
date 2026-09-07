@@ -23,18 +23,29 @@
 package cli
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
 // TestAgentReplay replays every cell that has been recorded.
 //
-// Serial: each cell boots a real sandbox, and they share one host's memory, one
-// network fabric and one pool of gateway ports.
+// The cells run in PARALLEL, bounded by `go test -parallel` (the Makefile picks
+// the bound; the default of GOMAXPROCS would try to boot fourteen sandboxes on
+// a laptop at once). What they share, they share safely: creates serialize
+// themselves on the host-wide create lock for the length of the race-sensitive
+// prefix — SSH-port and VM-IP allocation, the one-per-host fabric — and each
+// cell's sandbox name, cassette and tmux session are its own. One cs-vcr and
+// one lender serve them all, both of which are servers.
+//
+// In CI they are not run this way at all: each cell is its own job, on its own
+// runner, so one wedged agent takes down one job and names itself in the job
+// list rather than hiding in a serial log.
 func TestAgentReplay(t *testing.T) {
-	r, host := liveSetup(t)
+	r, host := matrixSetup(t)
 	startLiveLender(t, fabricatedAgentHome(t))
 	store := cassetteStore(t)
 	proxy := startVCR(t, "replay", store)
@@ -49,6 +60,7 @@ func TestAgentReplay(t *testing.T) {
 		}
 		replayed++
 		t.Run(c.name(), func(t *testing.T) {
+			t.Parallel()
 			assertCassetteAgent(t, c, store, versions)
 			assertCassetteRuleset(t, c, store)
 			runAgentCase(t, r, host, c, true)
@@ -60,8 +72,16 @@ func TestAgentReplay(t *testing.T) {
 	// After every cell, because one cs-vcr serves them all and its accounting
 	// is per session. A single statement about the whole tier is also the one
 	// worth making: nothing was spent, and the cassettes answered what was asked.
-	assertSpentNothing(t, proxy)
-	reportMisses(t, proxy)
+	//
+	// A cleanup rather than two lines here, and that is what the parallelism
+	// above costs. A parallel subtest does not start until its parent returns,
+	// so anything written at this point would be asserted before the first cell
+	// had run — and would pass, on a session that had served nothing. Cleanups
+	// are what runs after the cells, which is where this belongs.
+	t.Cleanup(func() {
+		assertSpentNothing(t, proxy)
+		reportMisses(t, proxy)
+	})
 }
 
 // assertCassetteAgent settles what a cell's cassette can still be asked to
@@ -140,4 +160,85 @@ func assertCassetteRuleset(t *testing.T, c liveCase, store string) {
 	t.Fatalf("this cs-vcr build cannot replay the committed cassette:\n%s\n"+
 		"re-record it with: make fixtures FIXTURE_CASES='TestLiveAgentRecordsCassettes/%s'",
 		strings.TrimSpace(string(out)), c.name())
+}
+
+// TestCIRunsEveryCellAsItsOwnJob keeps the workflow's fan-out in step with the
+// matrix. It boots nothing, contacts nobody, and needs no engine.
+//
+// CI does not run this tier as one job. Each cell is a job of its own, named in
+// .github/workflows/ci.yml, on each of the two engines — which buys a failing
+// cell its own line in the job list and its own runner, instead of one serial
+// log where a wedged agent takes the other thirteen down with it.
+//
+// The cost of that is a list written by hand, and a hand-written list goes
+// stale the first time a pairing is added. It goes stale SILENTLY, too: the new
+// cell simply has no job, every job that does exist is still green, and the
+// only symptom is a credential path nobody is testing. This is what says so.
+func TestCIRunsEveryCellAsItsOwnJob(t *testing.T) {
+	want := make([]string, 0, len(liveCases()))
+	for _, c := range liveCases() {
+		want = append(want, c.name())
+	}
+	slices.Sort(want)
+	for _, job := range []string{"agents-podman", "agents-firecracker"} {
+		got := ciMatrixCases(t, job)
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("the %s job fans out over\n  %v\nand this matrix has\n  %v\n"+
+				"bring the `case:` list in .github/workflows/ci.yml back in step", job, got, want)
+		}
+	}
+}
+
+// ciMatrixCases reads back the case list one workflow job fans out over.
+//
+// Line-based rather than a YAML parse, and that is a deliberate trade: the file
+// is this repository's own, its shape is fixed, and the alternative is making a
+// YAML library a direct dependency of the module to read one list. What it
+// costs is that the list has to be spelled the ordinary way — `case:` on its
+// own line, one `- name` per line under it — which the workflow does, and which
+// actionlint keeps well-formed either way.
+func ciMatrixCases(t *testing.T, job string) []string {
+	t.Helper()
+	path := filepath.Join("..", "..", ".github", "workflows", "ci.yml")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the workflow: %v", err)
+	}
+	var cases []string
+	inJob, inList := false, false
+	for line := range strings.SplitSeq(string(b), "\n") {
+		if line == "  "+job+":" {
+			inJob = true
+			continue
+		}
+		if !inJob {
+			continue
+		}
+		// A two-space key at the top of the file's jobs map is the next job,
+		// and the end of this one.
+		if len(line) > 2 && strings.HasPrefix(line, "  ") && line[2] != ' ' && strings.HasSuffix(line, ":") {
+			break
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if trimmed == "case:" {
+			inList = true
+			continue
+		}
+		if !inList {
+			continue
+		}
+		if item, ok := strings.CutPrefix(trimmed, "- "); ok {
+			cases = append(cases, item)
+			continue
+		}
+		inList = false
+	}
+	if !inJob {
+		t.Fatalf(".github/workflows/ci.yml has no %q job, and this tier is run by it", job)
+	}
+	return cases
 }
