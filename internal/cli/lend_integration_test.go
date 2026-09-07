@@ -211,12 +211,36 @@ func TestCLILendKeyFirecrackerLive(t *testing.T) {
 		`curl -s --max-time 10 -X POST "$ANTHROPIC_BASE_URL/v1/messages" -H "x-api-key: $ANTHROPIC_API_KEY" -d '{}'`)
 	if !strings.Contains(body, "stand_in") {
 		t.Fatalf("the call did not reach the provider through the lender: %q\n%s", body,
-			sshCapture(t, host, name, "getent ahosts "+engine.HostReachableName+"; grep -i internal /etc/hosts"))
+			vmReachability(t, host, name))
 	}
 	if got, _, calls := seen.snapshot(); calls == 0 || got.Get("X-Api-Key") != "REAL-HOST-KEY" {
 		t.Errorf("provider saw x-api-key %q after %d call(s), want the host's real key",
 			got.Get("X-Api-Key"), calls)
 	}
+}
+
+// vmReachability is hostReachability for a microVM, which has no container to
+// exec into and answers over ssh instead.
+//
+// It carries the one thing its predecessor here left out and the whole question
+// turns on: curl's EXIT CODE. `curl -s` prints nothing when it fails, so a name
+// that does not resolve, a route that is not there, a port that refuses and a
+// port that hangs all reach the assertion above as the same empty string. They
+// are four different faults with four different fixes, and 6 (host), 7
+// (refused) and 28 (timeout) tell them apart in one number.
+//
+// Written out after a CI leg where this test was the ONLY minimal reproduction
+// of a microVM that could not reach its host -- no agent, no recorder, one curl
+// -- and it could not say which of the four it was.
+func vmReachability(t *testing.T, host hostenv.Host, name string) string {
+	t.Helper()
+	return "the microVM's view of the host:\n" + sshCapture(t, host, name,
+		`echo "base: $ANTHROPIC_BASE_URL"; `+
+			`getent ahosts `+engine.HostReachableName+` || echo "(does not resolve)"; `+
+			`grep -i internal /etc/hosts; `+
+			`curl -s -o /dev/null -w 'healthz: HTTP %{http_code} in %{time_total}s\n' `+
+			`--max-time 10 "$ANTHROPIC_BASE_URL/healthz"; echo "curl exit $?"; `+
+			`ip route 2>&1 | head -5`)
 }
 
 // hostReachability reports how the sandbox resolves the host, for a failure

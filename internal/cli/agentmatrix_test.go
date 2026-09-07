@@ -767,7 +767,55 @@ func reachedRecorder(t *testing.T, r *run.Exec, host hostenv.Host, c liveCase, n
 		`ip route 2>&1 | head -5`
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	return "what the guest sees of the recorder:\n" + runInBox(ctx, t, r, host, name, probe)
+	return "what the guest sees of the recorder:\n" + runInBox(ctx, t, r, host, name, probe) +
+		"\nwhat the host offers it:\n" + hostSideOfTheHop(ctx, r)
+}
+
+// hostSideOfTheHop is the other end of the probe above: what this host was
+// actually offering while the guest could not reach it.
+//
+// Both halves are needed and neither substitutes for the other. "connection
+// refused" from inside the guest means one thing if the recorder is listening
+// on 0.0.0.0:8080 and quite another if it is not listening at all, and a guest
+// that times out looks the same whether the packets were dropped on the way out
+// or on the way in. This is also the half that moves when a hosted runner's
+// image changes underneath us, which is the difference a local run cannot show.
+//
+// The listener is the part to trust here. A microVM's fabric is built inside a
+// ROOTLESS NETWORK NAMESPACE, so the tap and its routes belong to that
+// namespace and not to this process -- the address and route probes below come
+// back empty for firecracker, and empty means "not visible from here" rather
+// than "not there". They are kept because they are not empty for podman, and
+// because a reader who does not know that would otherwise go looking for a
+// dedicated probe that does not exist.
+func hostSideOfTheHop(ctx context.Context, r *run.Exec) string {
+	var b strings.Builder
+	for _, probe := range [][]string{
+		{"ss", "-lntp"},
+		{"ip", "-brief", "address"},
+		{"ip", "route"},
+	} {
+		res, err := r.Run(ctx, run.Opts{ReadOnly: true}, probe...)
+		out := strings.TrimSpace(res.Stdout + res.Stderr)
+		if err != nil && out == "" {
+			out = err.Error()
+		}
+		// Only the lines about this hop. `ss -lntp` on a runner is pages of
+		// unrelated listeners, and a wall of them is how a probe stops being
+		// read at all.
+		var kept []string
+		for line := range strings.SplitSeq(out, "\n") {
+			if strings.Contains(line, vcrPort) || strings.Contains(line, "169.254") ||
+				strings.Contains(line, "cs-") || strings.HasPrefix(line, "default") {
+				kept = append(kept, strings.TrimSpace(line))
+			}
+		}
+		if len(kept) == 0 {
+			kept = []string{"(nothing matching this hop)"}
+		}
+		fmt.Fprintf(&b, "  $ %s\n    %s\n", strings.Join(probe, " "), strings.Join(kept, "\n    "))
+	}
+	return b.String()
 }
 
 // Where the recorder listens. Fixed rather than drawn from the ephemeral range:
