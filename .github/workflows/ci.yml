@@ -666,6 +666,21 @@ jobs:
       - name: replay
         run: make test-agents-replay AGENTS_REPLAY_CASES='TestAgentReplay/${{ matrix.case }}$$'
 
+      # The missed request itself, when a cell fails. cs-vcr dumps every request
+      # a cassette could not answer, and the test log already points at the
+      # directory — but nothing kept it, so a miss that only happens on a hosted
+      # runner could not be read anywhere. The recorded side is in git; this is
+      # the other half of the diff, and without it the next failure costs
+      # another push to learn anything.
+      - name: keep what the cassettes could not answer
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vcr-misses-podman-${{ matrix.case }}
+          path: .tmp/agent-vcr/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: keep this cell's coverage
         uses: actions/upload-artifact@v7
         with:
@@ -756,6 +771,21 @@ jobs:
       # on its way through.
       - name: replay
         run: make test-agents-replay AGENTS_ENGINE=firecracker AGENTS_REPLAY_CASES='TestAgentReplay/${{ matrix.case }}$$'
+
+      # The missed request itself, when a cell fails. cs-vcr dumps every request
+      # a cassette could not answer, and the test log already points at the
+      # directory — but nothing kept it, so a miss that only happens on a hosted
+      # runner could not be read anywhere. The recorded side is in git; this is
+      # the other half of the diff, and without it the next failure costs
+      # another push to learn anything.
+      - name: keep what the cassettes could not answer
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vcr-misses-firecracker-${{ matrix.case }}
+          path: .tmp/agent-vcr/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: keep this cell's coverage
         uses: actions/upload-artifact@v7
