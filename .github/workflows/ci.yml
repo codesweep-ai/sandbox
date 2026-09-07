@@ -545,6 +545,11 @@ jobs:
           ls -l /dev/kvm
           sudo chmod 0666 /dev/kvm
           test -w /dev/kvm || { echo "/dev/kvm still not writable" >&2; exit 1; }
+          # podman 5.0 or later, using pasta: a microVM reaches the host at the
+          # address only pasta publishes, and create refuses without it. 26.04
+          # carries 5.7.0, where pasta is the default — printed, not trusted.
+          podman --version
+
 
       - uses: actions/download-artifact@v7
         with:
@@ -663,8 +668,21 @@ jobs:
       - name: a cell with no cassette is not a pass
         run: test -d "test/cassettes/${{ matrix.case }}"
 
+      # `go test` exits ZERO when it runs nothing, and this job is one cell. A
+      # cassette present but missing its index.jsonl, or a cell skipped because
+      # its agent version moved, leaves the subtest unregistered -- and the job
+      # reports green having replayed nothing at all. The tier is right to skip
+      # those quietly when it covers fourteen cells and says which ran; a job
+      # named after ONE cell has no such second opinion, so it insists on
+      # finding that cell's own PASS line before it agrees it passed.
       - name: replay
-        run: make test-agents-replay AGENTS_REPLAY_CASES='TestAgentReplay/${{ matrix.case }}$$'
+        run: |
+          set -euo pipefail
+          make test-agents-replay AGENTS_REPLAY_CASES='TestAgentReplay/${{ matrix.case }}$$' 2>&1 | tee replay.log
+          grep -qF -- '--- PASS: TestAgentReplay/${{ matrix.case }} (' replay.log || {
+            echo "::error::${{ matrix.case }} never ran: the output carries no PASS line for it"
+            exit 1
+          }
 
       # The missed request itself, when a cell fails. cs-vcr dumps every request
       # a cassette could not answer, and the test log already points at the
@@ -741,6 +759,11 @@ jobs:
             fakeroot e2fsprogs dnsmasq-base passt socat uidmap iproute2 curl
           sudo chmod 0666 /dev/kvm
           test -w /dev/kvm || { echo "/dev/kvm still not writable" >&2; exit 1; }
+          # podman 5.0 or later, using pasta: a microVM reaches the host at the
+          # address only pasta publishes, and create refuses without it. 26.04
+          # carries 5.7.0, where pasta is the default — printed, not trusted.
+          podman --version
+
 
       - uses: actions/download-artifact@v7
         with:
@@ -761,6 +784,12 @@ jobs:
           podman image exists "$CS_SANDBOX_IMAGE"
           mkdir -p bin/fc-cache
           tar -C bin/fc-cache -xzf bin/fc-artifacts.tar.gz
+          # Named here rather than left to the tier. Without the kernel and a
+          # base rootfs, matrixSetup SKIPS -- which the PASS-line guard below
+          # turns into a failure, but one that reads "the cell never ran" and
+          # sends a reader looking at the agent. This says which file is absent.
+          test -f bin/fc-cache/vmlinux.elf
+          ls -1 bin/fc-cache/base-rootfs-*.ext4
 
       - name: a cell with no cassette is not a pass
         run: test -d "test/cassettes/${{ matrix.case }}"
@@ -769,8 +798,21 @@ jobs:
       # target exports CS_SANDBOX_AGENTS_ENGINE from this variable, so an
       # environment variable of that name would be overwritten by the default
       # on its way through.
+      # `go test` exits ZERO when it runs nothing, and this job is one cell. A
+      # cassette present but missing its index.jsonl, or a cell skipped because
+      # its agent version moved, leaves the subtest unregistered -- and the job
+      # reports green having replayed nothing at all. The tier is right to skip
+      # those quietly when it covers fourteen cells and says which ran; a job
+      # named after ONE cell has no such second opinion, so it insists on
+      # finding that cell's own PASS line before it agrees it passed.
       - name: replay
-        run: make test-agents-replay AGENTS_ENGINE=firecracker AGENTS_REPLAY_CASES='TestAgentReplay/${{ matrix.case }}$$'
+        run: |
+          set -euo pipefail
+          make test-agents-replay AGENTS_ENGINE=firecracker AGENTS_REPLAY_CASES='TestAgentReplay/${{ matrix.case }}$$' 2>&1 | tee replay.log
+          grep -qF -- '--- PASS: TestAgentReplay/${{ matrix.case }} (' replay.log || {
+            echo "::error::${{ matrix.case }} never ran: the output carries no PASS line for it"
+            exit 1
+          }
 
       # The missed request itself, when a cell fails. cs-vcr dumps every request
       # a cassette could not answer, and the test log already points at the

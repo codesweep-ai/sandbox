@@ -101,9 +101,21 @@ func findFCCache(t *testing.T) string {
 	return ""
 }
 
+// hasArtifacts reports whether a cache holds a base rootfs to boot from.
+//
+// ANY base rootfs, by glob, because the cache keeps one PER IMAGE
+// (fcdisk.Cache.BaseRootfs, SPEC R124) and this only decides whether the engine
+// has been built here at all -- Create then asks for the one its image names,
+// and says so itself when that is the file missing.
+//
+// It used to stat base-rootfs.ext4, the single unkeyed name a cache held before
+// that keying. No cache has written that name since, so the check answered
+// false everywhere and TestFirecrackerCreateLive -- the cheapest proof a microVM
+// boots at all -- skipped on every run, in CI and on every developer's machine,
+// while reporting the green of a test that had simply not run.
 func hasArtifacts(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, "base-rootfs.ext4"))
-	return err == nil
+	built, _ := filepath.Glob(filepath.Join(dir, "base-rootfs*.ext4"))
+	return len(built) > 0
 }
 
 func TestFirecrackerCreateLive(t *testing.T) {

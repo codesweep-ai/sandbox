@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -53,6 +54,10 @@ func TestAgentReplay(t *testing.T) {
 	// what each cassette says it was recorded against.
 	versions := agentCLIVersions(t, r, image(t))
 
+	// Cells that actually ran, which is not the same as cassettes present: CI
+	// narrows to one cell per job with -run, and the guard below is about what
+	// this process did rather than about what is committed.
+	var ran atomic.Int64
 	replayed := 0
 	for _, c := range liveCases() {
 		if !hasCassette(t, c) {
@@ -63,6 +68,7 @@ func TestAgentReplay(t *testing.T) {
 			t.Parallel()
 			assertCassetteAgent(t, c, store, versions)
 			assertCassetteRuleset(t, c, store)
+			ran.Add(1)
 			runAgentCase(t, r, host, c, true)
 		})
 	}
@@ -81,6 +87,7 @@ func TestAgentReplay(t *testing.T) {
 	t.Cleanup(func() {
 		assertSpentNothing(t, proxy)
 		reportMisses(t, proxy)
+		assertTheCassettesWereUsed(t, proxy, ran.Load())
 	})
 }
 

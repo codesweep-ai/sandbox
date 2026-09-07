@@ -229,7 +229,19 @@ func matrixSetup(t *testing.T) (*run.Exec, hostenv.Host) {
 // the turn drivers are on the image's PATH and the credentials arrive as
 // environment. So what the agent sends is the same either way, which is what
 // lets one cassette serve both engines.
-func runInBox(ctx context.Context, t *testing.T, r *run.Exec, host hostenv.Host, name, sh string) string {
+// boxOutput is what one command inside a cell's sandbox produced.
+//
+// Split into the answer and the diagnosis, and that split is load-bearing.
+// Joining them is how fourteen microVM cells came to report PASS on a run where
+// the recorder served nothing at all: the diagnosis quotes the command, the
+// command carries the prompt, and the prompt contains the single word the
+// assertion looks for. Only Answer may ever be asserted on.
+type boxOutput struct {
+	Answer string // stdout: what the agent produced, and the only thing to assert on
+	Diag   string // stderr and exit status, for a failure message and nothing else
+}
+
+func runInBox(ctx context.Context, t *testing.T, r *run.Exec, host hostenv.Host, name, sh string) boxOutput {
 	t.Helper()
 	var argv []string
 	if matrixEngine() == "firecracker" {
@@ -250,12 +262,12 @@ func runInBox(ctx context.Context, t *testing.T, r *run.Exec, host hostenv.Host,
 	// could report only "the model did not answer", with an empty output block
 	// under it, because the one sentence naming the cause had been thrown away
 	// twice over.
-	out := res.Stdout
+	out := boxOutput{Answer: res.Stdout}
 	if e := strings.TrimSpace(res.Stderr); e != "" {
-		out += "\n" + e
+		out.Diag = "stderr:\n" + e
 	}
 	if err != nil {
-		out += fmt.Sprintf("\n(the command exited %d: %v)", res.ExitCode, err)
+		out.Diag += fmt.Sprintf("\n(the command exited %d: %v)", res.ExitCode, err)
 	}
 	return out
 }
@@ -736,10 +748,13 @@ func runAgentCase(t *testing.T, r *run.Exec, host hostenv.Host, c liveCase, prox
 	}
 
 	step(t, "asking the model, through %s…", strings.Join(flags, " "))
-	got := stripANSI(runInBox(context.Background(), t, r, host, name, c.run(c)))
+	said := runInBox(context.Background(), t, r, host, name, c.run(c))
+	// stripANSI over the ANSWER alone. The diagnosis is printed beside it and
+	// never searched: see boxOutput.
+	got := stripANSI(said.Answer)
 	if !strings.Contains(strings.ToLower(got), pongWord) {
-		t.Fatalf("the model did not answer through this credential.\ncommand: %s\noutput:\n%s\n%s",
-			c.run(c), tail(got, 900), reachedRecorder(t, r, host, c, name))
+		t.Fatalf("the model did not answer through this credential.\ncommand: %s\noutput:\n%s\n%s\n%s",
+			c.run(c), tail(got, 900), said.Diag, reachedRecorder(t, r, host, c, name))
 	}
 	return got
 }
@@ -767,7 +782,8 @@ func reachedRecorder(t *testing.T, r *run.Exec, host hostenv.Host, c liveCase, n
 		`ip route 2>&1 | head -5`
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	return "what the guest sees of the recorder:\n" + runInBox(ctx, t, r, host, name, probe) +
+	seen := runInBox(ctx, t, r, host, name, probe)
+	return "what the guest sees of the recorder:\n" + seen.Answer + seen.Diag +
 		"\nwhat the host offers it:\n" + hostSideOfTheHop(ctx, r)
 }
 
@@ -815,7 +831,44 @@ func hostSideOfTheHop(ctx context.Context, r *run.Exec) string {
 		}
 		fmt.Fprintf(&b, "  $ %s\n    %s\n", strings.Join(probe, " "), strings.Join(kept, "\n    "))
 	}
+	b.WriteString(fromTheRootlessNetns(ctx, r))
 	return b.String()
+}
+
+// fromTheRootlessNetns asks the namespace a microVM's tap actually lives in
+// whether it can reach the host, and says which pasta answered.
+//
+// This is the hop, reduced to its smallest form. A firecracker sandbox runs
+// under `podman unshare --rootless-netns`, so its guest reaches the host at
+// 169.254.1.2 through the pasta podman started FOR THAT NAMESPACE -- not the
+// per-container pasta a podman sandbox gets. The two are different invocations
+// of the same program, which is how the container cells can pass on a host
+// where every microVM cell times out.
+//
+// Asked here rather than in a workflow step, and the timing is the point: the
+// namespace exists only while something is using the network, and the recorder
+// is listening only while the tier runs. A probe before the tests would create
+// a fresh namespace, find it healthy, and prove nothing about the one that
+// failed.
+//
+// No microVM, no agent and no cassette in the way -- so an answer here is about
+// the network alone.
+func fromTheRootlessNetns(ctx context.Context, r *run.Exec) string {
+	script := `ip -brief address 2>&1 | head -4; ip route 2>&1 | head -3; ` +
+		`curl -s -o /dev/null -w 'host at ` + engine.HostReachableIP + `:` + vcrPort +
+		` -> HTTP %{http_code} in %{time_total}s
+' --max-time 5 ` +
+		`http://` + engine.HostReachableIP + `:` + vcrPort + `/; echo "curl exit $?"`
+	res, _ := r.Run(ctx, run.Opts{ReadOnly: true},
+		"podman", "unshare", "--rootless-netns", "sh", "-c", script)
+	out := strings.TrimSpace(res.Stdout + res.Stderr)
+	if out == "" {
+		out = "(no answer)"
+	}
+	ver, _ := r.Run(ctx, run.Opts{ReadOnly: true}, "pasta", "--version")
+	return "  from inside the rootless netns (where a microVM's tap lives):\n    " +
+		strings.ReplaceAll(out, "\n", "\n    ") +
+		"\n  pasta: " + strings.TrimSpace(strings.SplitN(ver.Stdout+ver.Stderr, "\n", 2)[0]) + "\n"
 }
 
 // Where the recorder listens. Fixed rather than drawn from the ephemeral range:
@@ -1038,6 +1091,36 @@ func reportMisses(t *testing.T, p *vcrProxy) {
 	if misses > served/4 {
 		t.Errorf("replay missed %d of %d request(s), which is more than bookkeeping accounts for: "+
 			"the cassettes and this run are asking different things", misses, served+misses)
+	}
+}
+
+// assertTheCassettesWereUsed fails a run whose cells reported success without
+// the recorder answering a single request.
+//
+// The one statement that catches a cell passing for a reason that has nothing
+// to do with what it tests. A replayed turn IS a sequence of requests to this
+// recorder; if none arrived, the guest never reached it, and whatever made the
+// assertion pass came from somewhere else. That is not a hypothetical: fourteen
+// microVM cells reported PASS on a run where every one of them served zero,
+// because the failure text they were searched for quoted the prompt back.
+//
+// Keyed on cells that actually RAN rather than on cassettes present, because CI
+// gives each cell its own job and narrows with -run: thirteen of the fourteen
+// are filtered out there, and counting cassettes would fail every job.
+func assertTheCassettesWereUsed(t *testing.T, p *vcrProxy, cells int64) {
+	t.Helper()
+	if cells == 0 {
+		return // nothing ran: -run selected none, and the tier says so elsewhere
+	}
+	summary := p.stop(t)
+	served, err := countedAs(summary, "replayed")
+	if err != nil {
+		return // reportMisses owns that complaint
+	}
+	if served == 0 {
+		t.Errorf("%d cell(s) ran and the recorder answered nothing at all.\n"+
+			"A replayed turn is requests to this recorder, so zero means the guest never "+
+			"reached it and the cells passed for some other reason.", cells)
 	}
 }
 
@@ -1269,6 +1352,22 @@ func writeVCRConfig(t *testing.T) string {
 	}
 	user := regexp.QuoteMeta(me)
 
+	// The account's NUMBER, which travels separately from its name and is not
+	// covered by blanking the name.
+	//
+	// Claude Code puts its scratchpad at /tmp/claude-<uid>/…, and a sandbox
+	// mirrors the launching account's uid as well as its name. So a cassette
+	// recorded by uid 1000 says claude-1000 and one replayed by uid 1001 says
+	// claude-1001, in one character, 5780 bytes into a 10321-byte system prompt
+	// that is otherwise identical. Everything else about the path was already
+	// blanked -- the home directory, the session -- which is what made this the
+	// last thing left and the hardest to see.
+	//
+	// Found the only way it could be: a GitHub runner replayed as uid 1001
+	// where this machine recorded as 1000, both claude-login cells missed, and
+	// the request cs-vcr dumped differed from the recording by that digit.
+	uid := regexp.QuoteMeta(strconv.Itoa(os.Getuid()))
+
 	// Under `extend`, which appends to the ruleset cs-vcr ships. The same names
 	// directly under `normalize` would stand in for it, and the shipped rules
 	// are what blank the date, the working directory, the platform and the
@@ -1301,7 +1400,9 @@ normalize:
         as: '<USER>'
       - pattern: '(%[1]s %[1]s)'
         as: '<USER_GROUP>'
-`, user)
+      - pattern: 'claude-(%[2]s)'
+        as: '<USER_UID>'
+`, user, uid)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write the cs-vcr config: %v", err)
 	}
