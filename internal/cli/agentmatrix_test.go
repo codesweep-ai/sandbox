@@ -55,11 +55,10 @@ const (
 // Model ids are pinned rather than defaulted, so a case that fails says
 // something about the credential path instead of about a model that moved. A
 // default that moves is also a cassette that stops matching for a reason no
-// diff explains. Each is the cheapest one its provider offers that these
-// clients can address.
+// diff explains.
 const (
 	// Claude Code names a model bare; OpenCode names the provider too.
-	claudeModel    = "claude-fable-5"
+	claudeModel    = "claude-opus-5"
 	anthropicModel = "anthropic/" + claudeModel
 	openaiModel    = "openai/gpt-5-nano"
 	codexAPIModel  = "gpt-5-nano"
@@ -113,6 +112,11 @@ type pairing struct {
 	key, login string
 }
 
+// claudeTurnUUID names the tmux session cs-claude-turn drives. Fixed rather
+// than generated: a recording and its replay must produce the same session, and
+// the name reaches nothing the provider sees.
+const claudeTurnUUID = "00000000-0000-4000-8000-00000000cafe"
+
 // pairings is the matrix. Every combination is listed whether or not this host
 // can sign in for it: a case that skips says which credential is missing, and
 // that is the only way a contributor learns what one more login would cover.
@@ -121,7 +125,28 @@ func pairings() []pairing {
 	// otherwise, measured recording as claude-opus-5: a cassette keyed on
 	// whatever that default happens to be stops matching on the day it moves,
 	// for a reason no diff explains.
-	claude := `cd ~ && cs-claude -p --model ` + claudeModel + ` ` + shellQuote(pongPrompt)
+	// Driven through cs-claude-turn rather than `cs-claude -p`, because the
+	// two are different clients of the same credential.
+	//
+	// -p is headless: one process, one request, no terminal. cs-claude-turn
+	// drives the INTERACTIVE Claude Code inside a long-running tmux session —
+	// it pastes the prompt and waits for the turn_duration marker in the
+	// session JSONL. That is the path a campaign uses for every turn, and it
+	// is the one that has been stalling on hosted runners while this matrix,
+	// on -p, stays green. Running the matrix on the driver a caller actually
+	// uses is what makes this tier evidence for that caller.
+	//
+	// --timeout is the turn bound; the tier's own timeout is well above it, so
+	// a stall reports as a stalled turn rather than as a killed test.
+	// --wrapper carries the model pin, which cs-claude-turn has no flag of its
+	// own for: it launches `$WRAPPER --session-id <uuid>`, so the model belongs
+	// on the wrapper. Pinned for the reason above and not for the cost — the
+	// TUI takes Claude Code's own default otherwise, and a cassette keyed on
+	// whatever that happens to be stops matching the day it moves.
+	claude := `cd ~ && printf %s ` + shellQuote(pongPrompt) +
+		` | cs-claude-turn --uuid ` + claudeTurnUUID +
+		` --wrapper ` + shellQuote("cs-claude --model "+claudeModel) +
+		` --workdir "$HOME" --timeout 300`
 	opencode := func(model string) string {
 		m := ""
 		if model != "" {
@@ -982,6 +1007,25 @@ func writeVCRConfig(t *testing.T) string {
 	body := fmt.Sprintf(`# Written by internal/cli/agentmatrix_test.go. Not committed.
 normalize:
   extend:
+    volatile:
+      # What the account says a tool does, which is the world's answer and not
+      # the agent's decision.
+      #
+      # Claude Code asks its account for managed settings and takes the tool
+      # descriptions it is given. A recording made under a real login gets the
+      # account's; a replay presents a fabricated one, the settings call is
+      # refused, and the client falls back to its built-in text. The request
+      # then differs in prose nobody chose, on a path the model never acts on.
+      #
+      # Only the description. The tool NAMES and their schemas stay exact,
+      # because which tools an agent is offered is a decision and a difference
+      # there is a real one.
+      #
+      # It shows up in claude-login-shared alone: that is the one case whose
+      # guest presents the login itself, real when recording and fabricated
+      # when replaying. A lent guest holds a loan token in both halves and
+      # behaves identically.
+      - 'tools[].description'
     capture:
       - pattern: '(?:/home/|-home-)(%[1]s)'
         as: '<USER>'
