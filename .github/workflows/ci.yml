@@ -58,20 +58,28 @@
 # only buy a second, slower copy of the same answer: measured on the Intel macOS
 # leg, they cost nine minutes against a 35-minute budget.
 #
-# What that fan-out cannot buy is another ARCHITECTURE. It is x86_64 Linux only,
-# because hosted runners are the whole point of it, so no arm64 host runs the
-# agent matrix today. The arm64 Mac mini could — it is the only machine that
-# can — but it is a single self-hosted runner, and a runner takes one job at a
-# time. A matrix pointed at it would queue fourteen jobs onto one box and pay
-# the setup fourteen times over to run them in the same order they run now.
-# Parallelism there has to come from inside one job, which is what this tier is
-# built for: cells run in parallel under `go test -parallel`, and each run gets
-# a GROUP of its own — one podman network, with the recorder and the lender as
-# containers on it. Nothing binds a host port any more, so two runs on one
-# machine cannot collide on 8080 or on 2500, and neither can see the other's
-# recorder. What is still per-process is the create lock that serializes
-# host-wide resources (the ssh port pool, the tier keys): it lives under the
-# instance root, so two runs still race there. That one is not fixed here.
+# The fan-out runs on BOTH architectures now, and the arm64 half is the Mac mini
+# (agents-podman-macos). It used to be x86_64 Linux only, for two reasons that
+# have both gone. That machine was one runner taking one job at a time, so a
+# matrix pointed at it would have queued fourteen jobs onto one box; it now has
+# a pool of four. And the tier could not be run twice at once on any host: the
+# recorder bound a fixed 8080 and the lender a fixed 2500, so the second run
+# found the first one's and quietly used it.
+#
+# Nothing binds a host port any more. The recorder and the lender are containers
+# on a GROUP's own network, and every cell takes a group of its own — so four
+# cells share that machine without seeing each other, colliding on a name, or
+# answering each other's health checks. Cells still run in parallel inside one
+# job too (`go test -parallel`), which is what a single-runner host gets.
+#
+# The arm64 leg is worth its minutes because the Mac mini builds its own image
+# in the smoke job: those cells run arm64 agents on an arm64 guest, where the
+# hosted fan-out runs x86_64.
+#
+# What is still per-process is the create lock that serializes host-wide
+# resources (the tier keys): it lives under the instance root, so two runs still
+# race there. It matters less than it did — the ssh port pool it also guarded is
+# no longer drawn from — but it is not fixed here.
 #
 # Firecracker, the other engine, is covered by one job on Linux: it boots a real
 # microVM against artifacts built from the same slimmed image. macOS has no KVM,
@@ -1047,8 +1055,25 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 35
+    # One writer of localhost/sandbox-slim:ci at a time. setup-smoke rebuilds
+    # that tag on every run, deliberately, and this machine now has several
+    # runners: two jobs building into one podman store under one tag is
+    # undefined, and the loser would boot whatever the winner left. Queued
+    # rather than cancelled, because the second run still has to be tested.
+    #
+    # It bounds only the jobs that WRITE the image. The agent matrix does not —
+    # its tier depends on `tools`, not on setup-smoke — so cells stay free to
+    # run beside this.
+    concurrency:
+      group: macos-arm64-ci-image
+      cancel-in-progress: false
     env:
       CS_SANDBOX_IMAGE: localhost/sandbox-slim:ci
+      # A group of this job's own, so several runners on one machine cannot see
+      # or tear down each other's sandboxes. A group is one podman network, and
+      # a network is the boundary: the credential lender, the sandboxes and
+      # their names all live inside it (SPEC R52b).
+      CS_SANDBOX_GROUP: ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7
       # Off for the same reason as the build-test leg above: this runner's
@@ -1110,19 +1135,163 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
-      # The runner is not ephemeral, so this is the equivalent of the Intel job
-      # throwing its whole machine away. Containers and networks only: images are
-      # left alone deliberately, since the next run reloads the CI image anyway
-      # and keeping the layers is free speed. Best-effort — a cleanup failure
-      # must not turn a passing smoke run red.
-      - name: tear down leftovers
+      # The runner is not ephemeral, so something has to clean up. What it must
+      # NOT do any more is clean up everything: this machine runs several
+      # runners, and `podman rm -f --all` would take the other jobs' sandboxes,
+      # lenders and recorders with it.
+      #
+      # So it removes this job's GROUP, which is one network and everything
+      # attached to it — sandboxes, the group's lender, the gateway. Images are
+      # left alone deliberately, since the next run rebuilds the CI image anyway
+      # and keeping the layers is free speed. Best-effort: a cleanup failure must
+      # not turn a passing smoke run red.
+      #
+      # A test that dies mid-way can still leave a group of its own behind
+      # (the live tier makes them, named csgocli-…). Those are reported rather
+      # than removed, because nothing here can tell one job's from another's.
+      - name: tear down this job's group
         if: always()
         run: |
           set -uo pipefail
-          podman rm -f --all || true
-          podman network prune -f || true
-          echo "--- surviving containers (expect none) ---"
-          podman ps -a || true
+          ./bin/cs-sandbox group rm "$CS_SANDBOX_GROUP" -f || true
+          podman network rm -f "cs-sandbox-$CS_SANDBOX_GROUP" || true
+          echo "--- anything of this job still standing (expect none) ---"
+          podman ps -a --filter "network=cs-sandbox-$CS_SANDBOX_GROUP" || true
+          echo "--- groups left by a test that did not finish, for the sweep ---"
+          podman network ls --filter name=cs-sandbox-csgocli --format '{{.Name}}' || true
+
+  # The same fourteen cells on arm64 macOS, one job per cell, on the Mac mini's
+  # pool of self-hosted runners.
+  #
+  # This is the tier the whole group-isolation work was for. Every cell runs in a
+  # GROUP of its own — one podman network, carrying that cell's sandboxes, its
+  # credential lender and its recorder — so several cells on one machine cannot
+  # see each other, collide on a name, or answer each other's health checks.
+  # Nothing binds a host port, which is what makes four of them at once possible
+  # on a box that has one 8080 and one 2500.
+  #
+  # It buys the architecture the hosted fan-out cannot: the Mac mini builds its
+  # own arm64 image in the smoke job below, so these cells run arm64 agents on an
+  # arm64 guest rather than x86_64 under emulation.
+  #
+  # needs the smoke job for that image and nothing else. The cells do not build
+  # one — their tier depends on `tools`, not on setup-smoke — so they neither
+  # race on the tag nor pay three minutes each for it.
+  agents-podman-macos:
+    name: agents podman macos (${{ matrix.case }})
+    needs: [smoke-macos-arm64]
+    # Skips cleanly for fork PRs, like every other job on this machine. The
+    # repository's "require approval for all external contributors" setting is
+    # what actually protects it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 30
+    strategy:
+      # One cell says nothing about the next: a run that stopped at the first
+      # failure would hide the other thirteen answers it had already paid for.
+      fail-fast: false
+      matrix:
+        case:
+          - claude-login-lent
+          - claude-login-shared
+          - codex-login-lent
+          - codex-login-shared
+          - claude-anthropic-lent
+          - claude-anthropic-shared
+          - opencode-anthropic-lent
+          - opencode-anthropic-shared
+          - codex-openai-lent
+          - codex-openai-shared
+          - opencode-openai-lent
+          - opencode-openai-shared
+          - opencode-fireworks-lent
+          - opencode-fireworks-shared
+    env:
+      CS_SANDBOX_IMAGE: localhost/sandbox-slim:ci
+      # This cell's own group, named after the cell so `podman network ls` on
+      # the machine says which job owns what while four of them run.
+      CS_SANDBOX_GROUP: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.case }}
+    steps:
+      - uses: actions/checkout@v7
+      # Off for the same reason as the other legs on this machine: the module
+      # cache persists between jobs and Go leaves it read-only, so the restore
+      # fails trying to unpack over it.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+
+      # launchd does not order jobs relative to each other and `podman machine
+      # start` takes 20-30s, so after a reboot a runner can pick up a job before
+      # the VM is ready. Guard on state rather than calling start blindly: start
+      # exits 125 when the machine is already running.
+      - name: ensure the podman machine is up
+        run: |
+          set -euo pipefail
+          if [ "$(podman machine inspect --format '{{.State}}' podman-machine-default)" != "running" ]; then
+            echo "machine was down; starting it"
+            podman machine start
+          fi
+
+      # Built by the smoke job this one needs, and native to this machine. Named
+      # rather than assumed: without it the first thing to fail would be a cell,
+      # and it would look like the agent's fault.
+      - name: the image the smoke job built
+        run: |
+          set -euo pipefail
+          podman image exists "$CS_SANDBOX_IMAGE" || {
+            echo "::error::$CS_SANDBOX_IMAGE is not on this machine — the smoke job builds it"
+            exit 1
+          }
+          podman image inspect --format 'image arch: {{.Architecture}}' "$CS_SANDBOX_IMAGE"
+
+      # A cell with no cassette is passed over by the tier, which is right when
+      # fourteen share a job and wrong when each one IS a job: this job would
+      # then boot nothing, assert nothing and report green.
+      - name: a cell with no cassette is not a pass
+        run: test -d "test/cassettes/${{ matrix.case }}"
+
+      # `go test` exits ZERO when it runs nothing, and this job is one cell, so
+      # it insists on finding that cell's own PASS line before it agrees it
+      # passed. Same reasoning as the hosted leg above.
+      - name: replay
+        run: |
+          set -euo pipefail
+          make test-agents-replay AGENTS_REPLAY_CASES='TestAgentReplay/${{ matrix.case }}$$' 2>&1 | tee replay.log
+          grep -qF -- '--- PASS: TestAgentReplay/${{ matrix.case }} (' replay.log || {
+            echo "::error::${{ matrix.case }} never ran: the output carries no PASS line for it"
+            exit 1
+          }
+
+      - name: keep what the cassettes could not answer
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vcr-misses-podman-macos-${{ matrix.case }}
+          path: .tmp/agent-vcr/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: keep this cell's coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-agents-podman-macos-${{ matrix.case }}
+          path: .coverage/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+      # This cell's group and nothing else. Three other cells are running beside
+      # it on this machine, and each owns a network of its own.
+      - name: tear down this cell's group
+        if: always()
+        run: |
+          set -uo pipefail
+          ./bin/cs-sandbox group rm "$CS_SANDBOX_GROUP" -f || true
+          podman network rm -f "cs-sandbox-$CS_SANDBOX_GROUP" || true
+          echo "--- anything of this cell still standing (expect none) ---"
+          podman ps -a --filter "network=cs-sandbox-$CS_SANDBOX_GROUP" || true
 
   # One number for the whole run, and the gate that keeps it honest.
   #
