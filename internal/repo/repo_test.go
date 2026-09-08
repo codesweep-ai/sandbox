@@ -3,6 +3,7 @@ package repo
 import (
 	"testing"
 
+	"github.com/codesweep-ai/sandbox/internal/hostcfg"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/state"
 )
@@ -25,7 +26,7 @@ func TestSelect(t *testing.T) {
 }
 
 func TestTransportRemote(t *testing.T) {
-	tr := Transport{Host: hostenv.Host{User: "dev"}, Name: "x", Port: 2201}
+	tr := Transport{Host: hostenv.Host{User: "dev"}, Name: "x", Route: hostcfg.Route{Port: 2201}}
 	if got := tr.remote("api"); got != "dev@127.0.0.1:api" {
 		t.Errorf("remote = %q, want dev@127.0.0.1:api", got)
 	}

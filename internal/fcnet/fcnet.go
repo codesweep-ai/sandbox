@@ -34,18 +34,14 @@ import (
 )
 
 // KeepaliveName is the container that pins podman's rootless netns + bridge on
-// the default network. Every network has one, named after it.
-const KeepaliveName = "cs-sandbox-net-keepalive"
+// the default network.
+var KeepaliveName = state.KeepaliveFor(state.NetworkName(state.DefaultGroup))
 
-// KeepaliveFor is the keepalive/gateway container for a network. One container
-// per network serves both roles: it pins the bridge (netavark tears the bridge
-// down around running containers, so a lone VM would otherwise lose it) and,
-// with a published port, it is the group's ssh jump host. Two roles, but one
-// lifetime — the gateway exists exactly as long as the fabric it fronts.
-func KeepaliveFor(network string) string { return network + "-keepalive" }
-
-// InternalSSHPort is the port the guest sshd listens on.
-const InternalSSHPort = 22
+// KeepaliveFor is the keepalive/gateway container for a network (state owns the
+// name). One container per network serves both roles: it pins the bridge, and it
+// is the group's ssh entry point. Two roles, one lifetime — the gateway exists
+// exactly as long as the fabric it fronts.
+func KeepaliveFor(network string) string { return state.KeepaliveFor(network) }
 
 // Fabric bundles the dependencies for managing the shared network.
 type Fabric struct {
@@ -56,8 +52,9 @@ type Fabric struct {
 	// Suffix is the DNS suffix this fabric is authoritative for. Empty reads
 	// CS_SANDBOX_DNS_SUFFIX, then falls back to cs.sandbox.
 	Suffix string
-	// GWPort publishes this network's keepalive as the group's ssh gateway.
-	// 0 leaves it unpublished (bridge-pinning only).
+	// GWPort publishes this network's gateway on a host port. Zero leaves it
+	// unpublished, which is the default: the host reaches the gateway through
+	// the engine, exactly as it reaches a sandbox.
 	GWPort int
 	GWBind string // host bind address for GWPort (127.0.0.1 default)
 	GWSeed string // seed dir holding the gateway's authorized_keys
@@ -110,10 +107,10 @@ func (f Fabric) Keepalive() string { return KeepaliveFor(f.Network) }
 // create one today: the point is to catch a gateway created by an older build,
 // which is exactly the case where our assumptions do not apply.
 //
-// A keepalive with no published port is not a gateway — nobody jumps through it
-// — so it is left alone rather than churned.
+// A keepalive built without the gateway leg is not one, so it is left alone
+// rather than churned.
 func (f Fabric) gatewayResolvesVMs(ctx context.Context) bool {
-	if f.GWPort == 0 {
+	if f.GWSeed == "" {
 		return true
 	}
 	want := f.DNSIP(ctx)
@@ -170,12 +167,13 @@ func (f Fabric) keepaliveUp(ctx context.Context) error {
 	argv := []string{"podman", "run", "-d", "--name", f.Keepalive(),
 		"--hostname", "gateway", "--network", f.Network, "--restart=always",
 		"--label", "cs-sandbox.managed=1", "--label", "cs-sandbox.keepalive=1"}
-	if f.GWPort != 0 {
-		// The gateway leg. One published port per group: the host jumps through
-		// it and then reaches every member by its bare name over the group's own
-		// DNS, which is the same path members use to reach each other. The image
-		// entrypoint already starts sshd, so the gateway needs only an identity
-		// and the group's authorized_keys.
+	if f.GWSeed != "" {
+		// The gateway leg, which is no longer the same decision as publishing a
+		// port. The host reaches this container the way it reaches a sandbox —
+		// through the engine — and from inside it every member answers to its
+		// bare name over the group's own DNS. The image entrypoint already
+		// starts sshd, so the gateway needs only an identity and the group's
+		// authorized_keys.
 		//
 		// --dns is what makes that true. A group has two resolvers: aardvark,
 		// which containers get by default and which knows container names, and
@@ -186,7 +184,6 @@ func (f Fabric) keepaliveUp(ctx context.Context) error {
 		// while a podman-only group worked and hid it.
 		argv = append(argv,
 			"--dns", f.DNSIP(ctx),
-			"-p", fmt.Sprintf("%s:%d:22", f.GWBind, f.GWPort),
 			"--label", "cs-sandbox.gateway=1",
 			"--userns=keep-id", "--user", "0:0",
 			// The seed is a host dir owned by the invoking user; without this
@@ -200,6 +197,12 @@ func (f Fabric) keepaliveUp(ctx context.Context) error {
 			"-e", fmt.Sprintf("CS_SANDBOX_GID=%d", f.GWGID),
 			"-e", "CS_SANDBOX_HOME="+f.GWHome,
 			"-v", f.GWSeed+":/run/cs-sandbox-seed:ro")
+		// A published port is the opt-in, for a caller that cannot run a
+		// command: something on another machine, or a tool that takes a host and
+		// a port. Nothing needs it to reach the group from this host.
+		if f.GWPort != 0 {
+			argv = append(argv, "-p", fmt.Sprintf("%s:%d:22", f.GWBind, f.GWPort))
+		}
 	}
 	argv = append(argv, f.Image, "sleep", "infinity")
 	res, err := f.Runner.Run(ctx, run.Opts{}, argv...)
@@ -566,8 +569,14 @@ func (f Fabric) TapDel(ctx context.Context, tap string) {
 // --- host → VM forwarder (unix-socket bridge across the netns boundary) ---
 
 // FwdUp brings up the host→VM ssh forwarder for an instance: a socat in the netns
-// relaying a unix socket to the VM's sshd, and a host-side socat binding the
-// published port to that socket.
+// relaying a unix socket to the VM's sshd, and — only where a host port was asked
+// for — a second socat binding that port to the socket.
+//
+// The socket is the route. ssh reaches a microVM by handing its stream to
+// `socat - UNIX-CONNECT:<sock>`, so the host-side leg exists for a caller that
+// needs a host and a port rather than a command: something on another machine,
+// or a tool that cannot run a ProxyCommand. hostPort of 0 leaves it unbuilt, and
+// then this instance costs the host no port at all.
 //
 // The inner (in-netns) socat reports its OWN pid — `podman unshare` re-execs, so
 // $! would be the wrapper, not the process holding the socket.
@@ -587,7 +596,7 @@ exec socat "UNIX-LISTEN:$2,fork,reuseaddr" "TCP:$3:$4"`
 		return err
 	}
 	nsCmd := exec.Command("podman", "unshare", "--rootless-netns", "sh", "-c", nsScript,
-		"_", filepath.Join(idir, "fwd-ns.pid"), sock, vmIP, strconv.Itoa(InternalSSHPort))
+		"_", filepath.Join(idir, "fwd-ns.pid"), sock, vmIP, strconv.Itoa(state.InternalSSHPort))
 	nsCmd.Stdout, nsCmd.Stderr = nsLog, nsLog
 	nsCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := nsCmd.Start(); err != nil {
@@ -602,6 +611,10 @@ exec socat "UNIX-LISTEN:$2,fork,reuseaddr" "TCP:$3:$4"`
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+
+	if hostPort == 0 {
+		return nil
 	}
 
 	// Host-side socat: bind the published port to the socket.

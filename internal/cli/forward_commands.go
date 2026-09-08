@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/codesweep-ai/sandbox/internal/forward"
+	"github.com/codesweep-ai/sandbox/internal/hostcfg"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/state"
 	"github.com/spf13/cobra"
@@ -33,7 +34,7 @@ func newForwardCmd(app *App) *cobra.Command {
 				return errors.New("--socks port must be between 1 and 65535")
 			}
 			if socks > 0 {
-				r, err := forward.Start(app.Host, paths.GroupKeys(in.Group), app.InstDir, in.Group, in.Name, in.Port, "D", socks, "socks", bind)
+				r, err := forward.Start(app.Host, paths.GroupKeys(in.Group), app.InstDir, in.Group, in.Name, hostcfg.RouteTo(app.InstDir, in), "D", socks, "socks", bind)
 				if err != nil {
 					return err
 				}
@@ -48,7 +49,7 @@ func newForwardCmd(app *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				r, err := forward.Start(app.Host, paths.GroupKeys(in.Group), app.InstDir, in.Group, in.Name, in.Port, "L", hp, fmt.Sprintf("localhost:%d", vp), bind)
+				r, err := forward.Start(app.Host, paths.GroupKeys(in.Group), app.InstDir, in.Group, in.Name, hostcfg.RouteTo(app.InstDir, in), "L", hp, fmt.Sprintf("localhost:%d", vp), bind)
 				if err != nil {
 					return err
 				}

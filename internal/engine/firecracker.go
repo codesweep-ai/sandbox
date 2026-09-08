@@ -13,6 +13,7 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/fcconfig"
 	"github.com/codesweep-ai/sandbox/internal/fcdisk"
 	"github.com/codesweep-ai/sandbox/internal/fcnet"
+	"github.com/codesweep-ai/sandbox/internal/hostcfg"
 	"github.com/codesweep-ai/sandbox/internal/lock"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/ports"
@@ -143,9 +144,15 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	if err != nil {
 		return nil, err
 	}
-	port, err := allocPort(ports.Split, ports.Max, d.reservedPorts(ctx))
-	if err != nil {
-		return nil, err
+	// A host port only where one was asked for; see the podman engine. A microVM
+	// is reached over the forwarder's unix socket either way, and that socket is
+	// built below whether or not anything publishes it.
+	var port int
+	if d.SSHBind != "" {
+		port, err = allocPort(ports.Split, ports.Max, d.reservedPorts(ctx))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	inst = &state.Instance{
@@ -405,9 +412,9 @@ func (fe *Firecracker) shutdown(ctx context.Context, name string) {
 	// ssh round trip to a VM whose wrapper already died. killFirecracker runs
 	// either way, because a dead wrapper says nothing about the VMM below it.
 	if fcRunning(idir) {
-		// Best-effort graceful reboot over the published port.
-		if in, err := state.Load(fe.d.InstDir, fe.d.group(), name); err == nil && in.Port > 0 {
-			reboot := append(fe.sshArgs(name, in.Port), "sync; sudo sh -c \"sync; reboot -f\"")
+		// Best-effort graceful reboot, by whatever route reaches this VM.
+		if in, err := state.Load(fe.d.InstDir, fe.d.group(), name); err == nil {
+			reboot := append(fe.sshArgs(name, in), "sync; sudo sh -c \"sync; reboot -f\"")
 			cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 			_, _ = fe.d.Runner.Run(cctx, run.Opts{}, reboot...)
 			cancel()
@@ -438,7 +445,7 @@ func (fe *Firecracker) Exec(ctx context.Context, name string, io ExecIO) error {
 	if err != nil {
 		return err
 	}
-	argv := fe.sshArgs(name, in.Port)
+	argv := fe.sshArgs(name, in)
 	if io.Interactive {
 		argv = append(argv, "-t")
 	}
@@ -478,21 +485,17 @@ func (fe *Firecracker) Port(ctx context.Context, name string) (int, error) {
 
 // sshArgs builds the ssh argv reaching the VM by its published port with the
 // user-tier key, keyed by HostKeyAlias (as cmd ssh does).
-func (fe *Firecracker) sshArgs(name string, port int) []string {
-	key := filepath.Join(fe.d.TierDir, "id_cs-sandbox_user")
-	knownHosts := fe.d.Host.SSHDir() + "/known_hosts.cs-sandbox"
-	// The host-global object name, not the bare one: two groups holding the same
-	// fixture present different host keys, and one alias for both fails the
-	// second with "host key changed" under BatchMode, with nobody to accept it.
-	return []string{"ssh",
-		"-i", key, "-p", strconv.Itoa(port),
-		"-o", "HostKeyAlias=" + state.ObjectName(fe.d.group(), name),
-		"-o", "UserKnownHostsFile=" + knownHosts,
-		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "IdentitiesOnly=yes",
-		"-o", "BatchMode=yes",
-		fe.d.Host.User + "@127.0.0.1",
-	}
+// sshArgs is how this engine reaches one of its own microVMs, by the same route
+// the managed ssh config hands a person.
+//
+// The host-global object name, not the bare one: two groups holding the same
+// fixture present different host keys, and one alias for both fails the second
+// with "host key changed" under BatchMode, with nobody to accept it.
+func (fe *Firecracker) sshArgs(name string, in *state.Instance) []string {
+	obj := state.ObjectName(fe.d.group(), name)
+	r := hostcfg.RouteTo(fe.d.InstDir, in)
+	argv := append([]string{"ssh"}, hostcfg.SSHOptions(fe.d.Host, fe.d.TierDir, obj, r)...)
+	return append(argv, "-o", "BatchMode=yes", hostcfg.SSHDest(fe.d.Host, obj, r))
 }
 
 // allocIP picks the next free VM address from the high end of the /24 (.200-.250),

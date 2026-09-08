@@ -114,7 +114,7 @@ func newCreateCmd(app *App) *cobra.Command {
 	return cmd
 }
 
-func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *cobra.Command) error {
+func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *cobra.Command) (err error) {
 	// Creation is the single gate for sandbox names: everything downstream (the
 	// instance dir, the managed ssh config, the fabric hosts entry) derives from
 	// an instance that got past here.
@@ -179,22 +179,37 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		fmt.Fprintln(os.Stderr, "cs-sandbox: "+w)
 	}
 
-	// Credentials, before anything is provisioned: a flag naming a login the
-	// host does not hold, or a cs-vcr that is not answering, is a mistake to
-	// report now rather than one to discover from inside the sandbox.
-	plan, err := app.resolveLoans(f, name, injected)
-	if err != nil {
-		return err
-	}
-	if injected, err = mergeLoanEnv(injected, plan.env, plan.consumed); err != nil {
-		return err
-	}
-
 	// The group's artifacts (network, keys, gateway) and its record must exist
 	// before Deps is built: the engines take a COPY of Deps, so a field set
 	// afterwards — the allocated tap prefix — would never reach them.
+	//
+	// Before the credentials too, and that ordering is load-bearing now: the
+	// lender is a container ON this group's network, so the network has to be
+	// there for it to join. Nothing here provisions the sandbox, so a lend flag
+	// that cannot be honoured still fails before anything the caller would have
+	// to clean up.
 	app.progress("preparing the group's isolated network and trust keys…")
-	if _, err := app.ensureGroup(ctx, f.group); err != nil {
+	if _, err := app.ensureGroup(ctx, f.group, false); err != nil {
+		return err
+	}
+
+	// Credentials, before anything is provisioned: a flag naming a login the
+	// host does not hold, or a cs-vcr that is not answering, is a mistake to
+	// report now rather than one to discover from inside the sandbox.
+	plan, err := app.resolveLoans(ctx, f, name, injected)
+	if err != nil {
+		return err
+	}
+	// Resolving the loans started the group's lender, and from here a failure
+	// can leave it running with nothing to lend: no sandbox exists yet, so no
+	// destroy will ever come along to stop it. Idle either way, but a container
+	// that outlives the command that started it is one nobody goes looking for.
+	defer func() {
+		if err != nil {
+			app.stopLenderIfIdle(ctx, f.group)
+		}
+	}()
+	if injected, err = mergeLoanEnv(injected, plan.env, plan.consumed); err != nil {
 		return err
 	}
 	d := app.engineDepsFor(f.group)
@@ -268,7 +283,13 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	if app.dryRun() {
 		verb = "would create"
 	}
-	fmt.Fprintf(out, "%s %s (type=%s, engine=%s, ssh port=%d)\n", verb, name, f.typ, f.engine, inst.Port)
+	// The port is named only when there is one. A sandbox publishes none by
+	// default, and reporting "ssh port=0" would send a reader looking for it.
+	where := ""
+	if inst.Port != 0 {
+		where = fmt.Sprintf(", ssh port=%d", inst.Port)
+	}
+	fmt.Fprintf(out, "%s %s (type=%s, engine=%s%s)\n", verb, name, f.typ, f.engine, where)
 	fmt.Fprintf(out, "  shell: ssh %s\n", name+"."+f.group)
 	if len(inst.AgentLogins) > 0 {
 		fmt.Fprintf(out, "  agent login: %s (inherited from your host)\n", strings.Join(inst.AgentLogins, " + "))

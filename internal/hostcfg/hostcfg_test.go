@@ -13,7 +13,7 @@ import (
 
 func TestSSHCommandString(t *testing.T) {
 	h := hostenv.Host{User: "dev", Home: "/home/dev"}
-	got := SSHCommandString(h, "/tier", "feature", 2201)
+	got := SSHCommandString(h, "/tier", "feature", Route{Port: 2201})
 	for _, want := range []string{
 		"ssh", "-i /tier/id_cs-sandbox_user", "-p 2201",
 		"HostKeyAlias=feature", "IdentitiesOnly=yes", "StrictHostKeyChecking=accept-new",
@@ -26,7 +26,7 @@ func TestSSHCommandString(t *testing.T) {
 
 func TestSSHCommandStringQuotesShellMetacharacters(t *testing.T) {
 	h := hostenv.Host{User: "dev", Home: "/home/dev"}
-	got := SSHCommandString(h, "/tmp/user's keys", "feature", 2201)
+	got := SSHCommandString(h, "/tmp/user's keys", "feature", Route{Port: 2201})
 	want := `'/tmp/user'"'"'s keys/id_cs-sandbox_user'`
 	if !strings.Contains(got, want) {
 		t.Errorf("SSHCommandString = %q, want safely quoted path %q", got, want)
@@ -41,9 +41,9 @@ func TestSyncSSHConfig(t *testing.T) {
 	h := hostenv.Host{User: "dev", Home: home}
 	instDir := filepath.Join(t.TempDir(), "instances")
 	insts := []*state.Instance{
-		{Name: "a", Port: 2200},
-		{Name: "b", Port: 2301},
-		{Name: "skip", Port: 0}, // no port -> skipped
+		{Name: "a", Port: 2200},                                // published: dialled by port
+		{Name: "b", Engine: state.Podman},                      // the default: reached through the engine
+		{Name: "c", Engine: state.Firecracker, Group: "cache"}, // and a microVM, over its socket
 	}
 	if err := SyncSSHConfig(h, "/tier", instDir, insts, nil); err != nil {
 		t.Fatal(err)
@@ -56,8 +56,12 @@ func TestSyncSSHConfig(t *testing.T) {
 	for _, want := range []string{
 		// Every sandbox gets its qualified alias; the bare one rides along
 		// because these are default-group members.
-		"Host a.default a\n", "Port 2200", "HostKeyAlias a.default",
-		"Host b.default b\n", "Port 2301",
+		"Host a.default a\n", "HostName 127.0.0.1", "Port 2200", "HostKeyAlias a.default",
+		// No port, so no host to dial: ssh gets its stream from the engine.
+		"Host b.default b\n", "ProxyCommand podman exec -i b.default socat - TCP:127.0.0.1:22",
+		// A microVM has no container to enter. It answers on the socket its
+		// forwarder already listens on, in its own instance directory.
+		"Host c.cache\n", "ProxyCommand socat - UNIX-CONNECT:" + filepath.Join(instDir, "cache", "c", "fwd.sock"),
 		// Trust material is per group, so the identity path names the group.
 		"IdentityFile /tier/groups/default/id_cs-sandbox_user",
 	} {
@@ -65,8 +69,12 @@ func TestSyncSSHConfig(t *testing.T) {
 			t.Errorf("config missing %q:\n%s", want, cfg)
 		}
 	}
-	if strings.Contains(cfg, "Host skip") {
-		t.Errorf("port-less instance should be skipped:\n%s", cfg)
+	// One or the other, never both: a block that carried a Port and a
+	// ProxyCommand would dial the port and ignore the command.
+	for _, block := range strings.Split(cfg, "\nHost ")[1:] {
+		if strings.Contains(block, "ProxyCommand") && strings.Contains(block, "\n    Port ") {
+			t.Errorf("a block carries both a port and a proxy:\n%s", block)
+		}
 	}
 
 	// The Include directive is prepended to ~/.ssh/config.
@@ -304,9 +312,13 @@ func TestSyncSSHConfigGroups(t *testing.T) {
 		// Each sandbox authenticates with its own group's key.
 		"IdentityFile /tier/groups/cache-redis/id_cs-sandbox_user",
 		"IdentityFile /tier/groups/cache-memory/id_cs-sandbox_user",
-		// A group with a gateway gets an alias for it.
+		// Every group gets a gateway alias. A published port is dialled where
+		// one was asked for; otherwise the engine's own channel carries it, so
+		// the alias works with nothing bound on the host.
 		"Host cache-redis-gw\n",
 		"Port 2400",
+		"Host cache-memory-gw\n",
+		"ProxyCommand podman exec -i cs-sandbox-cache-memory-keepalive socat - TCP:127.0.0.1:22",
 	} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("config missing %q:\n%s", want, cfg)
@@ -320,9 +332,18 @@ func TestSyncSSHConfigGroups(t *testing.T) {
 			t.Errorf("bare alias %q must not be emitted for a non-default group:\n%s", bad, cfg)
 		}
 	}
-	// A group without a gateway port gets no gateway block.
-	if strings.Contains(cfg, "cache-memory-gw") {
-		t.Errorf("group without a gateway port should have no gateway alias:\n%s", cfg)
+	// The unpublished gateway dials nothing: a Port line there would send ssh
+	// to a host port that was never bound.
+	at := strings.Index(cfg, "Host cache-memory-gw")
+	if at < 0 {
+		t.Fatalf("no gateway block for the unpublished group:\n%s", cfg)
+	}
+	unpub := cfg[at:]
+	if i := strings.Index(unpub, "\nHost "); i > 0 {
+		unpub = unpub[:i]
+	}
+	if strings.Contains(unpub, "Port ") || strings.Contains(unpub, "HostName ") {
+		t.Errorf("an unpublished gateway should carry no host or port:\n%s", unpub)
 	}
 	// The gateway authorizes only its group's key; offering the host's other
 	// identities first would exhaust sshd's MaxAuthTries before it was tried.

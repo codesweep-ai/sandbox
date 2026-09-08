@@ -1,6 +1,6 @@
 // Package hostcfg generates the host-side SSH material: the reusable ssh option
-// set for reaching a sandbox by published port (keyed by HostKeyAlias so a
-// recycled port never trips "host key changed"), and the managed
+// set for reaching a sandbox (keyed by HostKeyAlias, so two sandboxes of the
+// same name in different groups key two entries), and the managed
 // ~/.ssh/config.d include that makes `ssh <name>` work.
 package hostcfg
 
@@ -21,24 +21,114 @@ func KnownHostsFile(h hostenv.Host) string {
 	return filepath.Join(h.SSHDir(), "known_hosts.cs-sandbox")
 }
 
-// SSHOptions returns the -o/-i/-p option list for reaching sandbox `name` on
-// `port` with the user-tier key, keyed by HostKeyAlias.
-func SSHOptions(h hostenv.Host, tierDir, name string, port int) []string {
-	return []string{
+// Route is how the host reaches one sandbox's sshd.
+//
+// A sandbox binds no host port. It used to bind one each, from a 100-port range
+// per engine (R42) that every sandbox on the machine drew from — so two people,
+// or two runs, competed for the same hundred numbers, and allocation could only
+// see the ports of whoever was asking. What replaces it is a ProxyCommand: ssh
+// gets its byte stream from something that already exists, and nothing is bound
+// on the host at all.
+//
+// The stream differs by engine, and neither is new machinery. A container is
+// entered with `podman exec`, which is how `exec` already reaches one. A microVM
+// answers on the unix socket the fabric's forwarder already publishes for it,
+// which used to have a host-side socat bolted onto it purely to turn it back
+// into a TCP port.
+//
+// It narrows the reach as well as the pollution. A loopback port is open to
+// every account on the machine; `podman exec` is refused to anyone but the
+// owner, because another user's rootless podman does not have this container,
+// and the microVM's socket is protected by the 0700 instance directory it sits
+// in.
+//
+// Port is the opt-in: CS_SANDBOX_SSH_BIND publishes one for a caller that cannot
+// run a ProxyCommand — another machine, or a tool that takes a host and a port.
+type Route struct {
+	Proxy string // the ProxyCommand ssh runs, or "" when Port is dialled instead
+	Port  int    // a published host port, or 0 for none
+}
+
+// Published reports whether this route dials a host port.
+func (r Route) Published() bool { return r.Proxy == "" && r.Port != 0 }
+
+// RouteTo is how to reach this instance, published port first.
+//
+// instDir is where a microVM's forwarder socket lives, beside the instance whose
+// stream it carries.
+func RouteTo(instDir string, in *state.Instance) Route {
+	if in.Port != 0 {
+		return Route{Port: in.Port}
+	}
+	group := in.Group
+	if group == "" {
+		group = state.DefaultGroup
+	}
+	if in.Engine == state.Firecracker {
+		return Route{Proxy: proxyUnix(filepath.Join(state.Dir(instDir, group, in.Name), state.SockFwd))}
+	}
+	return Route{Proxy: proxyExec(state.ObjectName(group, in.Name))}
+}
+
+// proxyExec reaches a container's sshd through the engine, with the socat the
+// image is guaranteed to carry. `podman exec` needs no network of its own, so
+// this works for a sandbox on any group's bridge and for one on none.
+func proxyExec(obj string) string {
+	return shellJoin("podman", "exec", "-i", obj, "socat", "-",
+		fmt.Sprintf("TCP:127.0.0.1:%d", state.InternalSSHPort))
+}
+
+// proxyUnix reaches a microVM through the socket its forwarder already listens
+// on inside the rootless namespace. The socket is a file in the instance
+// directory, so what may open it is decided by the mode of that directory
+// rather than by who can reach a loopback port.
+func proxyUnix(sock string) string {
+	return shellJoin("socat", "-", "UNIX-CONNECT:"+sock)
+}
+
+// SSHOptions returns the -o/-i option list for reaching sandbox `name` by this
+// route with the user-tier key, keyed by HostKeyAlias.
+func SSHOptions(h hostenv.Host, tierDir, name string, r Route) []string {
+	opts := []string{
 		"-i", filepath.Join(tierDir, "id_cs-sandbox_user"),
-		"-p", strconv.Itoa(port),
 		"-o", "HostKeyAlias=" + name,
 		"-o", "UserKnownHostsFile=" + KnownHostsFile(h),
 		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "IdentitiesOnly=yes",
 	}
+	if r.Proxy != "" {
+		return append(opts, "-o", "ProxyCommand="+r.Proxy)
+	}
+	return append(opts, "-p", strconv.Itoa(r.Port))
+}
+
+// SSHDest is the destination that goes with SSHOptions.
+//
+// A proxied connection never resolves this name: ssh hands the stream to the
+// ProxyCommand instead. It is the alias rather than a placeholder so that a log
+// line, a prompt and an error all say which sandbox this was.
+func SSHDest(h hostenv.Host, name string, r Route) string {
+	if r.Proxy != "" {
+		return h.User + "@" + name
+	}
+	return h.User + "@127.0.0.1"
+}
+
+// shellJoin renders a command line for somewhere a shell will read it: an ssh
+// ProxyCommand, or GIT_SSH_COMMAND.
+func shellJoin(argv ...string) string {
+	parts := make([]string, len(argv))
+	for i, a := range argv {
+		parts[i] = shellQuote(a)
+	}
+	return strings.Join(parts, " ")
 }
 
 // SSHCommandString renders SSHOptions as a single `ssh …` string for
 // GIT_SSH_COMMAND / core.sshCommand, so git transport reaches a sandbox without
 // depending on the user's ssh config.
-func SSHCommandString(h hostenv.Host, tierDir, name string, port int) string {
-	parts := append([]string{"ssh"}, SSHOptions(h, tierDir, name, port)...)
+func SSHCommandString(h hostenv.Host, tierDir, name string, r Route) string {
+	parts := append([]string{"ssh"}, SSHOptions(h, tierDir, name, r)...)
 	// Git runs this through a shell, so quote every argument containing shell
 	// metacharacters. In particular, macOS keeps our keys under
 	// "~/Library/Application Support/…".
@@ -94,18 +184,22 @@ func SyncSSHConfig(h hostenv.Host, tierDir, instDir string, insts []*state.Insta
 	// collision would silently connect to whichever block was written first.
 	blocks := 0
 	// One gateway alias per group. The per-sandbox blocks below are the direct
-	// path and keep working when a gateway is down; the jump host is what makes
-	// names resolve the way they do INSIDE the group, and reaches services the
-	// published SSH port does not.
+	// path and keep working when a gateway is down; the gateway is what reaches
+	// a name on the group's network that is not a member — the credential
+	// lender, a recorder — without having to pick a member to go through.
 	for _, g := range groups {
-		if g.GWPort == 0 {
-			continue
-		}
 		gwKey := filepath.Join(GroupKeysDir(tierDir, g.Name), "id_cs-sandbox_user")
 		blocks++
 		fmt.Fprintf(&b, "\nHost %s-gw\n", g.Name)
-		fmt.Fprintf(&b, "    HostName 127.0.0.1\n")
-		fmt.Fprintf(&b, "    Port %d\n", g.GWPort)
+		// The same choice a sandbox gets: a published port where one was asked
+		// for, and otherwise the engine's own channel into the container.
+		if g.GWPort != 0 {
+			fmt.Fprintf(&b, "    HostName 127.0.0.1\n")
+			fmt.Fprintf(&b, "    Port %d\n", g.GWPort)
+		} else {
+			fmt.Fprintf(&b, "    ProxyCommand %s\n",
+				proxyExec(state.KeepaliveFor(state.NetworkName(g.Name))))
+		}
 		fmt.Fprintf(&b, "    User %s\n", h.User)
 		fmt.Fprintf(&b, "    HostKeyAlias %s-gw\n", g.Name)
 		// Only the group key, deliberately: the gateway authorizes nothing else,
@@ -117,9 +211,6 @@ func SyncSSHConfig(h hostenv.Host, tierDir, instDir string, insts []*state.Insta
 		fmt.Fprintf(&b, "    UserKnownHostsFile %s\n", hostenv.QuoteConfigArg(kh))
 	}
 	for _, in := range insts {
-		if in.Port == 0 {
-			continue
-		}
 		blocks++
 		// Trust material is per group: the key that opens this sandbox opens
 		// nothing in any other group.
@@ -133,8 +224,14 @@ func SyncSSHConfig(h hostenv.Host, tierDir, instDir string, insts []*state.Insta
 		}
 		userKey := filepath.Join(GroupKeysDir(tierDir, group), "id_cs-sandbox_user")
 		fmt.Fprintf(&b, "\nHost %s\n", aliases)
-		fmt.Fprintf(&b, "    HostName 127.0.0.1\n")
-		fmt.Fprintf(&b, "    Port %d\n", in.Port)
+		// One or the other, never both: a published port is the opt-in, and a
+		// ProxyCommand is what a sandbox has when nothing is published for it.
+		if r := RouteTo(instDir, in); r.Published() {
+			fmt.Fprintf(&b, "    HostName 127.0.0.1\n")
+			fmt.Fprintf(&b, "    Port %d\n", r.Port)
+		} else {
+			fmt.Fprintf(&b, "    ProxyCommand %s\n", r.Proxy)
+		}
 		fmt.Fprintf(&b, "    User %s\n", h.User)
 		fmt.Fprintf(&b, "    HostKeyAlias %s\n", Ref(in))
 		// The host reaches sandboxes with its own keys (H) if it has any, plus the

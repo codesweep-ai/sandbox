@@ -666,25 +666,6 @@ func TestALoanMintedAfterTheLastScanStillResolves(t *testing.T) {
 	}
 }
 
-// A pid file can outlive the process it names, and the number is then whatever
-// the kernel handed out next. Stop must not signal on that evidence alone.
-func TestStopDoesNotSignalAPidItCannotConfirm(t *testing.T) {
-	dir := t.TempDir()
-	d := Daemon{Dir: dir}
-	// Our own pid, recorded against an address nothing answers on: exactly the
-	// shape a record left behind by a reboot has.
-	if err := d.writeRecord(os.Getpid(), "127.0.0.1:1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.Stop(); err != nil {
-		t.Fatalf("Stop on a stale record should succeed: %v", err)
-	}
-	// Signalled, this test would not be here to check.
-	if _, _, alive := d.Status(); alive {
-		t.Error("the record should be gone")
-	}
-}
-
 // This package holds every credential on the host, and it is the one package
 // that must not be able to go looking for more. Everything it reads arrives as
 // a parameter, which is a property worth failing a build over rather than a

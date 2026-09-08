@@ -3,9 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"strconv"
-
-	"path/filepath"
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/forward"
@@ -92,9 +89,9 @@ func newDestroyCmd(app *App) *cobra.Command {
 				return err
 			}
 			// The loan record went with the instance directory, so the lender
-			// stops honouring this sandbox's token. Stop the lender too once no
-			// sandbox on this host holds one.
-			app.stopLenderIfIdle()
+			// stops honouring this sandbox's token. Stop this group's lender too
+			// once no sandbox in the group holds one.
+			app.stopLenderIfIdle(cmd.Context(), in.Group)
 			app.refreshHostRoute(cmd) // unpublish the destroyed name if host-route is on
 			if err := app.syncSSHConfig(); err != nil {
 				return err
@@ -163,7 +160,7 @@ func newRmCmd(app *App) *cobra.Command {
 			if err := e.Remove(cmd.Context(), in.Name, false); err != nil {
 				return err
 			}
-			app.stopLenderIfIdle()
+			app.stopLenderIfIdle(cmd.Context(), in.Group)
 			app.refreshHostRoute(cmd) // unpublish the name if host-route is on
 			if err := app.syncSSHConfig(); err != nil {
 				return err
@@ -218,21 +215,15 @@ func newSSHCmd(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Reach the published port with the user-tier key. Key known-hosts by
-			// the host-global object name in a dedicated file, so a recycled port
-			// never trips "host key changed", the user's main known_hosts is
-			// untouched, and the same fixture in two groups keys two entries
-			// rather than one the second connection fails on.
-			key := filepath.Join(paths.GroupKeys(in.Group), "id_cs-sandbox_user")
-			knownHosts := app.Host.SSHDir() + "/known_hosts.cs-sandbox"
-			sshArgs := []string{
-				"-i", key, "-p", strconv.Itoa(in.Port),
-				"-o", "HostKeyAlias=" + hostcfg.Ref(in),
-				"-o", "UserKnownHostsFile=" + knownHosts,
-				"-o", "StrictHostKeyChecking=accept-new",
-				"-o", "IdentitiesOnly=yes",
-				app.Host.User + "@127.0.0.1",
-			}
+			// The same route the managed ssh config hands a person, built from
+			// one place so the two cannot drift. Known-hosts is keyed by the
+			// host-global object name in a dedicated file, so the user's own
+			// known_hosts is untouched and the same fixture in two groups keys
+			// two entries rather than one the second connection fails on.
+			route := hostcfg.RouteTo(app.InstDir, in)
+			ref := hostcfg.Ref(in)
+			sshArgs := hostcfg.SSHOptions(app.Host, paths.GroupKeys(in.Group), ref, route)
+			sshArgs = append(sshArgs, hostcfg.SSHDest(app.Host, ref, route))
 			sshArgs = append(sshArgs, args[1:]...)
 			_, err = app.Runner.Run(cmd.Context(), run.Opts{Interactive: true}, append([]string{"ssh"}, sshArgs...)...)
 			return sandboxedExit(err)
@@ -245,13 +236,21 @@ func newSSHCmd(app *App) *cobra.Command {
 func newPortCmd(app *App) *cobra.Command {
 	return &cobra.Command{
 		Use:               "port <name>",
-		Short:             "Print a sandbox's host SSH port",
+		Short:             "Print a sandbox's published host SSH port, if it has one",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: app.completeSandbox,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			in, err := app.resolve(args[0])
 			if err != nil {
 				return err
+			}
+			// A sandbox publishes nothing by default, so most have no number to
+			// print. Saying which command does reach it is the useful answer;
+			// printing 0 would be a port somebody then tries to connect to.
+			if in.Port == 0 {
+				return fmt.Errorf("%s publishes no host port: reach it with `ssh %s`, "+
+					"or set CS_SANDBOX_SSH_BIND before create to publish one",
+					hostcfg.Ref(in), hostcfg.Ref(in))
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), in.Port)
 			return nil

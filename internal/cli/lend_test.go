@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/lend"
 	"github.com/codesweep-ai/sandbox/internal/run"
@@ -84,7 +83,7 @@ func TestLendFlagsFailBeforeAnythingIsProvisioned(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			app := lendApp(t, lendHome(t))
-			_, err := app.resolveLoans(&c.flags, "box", "")
+			_, err := app.resolveLoans(context.Background(), &c.flags, "box", "")
 			if err == nil {
 				t.Fatalf("resolveLoans(%+v) succeeded, want an error mentioning %q", c.flags, c.want)
 			}
@@ -99,7 +98,7 @@ func TestLendFlagsFailBeforeAnythingIsProvisioned(t *testing.T) {
 // command that gives it one.
 func TestLendingAKeyTheHostDoesNotHaveNamesTheRemedy(t *testing.T) {
 	app := lendApp(t, t.TempDir()) // an empty home
-	_, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}}, "box", "")
+	_, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{"anthropic"}}, "box", "")
 	if err == nil {
 		t.Fatal("lending a key that does not exist should fail")
 	}
@@ -154,7 +153,7 @@ func TestAConsumedBaseURLLeavesTheSandbox(t *testing.T) {
 // and no base URL, and the value must be the real one.
 func TestInheritedKeyIsCopiedInWithoutALender(t *testing.T) {
 	app := lendApp(t, lendHome(t))
-	plan, err := app.resolveLoans(&createFlags{inheritAPIKey: []string{"anthropic"}}, "box", "")
+	plan, err := app.resolveLoans(context.Background(), &createFlags{inheritAPIKey: []string{"anthropic"}}, "box", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,14 +247,14 @@ func TestDoctorReportsALoanWithNoLender(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Nothing is listening on a port nothing was started on.
-	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
-	st := app.lendState()
+	// No lender container was ever started for this group, so nothing answers.
+	st := app.lendState(context.Background())
 	if st.Sandboxes != 1 {
 		t.Errorf("doctor saw %d borrowing sandboxes, want 1", st.Sandboxes)
 	}
-	if st.Addr != "" {
-		t.Errorf("doctor found a lender at %q, want none", st.Addr)
+	// One entry, for the group the loan is in, and it says what is wrong there.
+	if len(st.Lenders) != 1 || st.Lenders[0].Group != state.DefaultGroup || st.Lenders[0].Err == "" {
+		t.Errorf("doctor lenders = %+v, want the default group reported as not running", st.Lenders)
 	}
 	if len(st.Credentials) != 1 || st.Credentials[0].Slot != "claude" || st.Credentials[0].Err != "" {
 		t.Errorf("doctor credentials = %+v, want claude readable", st.Credentials)
@@ -269,21 +268,20 @@ func TestDryRunMintsNothingAndStartsNothing(t *testing.T) {
 	app.Exec = &run.Exec{DryRun: true}
 	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1") // nothing is listening there
 
-	plan, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}, blockSideCalls: true}, "box", "")
+	plan, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{"anthropic"}, blockSideCalls: true}, "box", "")
 	if err != nil {
 		t.Fatalf("a dry run should still resolve the plan: %v", err)
 	}
 	if len(plan.loans) != 1 {
 		t.Fatalf("the plan should still describe the loan, got %d", len(plan.loans))
 	}
-	if _, _, alive := (lend.Daemon{Dir: app.InstDir}).Status(); alive {
-		t.Error("a dry run started a lender")
+	if fake, ok := app.Runner.(*run.Fake); ok && fake.Contains("podman run") {
+		t.Errorf("a dry run started the lender container:\n%s", strings.Join(fake.Rendered(), "\n"))
 	}
-	if _, err := os.Stat(filepath.Join(app.InstDir, "lender")); err == nil {
-		t.Error("a dry run recorded a lender it did not start")
-	}
-	// And the environment it reports is the environment a real run would seed.
-	if got := strings.Join(plan.env, " "); !strings.Contains(got, "ANTHROPIC_BASE_URL=http://"+engine.HostReachableName+":") {
+	// And the environment it reports is the environment a real run would seed:
+	// the lender's name on the group's own network, which is what a sandbox
+	// there resolves.
+	if got := strings.Join(plan.env, " "); !strings.Contains(got, "ANTHROPIC_BASE_URL=http://"+lend.GuestName+":") {
 		t.Errorf("env = %q, want the address a real run would use", got)
 	}
 }
@@ -300,7 +298,7 @@ func TestCreateReportsEveryHostItRefuses(t *testing.T) {
 	app.Exec = &run.Exec{DryRun: true}
 	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
 
-	plan, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}, blockSideCalls: true}, "box", "")
+	plan, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{"anthropic"}, blockSideCalls: true}, "box", "")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -331,8 +329,8 @@ func TestALentSlotTakesTheBaseURLTheCallerNamed(t *testing.T) {
 	app.Exec = &run.Exec{DryRun: true}
 	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
 
-	const upstream = "http://127.0.0.1:8080/c/anthropic/testcassette"
-	plan, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}}, "box",
+	const upstream = "http://recorder.example:8080/c/anthropic/testcassette"
+	plan, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{"anthropic"}}, "box",
 		"ANTHROPIC_BASE_URL="+upstream+"\n")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -342,7 +340,7 @@ func TestALentSlotTakesTheBaseURLTheCallerNamed(t *testing.T) {
 	}
 	// The sandbox is pointed at the lender, and the variable it was given is
 	// the one it would have had without any of this.
-	if !slices.Contains(plan.env, "ANTHROPIC_BASE_URL=http://"+engine.HostReachableName+":1") {
+	if !slices.Contains(plan.env, "ANTHROPIC_BASE_URL=http://"+lend.GuestName+":2500") {
 		t.Errorf("the sandbox was not pointed at the lender:\n%s", strings.Join(plan.env, "\n"))
 	}
 	if !slices.Contains(plan.consumed, "ANTHROPIC_BASE_URL") {
@@ -361,7 +359,7 @@ func TestALentSlotsBaseURLMustBeAnAddress(t *testing.T) {
 	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
 
 	for _, bad := range []string{"api.anthropic.com", "://nonsense", "https://", "file:///etc/passwd"} {
-		_, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}}, "box",
+		_, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{"anthropic"}}, "box",
 			"ANTHROPIC_BASE_URL="+bad+"\n")
 		if err == nil {
 			t.Errorf("--env ANTHROPIC_BASE_URL=%q was accepted", bad)
@@ -376,7 +374,7 @@ func TestAnUnlentBaseURLIsNotTakenOver(t *testing.T) {
 	app.Exec = &run.Exec{DryRun: true}
 	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
 
-	plan, err := app.resolveLoans(&createFlags{lendAPIKey: []string{"anthropic"}}, "box",
+	plan, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{"anthropic"}}, "box",
 		"OPENAI_BASE_URL=http://somewhere.test\n")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -409,7 +407,7 @@ func TestAKeySeedsEveryVariableItsClientsRead(t *testing.T) {
 			app := lendApp(t, home)
 			app.Exec = &run.Exec{DryRun: true} // resolve the plan, start nothing
 			t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
-			plan, err := app.resolveLoans(&createFlags{lendAPIKey: []string{c.provider}}, "box", "")
+			plan, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{c.provider}}, "box", "")
 			if err != nil {
 				t.Fatal(err)
 			}

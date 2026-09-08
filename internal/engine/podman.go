@@ -93,9 +93,11 @@ func buildRunArgs(p runParams) []string {
 		"podman", "run", "-d",
 		"--name", p.Obj, "--hostname", p.Name,
 		"--network", p.Network, "--network-alias", p.Name,
-		"-p", fmt.Sprintf("%s:%d:%d", p.SSHBind, p.Port, p.IntPort),
 		"--dns", p.DNSPrimary, "--dns", p.DNSGateway,
 		"--init",
+	}
+	if p.Port != 0 {
+		a = append(a, "-p", fmt.Sprintf("%s:%d:%d", p.SSHBind, p.Port, p.IntPort))
 	}
 	if p.Privileged {
 		a = append(a, "--privileged")
@@ -262,13 +264,20 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 	}
 	defer unlock()
 
-	// The host SSH port must be resolved before rendering argv (it is published).
-	port, err := d.allocPodmanPort(ctx)
-	if err != nil {
-		return nil, err
+	// A host SSH port only where one was asked for. `ssh <name>` reaches this
+	// sandbox through the engine (hostcfg.Route), so the default costs the host
+	// nothing: no port drawn from a 100-number range, and nothing bound. What
+	// the port buys is a caller that cannot run a ProxyCommand, which is what
+	// CS_SANDBOX_SSH_BIND is for. Resolved before argv is rendered, because it
+	// is published there.
+	if d.SSHBind != "" {
+		port, err := d.allocPodmanPort(ctx)
+		if err != nil {
+			return nil, err
+		}
+		inst.Port = port
+		params.Port = inst.Port
 	}
-	inst.Port = port
-	params.Port = inst.Port
 	for _, sn := range s.Snapshots {
 		inst.Snapshots = append(inst.Snapshots, sn.HostPath+":"+sn.Name)
 	}
@@ -316,9 +325,22 @@ func (p *Podman) Prepare(ctx context.Context) error { return nil }
 // quietly moves gigabytes is not what anybody asked for; failing here first is
 // what makes the pull a thing you ask for by name.
 func (p *Podman) Verify(ctx context.Context) error {
-	if _, err := p.d.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "image", "exists", p.d.Image); err != nil {
+	return VerifyImage(ctx, p.d.Runner, p.d.Image)
+}
+
+// VerifyImage reports whether the sandbox image is on this host, in the one
+// sentence that says what to run about it.
+//
+// A package function rather than a method, because it is needed before Deps
+// exists. Everything a group is made of is a container from this image — the
+// keepalive, the credential lender — so the check has to come before the first
+// of them is started. Without it a missing image surfaces as podman trying to
+// PULL it: a registry error, three retries deep, naming a host nobody meant to
+// contact.
+func VerifyImage(ctx context.Context, r run.Runner, image string) error {
+	if _, err := r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "image", "exists", image); err != nil {
 		return fmt.Errorf("sandbox image %q is not on this host — run: cs-sandbox build "+
-			"(it pulls that image when one is published, and builds it when none is)", p.d.Image)
+			"(it pulls that image when one is published, and builds it when none is)", image)
 	}
 	return nil
 }

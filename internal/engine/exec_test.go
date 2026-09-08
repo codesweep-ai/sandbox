@@ -36,7 +36,7 @@ func TestShellQuote(t *testing.T) {
 func TestSSHArgsKeysHostKeyOnTheObjectName(t *testing.T) {
 	alias := func(group string) string {
 		fe := NewFirecracker(Deps{Group: group, Host: hostenv.Host{User: "dev"}})
-		args := fe.sshArgs("api", 2200)
+		args := fe.sshArgs("api", &state.Instance{Name: "api", Group: group, Port: 2200})
 		for i := 0; i < len(args)-1; i++ {
 			if args[i] == "-o" && strings.HasPrefix(args[i+1], "HostKeyAlias=") {
 				return strings.TrimPrefix(args[i+1], "HostKeyAlias=")

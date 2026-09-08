@@ -31,7 +31,7 @@ cs-sandbox exec feature ls      # run one command instead
 cs-sandbox ls                   # GROUP NAME STATUS AGE TYPE ENGINE YOLO SOLO CREDS
                                 # STATUS is running, stopped or removed
 cs-sandbox ls -q                # names only, one per line — pipe it into other commands
-cs-sandbox port feature         # its host SSH port, if a tool needs it (ssh <name> does not)
+cs-sandbox port feature         # its published SSH port, where one was asked for (ssh <name> needs none)
 
 cs-sandbox fetch feature        # pull the sandbox's commits back to the host (fast-forward only)
 cs-sandbox push feature         # send host commits in (fast-forward, clean tree)

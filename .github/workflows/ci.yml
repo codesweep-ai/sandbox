@@ -64,10 +64,14 @@
 # can — but it is a single self-hosted runner, and a runner takes one job at a
 # time. A matrix pointed at it would queue fourteen jobs onto one box and pay
 # the setup fourteen times over to run them in the same order they run now.
-# Parallelism there has to come from inside one job, and this tier cannot yet be
-# run twice at once on a host anyway: cs-vcr binds a fixed 8080/8081, and the
-# create lock that serializes host-wide resources lives under the instance root,
-# which is per process. Both are fixable, and neither is fixed here.
+# Parallelism there has to come from inside one job, which is what this tier is
+# built for: cells run in parallel under `go test -parallel`, and each run gets
+# a GROUP of its own — one podman network, with the recorder and the lender as
+# containers on it. Nothing binds a host port any more, so two runs on one
+# machine cannot collide on 8080 or on 2500, and neither can see the other's
+# recorder. What is still per-process is the create lock that serializes
+# host-wide resources (the ssh port pool, the tier keys): it lives under the
+# instance root, so two runs still race there. That one is not fixed here.
 #
 # Firecracker, the other engine, is covered by one job on Linux: it boots a real
 # microVM against artifacts built from the same slimmed image. macOS has no KVM,

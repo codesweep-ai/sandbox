@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,7 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/fcdisk"
 	"github.com/codesweep-ai/sandbox/internal/fcnet"
+	"github.com/codesweep-ai/sandbox/internal/hostcfg"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/run"
@@ -107,7 +109,11 @@ func liveSetup(t *testing.T) (*run.Exec, hostenv.Host) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CS_SANDBOX_INSTANCES_DIR", filepath.Join(t.TempDir(), "instances"))
+	// shareDir, not t.TempDir(): the group's lender mounts this root read-only
+	// to read its loan records, and on macOS a container can only mount what is
+	// under $HOME. A root under /var/folders would come up with no loans in it
+	// and refuse every token, on that platform alone.
+	t.Setenv("CS_SANDBOX_INSTANCES_DIR", filepath.Join(shareDir(t, host), "instances"))
 	t.Setenv("CS_SANDBOX_TIER_DIR", filepath.Join(t.TempDir(), "tier"))
 	cleanSSHFragment(t, host)
 	return r, host
@@ -209,7 +215,35 @@ func fcInstancesDir(t *testing.T, host hostenv.Host) string {
 // nothing — silently, since `rm`/`exec` against a missing object just returns
 // empty. That is how this whole suite came to assert on empty strings instead of
 // failing, and how its cleanup quietly leaked containers and volumes.
-func objName(name string) string { return state.ObjectName(state.DefaultGroup, name) }
+func objName(name string) string { return state.ObjectName(testGroup(), name) }
+
+// ref is a sandbox's QUALIFIED reference, which is what every command that
+// resolves one has to be given.
+//
+// A bare name always means the default group — never "whichever group has it",
+// which is the identity rule the product is built on. A tier running in a group
+// of its own therefore has to say which. Getting it wrong fails loudly for a
+// command whose error is checked, and silently for one whose is not: the
+// sandbox survives, its loan survives, and the group's lender is never stopped.
+func ref(name string) string { return state.ObjectName(testGroup(), name) }
+
+// destroyBox destroys a sandbox by that reference.
+func destroyBox(t *testing.T, name string) (string, error) {
+	t.Helper()
+	return execRoot(t, "destroy", ref(name), "-f")
+}
+
+// testGroup is the group these tests create in. The default on its own, and a
+// per-run one where a tier sets CS_SANDBOX_GROUP — which is how two runs on one
+// machine stay out of each other's way: a group is a network, and a network is
+// the boundary that keeps one run's recorder and lender unreachable from the
+// other's sandboxes.
+func testGroup() string {
+	if g := os.Getenv("CS_SANDBOX_GROUP"); g != "" {
+		return g
+	}
+	return state.DefaultGroup
+}
 
 // inBox runs a command inside the sandbox as the dev user and returns stdout.
 func inBox(ctx context.Context, r *run.Exec, host hostenv.Host, name, sh string) string {
@@ -238,7 +272,7 @@ func TestCLICreateExecDestroyLive(t *testing.T) {
 		t.Errorf("cs-claude resolved to %q, want ~/.local/bin/cs-claude", where)
 	}
 
-	if _, err = execRoot(t, "destroy", name, "-f"); err != nil {
+	if _, err = destroyBox(t, name); err != nil {
 		t.Fatalf("destroy: %v", err)
 	}
 	if _, err := r.Run(ctx, run.Opts{}, "podman", "inspect", objName(name)); err == nil {
@@ -253,7 +287,7 @@ func TestCLIRmRecreateReusesDataLive(t *testing.T) {
 	ctx := context.Background()
 	name := boxName("reuse")
 	t.Cleanup(func() {
-		_, _ = execRoot(t, "destroy", name, "-f")
+		_, _ = destroyBox(t, name)
 		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "rm", "-f", objName(name))
 		_, _ = r.Run(context.Background(), run.Opts{}, "podman", "volume", "rm", "-f",
 			"cs-sandbox-home-"+objName(name), "cs-sandbox-containers-"+objName(name))
@@ -270,7 +304,7 @@ func TestCLIRmRecreateReusesDataLive(t *testing.T) {
 	// rm keeps the data, and keeps listing it as `removed` — kept data that
 	// vanished from `ls` could sit on disk unnoticed, which is the whole reason
 	// the status exists.
-	if out, err := execRoot(t, "rm", name); err != nil {
+	if out, err := execRoot(t, "rm", ref(name)); err != nil {
 		t.Fatalf("rm: %v (%s)", err, out)
 	}
 	ls, _ := execRoot(t, "ls")
@@ -700,18 +734,27 @@ func probeReport(res run.Result, err error, timedOut bool) string {
 // sshPipe) reaches it over exactly the same port, key and options.
 func sshArgv(t *testing.T, host hostenv.Host, name string) []string {
 	t.Helper()
-	portStr, err := execRoot(t, "port", name)
+	in, err := state.Load(paths.Instances(), testGroup(), name)
 	if err != nil {
-		t.Fatalf("port %s: %v", name, err)
+		t.Fatalf("load %s: %v", name, err)
 	}
-	// Trust material is per group; these tests create default-group sandboxes.
-	key := filepath.Join(paths.GroupKeys(state.DefaultGroup), "id_cs-sandbox_user")
-	return []string{
-		"-i", key, "-p", strings.TrimSpace(portStr),
+	// However this sandbox is reached: a ProxyCommand by default, and a port
+	// where the run asked for one. Built from the same place the managed ssh
+	// config is, so a test cannot pass against a route a person does not get.
+	r := hostcfg.RouteTo(paths.Instances(), in)
+	// Trust material is per group, and a tier may be running in one of its own.
+	key := filepath.Join(paths.GroupKeys(testGroup()), "id_cs-sandbox_user")
+	argv := []string{
+		"-i", key,
 		"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
 		"-o", "IdentitiesOnly=yes", "-o", "LogLevel=ERROR",
-		host.User + "@127.0.0.1",
 	}
+	if r.Proxy != "" {
+		argv = append(argv, "-o", "ProxyCommand="+r.Proxy)
+	} else {
+		argv = append(argv, "-p", strconv.Itoa(r.Port))
+	}
+	return append(argv, hostcfg.SSHDest(host, hostcfg.Ref(in), r))
 }
 
 // sshPipe runs a shell snippet inside a sandbox with r streamed to its stdin.
@@ -828,7 +871,7 @@ func TestCLIHostByNameFirecrackerLive(t *testing.T) {
 	}
 	fcInstancesDir(t, host)
 	name := boxName("hostnamefc")
-	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
+	t.Cleanup(func() { _, _ = destroyBox(t, name) })
 	step(t, "booting firecracker microVM %s (takes ~30s)…", name)
 	start := time.Now()
 	if out, err := execRoot(t, "create", name, "--engine", "firecracker"); err != nil {
@@ -881,7 +924,7 @@ func TestCLINestedSandboxInVMLive(t *testing.T) {
 	store := fmt.Sprintf("csgonest%d%s", os.Getpid(), runID)
 	outer := boxName("nest")
 	t.Cleanup(func() {
-		_, _ = execRoot(t, "destroy", outer, "-f")
+		_, _ = execRoot(t, "destroy", ref(outer), "-f")
 		_, _ = execRoot(t, "rm-store", store, "-f")
 	})
 
@@ -1076,7 +1119,7 @@ func TestCLIListShowsInstanceLive(t *testing.T) {
 	}
 
 	// Stopping it must be visible in the same column.
-	if _, err := execRoot(t, "stop", name); err != nil {
+	if _, err := execRoot(t, "stop", ref(name)); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	out, err = execRoot(t, "ls")
@@ -1111,10 +1154,10 @@ func TestCLIPortForwardLive(t *testing.T) {
 		t.Fatalf("start in-sandbox http server: %v", err)
 	}
 
-	if _, err := execRoot(t, "forward", name, "18099:8099"); err != nil {
+	if _, err := execRoot(t, "forward", ref(name), "18099:8099"); err != nil {
 		t.Fatalf("forward: %v", err)
 	}
-	t.Cleanup(func() { _, _ = execRoot(t, "unforward", name, "all") })
+	t.Cleanup(func() { _, _ = execRoot(t, "unforward", ref(name), "all") })
 
 	// Poll the host-side forwarded port (ssh -L + server both need a moment).
 	ok := false
@@ -1130,10 +1173,10 @@ func TestCLIPortForwardLive(t *testing.T) {
 	}
 
 	// It shows up in `forwards`, and unforward clears it.
-	if out, _ := execRoot(t, "forwards", name); !strings.Contains(out, "18099") {
+	if out, _ := execRoot(t, "forwards", ref(name)); !strings.Contains(out, "18099") {
 		t.Errorf("forwards did not list the active forward:\n%s", out)
 	}
-	if _, err := execRoot(t, "unforward", name, "all"); err != nil {
+	if _, err := execRoot(t, "unforward", ref(name), "all"); err != nil {
 		t.Fatalf("unforward: %v", err)
 	}
 }
@@ -1152,10 +1195,10 @@ func TestCLISocksForwardLive(t *testing.T) {
 	}
 
 	// --socks needs =VALUE syntax (the flag has an optional default).
-	if _, err := execRoot(t, "forward", name, "--socks=11080"); err != nil {
+	if _, err := execRoot(t, "forward", ref(name), "--socks=11080"); err != nil {
 		t.Fatalf("forward --socks: %v", err)
 	}
-	t.Cleanup(func() { _, _ = execRoot(t, "unforward", name, "all") })
+	t.Cleanup(func() { _, _ = execRoot(t, "unforward", ref(name), "all") })
 
 	// Through the SOCKS proxy, localhost:8098 resolves from the sandbox's side.
 	ok := false
@@ -1170,7 +1213,7 @@ func TestCLISocksForwardLive(t *testing.T) {
 	if !ok {
 		t.Errorf("SOCKS proxy on 11080 never reached the sandbox's HTTP server")
 	}
-	if out, _ := execRoot(t, "forwards", name); !strings.Contains(out, "11080") {
+	if out, _ := execRoot(t, "forwards", ref(name)); !strings.Contains(out, "11080") {
 		t.Errorf("forwards did not list the socks proxy:\n%s", out)
 	}
 }
@@ -1189,7 +1232,7 @@ func TestCLINestedRootlessPodmanLive(t *testing.T) {
 	const workload = "docker.io/library/busybox"
 	requireWorkloadImage(t, workload)
 	name := boxName("rootless")
-	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
+	t.Cleanup(func() { _, _ = destroyBox(t, name) })
 
 	if out, err := execRoot(t, "create", name, "--engine", "podman"); err != nil {
 		t.Fatalf("create: %v (%s)", err, out)
@@ -1231,7 +1274,7 @@ func TestCLIImageStoreUseOnMicroVMLive(t *testing.T) {
 	store := fmt.Sprintf("csgofcstore%d%s", os.Getpid(), runID)
 	name := boxName("fcstore")
 	t.Cleanup(func() {
-		_, _ = execRoot(t, "destroy", name, "-f")
+		_, _ = destroyBox(t, name)
 		_, _ = execRoot(t, "rm-store", store, "-f")
 	})
 
@@ -1263,7 +1306,7 @@ func TestCLIImageStoreUseLive(t *testing.T) {
 	store := fmt.Sprintf("csgostore%d%s", os.Getpid(), runID)
 	name := boxName("store")
 	t.Cleanup(func() {
-		_, _ = execRoot(t, "destroy", name, "-f")
+		_, _ = destroyBox(t, name)
 		_, _ = execRoot(t, "rm-store", store, "-f")
 	})
 
@@ -1336,7 +1379,7 @@ func TestCLIRepoPushLive(t *testing.T) {
 	if _, err := r.Run(ctx, run.Opts{Dir: src}, "git", "commit", "--allow-empty", "-m", "host-side change"); err != nil {
 		t.Fatalf("host commit: %v", err)
 	}
-	if _, err := execRoot(t, "push", name); err != nil {
+	if _, err := execRoot(t, "push", ref(name)); err != nil {
 		t.Fatalf("push: %v", err)
 	}
 	if log := inBox(ctx, r, host, name, "git -C ~/proj log --oneline"); !strings.Contains(log, "host-side change") {
@@ -1416,7 +1459,7 @@ func TestCLIFirecrackerCrossEngineLive(t *testing.T) {
 	instDir := fcInstancesDir(t, host)
 
 	fbox := boxName("xfc")
-	t.Cleanup(func() { _, _ = execRoot(t, "destroy", fbox, "-f") })
+	t.Cleanup(func() { _, _ = execRoot(t, "destroy", ref(fbox), "-f") })
 	step(t, "booting firecracker microVM %s (takes ~30s)…", fbox)
 	start := time.Now()
 	if out, err := execRoot(t, "create", fbox, "--engine", "firecracker"); err != nil {
@@ -1488,13 +1531,14 @@ func TestCLIGroupIsolationLive(t *testing.T) {
 	}
 
 	// The credential plane: group A's key must be refused by a group B sandbox.
-	portB, err := execRoot(t, "port", member+"."+gb)
+	inB, err := state.Load(paths.Instances(), gb, member)
 	if err != nil {
 		t.Fatal(err)
 	}
+	routeB := hostcfg.RouteTo(paths.Instances(), inB)
 	ssh := func(keyGroup string) string {
 		key := filepath.Join(os.Getenv("CS_SANDBOX_TIER_DIR"), "groups", keyGroup, "id_cs-sandbox_user")
-		return run.Output(ctx, r, "ssh", "-i", key, "-p", strings.TrimSpace(portB),
+		return run.Output(ctx, r, "ssh", "-i", key, "-o", "ProxyCommand="+routeB.Proxy,
 			"-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
 			"-o", "UserKnownHostsFile=/dev/null", "-o", "BatchMode=yes",
 			"-o", "ConnectTimeout=10", host.User+"@127.0.0.1", "echo AUTHOK")
@@ -1530,13 +1574,13 @@ func TestCLIGroupSameNameLive(t *testing.T) {
 		}
 	}
 	// A bare reference is ambiguous and must be refused rather than guessed.
-	if _, err := execRoot(t, "port", "dup"); err == nil {
+	if _, err := execRoot(t, "inspect", "dup"); err == nil {
 		t.Error("a bare ambiguous name must not resolve")
 	}
 	// Qualified references work.
 	for _, g := range []string{ga, gb} {
-		if _, err := execRoot(t, "port", "dup."+g); err != nil {
-			t.Errorf("port dup.%s: %v", g, err)
+		if _, err := execRoot(t, "inspect", "dup."+g); err != nil {
+			t.Errorf("inspect dup.%s: %v", g, err)
 		}
 	}
 }
@@ -1643,7 +1687,7 @@ func TestCLIAgentLoginInheritedFirecrackerLive(t *testing.T) {
 	instDir := fcInstancesDir(t, host)
 	synthAgentHome(t, host)
 	name := boxName("fclogin")
-	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
+	t.Cleanup(func() { _, _ = destroyBox(t, name) })
 
 	step(t, "booting firecracker microVM %s with %s (takes ~30s)…", name, strings.Join(agents, ","))
 	start := time.Now()

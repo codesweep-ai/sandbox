@@ -115,7 +115,7 @@ func TestConnectTunnelsEverythingElse(t *testing.T) {
 // host's network. The peer check is what keeps that from mattering.
 func TestOnlyThisHostIsServed(t *testing.T) {
 	home := hostProfile(t)
-	s := New(Config{Home: home, KeysDir: KeysDir(home), Loans: fixedLoans{}, LocalOnly: true})
+	s := New(Config{Home: home, KeysDir: KeysDir(home), Loans: fixedLoans{}, Callers: CallersHost})
 
 	for _, c := range []struct {
 		remote string

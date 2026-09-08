@@ -23,9 +23,9 @@ type Config struct {
 	Loans   Loans  // resolves a loan token to the sandbox and slot it stands for
 	Log     *slog.Logger
 
-	// LocalOnly refuses any caller that is not the host itself. It is on in
-	// production and off in tests, which dial from a loopback address anyway.
-	LocalOnly bool
+	// Callers says which peers may be answered. The zero value is the strict
+	// one, CallersHost, so a Config that forgets the field is not open.
+	Callers Callers
 
 	// Origins points a slot at a different upstream, by slot id. It is how a
 	// host puts something of its own in front of a provider — a gateway, or a
@@ -55,7 +55,7 @@ type Server struct {
 	stats Stats
 
 	localMu   sync.Mutex
-	localAddr map[string]bool
+	localNets []*net.IPNet
 	localAt   time.Time
 }
 
@@ -94,11 +94,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// from a sandbox is translated to the host's own address on the way through
 	// the rootless network, and a machine on the same network cannot claim that
 	// address without being on the path.
-	if s.cfg.LocalOnly && !s.peerIsLocal(r.RemoteAddr) {
+	if !s.peerAllowed(r.RemoteAddr) {
 		s.count(func(st *Stats) { st.NotLocal++ })
-		s.cfg.Log.Warn("refused a caller that is not this host", slog.String("remote", r.RemoteAddr))
+		s.cfg.Log.Warn("refused a caller from outside the boundary",
+			slog.String("remote", r.RemoteAddr), slog.String("callers", string(s.callers())))
 		writeError(w, http.StatusForbidden, "not_local",
-			"cs-sandbox lends credentials to this host's own sandboxes, and this connection came from somewhere else")
+			"cs-sandbox lends credentials to the sandboxes inside its own boundary, and this connection came from outside it")
 		return
 	}
 
@@ -330,10 +331,59 @@ func cutPrefixFold(s, prefix string) (string, bool) {
 	return "", false
 }
 
-// peerIsLocal reports whether an address belongs to this host. The set is
-// re-read periodically because a laptop changes networks while sandboxes keep
-// running.
-func (s *Server) peerIsLocal(remote string) bool {
+// Callers names the boundary a lender answers inside. It exists because the
+// lender has two homes now, and "who may call me" is a different sentence in
+// each.
+type Callers string
+
+const (
+	// CallersHost is the lender as a host process. A sandbox reaches it at the
+	// host's own address (SPEC R152), so the callers to accept are this host's
+	// addresses and nothing else. This is the zero value: a Config that names
+	// no policy gets the strict one.
+	CallersHost Callers = ""
+
+	// CallersNetwork is the lender ON the fabric, in a container attached to
+	// one group's network. Its callers arrive from that network's subnet, and
+	// the container's namespace is what keeps everyone else out — it has no
+	// interface any other network can reach. So the check here is a second
+	// fence rather than the boundary: accept the subnets this lender is
+	// actually attached to, refuse everything else.
+	CallersNetwork Callers = "network"
+
+	// CallersAny turns the check off, for a test that dials from wherever the
+	// test framework happened to bind.
+	CallersAny Callers = "any"
+)
+
+// ParseCallers reads the flag value, so an unknown one is refused where it is
+// typed rather than silently becoming the strict policy.
+func ParseCallers(v string) (Callers, error) {
+	switch Callers(v) {
+	case CallersHost, "host":
+		return CallersHost, nil
+	case CallersNetwork:
+		return CallersNetwork, nil
+	case CallersAny:
+		return CallersAny, nil
+	}
+	return CallersHost, fmt.Errorf("--callers %q: use host, network or any", v)
+}
+
+func (s *Server) callers() Callers {
+	if s.cfg.Callers == CallersHost {
+		return "host"
+	}
+	return s.cfg.Callers
+}
+
+// peerAllowed reports whether this caller is inside the boundary. Loopback is
+// allowed under every policy: it is how a health probe reaches a lender, from
+// the host when it is a host process and from `podman exec` when it is not.
+func (s *Server) peerAllowed(remote string) bool {
+	if s.cfg.Callers == CallersAny {
+		return true
+	}
 	host, _, err := net.SplitHostPort(remote)
 	if err != nil {
 		host = remote
@@ -347,23 +397,41 @@ func (s *Server) peerIsLocal(remote string) bool {
 	}
 	s.localMu.Lock()
 	defer s.localMu.Unlock()
-	if s.localAddr == nil || time.Since(s.localAt) > 10*time.Second {
-		s.localAddr = hostAddrs()
+	// Re-read periodically: a laptop changes networks while sandboxes keep
+	// running, and a container is attached to a network after it starts.
+	if s.localNets == nil || time.Since(s.localAt) > 10*time.Second {
+		s.localNets = ownNets()
 		s.localAt = time.Now()
 	}
-	return s.localAddr[ip.String()]
+	for _, n := range s.localNets {
+		if s.cfg.Callers == CallersNetwork {
+			if n.Contains(ip) {
+				return true
+			}
+			continue
+		}
+		if n.IP.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
-// hostAddrs is every address currently assigned to this host.
-func hostAddrs() map[string]bool {
-	out := map[string]bool{}
+// ownNets is every network this process's interfaces sit on: the address for
+// CallersHost, and the whole subnet for CallersNetwork.
+//
+// A var so a test can say what the interfaces are. The two policies differ only
+// in how this list is read, and that difference is the boundary — worth testing
+// without a machine that happens to have the right addresses.
+var ownNets = func() []*net.IPNet {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return out
+		return nil
 	}
+	out := make([]*net.IPNet, 0, len(addrs))
 	for _, a := range addrs {
 		if n, ok := a.(*net.IPNet); ok {
-			out[n.IP.String()] = true
+			out = append(out, n)
 		}
 	}
 	return out

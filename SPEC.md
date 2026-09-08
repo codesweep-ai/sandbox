@@ -240,7 +240,7 @@ and would then either break or, worse, keep working while denoting a different s
 |---|---|---|
 | Podman network | `cs-sandbox-<group>` | the isolation boundary, created `isolate=true` |
 | SSH keys | `keys/groups/<group>/` | trust material valid only inside the group |
-| Gateway | `cs-sandbox-<group>-keepalive` | pins the bridge; published as the group's ssh jump host |
+| Gateway | `cs-sandbox-<group>-keepalive` | pins the bridge; the group's ssh entry point, published only on request |
 | Fabric dir | `net/<group>/` | per-group dnsmasq state and VM name records |
 | Tap prefix | recorded in `group.json` | allocated rather than hashed |
 
@@ -291,12 +291,17 @@ and a microVM therefore reach each other exactly as two containers would.
 
 ### 6.1 Reaching a sandbox from the host
 
-**R41.** Every sandbox's sshd **MUST** listen on 22 internally, and the host **MUST** publish it on
-`127.0.0.1:<PORT>`.
+**R41.** Every sandbox's sshd **MUST** listen on 22 internally, and the host **MUST** be able to reach it
+without publishing a port. A published port **MUST** be opt-in.
 
-**R42.** Ports **MUST** be drawn from distinct ranges, so an ingress cannot collide with a sandbox.
-Containers take 2200 to 2299, microVMs 2300 to 2399, and group gateways 2400 to 2499. The credential
-lender (§10.2) takes 2500, above them all.
+**R41a.** The route to a sandbox's sshd **MUST** be a stream the engine already provides: `podman exec`
+into a container, and for a microVM the forwarder socket in its instance directory. What may open
+that socket **MUST** be decided by the mode of the directory holding it.
+
+**R42.** A published port **MUST** be drawn from a range that cannot collide with another kind of
+ingress. Containers take 2200 to 2299, microVMs 2300 to 2399, and group gateways 2400 to 2499. A
+credential lender run by hand on the host (§10.2) takes 2500, above them all; the one `create` starts
+binds no host port at all.
 
 **R43.** A port **MUST** be treated as free only when it is both unrecorded and unanswered. Allocation **MUST**
 probe loopback.
@@ -317,19 +322,25 @@ is stable across restarts.
 **R48.** The fragment **MUST** be per instances root, so two sandbox sets sharing one `~/.ssh` cannot
 overwrite each other.
 
-R43 matters because a port may be held by a sandbox under a different `CS_SANDBOX_INSTANCES_DIR`, or
-by an unrelated program. R45 exists because ssh otherwise tries only the default key names, so a
-sandbox authorized under a key named `id_ed25519_work` would be refused despite that key being
-authorized. R46 keys the known-hosts entry by identity rather than by `127.0.0.1:<port>`, so
-recycling a freed port for a different sandbox does not trip "host key changed".
+R41 and R41a are what keep one machine usable by more than one person. A sandbox used to bind a host
+port each, from a hundred numbers per engine. Allocation could only see the ports of whoever was
+asking, so two accounts drew from one range while blind to each other. A route through the engine takes
+nothing from that range and cannot collide at all. It also narrows what may reach a sandbox from
+"anything that can open a loopback port" to "anything that may run this engine, or open this file".
+
+R43 still matters wherever a port IS published: it may be held by a sandbox under a different
+`CS_SANDBOX_INSTANCES_DIR`, or by an unrelated program. R45 exists because ssh otherwise tries only
+the default key names, so a sandbox authorized under a key named `id_ed25519_work` would be refused
+despite that key being authorized. R46 keys the known-hosts entry by identity rather than by
+`127.0.0.1:<port>`, so two sandboxes of one name in different groups key two entries.
 
 Host access does not use the sandbox network at all, which is deliberate. This plane keeps working
 when a group's fabric is broken, and that is exactly when you need it.
 
 ### 6.2 The gateway
 
-**R49.** Each group **MUST** publish one gateway port fronting its keepalive container, which doubles as the
-group's ssh jump host.
+**R49.** Each group **MUST** have a gateway, which is its keepalive container in a second role. It
+**MUST** be reachable from the host without a published port, and a published one **MUST** be opt-in.
 
 **R50.** The gateway **MUST** run against the fabric's own DNS, and `group create` **MUST** replace one that
 cannot resolve its members.
@@ -337,20 +348,25 @@ cannot resolve its members.
 **R51.** The gateway **MUST** authorize only its own group's key, and its ssh config block **MUST** offer only
 that key.
 
-Inside a group, names resolve over the group's own DNS, so one published port reaches every member
-on any port they bind:
+Inside a group, names resolve over the group's own DNS, so one entry point reaches every member on
+any port they bind:
 
 ```bash
 ssh cache-redis-gw                    # a shell inside the group
 ssh -L 8080:api:8000 cache-redis-gw   # reach a member's service by name
 ```
 
+What a member cannot stand in for is the rest of the network. A group's own services are on that
+network and are not members: the credential lender (§10.2), and a recorder a tier puts in front of a
+provider. They have no alias of their own on the host. The gateway is how they are reached by name,
+and it is there whether or not any member is.
+
 R50 exists because aardvark knows container names but not microVM ones, so a gateway on the default
 resolver would be nameless for half its members. R51 exists because sshd's `MaxAuthTries` would
 otherwise be spent before the right key was tried.
 
-`ssh -J` to a member's bare alias does not work. That alias is a host loopback port, which means
-nothing inside the group.
+`ssh -J` to a member's bare alias does not work. That alias carries a `ProxyCommand` that runs on the
+host, which means nothing inside the group.
 
 ### 6.3 Reaching the host from inside a sandbox
 
@@ -361,6 +377,12 @@ published an address for the host itself, the guest init **MUST** use that one i
 **R52a.** A sandbox **MUST** reach a service on the host by the name `host.containers.internal`.
 Anything this tool points a sandbox at on the host **MUST** use that name rather than an address.
 The seed **MUST** pin the name on an engine whose guest is not given it.
+
+**R52b.** A service this tool runs FOR a group **MUST** run on that group's own network. The credential
+lender is one, and so is a recorder a tier puts in front of a provider. Such a service **MUST** be
+addressed by a name on that network, never by a host address and never by a published port. Those
+names **MUST** be refused as sandbox names. A service so placed **MUST NOT** be reachable from another
+group.
 
 **R53.** The guest init **MUST** write `/etc/gai.conf` with `precedence ::ffff:0:0/96 100`.
 
@@ -688,8 +710,9 @@ onboarding only once a credential or a key exists.
 
 A sandbox does not have to hold a credential to use one. `--lend-agent-login <agent>` and
 `--lend-api-key <provider>` give it a **loan token** instead. They point its agent at the **lender**,
-a proxy on the host that swaps that token for the real credential on the way to the provider. What
-the sandbox holds is worth nothing anywhere else, and the credential never crosses the boundary.
+a proxy on the group's own network that swaps that token for the real credential on the way to the
+provider. The credential stays in the host's filesystem, which the lender reads per request. What the
+sandbox holds is worth nothing anywhere else, and the credential never crosses the boundary.
 
 Two things can be lent. A **token loan** lends an agent's host login, such as the one Claude Code
 signs in with. A **key loan** lends an LLM API key the host keeps in `~/.cs-keys/`.
@@ -716,7 +739,8 @@ select or change it: not the host, not the path, not the query, not a header.
 **R147a.** A base URL the caller sets for a slot that is being lent **MUST** become that loan's
 upstream, and **MUST NOT** be seeded into the sandbox. The variable **MUST** carry the lender's own
 address there, and an upstream that is not an http or https address **MUST** fail before anything is
-provisioned.
+provisioned. An upstream naming a loopback address **MUST** be read as this host and reported as
+having been read that way, because the lender's own loopback is not it.
 
 **R148.** A credential the lender did not mint **MUST** be refused, and **MUST NOT** be forwarded anywhere.
 
@@ -728,8 +752,9 @@ output of any command.
 **R151.** A loan **MUST** be recorded in the instance directory at mode 600. It **MUST** stop being honoured
 when that directory is removed, and there **MUST** be no other revocation.
 
-**R152.** The lender **MUST** listen on a non-loopback address, and **MUST** refuse any caller that is not
-this host.
+**R152.** The lender **MUST** listen on a non-loopback address, and **MUST** refuse callers from outside
+its own boundary. That boundary is this host's addresses for a lender run on the host. It is the
+networks it is attached to for one on a group's network (R52b).
 
 **R153.** The lender **MUST** answer `CONNECT`. It **MUST** refuse the hosts it is itself the front for and
 the hosts these agents contact on their own, and **MUST** tunnel every other host. `create` **MUST** report
@@ -783,7 +808,8 @@ The recorder or gateway it names sits BEHIND the lender, and that is the whole o
 hop is added, past the swap rather than before it. Nothing changes between the sandbox and the
 lender. A sandbox reaching a recorder is configured exactly like one reaching a provider, which is
 what lets a recording be added and dropped again. The upstream only has to be reachable from the
-host, so it may run on another machine.
+lender. So it may run on another machine, on the group's own network, or on this host under the name
+a container reaches it by (R147a).
 
 Two costs come with that, and both are the price of the hop being past the swap. The upstream is
 handed the real credential, so a recorder on another machine is one the credential crosses a network
@@ -801,12 +827,19 @@ instance. It is true from the moment `create` returns, and gone when `destroy` r
 directory. Nothing has to be sequenced at create, and no second lifetime has to be kept in step
 with the sandbox's.
 
-R152 has one cause. A sandbox reaches the host by name (R52a), at an address that arrives on the
-host's ordinary side. A server bound to `127.0.0.1` refuses that connection. Binding wider puts the port on
-the network the host is on, so the caller is checked instead. A sandbox's traffic is translated to the
-host's own address on the way out of the rootless namespace. A machine elsewhere cannot claim that
-address without being on the path. The lender takes port 2500, above every range R42
-allocates from.
+R152 had one cause and now has two shapes. A sandbox reaches the host by name (R52a), at an address
+that arrives on the host's ordinary side. A server bound to `127.0.0.1` refuses that connection. So a
+lender run on the host binds wider and checks the caller instead. It takes port 2500, above every
+range R42 allocates from.
+
+The one `create` starts is not that lender. R52b puts it on the group's own network. There it binds
+no host port, and its callers are the sandboxes on its bridge. Another group cannot reach it at all.
+The check is then a second fence rather than the boundary: what keeps another group out is that the
+container has no interface there, and netavark forwards nothing between bridges.
+
+That is what lets two people, or two CI jobs, use this machine at once. One port is one port. The
+second `create` used to find something answering on 2500, adopt it, and report a loan the other
+user's lender would never honour. The sandbox then met a 401 on its first model call.
 
 R153 covers the half of an agent's traffic a base URL does not govern. These clients also reach
 their provider on their own, for analytics, for news about what the agent can do, and for whatever
@@ -1068,10 +1101,18 @@ PVH boot protocol.
 **R120.** The default kernel **MUST** be built from the sandbox image in a throwaway container, pinned by
 version. The same kernel then boots on any host, with no dependency on the host's `/boot`.
 
+**R120a.** The script that unwraps the packaged kernel into that ELF **MUST** be pinned to an upstream
+tag, in the same series as the kernel it unwraps.
+
 **R121.** The initrd **MUST** be purpose-built rather than generated with `dracut`.
 
 **R122.** The cached initrd **MUST** be keyed by a hash of its source, so editing the source rebuilds the
 boot artifacts.
+
+R120a is about what the pin protects. This script's stdout IS the artifact, so a line printed to the
+wrong stream would prepend text to every kernel it extracts and still exit 0. The file sat unchanged
+from 2019 to 2025 and then changed twice in six weeks. Naming a tag is a real anchor, because
+upstream tags are signed and never move.
 
 An initrd is unavoidable, because Fedora builds `CONFIG_VIRTIO_MMIO` as a module: no block device
 exists until it is loaded, so the kernel cannot mount its root on its own. The purpose-built init
@@ -1211,10 +1252,11 @@ R135 has three payoffs, each of them a real failure otherwise. A dnsmasq already
 directory is adopted rather than duplicated. One serving a different directory is reported as a
 conflict by name. A root that never started one still finds the running instance.
 
-R136 exists because the host cannot address the rootless namespace directly. A host-side `socat`
-binds the published port and relays through a unix socket to a per-VM `socat` inside the namespace,
-which connects to the guest's port 22. A Firecracker vsock is retained as a no-IP standby transport,
-and is not the routine path.
+R136 exists because the host cannot address the rootless namespace directly. A per-VM `socat` inside
+the namespace connects to the guest's port 22 and listens on a unix socket in the instance directory,
+which is what ssh's `ProxyCommand` opens (R41a). A second `socat` binds a host port to that same
+socket, and is built only where a port was asked for. A Firecracker vsock is retained as a no-IP
+standby transport, and is not the routine path.
 
 ### 12.7 The fabric is host-global; an instances root is not
 
@@ -1228,7 +1270,8 @@ only its own state. So:
 - **A VM address** is taken if this root records it, or if a tap for that octet already exists under
   the group's prefix. Taps are host-global and outlive whichever root created them.
 - **A host SSH port** is taken if this root records it, or if something answers on it. A stopped
-  sandbox is caught by the first check and another root's running forwarder only by the second.
+  sandbox is caught by the first check and another root's running forwarder only by the second. Most
+  sandboxes claim none at all, so what this arbitrates is the ports somebody asked for (R142).
 - **Fabric collection** treats a live tap as a VM that still needs the fabric.
 - **Stale name records** are swept by looking for records whose address has no tap. Driving that
   sweep off one root's instance list would instead delete the live names of every sandbox it cannot
@@ -1270,7 +1313,8 @@ Firecracker is a deliberately lean VMM, which trades features for a small surfac
 **R141.** Sandboxes **MUST** run rootless, with a scaled-down capability set, seccomp on, and no host
 device beyond `/dev/net/tun`.
 
-**R142.** SSH ports **MUST** bind `127.0.0.1`, and any other bind **MUST** be opt-in.
+**R142.** A sandbox **MUST NOT** publish an SSH port unless asked to. A published one **MUST** bind
+`127.0.0.1`, and any other bind **MUST** be opt-in.
 
 **R143.** `--privileged` **MUST** be opt-in.
 
@@ -1279,11 +1323,15 @@ absent a kernel bug: the engine and the container are bounded by your unprivileg
 keep-id. The microVM engine removes the shared-kernel attack surface entirely. `--privileged` trades
 that defence in depth for breadth, which is why it is a flag rather than a default.
 
-`CS_SANDBOX_SSH_BIND` is R142's opt-in. It sets the host address a sandbox's published SSH port
-binds, and a group gateway's with it. The cost is reach: any value other than loopback publishes
-that port on an interface the rest of the network can route to. Key authentication still holds,
+`CS_SANDBOX_SSH_BIND` is R142's opt-in, and it is now two decisions in one variable: setting it at all
+is what publishes a port, and its value is where that port binds. Unset, a sandbox is reached the way
+R41a says and nothing is bound. The cost of setting it is reach: any value other than loopback
+publishes on an interface the rest of the network can route to. Key authentication still holds,
 because sshd takes no password and authorizes only the keys §4 gives it. R142 does not, so scope the
 variable to one command rather than exporting it.
+
+A group gateway publishes nothing either, unless `group create --publish-gateway` asks for it. That
+flag binds where this variable says, and loopback when it says nothing.
 
 R105 unmasks the container's `/proc`, which is why R141 no longer names `/proc/kcore`. The masking
 was the outer of two defences, and not the load-bearing one. The container's root is an unprivileged
@@ -1342,7 +1390,7 @@ real cobra tree with a fake `Runner`.
 **Integration tests** (`make test-integration`, behind a build tag) are live tests on a Linux host
 with KVM and Podman. They create namespaced sandboxes in temporary state directories, tear them
 down, and skip gracefully when Podman or the image is unavailable. The suite runs with `-p 1`,
-because packages share one rootless network namespace and one host SSH port pool.
+because packages share one rootless network namespace and one fabric.
 
 The **smoke profile** (`make test-smoke`) is not a third tier. It is the subset of the integration
 tier that CI runs on every host, against a slimmed image. Keep it short.

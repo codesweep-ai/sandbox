@@ -13,6 +13,7 @@ import (
 
 	"path/filepath"
 
+	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/fcnet"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/ports"
@@ -50,24 +51,38 @@ A bare name always means the default group, never "whichever group has it".`,
 }
 
 func newGroupCreateCmd(app *App) *cobra.Command {
-	return &cobra.Command{
+	var publish bool
+	cmd := &cobra.Command{
 		Use:   "create <group>",
 		Short: "Create a group and its network, keys and gateway",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			g, err := app.ensureGroup(cmd.Context(), args[0])
+			g, err := app.ensureGroup(cmd.Context(), args[0], publish)
 			if err != nil {
+				return err
+			}
+			// The gateway alias is offered below, so the fragment that carries
+			// it has to exist. `create` syncs for its own sandbox; a group made
+			// ahead of time has none yet, and used to leave the alias it printed
+			// unusable until the first sandbox was built.
+			if err := app.syncSSHConfig(); err != nil {
 				return err
 			}
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "group %s ready (network=%s, keys=%s)\n",
 				g.Name, state.NetworkName(g.Name), paths.GroupKeys(g.Name))
+			fmt.Fprintf(out, "  gateway: ssh %s-gw — members are reachable there as <name>\n", g.Name)
 			if g.GWPort != 0 {
-				fmt.Fprintf(out, "  gateway: ssh port %d — members are reachable as <name>.%s\n", g.GWPort, g.Name)
+				fmt.Fprintf(out, "  published on %s:%d, for a caller that cannot run a command\n",
+					gatewayBind(app.SSHBind), g.GWPort)
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&publish, "publish-gateway", false,
+		"also bind the gateway to a host port, for something that cannot run a ProxyCommand "+
+			"(another machine, or a tool that takes a host and a port)")
+	return cmd
 }
 
 // groupItem is the stable shape of `group ls --json`: the inventory a tool
@@ -124,8 +139,11 @@ func newGroupLsCmd(app *App) *cobra.Command {
 				return enc.Encode(items)
 			}
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "GROUP\tMEMBERS\tNETWORK\tGATEWAY\tAGE")
+			fmt.Fprintln(tw, "GROUP\tMEMBERS\tNETWORK\tGW PORT\tAGE")
 			for _, g := range groups {
+				// The PORT, not the gateway: every group has one of those and
+				// it is reached through the engine. A dash here means nothing is
+				// bound on the host, which is the default.
 				gw := "-"
 				if g.GWPort != 0 {
 					gw = strconv.Itoa(g.GWPort)
@@ -158,11 +176,21 @@ func newGroupRmCmd(app *App) *cobra.Command {
 // ensureGroup creates a group's record and artifacts if they are missing, and
 // returns the record either way. `create --group X` calls this too, so a group
 // never has to be declared before it is used.
-func (a *App) ensureGroup(ctx context.Context, group string) (*state.Group, error) {
+//
+// publish asks for the gateway to take a host port as well. It is off for every
+// implicit group, which is what keeps a machine's port space empty: the gateway
+// is reached through the engine like everything else, and a port is for a caller
+// that cannot run a command.
+func (a *App) ensureGroup(ctx context.Context, group string, publish bool) (*state.Group, error) {
 	if err := state.ValidGroup(group); err != nil {
 		return nil, err
 	}
 	if g, err := state.LoadGroup(a.InstDir, group); err == nil {
+		if publish && g.GWPort == 0 {
+			if err := a.publishGateway(ctx, g); err != nil {
+				return nil, err
+			}
+		}
 		return g, a.ensureGroupArtifacts(ctx, g)
 	}
 	g := &state.Group{Name: group, Created: time.Now().UTC().Format(time.RFC3339)}
@@ -171,11 +199,13 @@ func (a *App) ensureGroup(ctx context.Context, group string) (*state.Group, erro
 		return nil, err
 	}
 	g.TapPrefix = prefix
-	port, err := a.allocGatewayPort()
-	if err != nil {
-		return nil, err
+	if publish {
+		port, err := a.allocGatewayPort()
+		if err != nil {
+			return nil, err
+		}
+		g.GWPort = port
 	}
-	g.GWPort = port
 	if err := a.ensureGroupArtifacts(ctx, g); err != nil {
 		return nil, err
 	}
@@ -185,11 +215,41 @@ func (a *App) ensureGroup(ctx context.Context, group string) (*state.Group, erro
 	return g, nil
 }
 
+// publishGateway gives an existing group's gateway a host port.
+//
+// The running container is removed rather than reconfigured: a published port is
+// fixed at `podman run` and there is no way to add one to a container that is
+// already up. Removing it is safe — it is rebuilt by the artifacts pass that
+// follows, and what it pins comes back with it.
+func (a *App) publishGateway(ctx context.Context, g *state.Group) error {
+	port, err := a.allocGatewayPort()
+	if err != nil {
+		return err
+	}
+	g.GWPort = port
+	if err := state.SaveGroup(a.InstDir, g); err != nil {
+		return err
+	}
+	a.engineDepsFor(g.Name).RemoveGateway(ctx)
+	return nil
+}
+
 // ensureGroupArtifacts brings the network and trust material up. It is
 // idempotent so a group whose network was removed underneath it recovers on the
 // next create rather than failing.
 func (a *App) ensureGroupArtifacts(ctx context.Context, g *state.Group) error {
+	// The image first, because everything below is made from it: the keepalive
+	// that pins the bridge, and the group's credential lender. Checked here
+	// rather than left to the engine's own Verify, which runs after a group is
+	// already up — by which point a missing image has surfaced as a pull
+	// against a registry nobody named.
+	if err := a.requireImage(); err != nil {
+		return err
+	}
 	d := a.engineDepsFor(g.Name)
+	if err := engine.VerifyImage(ctx, d.Runner, d.Image); err != nil {
+		return err
+	}
 	if err := d.EnsureNetwork(ctx); err != nil {
 		return err
 	}
@@ -200,13 +260,15 @@ func (a *App) ensureGroupArtifacts(ctx context.Context, g *state.Group) error {
 }
 
 // ensureGateway brings up the group's keepalive/gateway. The container pins the
-// bridge and, published on one host port, is the ssh jump host into the group:
-// through it the host reaches members by their bare names over the group's own
-// DNS, exactly as members reach each other.
+// bridge, and it is the ssh entry point into the group: from inside it the host
+// reaches members by their bare names over the group's own DNS, exactly as
+// members reach each other, and reaches the group's own services — the
+// credential lender, a recorder — which are not members and have no alias of
+// their own on the host.
+//
+// Always, now. It used to be built only for a group that had a published port,
+// which made "is this a gateway" and "is it bound to the host" one decision.
 func (a *App) ensureGateway(ctx context.Context, g *state.Group) error {
-	if g.GWPort == 0 {
-		return nil
-	}
 	seedDir := filepath.Join(state.GroupDir(a.InstDir, g.Name), ".gateway", "seed")
 	if err := os.MkdirAll(seedDir, 0o700); err != nil {
 		return err
@@ -223,7 +285,7 @@ func (a *App) ensureGateway(ctx context.Context, g *state.Group) error {
 	fab := fcnet.Fabric{
 		Runner: a.Runner, Network: state.NetworkName(g.Name), Image: a.Image,
 		NetDir: paths.FCNetFor(g.Name), TapPrefix: g.TapPrefix,
-		GWPort: g.GWPort, GWBind: a.SSHBind, GWSeed: seedDir,
+		GWPort: g.GWPort, GWBind: gatewayBind(a.SSHBind), GWSeed: seedDir,
 		GWUser: a.Host.User, GWUID: a.Host.UID, GWGID: a.Host.GID,
 		GWHome: filepath.Join("/home", a.Host.User),
 	}
@@ -323,4 +385,17 @@ func (a *App) removeGroup(ctx context.Context, group string, force bool, out io.
 	}
 	fmt.Fprintf(out, "removed group %s\n", group)
 	return nil
+}
+
+// gatewayBind is where a group's gateway publishes its jump-host port.
+//
+// The gateway is an ingress by design: it exists so a person can `ssh <group>-gw`
+// and reach services inside the group by name. So it keeps a published port
+// where a sandbox no longer has one, and loopback is where that port goes unless
+// CS_SANDBOX_SSH_BIND says otherwise.
+func gatewayBind(bind string) string {
+	if bind == "" {
+		return "127.0.0.1"
+	}
+	return bind
 }

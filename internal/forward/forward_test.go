@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/codesweep-ai/sandbox/internal/hostcfg"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 
 	"github.com/codesweep-ai/sandbox/internal/state"
@@ -20,7 +21,7 @@ import (
 func TestForwardArgs(t *testing.T) {
 	h := hostenv.Host{User: "dev"}
 
-	local := forwardArgs(h, "/tier", state.DefaultGroup, "box", 2200, "L", 18099, "localhost:80", "127.0.0.1")
+	local := forwardArgs(h, "/tier", state.DefaultGroup, "box", hostcfg.Route{Port: 2200}, "L", 18099, "localhost:80", "127.0.0.1")
 	for _, want := range []string{"-N", "-L", "127.0.0.1:18099:localhost:80", "dev@127.0.0.1"} {
 		if !slices.Contains(local, want) {
 			t.Errorf("local forward args missing %q: %v", want, local)
@@ -30,7 +31,7 @@ func TestForwardArgs(t *testing.T) {
 		t.Errorf("local forward should not use -D: %v", local)
 	}
 
-	socks := forwardArgs(h, "/tier", state.DefaultGroup, "box", 2200, "D", 1080, "socks", "127.0.0.1")
+	socks := forwardArgs(h, "/tier", state.DefaultGroup, "box", hostcfg.Route{Port: 2200}, "D", 1080, "socks", "127.0.0.1")
 	for _, want := range []string{"-N", "-D", "127.0.0.1:1080", "dev@127.0.0.1"} {
 		if !slices.Contains(socks, want) {
 			t.Errorf("socks args missing %q: %v", want, socks)
@@ -48,7 +49,7 @@ func TestForwardArgsKeysHostKeyOnTheObjectName(t *testing.T) {
 	h := hostenv.Host{User: "dev"}
 	seen := map[string]string{}
 	for _, group := range []string{"cache-redis", "cache-memory", state.DefaultGroup} {
-		args := forwardArgs(h, "/tier", group, "api", 2200, "L", 18099, "localhost:80", "127.0.0.1")
+		args := forwardArgs(h, "/tier", group, "api", hostcfg.Route{Port: 2200}, "L", 18099, "localhost:80", "127.0.0.1")
 		i := slices.Index(args, "-o")
 		alias := ""
 		for ; i >= 0 && i < len(args)-1; i++ {

@@ -1,13 +1,15 @@
 package cli
 
 import (
+	"context"
 	"fmt"
-	"net/http"
+	"net"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/doctor"
 	"github.com/codesweep-ai/sandbox/internal/engine"
@@ -48,7 +50,7 @@ type loanPlan struct {
 // comes up looking healthy and reports itself signed out at the first model
 // call, which is the failure this whole feature exists to make impossible to
 // hit by accident.
-func (app *App) resolveLoans(f *createFlags, name, injected string) (*loanPlan, error) {
+func (app *App) resolveLoans(ctx context.Context, f *createFlags, name, injected string) (*loanPlan, error) {
 	plan := &loanPlan{origins: map[string]string{}}
 	home := paths.AgentLoginHome(app.Host.Home)
 	keysDir := lend.KeysDir(home)
@@ -145,13 +147,17 @@ func (app *App) resolveLoans(f *createFlags, name, injected string) (*loanPlan, 
 		if err := checkUpstream(s.BaseEnv, u); err != nil {
 			return nil, err
 		}
+		u, moved := lenderUpstream(u)
 		plan.origins[s.ID] = u
 		plan.consumed = append(plan.consumed, s.BaseEnv)
 		plan.notes = append(plan.notes,
 			fmt.Sprintf("upstream: %s goes to %s (from %s, which the sandbox does not keep)", s.ID, u, s.BaseEnv))
+		if moved != "" {
+			plan.notes = append(plan.notes, moved)
+		}
 	}
 
-	guestBase, err := app.ensureLender()
+	guestBase, err := app.ensureLender(ctx, f.group)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +228,7 @@ func checkUpstream(name, raw string) error {
 	}
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("--env %s=%q needs an http or https scheme and a host, "+
-			"as in http://127.0.0.1:8080/c/anthropic/build", name, raw)
+			"as in http://host.containers.internal:8080/c/anthropic/build", name, raw)
 	}
 	return nil
 }
@@ -245,40 +251,113 @@ func keySlot(id, flag string) (lend.Slot, error) {
 	return s, nil
 }
 
-// ensureLender returns the base URL a sandbox reaches the lender at, starting
-// one if nothing is listening.
+// ensureLender returns the base URL a sandbox in this group reaches the lender
+// at, starting the group's lender container if one is not already serving it.
 //
-// Started the way a port forward starts its ssh child: on first use, so a
+// One lender per GROUP, where there used to be one per host. That is the whole
+// of the isolation: the container is attached to this group's network and no
+// other, so a sandbox in another group has no interface to reach it on and no
+// forwarding path to get there — where a host process on a fixed port was
+// reachable by everything local, including another user's `create`, which would
+// adopt it and report a loan it would never honour.
+//
+// Started on first use, the way a port forward starts its ssh child, so a
 // sandbox created with a loan works without anyone having been told to run a
 // daemon first.
-func (app *App) ensureLender() (guestBase string, err error) {
-	d := lend.Daemon{Dir: app.InstDir}
-	bind := envOr("CS_SANDBOX_LEND_ADDR", lend.DefaultBind)
+func (app *App) ensureLender(ctx context.Context, group string) (guestBase string, err error) {
+	b := app.lenderBox(group)
 	if app.dryRun() {
-		// A dry run starts nothing. It reports the address a real run would use,
-		// so the environment it prints is the environment it would seed.
-		fmt.Fprintf(app.stderr(), "+ cs-sandbox lender --addr %s\n", bind)
-		return lend.GuestURL(engine.HostReachableName, bind), nil
+		// A dry run starts nothing. It prints the command a real run would use,
+		// so the environment it reports is the environment it would seed.
+		fmt.Fprintf(app.stderr(), "+ %s\n", strings.Join(lenderBoxArgv(b.name(), b.Spec), " "))
+		return b.guestBase(), nil
 	}
-	if _, recorded, alive := d.Status(); alive && recorded != "" {
-		if lend.Probe(lend.ProbeAddr(recorded)) == nil {
-			return lend.GuestURL(engine.HostReachableName, recorded), nil
-		}
+	return b.ensure(ctx)
+}
+
+// lenderBox is this group's lender container, described.
+func (app *App) lenderBox(group string) lenderBox {
+	home := paths.AgentLoginHome(app.Host.Home)
+	return lenderBox{Runner: app.Runner, Spec: lenderBoxSpec{
+		Network: state.NetworkName(group),
+		Image:   app.Image,
+		Home:    home,
+		InstDir: app.InstDir,
+		Bin:     lenderBinary(),
+		Stage:   filepath.Join(state.GroupDir(app.InstDir, group), ".lender", "cs-sandbox"),
+	}}
+}
+
+// lenderBinary is the cs-sandbox the lender container runs, or "" to let the
+// image supply it.
+//
+// This executable, on Linux, because then the lender under test is the one this
+// checkout built — which is the only way the lent tier says anything about a
+// change to the lender. It is safe to hand over: the release build is
+// CGO_ENABLED=0, so it needs no loader the image might not have.
+//
+// Not on macOS, where this binary is Mach-O and the container is Linux. There
+// the image's own cs-sandbox serves, which for a released build is the matching
+// version by construction.
+//
+// CS_SANDBOX_LENDER_BIN overrides both, and an empty value is a deliberate
+// "use the image's": it is how a cross-built binary reaches a container whose
+// architecture is not this host's, and how a macOS run puts its own build in.
+func lenderBinary() string {
+	if v, ok := os.LookupEnv("CS_SANDBOX_LENDER_BIN"); ok {
+		return v
 	}
-	// A lender this tool did not start still counts: a host that runs one under
-	// a service manager should not have a second started underneath it, and the
-	// port would refuse the attempt anyway.
-	if lend.Probe(lend.ProbeAddr(bind)) == nil {
-		return lend.GuestURL(engine.HostReachableName, bind), nil
+	if runtime.GOOS != "linux" {
+		return ""
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("find this executable to start the lender: %w", err)
+		return ""
 	}
-	if err := d.Start(exe, []string{"lender", "--addr", bind}, bind, lend.ProbeAddr(bind)); err != nil {
-		return "", fmt.Errorf("start the credential lender: %w\n  its log is at %s", err, d.LogPath())
+	// Only when this process IS cs-sandbox. Under `go test` os.Executable is
+	// the test binary, and mounting that would start a container that runs the
+	// test suite with `lender --addr …` as its arguments — a failure whose
+	// message is about testing flags and mentions none of this. A tier that
+	// wants its own build in there names it, which is the honest way round.
+	if filepath.Base(exe) != "cs-sandbox" {
+		return ""
 	}
-	return lend.GuestURL(engine.HostReachableName, bind), nil
+	return exe
+}
+
+// lenderUpstream retargets an upstream that names the loopback at the host.
+//
+// `--env ANTHROPIC_BASE_URL=http://127.0.0.1:8080/c/anthropic/build` is the
+// documented spelling for putting a recorder in front of a provider, and it
+// meant "this host" for as long as the lender was a host process. It is a
+// container now, where 127.0.0.1 is the container itself and nothing answers
+// there. The host is still reachable from inside it, by the name podman
+// publishes for it (R52a), so the address is moved onto that name.
+//
+// REPORTED rather than done quietly. The upstream is where a real credential
+// goes; moving one silently is the single thing this must never do, and a
+// caller who meant a service inside the fabric needs to see that their spelling
+// was read as "the host".
+func lenderUpstream(raw string) (string, string) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw, ""
+	}
+	h, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		h, port = u.Host, ""
+	}
+	ip := net.ParseIP(h)
+	if ip == nil || !ip.IsLoopback() {
+		return raw, ""
+	}
+	u.Host = engine.HostReachableName
+	if port != "" {
+		u.Host = net.JoinHostPort(engine.HostReachableName, port)
+	}
+	return u.String(), fmt.Sprintf(
+		"upstream: %s is the lender's own loopback now that it runs on the group's network — reading it as %s, "+
+			"the name a container reaches this host by", raw, u.Host)
 }
 
 // mergeLoanEnv folds the loan variables into the injected block, refusing to
@@ -332,7 +411,7 @@ func mergeLoanEnv(block string, loanEnv, consumed []string) (string, error) {
 // It holds refreshed credentials in memory, so the fewer minutes it exists the
 // smaller the window; and a process still running for nobody is one a reader
 // has to explain.
-func (app *App) stopLenderIfIdle() {
+func (app *App) stopLenderIfIdle(ctx context.Context, group string) {
 	if app.dryRun() {
 		return
 	}
@@ -341,12 +420,18 @@ func (app *App) stopLenderIfIdle() {
 		return
 	}
 	for _, in := range insts {
+		// This group's lender serves this group's sandboxes and nothing else
+		// can reach it, so what keeps it up is a loan in HERE. A loan in another
+		// group holds that group's lender, and says nothing about this one.
+		if in.Group != group {
+			continue
+		}
 		loans, err := lend.ReadLoans(state.Dir(app.InstDir, in.Group, in.Name))
 		if err == nil && len(loans) > 0 {
 			return
 		}
 	}
-	_ = lend.Daemon{Dir: app.InstDir}.Stop()
+	_ = app.lenderBox(group).stop(ctx)
 }
 
 // loanSummary is the loans a sandbox holds, for `inspect` and `ls`.
@@ -370,9 +455,10 @@ func loanSlots(instDir, group, name string) []string {
 // It reports rather than repairs. Every hop it checks fails the same way from
 // inside a sandbox — the agent says it is not signed in — so naming the dark
 // hop is the whole job.
-func (app *App) lendState() doctor.LendState {
+func (app *App) lendState(ctx context.Context) doctor.LendState {
 	var st doctor.LendState
 	slots := map[string]bool{}
+	groups := map[string]bool{}
 	insts, _ := state.List(app.InstDir)
 	for _, in := range insts {
 		loans, err := lend.ReadLoans(state.Dir(app.InstDir, in.Group, in.Name))
@@ -380,33 +466,32 @@ func (app *App) lendState() doctor.LendState {
 			continue
 		}
 		st.Sandboxes++
+		groups[in.Group] = true
 		for _, l := range loans {
 			slots[l.Slot] = true
 		}
 		// The upstream a loan was created with: a recorder or a gateway the
-		// lender forwards to. As dark a hop as any, and reached from here.
+		// lender forwards to. As dark a hop as any, and asked of the lender —
+		// which is the only party that dials it.
 		for _, l := range loans {
 			if l.Origin == "" {
 				continue
 			}
 			st.Upstreams = append(st.Upstreams, doctor.UpstreamCheck{
-				Sandbox: in.Name, URL: l.Origin, Slot: l.Slot, Err: reachErr(l.Origin),
+				Sandbox: in.Name, URL: l.Origin, Slot: l.Slot,
+				Err: app.lenderBox(in.Group).probe(ctx, l.Origin),
 			})
 		}
 	}
-
-	d := lend.Daemon{Dir: app.InstDir}
-	pid, recorded, alive := d.Status()
-	switch {
-	case alive && recorded != "" && lend.Probe(lend.ProbeAddr(recorded)) == nil:
-		st.Addr = recorded
-	case pid != 0 || recorded != "":
-		st.Recorded = recorded
-	default:
-		bind := envOr("CS_SANDBOX_LEND_ADDR", lend.DefaultBind)
-		if lend.Probe(lend.ProbeAddr(bind)) == nil {
-			st.Addr = bind
+	for _, g := range sortedKeys(groups) {
+		b := app.lenderBox(g)
+		c := doctor.LenderCheck{Group: g, Where: b.guestBase()}
+		if !b.running(ctx) {
+			c.Err = "the group's lender container is not running"
+		} else if why := b.probe(ctx, "http://"+lend.ProbeAddr(lend.DefaultBind)+"/healthz"); why != "" {
+			c.Err = why
 		}
+		st.Lenders = append(st.Lenders, c)
 	}
 
 	home := paths.AgentLoginHome(app.Host.Home)
@@ -425,19 +510,13 @@ func (app *App) lendState() doctor.LendState {
 	return st
 }
 
-// reachErr reports why an endpoint does not answer, or "" when it does. Any
-// HTTP reply counts: a cs-vcr answering 404 for a path this check invented is
-// still a cs-vcr that is running and reachable.
-func reachErr(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return err.Error()
+// sortedKeys keeps doctor's output stable across runs, which is what makes two
+// reports comparable.
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
 	}
-	c := &http.Client{Timeout: 2 * time.Second}
-	res, err := c.Get(u.Scheme + "://" + u.Host + "/")
-	if err != nil {
-		return err.Error()
-	}
-	res.Body.Close()
-	return ""
+	sort.Strings(out)
+	return out
 }

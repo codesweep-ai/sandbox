@@ -161,12 +161,12 @@ func TestFirecrackerCreateLive(t *testing.T) {
 	}
 
 	// End-to-end trust proof: ssh in with the user-tier key and land as the dev user.
-	waitSSH(t, d, inst.Port, "true", 60*time.Second)
-	who := sshOut(ctx, d, inst.Port, "whoami")
+	waitSSH(t, d, inst, "true", 60*time.Second)
+	who := sshOut(ctx, d, inst, "whoami")
 	if who != d.Host.User {
 		t.Errorf("ssh whoami = %q, want %q (dev user via U tier key over the fabric forwarder)", who, d.Host.User)
 	}
-	host := sshOut(ctx, d, inst.Port, "hostname")
+	host := sshOut(ctx, d, inst, "hostname")
 	if host != name {
 		t.Errorf("guest hostname = %q, want %q", host, name)
 	}

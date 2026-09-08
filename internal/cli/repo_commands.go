@@ -29,7 +29,7 @@ func (a *App) transport(name string) (repo.Transport, *state.Instance, error) {
 	}
 	// hostcfg.Ref, not the name as typed: git keys known_hosts by HostKeyAlias
 	// too, so the same fixture in two groups needs two entries.
-	return repo.Transport{Host: a.Host, TierDir: paths.GroupKeys(in.Group), Name: hostcfg.Ref(in), Port: in.Port}, in, nil
+	return repo.Transport{Host: a.Host, TierDir: paths.GroupKeys(in.Group), Name: hostcfg.Ref(in), Route: hostcfg.RouteTo(a.InstDir, in)}, in, nil
 }
 
 func newFetchCmd(app *App) *cobra.Command {

@@ -110,11 +110,17 @@ Recreating with the name of a sandbox that `rm` kept data for reuses that data.
 ```
 cs-sandbox ssh <name> [args...]     # a shell, or one command, over SSH
 cs-sandbox exec <name> [cmd...]     # run a command through the engine
-cs-sandbox port <name>              # its host SSH port
+cs-sandbox port <name>              # its published host SSH port, if it has one
 ```
 
 Prefer plain `ssh <name>`, which works because `create` maintains an SSH config fragment. Use
 `exec` when you want the engine's own channel rather than SSH.
+
+A sandbox binds no host port. `ssh <name>` reaches it through a `ProxyCommand` the fragment carries:
+`podman exec` for a container, and for a microVM the forwarder socket in its instance directory. So
+`port` has nothing to print unless you asked for a port, and says so. Ask for one with
+`CS_SANDBOX_SSH_BIND` when something that cannot run a command has to connect: another machine, or a
+tool that takes a host and a port.
 
 A command that exits non-zero inside the sandbox gives `cs-sandbox` that same exit status, with no
 message of its own. The command's output already reached your terminal.
@@ -179,8 +185,12 @@ sees every other, which is all most setups need. Reach for a group when unrelate
 host and must not see each other: each group gets its own network, its own SSH keys and its own
 gateway.
 
+The gateway is the group's ssh entry point, reached as `<group>-gw`. From inside it every member
+answers to its bare name, and so does anything else on that network, such as the credential lender or
+a recorder. It binds no host port unless you ask for one.
+
 ```
-cs-sandbox group create <group>
+cs-sandbox group create <group> [--publish-gateway]
 cs-sandbox group ls
 cs-sandbox group rm <group> [-f]     # -f destroys the group's sandboxes first
 ```
@@ -421,10 +431,15 @@ cs-sandbox create feature --repo ~/projects/api --lend-agent-login claude
 cs-sandbox create feature --lend-api-key anthropic
 ```
 
-Behind it is the **lender**, a proxy this tool runs on your host. The sandbox's agent is pointed at
+Behind it is the **lender**, a proxy this tool runs for the group. The sandbox's agent is pointed at
 it by the base URL the agent already reads. Each call arrives carrying the loan token, and the
 lender swaps that token for your real credential before passing the call to the provider. Only the
 lender knows which credential a token names.
+
+It runs as a container on the group's own network. There it answers to `cs-lender`, and nowhere
+else: nothing is bound on your machine, and a sandbox in another group has no route to it. Your
+credential stays in your filesystem. The lender reads it through a read-only mount, on every call,
+exactly as a process on the host would have.
 
 Lending comes in two kinds. A **token loan** lends an agent's login, and arrives as the credential
 file that agent's own sign-in would have written, holding fabricated values. The agent therefore
@@ -432,8 +447,8 @@ runs exactly as it does when signed in, rather than on the separate path a gatew
 put it on. A **key loan** lends an LLM API key, and arrives in the variables its clients read, which
 is already the shape that credential has.
 
-`create` starts the lender the first time a sandbox needs one, the way `forward` starts its `ssh`
-child. `destroy` stops it once no sandbox is borrowing anything.
+`create` starts the group's lender the first time a sandbox in it needs one, the way `forward`
+starts its `ssh` child. `destroy` stops it once no sandbox in that group is borrowing anything.
 
 | What you lend | Flag | Read from |
 |---|---|---|
@@ -494,7 +509,7 @@ there instead of to the provider:
 
 ```bash
 cs-sandbox create feature --lend-agent-login claude \
-  --env ANTHROPIC_BASE_URL=http://127.0.0.1:8080/c/anthropic/build-auth
+  --env ANTHROPIC_BASE_URL=http://host.containers.internal:8080/c/anthropic/build-auth
 ```
 
 That value is read at create and does not reach the sandbox. The sandbox is handed the lender's
@@ -502,6 +517,11 @@ address in the same variable, exactly as a lent key is read on the host and hand
 token. The upstream is recorded on the loan, so it steers this sandbox alone and goes when the
 sandbox does. Only the lender has to reach it, so it can be a recorder or a gateway on another
 machine.
+
+It is dialled from the lender's container, so name a service on your own machine
+`host.containers.internal`. That is the name a container reaches its host by. `127.0.0.1` there
+means the lender itself. `create` reads that spelling as the host and says so, rather than leaving
+you a credential going nowhere.
 
 It sits behind the credential swap, so it is handed the real credential. That is the thing to weigh
 before pointing one at a machine that is not this one. See
@@ -525,13 +545,14 @@ provider, and the lender forwards there. The session is recorded, and replayed l
 provider reached and nothing spent:
 
 ```bash
-cs-vcr record &                       # on this host, listening where the LENDER can reach it
+cs-vcr record --listen 0.0.0.0:8080 &   # listening where the LENDER can reach it
 cs-sandbox create feature --lend-agent-login claude \
-  --env ANTHROPIC_BASE_URL=http://127.0.0.1:8080/c/anthropic/build-auth
+  --env ANTHROPIC_BASE_URL=http://host.containers.internal:8080/c/anthropic/build-auth
 ```
 
 Two things have to be true of that cs-vcr, and both follow from where it sits. It is dialled by the
-lender rather than by the sandbox, so `127.0.0.1` is enough. It never has to be reachable from a
+lender, a container on the group's network. So a recorder on your own machine must listen on a
+non-loopback address, and be named `host.containers.internal`. It never has to be reachable from a
 guest. And the provider entry the URL names points at the real provider, because the recorder is the
 last hop before one.
 
@@ -566,12 +587,14 @@ when you want to watch what it is doing.
 
 | Flag | Meaning |
 |---|---|
-| `--addr ADDR` | Listen address. Default `0.0.0.0:2500`. It must not be loopback: a sandbox arrives on this host's ordinary side, where a loopback socket refuses the connection. |
+| `--addr ADDR` | Listen address. Default `0.0.0.0:2500`. It must not be loopback: a caller arrives on the ordinary side of wherever this is running, where a loopback socket refuses the connection. |
+| `--callers host\|network` | Which peers to answer. `host` (the default) accepts this machine's own addresses, for a lender run on the host. `network` accepts the subnets the lender is attached to, which is what the group's own lender container uses. |
 | `--origin SLOT=URL` | Send one slot's traffic somewhere else, such as a gateway or a recorder in front of the provider. Repeatable. |
 
-The port is open to the network the host is on, and the lender refuses every caller that is not this
-host. `cs-sandbox doctor` reports which address it bound and says so if that address is one no
-sandbox can reach.
+Run this way the port is open to the network the host is on, and the lender refuses every caller that
+is not this host. The lender `create` starts needs none of that. It sits inside the group's network,
+where its callers are the sandboxes on that bridge. Nothing else can route to it. `cs-sandbox doctor`
+reports each group's lender and says which one is dark.
 
 ### Connectors an account carries
 
@@ -628,7 +651,6 @@ no key the other side would accept.
 | `~/.ssh/known_hosts.cs-sandbox` | Sandbox host keys, kept out of your own `known_hosts` and keyed by `<name>.<group>` rather than by port. |
 | `~/.cs-keys/<provider>` | An LLM API key this host will lend or copy in. One file per provider, holding the key alone. Secret. |
 | `$XDG_DATA_HOME/cs-sandbox/instances/<group>/<name>/loans.json` | What one sandbox borrows, and the token it borrows with. Secret, and removed with the sandbox. |
-| `$XDG_DATA_HOME/cs-sandbox/instances/lender` | The running lender's process id and address. |
 
 No sandbox state lives in the source tree.
 
@@ -646,7 +668,8 @@ without disturbing your real one, which is what the test suite does.
 | `CS_SANDBOX_FC_NET` | The fabric working directory, which `CS_SANDBOX_HOME` deliberately leaves alone. |
 | `XDG_DATA_HOME`, `XDG_CACHE_HOME` | The defaults the paths above derive from. |
 | `CS_SANDBOX_AGENT_HOME` | Where a login or a key is read from, by `--inherit-agent-login` and by the lender alike. Your home, unless this names another profile tree. |
-| `CS_SANDBOX_LEND_ADDR` | The address the lender listens on. Default `0.0.0.0:2500`. |
+| `CS_SANDBOX_LEND_ADDR` | The address `cs-sandbox lender` listens on when you run one yourself. Default `0.0.0.0:2500`. The group's own lender container is not configured by it. |
+| `CS_SANDBOX_LENDER_BIN` | A Linux `cs-sandbox` for the image's architecture, run by the group's lender container instead of the image's own. Set it where the image carries no `cs-sandbox` (a slimmed one) or where you want the lender to be your own build. Empty means "use the image's". |
 
 The second group changes what gets built or run.
 
@@ -660,7 +683,7 @@ The second group changes what gets built or run.
 | `CS_SANDBOX_DNS_SUFFIX` | `cs.sandbox` | The domain `host-route` resolves sandbox names under. |
 | `CS_SANDBOX_GROUP` | `default` | The group `create` puts a sandbox in when no `--group` is given. |
 | `CS_SANDBOX_TZ` | `America/Los_Angeles` | The timezone a sandbox boots with. |
-| `CS_SANDBOX_SSH_BIND` | `127.0.0.1` | The host address a sandbox's SSH port, and its group gateway's, binds. Any other value publishes it beyond loopback: see [SPEC.md §13](SPEC.md#13-security-model). |
+| `CS_SANDBOX_SSH_BIND` | unset | Setting it publishes a host SSH port for each sandbox created, at this address; unset, none is published and `ssh <name>` goes through the config fragment. Any value other than `127.0.0.1` publishes beyond loopback: see [SPEC.md §13](SPEC.md#13-security-model). It is also where `group create --publish-gateway` binds. |
 
 The third group tunes the Firecracker engine. Leave these alone unless `doctor` or this manual sends
 you to one.
@@ -708,11 +731,11 @@ Everything runs in one podman-machine VM there, so `--repo` and `--snapshot` sou
 
 **An agent in a lent sandbox says it is not signed in**
 
-Run `cs-sandbox doctor`. It walks the lending chain and names the hop that is dark. The candidates
-are a lender that is not running, one bound where no sandbox can reach it, an expired host login,
-and an upstream that does not answer. It says which side of the lender that upstream is on, because
-the remedy differs. One in front has to listen where a sandbox can reach it. One behind only has to
-answer on this host.
+Run `cs-sandbox doctor`. It walks the lending chain and names the hop that is dark, per group. The
+candidates are a group whose lender is not running, an expired host login, and an upstream that does
+not answer. The upstream is asked of the lender itself, which is the only party that dials it. A
+service of your own on this machine therefore has to be named `host.containers.internal`, because
+`127.0.0.1` inside that container is the container.
 
 **`no loan matches the credential this request carried`**
 

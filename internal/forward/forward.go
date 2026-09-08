@@ -52,7 +52,7 @@ func legacyDir(instDir, ref string) string {
 
 // Start launches a forward. kind "L" needs target "host:port"; kind "D" is a
 // SOCKS proxy.
-func Start(h hostenv.Host, tierDir, instDir, group, name string, port int, kind string, hostPort int, target, bind string) (*Record, error) {
+func Start(h hostenv.Host, tierDir, instDir, group, name string, route hostcfg.Route, kind string, hostPort int, target, bind string) (*Record, error) {
 	d := dir(instDir, group, name)
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return nil, err
@@ -65,7 +65,7 @@ func Start(h hostenv.Host, tierDir, instDir, group, name string, port int, kind 
 		return nil, fmt.Errorf("host port %d is already in use", hostPort)
 	}
 
-	args := forwardArgs(h, tierDir, group, name, port, kind, hostPort, target, bind)
+	args := forwardArgs(h, tierDir, group, name, route, kind, hostPort, target, bind)
 
 	logf, err := os.Create(rec + ".log")
 	if err != nil {
@@ -107,15 +107,16 @@ func Start(h hostenv.Host, tierDir, instDir, group, name string, port int, kind 
 // HostKeyAlias is not unique: the same fixture in two groups is what groups are
 // for, and both would claim the one known_hosts entry, so the second forward
 // died on "host key changed" with BatchMode leaving nobody to answer.
-func forwardArgs(h hostenv.Host, tierDir, group, name string, port int, kind string, hostPort int, target, bind string) []string {
-	args := hostcfg.SSHOptions(h, tierDir, state.ObjectName(group, name), port)
+func forwardArgs(h hostenv.Host, tierDir, group, name string, route hostcfg.Route, kind string, hostPort int, target, bind string) []string {
+	obj := state.ObjectName(group, name)
+	args := hostcfg.SSHOptions(h, tierDir, obj, route)
 	args = append(args, "-N", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes")
 	if kind == "D" {
 		args = append(args, "-D", fmt.Sprintf("%s:%d", bind, hostPort))
 	} else {
 		args = append(args, "-L", fmt.Sprintf("%s:%d:%s", bind, hostPort, target))
 	}
-	return append(args, h.User+"@127.0.0.1")
+	return append(args, hostcfg.SSHDest(h, obj, route))
 }
 
 // List returns the live forwards for an instance, GC-ing dead ones.

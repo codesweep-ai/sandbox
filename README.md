@@ -360,7 +360,8 @@ ssh bench.cache-redis
 [bench]$ ssh api.cache-memory            # ssh: Could not resolve hostname
 [bench]$ exit
 
-# Each group's gateway is its ssh jump host, reaching members by name on any port.
+# Each group's gateway is its ssh entry point, reaching members by name on any
+# port — and the group's own services too, which are not members. No host port.
 ssh cache-redis-gw                       # a shell inside that experiment
 ssh -L 8080:api:8000 cache-redis-gw      # forward that experiment's api, once it serves
 

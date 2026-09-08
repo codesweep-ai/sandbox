@@ -30,7 +30,25 @@ func ValidName(name string) error {
 	if !nameRe.MatchString(name) {
 		return fmt.Errorf("invalid sandbox name %q: use letters, digits and dashes only (must start and end alphanumeric)", name)
 	}
+	if ReservedNames[name] {
+		return fmt.Errorf("sandbox name %q is reserved: the group's own services answer to it on the network "+
+			"this sandbox would join, and a sandbox alias would take the name from them", name)
+	}
 	return nil
+}
+
+// ReservedNames are the names the fabric itself answers to on a group's
+// network. A sandbox joins that network with its own name as an alias
+// (SPEC R52a's sibling: what the tool points a sandbox at inside the fabric is
+// named, not addressed), so a sandbox called one of these would take the name
+// from the service and the loan or the recording would go to it instead.
+//
+// Spelled here rather than imported from the packages that own them: internal/state
+// sits under those packages, and the one test that could go stale — the name
+// really being the one internal/lend uses — is asserted where both are visible.
+var ReservedNames = map[string]bool{
+	"cs-lender": true, // internal/lend.GuestName — the credential lender
+	"cs-vcr":    true, // the replay recorder the agent tier puts on the network
 }
 
 // sunPathMax is the AF_UNIX sun_path limit, terminator included. Not a Linux
@@ -47,6 +65,11 @@ const (
 )
 
 var instanceSockets = []string{SockFwd, SockVsock}
+
+// InternalSSHPort is the port a guest's sshd listens on, inside. It is the same
+// number for both engines and it is not configurable: what differs between them
+// is how the host reaches it, never where the guest offers it.
+const InternalSSHPort = 22
 
 // longestSocketName is the longest basename among instanceSockets — 8
 // characters, both of them being that long.
@@ -160,6 +183,16 @@ func BranchName(group, name string) string {
 // NetworkName is the Podman network backing a group. The default group keeps
 // the historical fabric name so existing docs, the host route and the fabric
 // helpers keep referring to the same bridge.
+// KeepaliveFor is the container that pins a network's bridge. One per network,
+// named after it: netavark tears a bridge down when no container is attached,
+// and a microVM is not a container — so a group whose only member is a VM would
+// lose the bridge under it.
+//
+// Named here rather than in the package that manages it, because the name is a
+// function of the network name and two packages have to agree on it: the one
+// that starts it, and the one that writes the ssh route to it.
+func KeepaliveFor(network string) string { return network + "-keepalive" }
+
 func NetworkName(group string) string {
 	if group == DefaultGroup {
 		return "cs-sandbox-net"

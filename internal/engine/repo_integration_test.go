@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codesweep-ai/sandbox/internal/hostcfg"
 	"github.com/codesweep-ai/sandbox/internal/repo"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/spec"
@@ -47,19 +48,19 @@ func TestPodmanRepoFetchLive(t *testing.T) {
 	}
 
 	// Wait for the first-boot alternates clone to appear.
-	waitSSH(t, d, inst.Port, "test -d ~/proj/.git", 90*time.Second)
+	waitSSH(t, d, inst, "test -d ~/proj/.git", 90*time.Second)
 
 	// The sandbox is on its own branch; make a commit there.
-	branch := sshOut(ctx, d, inst.Port, "git -C ~/proj rev-parse --abbrev-ref HEAD")
+	branch := sshOut(ctx, d, inst, "git -C ~/proj rev-parse --abbrev-ref HEAD")
 	if branch != "cs-sandbox/"+name {
 		t.Fatalf("sandbox checkout on branch %q, want cs-sandbox/%s", branch, name)
 	}
-	if _, err := sshRun(ctx, d, inst.Port, `git -C ~/proj commit --allow-empty -m "from sandbox agent"`); err != nil {
+	if _, err := sshRun(ctx, d, inst, `git -C ~/proj commit --allow-empty -m "from sandbox agent"`); err != nil {
 		t.Fatalf("sandbox commit: %v", err)
 	}
 
 	// Fetch it back to the host.
-	tr := repo.Transport{Host: d.Host, TierDir: d.TierDir, Name: name, Port: inst.Port}
+	tr := repo.Transport{Host: d.Host, TierDir: d.TierDir, Name: name, Route: hostcfg.RouteTo(d.InstDir, inst)}
 	rc := state.RepoClone{Source: src, Dir: "proj", Branch: "cs-sandbox/" + name}
 	tip, err := repo.Fetch(ctx, d.Runner, tr, rc)
 	if err != nil {
@@ -94,34 +95,42 @@ func gitInit(t *testing.T, d Deps, dir string) {
 	}
 }
 
-func sshBase(d Deps, port int) []string {
+// sshBase reaches a sandbox the way a person does: by whatever route it has,
+// which is a ProxyCommand unless the run asked for a published port.
+func sshBase(d Deps, in *state.Instance) []string {
 	key := filepath.Join(d.TierDir, "id_cs-sandbox_user")
-	return []string{"ssh",
-		"-i", key, "-p", strconv.Itoa(port),
+	r := hostcfg.RouteTo(d.InstDir, in)
+	argv := []string{"ssh",
+		"-i", key,
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "IdentitiesOnly=yes",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
-		d.Host.User + "@127.0.0.1",
 	}
+	if r.Proxy != "" {
+		argv = append(argv, "-o", "ProxyCommand="+r.Proxy)
+	} else {
+		argv = append(argv, "-p", strconv.Itoa(r.Port))
+	}
+	return append(argv, hostcfg.SSHDest(d.Host, state.ObjectName(in.Group, in.Name), r))
 }
 
-func sshRun(ctx context.Context, d Deps, port int, cmd string) (string, error) {
-	res, err := d.Runner.Run(ctx, run.Opts{}, append(sshBase(d, port), cmd)...)
+func sshRun(ctx context.Context, d Deps, in *state.Instance, cmd string) (string, error) {
+	res, err := d.Runner.Run(ctx, run.Opts{}, append(sshBase(d, in), cmd)...)
 	return res.Stdout, err
 }
 
-func sshOut(ctx context.Context, d Deps, port int, cmd string) string {
-	out, _ := sshRun(ctx, d, port, cmd)
+func sshOut(ctx context.Context, d Deps, in *state.Instance, cmd string) string {
+	out, _ := sshRun(ctx, d, in, cmd)
 	return strings.TrimSpace(out)
 }
 
-func waitSSH(t *testing.T, d Deps, port int, cmd string, budget time.Duration) {
+func waitSSH(t *testing.T, d Deps, in *state.Instance, cmd string, budget time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
-		if _, err := sshRun(context.Background(), d, port, cmd); err == nil {
+		if _, err := sshRun(context.Background(), d, in, cmd); err == nil {
 			return
 		}
 		time.Sleep(2 * time.Second)

@@ -1,10 +1,6 @@
 package doctor
 
-import (
-	"fmt"
-	"net"
-	"strings"
-)
+import "fmt"
 
 // Credential lending checks.
 //
@@ -20,16 +16,26 @@ import (
 type LendState struct {
 	// Sandboxes is how many sandboxes currently borrow a credential.
 	Sandboxes int
-	// Addr is where a lender is listening, or "" when none is.
-	Addr string
-	// Recorded is an address a stale record claims, when nothing answers there.
-	Recorded string
+	// Lenders is one entry per group that has something borrowed: a lender runs
+	// on the group's own network, not on the host, so "is the lender up" is a
+	// question per group rather than per machine.
+	Lenders []LenderCheck
 	// Credentials are the slots the live loans name, with the reason each one
 	// cannot be read right now (empty reason: it can).
 	Credentials []CredentialCheck
 	// Upstreams are the endpoints a sandbox's model calls pass through on the
 	// way to a provider, and whether each answers.
 	Upstreams []UpstreamCheck
+}
+
+// LenderCheck is one group's lender: where a sandbox in that group addresses
+// it, and why it is not serving when it is not.
+type LenderCheck struct {
+	Group string
+	// Where is the base URL a sandbox uses, which is a name on the group's
+	// network rather than an address on this host.
+	Where string
+	Err   string
 }
 
 // CredentialCheck is one lendable credential and whether the host can supply it.
@@ -57,25 +63,26 @@ type UpstreamCheck struct {
 // lendGroup renders the lending chain. Nothing is lent on most hosts, so the
 // group appears only when there is something to say.
 func lendGroup(s LendState) (Group, bool) {
-	if s.Sandboxes == 0 && s.Addr == "" && s.Recorded == "" {
+	if s.Sandboxes == 0 && len(s.Lenders) == 0 {
 		return Group{}, false
 	}
 	g := Group{Title: "credential lending (sandboxes borrowing your logins and keys)"}
 
-	switch {
-	case s.Addr != "":
-		g.add(OK, fmt.Sprintf("lender listening on %s, lending to %s", s.Addr, sandboxCount(s.Sandboxes)))
-		if isLoopback(s.Addr) {
-			// The whole trap in one line: the address answers on the host, so
-			// this looks like a working lender right up to the first model call.
-			g.add(NO, "that address is loopback, and no sandbox can reach it — a sandbox arrives on this host's "+
-				"ordinary side. Restart it with:  cs-sandbox lender --addr 0.0.0.0:2500")
+	if len(s.Lenders) == 0 {
+		g.add(NO, sandboxesAre(s.Sandboxes)+" borrowing a credential and no lender is running — "+
+			"the next create starts one on the group's network")
+	}
+	for _, l := range s.Lenders {
+		if l.Err == "" {
+			g.add(OK, fmt.Sprintf("group %s: lender answering at %s, lending to %s",
+				l.Group, l.Where, sandboxCount(s.Sandboxes)))
+			continue
 		}
-	case s.Recorded != "":
-		g.add(NO, fmt.Sprintf("a lender is recorded at %s but nothing answers there — the next create starts a new one, "+
-			"or start it now:  cs-sandbox lender", s.Recorded))
-	default:
-		g.add(NO, sandboxesAre(s.Sandboxes)+" borrowing a credential and no lender is running — start it:  cs-sandbox lender")
+		// A lender that is not answering fails the same way from inside a
+		// sandbox as an expired login does, so the group is named: on a host
+		// running several, the one that is dark is the thing to say.
+		g.add(NO, fmt.Sprintf("group %s: nothing is answering at %s — %s\n"+
+			"      the next create in that group starts one", l.Group, l.Where, l.Err))
 	}
 
 	for _, c := range s.Credentials {
@@ -91,22 +98,11 @@ func lendGroup(s LendState) (Group, bool) {
 			continue
 		}
 		g.add(NO, fmt.Sprintf("%s sends its %s traffic to %s, which does not answer: %s\n"+
-			"      the lender dials it from this host, so it needs to be listening here",
+			"      the lender dials it from its container on the group's network, so a service on this "+
+			"host has to be named host.containers.internal rather than 127.0.0.1",
 			c.Sandbox, c.Slot, c.URL, c.Err))
 	}
 	return g, true
-}
-
-func isLoopback(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		host = addr
-	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		return false
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback() || strings.EqualFold(host, "localhost")
 }
 
 // sandboxCount says "1 sandbox" / "3 sandboxes" — the package's own plural

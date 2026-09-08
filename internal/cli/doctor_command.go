@@ -80,7 +80,7 @@ func newDoctorCmd(app *App) *cobra.Command {
 				FCCache:        fc.Dir,
 				InstDir:        app.InstDir,
 
-				Lend: app.lendState(),
+				Lend: app.lendState(cmd.Context()),
 
 				BundledTools: bundled,
 				ToolPins:     pins,

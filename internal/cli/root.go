@@ -308,7 +308,12 @@ func newRootCmd(app *App) *cobra.Command {
 				app.Image, app.ImageErr = imageRef(imageRepo)
 			}
 			app.Network = state.NetworkName(state.DefaultGroup)
-			app.SSHBind = envOr("CS_SANDBOX_SSH_BIND", "127.0.0.1")
+			// Empty by default, which means "publish nothing". A sandbox is
+			// reached through the engine now (hostcfg.Route), so a host port is
+			// what you ask for when something that cannot run a ProxyCommand has
+			// to reach it — another machine, or a tool that takes a host and a
+			// port. Setting this names the address such a port binds.
+			app.SSHBind = os.Getenv("CS_SANDBOX_SSH_BIND")
 			app.TZ = envOr("CS_SANDBOX_TZ", "America/Los_Angeles")
 			app.Timeout = 120
 			return nil

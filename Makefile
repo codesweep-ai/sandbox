@@ -54,7 +54,7 @@ COVERDIR   ?= .coverage
 COVER_ABS  := $(abspath $(COVERDIR))
 COVERFLAGS := -covermode=atomic -coverpkg=./...
 
-.PHONY: help tidy-check embed-check build build-go build-ci-image build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration test-live-agents setup-fixtures fixtures fixtures-strict fixtures-check test-agents-replay test-agents-shared test-agents-lent coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode actionlint snapshot release release-check clean
+.PHONY: container-bins lender-bin vcr-bin help tidy-check embed-check build build-go build-ci-image build-ci-fc install uninstall test test-race tools setup-smoke test-smoke test-integration test-live-agents setup-fixtures fixtures fixtures-strict fixtures-check test-agents-replay test-agents-shared test-agents-lent coverage coverage-check coverage-baseline vet fmt fmt-check check ci prose refs oss surface ledger lint deadcode actionlint snapshot release release-check clean
 
 .DEFAULT_GOAL := help
 
@@ -225,6 +225,54 @@ test-race:
 # something a test run cannot fail by accident.
 TOOLSDIR   := $(abspath bin/tools)
 WITH_TOOLS := PATH="$(TOOLSDIR):$$PATH"
+
+## LENDER_BIN: the cs-sandbox the lender container runs.
+##
+## The lender is a container on the group's own network now, so the binary it
+## runs has to be a LINUX one for the IMAGE's architecture: this host's build on
+## Linux, a cross-build on macOS where the host binary is Mach-O, and an amd64
+## one wherever an amd64 image is being run under emulation.
+##
+## Named explicitly for every tier that boots a sandbox, and that is not
+## belt-and-braces: `create` defaults this to its own executable, which under
+## `go test` is the TEST binary rather than cs-sandbox — and the slim image the
+## tiers boot carries no cs-sandbox of its own to fall back to.
+LENDER_BIN  := $(abspath bin/cs-sandbox-lender)
+WITH_LENDER  = CS_SANDBOX_LENDER_BIN=$(LENDER_BIN)
+
+## CS_VCR_BIN: the cs-vcr the recorder container runs, same story as the lender.
+##
+## The recorder is a container on the run's network now, so it needs a LINUX
+## cs-vcr for the image's architecture — and the slim image drops the whole
+## codesweep-tools stanza, so there is none inside it to fall back to.
+VCR_BIN   := $(abspath bin/tools-linux/cs-vcr)
+WITH_VCR   = CS_VCR_BIN=$(VCR_BIN)
+
+## container-bins: the binaries the fabric's own containers run.
+##
+## Both are built for the architecture the IMAGE actually is, which is not
+## always this host's: a run on Apple silicon against the amd64 image CI builds
+## needs amd64 binaries, and one of the wrong architecture fails at exec with a
+## message about a missing file rather than a wrong one.
+container-bins: lender-bin vcr-bin
+
+vcr-bin:
+	@mkdir -p $(dir $(VCR_BIN))
+	@arch=$$(podman image inspect --format '{{.Architecture}}' "$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)}" 2>/dev/null); \
+	  echo "GOOS=linux $${arch:+GOARCH=$$arch} go build -o $(VCR_BIN)"; \
+	  env CGO_ENABLED=0 GOOS=linux $${arch:+GOARCH=$$arch} \
+	    go build -trimpath -o $(VCR_BIN) github.com/codesweep-ai/vcr/cmd/cs-vcr
+
+## lender-bin: build that binary, for the architecture the image actually is.
+##
+## The image is asked rather than assumed. A run on Apple silicon against the
+## amd64 image CI builds needs an amd64 lender, and a lender of the wrong
+## architecture fails at exec with a message about a missing file.
+lender-bin:
+	@mkdir -p $(dir $(LENDER_BIN))
+	@arch=$$(podman image inspect --format '{{.Architecture}}' "$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)}" 2>/dev/null); \
+	  echo "GOOS=linux $${arch:+GOARCH=$$arch} go build -o $(LENDER_BIN)"; \
+	  env CGO_ENABLED=0 GOOS=linux $${arch:+GOARCH=$$arch} go build -trimpath -ldflags '$(LDFLAGS)' -o $(LENDER_BIN) $(PKG)
 
 ## tools: the sibling cs- tools a tier needs on PATH, at the go.mod pins
 ##
@@ -434,13 +482,14 @@ SMOKE_RUN := $(subst $(space),|,$(strip $(SMOKE_TESTS)))
 ## Their coverage lands in the same tier directory, appended rather than reset,
 ## because `reset smoke` ran once above and both halves are this one profile.
 test-smoke: setup-smoke
+	@$(MAKE) --no-print-directory container-bins
 	@scripts/coverage.sh reset smoke
-	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
+	$(WITH_TOOLS) $(WITH_LENDER) $(WITH_VCR) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
 	  go test -tags smoke $(COVERFLAGS) -count=1 -p 1 -v -timeout 1200s -run '$(SMOKE_RUN)' ./... \
 	  -args -test.gocoverdir=$(COVER_ABS)/smoke
 	@if [ "$(SMOKE_AGENTS)" = 1 ]; then \
 		set -x; \
-		$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
+		$(WITH_TOOLS) $(WITH_LENDER) $(WITH_VCR) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
 		  CS_SANDBOX_AGENTS_ENGINE=$(AGENTS_ENGINE) \
 		  go test -tags agents_replay $(COVERFLAGS) -count=1 -p 1 -parallel $(AGENTS_PARALLEL) \
 		  -v -timeout 1200s \
@@ -474,8 +523,9 @@ test-smoke: setup-smoke
 SBX_IMAGE = $(shell go run -buildvcs=true $(PKG) version 2>/dev/null | awk '$$1=="image"{print $$2}')
 
 test-integration:
+	@$(MAKE) --no-print-directory lender-bin CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(SBX_IMAGE)}
 	@scripts/coverage.sh reset integration
-	CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(SBX_IMAGE)} CS_COVERDIR=$(COVER_ABS)/integration \
+	$(WITH_LENDER) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(SBX_IMAGE)} CS_COVERDIR=$(COVER_ABS)/integration \
 	  go test -tags integration $(COVERFLAGS) -p 1 -v -timeout 3600s ./... \
 	  -args -test.gocoverdir=$(COVER_ABS)/integration
 
@@ -542,7 +592,7 @@ FIXTURE_CASES ?= TestLiveAgentRecordsCassettes
 ## how every other live target behaves: the cases skip themselves there, and a
 ## setup step that turned that skip into a failure would take the target away
 ## from the hosts it was written for.
-setup-fixtures: tools
+setup-fixtures: tools container-bins
 	@if command -v podman >/dev/null 2>&1; then \
 		$(MAKE) --no-print-directory build-ci-image; \
 	else \
@@ -550,7 +600,7 @@ setup-fixtures: tools
 	fi
 
 fixtures: setup-fixtures
-	$(WITH_TOOLS) CS_SANDBOX_RECORD=1 CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
+	$(WITH_TOOLS) $(WITH_LENDER) $(WITH_VCR) CS_SANDBOX_RECORD=1 CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
 	  CS_SANDBOX_AGENTS_ENGINE=$(AGENTS_ENGINE) \
 	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run '$(FIXTURE_CASES)'
 
@@ -559,7 +609,7 @@ fixtures: setup-fixtures
 ## missing one skips under `fixtures`, and a run that recorded nothing reports
 ## the same green as one that recorded everything.
 fixtures-strict: setup-fixtures
-	$(WITH_TOOLS) CS_SANDBOX_RECORD=1 CS_SANDBOX_STRICT=1 \
+	$(WITH_TOOLS) $(WITH_LENDER) $(WITH_VCR) CS_SANDBOX_RECORD=1 CS_SANDBOX_STRICT=1 \
 	  CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} \
 	  CS_SANDBOX_AGENTS_ENGINE=$(AGENTS_ENGINE) \
 	  go test -tags live_agents -count=1 -p 1 -v -timeout 3600s ./internal/cli/ -run '$(FIXTURE_CASES)'
@@ -594,8 +644,9 @@ AGENTS_REPLAY_CASES ?= TestAgentReplay
 ## called it a regression. `make test-smoke` owns the reset, because it owns
 ## the whole tier. CI needs none of it: every fan-out job is a fresh checkout.
 test-agents-replay: tools
+	@$(MAKE) --no-print-directory container-bins
 	@mkdir -p $(COVER_ABS)/smoke
-	$(WITH_TOOLS) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
+	$(WITH_TOOLS) $(WITH_LENDER) $(WITH_VCR) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
 	  CS_SANDBOX_AGENTS_ENGINE=$(AGENTS_ENGINE) \
 	  go test -tags agents_replay $(COVERFLAGS) -count=1 -p 1 -parallel $(AGENTS_PARALLEL) \
 	  -v -timeout 1800s ./internal/cli/ \

@@ -51,7 +51,10 @@ func (s *seenRequest) snapshot() (http.Header, string, int) {
 func standInProvider(t *testing.T) (url string, seen *seenRequest) {
 	t.Helper()
 	seen = &seenRequest{header: http.Header{}}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	// 0.0.0.0, not loopback. The lender dials this from its container on the
+	// group's network, and a guest arrives on the host's ordinary side — where
+	// a server bound to 127.0.0.1 refuses the connection (SPEC R52).
+	l, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,15 +67,22 @@ func standInProvider(t *testing.T) (url string, seen *seenRequest) {
 	})}
 	go func() { _ = srv.Serve(l) }()
 	t.Cleanup(func() { _ = srv.Close() })
-	return "http://" + l.Addr().String(), seen
+	// Named as loopback deliberately: it is what a caller types, and create
+	// moves it onto the name a container reaches this host by. The tests below
+	// therefore drive the documented spelling AND that translation.
+	_, port, _ := net.SplitHostPort(l.Addr().String())
+	return "http://127.0.0.1:" + port, seen
 }
 
 // lendingHost writes a host home holding a login and a key to lend, and points
 // the agent-login lookup at it. Nothing real is read, and nothing is written to
 // the developer's own profiles.
-func lendingHost(t *testing.T) string {
+func lendingHost(t *testing.T, host hostenv.Host) {
 	t.Helper()
-	home := t.TempDir()
+	// Not t.TempDir(): the lender container mounts this home read-only, and on
+	// macOS a container can only mount what is under $HOME — the podman-machine
+	// share cs-sandbox commits to. shareDir already knows that rule.
+	home := shareDir(t, host)
 	put := func(rel, content string) {
 		p := filepath.Join(home, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
@@ -87,44 +97,52 @@ func lendingHost(t *testing.T) string {
 		time.Now().Add(time.Hour).UnixMilli()))
 	put(".cs-keys/anthropic", "REAL-HOST-KEY\n")
 	t.Setenv("CS_SANDBOX_AGENT_HOME", home)
-	return home
 }
 
-// startLender runs a lender in this process, on an address a sandbox can reach,
-// with its upstreams pointed at the stand-in. create finds it by probing the
-// address rather than starting one, which is what a host running a lender under
-// a service manager gets too.
-func startLender(t *testing.T, home, upstream string) string {
+// lendUpstream is how a live test puts a provider of its own behind the lender.
+//
+// Through the LOAN rather than through the lender, which is both the documented
+// path (R147: the origin may be named by the loan, the lender's --origin, or the
+// slot) and the only one available now: the lender is a container on the group's
+// network, started by create, so there is nothing for a test to configure by
+// hand before it exists.
+func lendUpstream(upstream string) []string {
+	return []string{"--env", "ANTHROPIC_BASE_URL=" + upstream}
+}
+
+// lenderIsUp reports whether this group's lender container is still running.
+func lenderIsUp(t *testing.T, r *run.Exec) bool {
 	t.Helper()
-	l, err := net.Listen("tcp", "0.0.0.0:0")
+	out := run.Output(context.Background(), r, "podman", "container", "inspect",
+		lend.BoxName(state.NetworkName(state.DefaultGroup)), "--format", "{{.State.Running}}")
+	return strings.TrimSpace(out) == "true"
+}
+
+// askTheLender puts a request to the group's lender from inside its own
+// container, which is the only place it can be reached from: nothing is bound
+// on the host, and no other network can route to it. Returns the status code.
+func askTheLender(t *testing.T, r *run.Exec, token string) string {
+	t.Helper()
+	box := lend.BoxName(state.NetworkName(state.DefaultGroup))
+	res, err := r.Run(context.Background(), run.Opts{ReadOnly: true}, "podman", "exec", box,
+		"curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-m", "10",
+		"-X", "POST", "-H", "x-api-key: "+token,
+		"http://"+lend.ProbeAddr(lend.DefaultBind)+"/v1/messages")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("asking the lender: %v (%s)", err, strings.TrimSpace(res.Stderr))
 	}
-	srv := &http.Server{Handler: lend.New(lend.Config{
-		Home:      home,
-		KeysDir:   lend.KeysDir(home),
-		Loans:     lend.NewFileLoans(paths.Instances()),
-		LocalOnly: true,
-		Origins:   map[string]string{"anthropic": upstream, "claude": upstream},
-	})}
-	go func() { _ = srv.Serve(l) }()
-	t.Cleanup(func() { _ = srv.Close() })
-	_, port, _ := net.SplitHostPort(l.Addr().String())
-	addr := "0.0.0.0:" + port
-	t.Setenv("CS_SANDBOX_LEND_ADDR", addr)
-	return addr
+	return strings.TrimSpace(res.Stdout)
 }
 
 // TestCLILendKeyLive: a sandbox spends a key it does not have.
 func TestCLILendKeyLive(t *testing.T) {
 	r, host := liveSetup(t)
-	home := lendingHost(t)
+	lendingHost(t, host)
 	upstream, seen := standInProvider(t)
-	startLender(t, home, upstream)
 
 	name := boxName("lendkey")
-	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
-	out := createBox(t, r, name, "--lend-api-key", "anthropic")
+	t.Cleanup(func() { _, _ = destroyBox(t, name) })
+	out := createBox(t, r, name, append([]string{"--lend-api-key", "anthropic"}, lendUpstream(upstream)...)...)
 	if !strings.Contains(out, "lent: anthropic") {
 		t.Errorf("create should report the loan:\n%s", out)
 	}
@@ -139,8 +157,8 @@ func TestCLILendKeyLive(t *testing.T) {
 	if strings.Contains(token, "REAL-HOST-KEY") {
 		t.Fatal("the real key reached the sandbox")
 	}
-	if !strings.Contains(base, engine.HostReachableName) {
-		t.Errorf("base URL = %q, want the host as seen from inside", base)
+	if !strings.Contains(base, lend.GuestName) {
+		t.Errorf("base URL = %q, want the lender's name on the group's network", base)
 	}
 
 	// And what a provider receives when it spends it.
@@ -181,17 +199,16 @@ func TestCLILendKeyFirecrackerLive(t *testing.T) {
 	if !fileExists(filepath.Join(paths.FCCache(), "vmlinux.elf")) {
 		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
 	}
-	// Before startLender: the lender reads its loan records from the instances
-	// root, and this moves that root.
+	// Before anything reads the instances root, because this moves it.
 	fcInstancesDir(t, host)
-	home := lendingHost(t)
+	lendingHost(t, host)
 	upstream, seen := standInProvider(t)
-	startLender(t, home, upstream)
 
 	name := boxName("lendkeyfc")
-	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
+	t.Cleanup(func() { _, _ = destroyBox(t, name) })
 	step(t, "booting firecracker microVM %s (takes ~30s)…", name)
-	out, err := execRoot(t, "create", name, "--engine", "firecracker", "--lend-api-key", "anthropic")
+	out, err := execRoot(t, append([]string{"create", name, "--engine", "firecracker", "--lend-api-key", "anthropic"},
+		lendUpstream(upstream)...)...)
 	if err != nil {
 		t.Fatalf("create firecracker: %v (out=%q)", err, out)
 	}
@@ -265,13 +282,12 @@ func hostReachability(ctx context.Context, r *run.Exec, host hostenv.Host, name 
 // a token rather than a credential.
 func TestCLILendLoginLive(t *testing.T) {
 	r, host := liveSetup(t)
-	home := lendingHost(t)
+	lendingHost(t, host)
 	upstream, seen := standInProvider(t)
-	startLender(t, home, upstream)
 
 	name := boxName("lendlogin")
-	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
-	createBox(t, r, name, "--lend-agent-login", "claude")
+	t.Cleanup(func() { _, _ = destroyBox(t, name) })
+	createBox(t, r, name, append([]string{"--lend-agent-login", "claude"}, lendUpstream(upstream)...)...)
 
 	ctx := context.Background()
 	// A login is seeded as the agent's own credential file, so the client stays
@@ -319,13 +335,12 @@ func TestCLILendLoginLive(t *testing.T) {
 // still reach everything else.
 func TestCLILendSideCallsBlockedLive(t *testing.T) {
 	r, host := liveSetup(t)
-	home := lendingHost(t)
+	lendingHost(t, host)
 	upstream, _ := standInProvider(t)
-	startLender(t, home, upstream)
 
 	name := boxName("lendside")
-	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
-	createBox(t, r, name, "--lend-api-key", "anthropic")
+	t.Cleanup(func() { _, _ = destroyBox(t, name) })
+	createBox(t, r, name, append([]string{"--lend-api-key", "anthropic"}, lendUpstream(upstream)...)...)
 
 	ctx := context.Background()
 	// A tunnel to a fronted host is refused, and curl reports the refusal
@@ -348,12 +363,11 @@ func TestCLILendSideCallsBlockedLive(t *testing.T) {
 // what it was lent to.
 func TestCLILendRevokedByDestroyLive(t *testing.T) {
 	r, host := liveSetup(t)
-	home := lendingHost(t)
+	lendingHost(t, host)
 	upstream, _ := standInProvider(t)
-	addr := startLender(t, home, upstream)
 
 	name := boxName("lendrevoke")
-	createBox(t, r, name, "--lend-api-key", "anthropic")
+	createBox(t, r, name, append([]string{"--lend-api-key", "anthropic"}, lendUpstream(upstream)...)...)
 	ctx := context.Background()
 	token := strings.TrimSpace(inBox(ctx, r, host, name, `printf '%s' "$ANTHROPIC_API_KEY"`))
 	if !strings.HasPrefix(token, lend.TokenPrefix) {
@@ -364,27 +378,22 @@ func TestCLILendRevokedByDestroyLive(t *testing.T) {
 	if !fileExists(loans) {
 		t.Fatalf("no loan record at %s", loans)
 	}
-	if out, err := execRoot(t, "destroy", name, "-f"); err != nil {
+	if out, err := destroyBox(t, name); err != nil {
 		t.Fatalf("destroy: %v (%s)", err, out)
 	}
 	if fileExists(loans) {
 		t.Error("the loan record outlived the sandbox")
 	}
 
-	// The token is now worth nothing, from the host itself.
-	probe := lend.ProbeAddr(addr)
-	req, err := http.NewRequest(http.MethodPost, "http://"+probe+"/v1/messages", http.NoBody)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("X-Api-Key", token)
-	res, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusUnauthorized {
-		t.Errorf("a destroyed sandbox's token = HTTP %d, want 401", res.StatusCode)
+	// The token is now worth nothing, asked of the lender that minted it.
+	//
+	// Destroy stops a lender with nothing left to lend, so this may find no
+	// container at all — which is the same claim, arrived at sooner: a token
+	// whose lender is gone buys nothing either.
+	if lenderIsUp(t, r) {
+		if code := askTheLender(t, r, token); code != "401" {
+			t.Errorf("a destroyed sandbox's token = HTTP %s, want 401", code)
+		}
 	}
 }
 
@@ -400,14 +409,14 @@ func TestCLILendFirecrackerLive(t *testing.T) {
 		t.Skip("firecracker artifacts not built (run: cs-sandbox build --engine firecracker)")
 	}
 	fcInstancesDir(t, host)
-	home := lendingHost(t)
+	lendingHost(t, host)
 	upstream, seen := standInProvider(t)
-	startLender(t, home, upstream)
 
 	name := boxName("lendfc")
-	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
+	t.Cleanup(func() { _, _ = destroyBox(t, name) })
 	step(t, "booting firecracker microVM %s (takes ~30s)…", name)
-	if out, err := execRoot(t, "create", name, "--engine", "firecracker", "--lend-api-key", "anthropic"); err != nil {
+	if out, err := execRoot(t, append([]string{"create", name, "--engine", "firecracker", "--lend-api-key", "anthropic"},
+		lendUpstream(upstream)...)...); err != nil {
 		t.Fatalf("create firecracker: %v (out=%q)", err, out)
 	}
 	body := sshCapture(t, host, name,

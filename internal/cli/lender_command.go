@@ -27,6 +27,7 @@ import (
 // something that stays in the foreground and can be stopped by a signal.
 func newLenderCmd(app *App) *cobra.Command {
 	var addr string
+	var callers string
 	var origins []string
 	cmd := &cobra.Command{
 		Use:   "lender",
@@ -37,11 +38,19 @@ func newLenderCmd(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runLender(cmd, app, addr, o)
+			c, err := lend.ParseCallers(callers)
+			if err != nil {
+				return err
+			}
+			return runLender(cmd, app, addr, c, o)
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", envOr("CS_SANDBOX_LEND_ADDR", lend.DefaultBind),
-		"listen address; must not be loopback, because a sandbox reaches the host on its ordinary side")
+		"listen address; must not be loopback, because a caller arrives on the ordinary side of "+
+			"wherever this runs, be that the host or a container on a group's network")
+	cmd.Flags().StringVar(&callers, "callers", "host",
+		"which peers to answer: host (this machine's own addresses, for a lender run on the host) "+
+			"or network (the subnets this lender is attached to, for one on a group's own network)")
 	cmd.Flags().StringArrayVar(&origins, "origin", nil,
 		"send one slot's traffic somewhere else: SLOT=URL, for a gateway or a recorder in front of the provider (repeatable)")
 	return cmd
@@ -70,7 +79,7 @@ func parseOrigins(args []string) (map[string]string, error) {
 	return out, nil
 }
 
-func runLender(cmd *cobra.Command, app *App, addr string, origins map[string]string) error {
+func runLender(cmd *cobra.Command, app *App, addr string, callers lend.Callers, origins map[string]string) error {
 	level := slog.LevelInfo
 	if app.Verbose {
 		level = slog.LevelDebug
@@ -78,12 +87,12 @@ func runLender(cmd *cobra.Command, app *App, addr string, origins map[string]str
 	log := slog.New(slog.NewTextHandler(app.stderr(), &slog.HandlerOptions{Level: level}))
 
 	srv := lend.New(lend.Config{
-		Home:      paths.AgentLoginHome(app.Host.Home),
-		KeysDir:   lend.KeysDir(paths.AgentLoginHome(app.Host.Home)),
-		Loans:     lend.NewFileLoans(app.InstDir),
-		Log:       log,
-		LocalOnly: true,
-		Origins:   origins,
+		Home:    paths.AgentLoginHome(app.Host.Home),
+		KeysDir: lend.KeysDir(paths.AgentLoginHome(app.Host.Home)),
+		Loans:   lend.NewFileLoans(app.InstDir),
+		Log:     log,
+		Callers: callers,
+		Origins: origins,
 	})
 
 	// The listener opens before anything is reported, so a port already in use
@@ -97,8 +106,12 @@ func runLender(cmd *cobra.Command, app *App, addr string, origins map[string]str
 
 	if host, _, err := net.SplitHostPort(l.Addr().String()); err == nil {
 		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			where := "this host's ordinary side"
+			if callers == lend.CallersNetwork {
+				where = "this container's address on the group's network"
+			}
 			fmt.Fprintf(app.stderr(),
-				"cs-sandbox: warning: %s is loopback, and a sandbox cannot reach it — it arrives on this host's ordinary side\n", addr)
+				"cs-sandbox: warning: %s is loopback, and a sandbox cannot reach it — it arrives on %s\n", addr, where)
 		}
 	}
 	log.Info("lending", slog.String("listen", l.Addr().String()),

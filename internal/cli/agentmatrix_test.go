@@ -22,7 +22,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -31,20 +30,18 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/lend"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/run"
+	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
 // pong is what every case asks the model for. One word, so the assertion is
@@ -201,6 +198,7 @@ func matrixEngine() string {
 func matrixSetup(t *testing.T) (*run.Exec, hostenv.Host) {
 	t.Helper()
 	r, host := liveSetup(t)
+	matrixGroup(t)
 	if matrixEngine() != "firecracker" {
 		return r, host
 	}
@@ -213,6 +211,44 @@ func matrixSetup(t *testing.T) (*run.Exec, hostenv.Host) {
 	}
 	fcInstancesDir(t, host)
 	return r, host
+}
+
+// matrixGroup puts this run in a group of its own, and takes it away after.
+//
+// The group is the isolation, and everything else in this tier follows from it:
+// a group is one podman network, the recorder and the lender are containers ON
+// that network, and the cells are the only sandboxes attached to it. Two runs
+// on one machine — two CI jobs, two developers, a developer beside a runner —
+// therefore cannot see each other's recorder, cannot collide on its name, and
+// cannot answer each other's health checks. None of that was true while the
+// recorder was a process on the host's port 8080.
+//
+// A caller may name the group instead — CI does, so that several jobs on one
+// machine each get their own, and a person debugging one cell can point a run at
+// a group they can inspect afterwards. A named group is still CREATED here and
+// is never removed here: taking away something this run did not make is how a
+// debugging session loses its evidence, or one CI job takes another's network.
+func matrixGroup(t *testing.T) {
+	t.Helper()
+	g, named := os.LookupEnv("CS_SANDBOX_GROUP")
+	if !named || g == "" {
+		g = "vcr" + runID
+		t.Setenv("CS_SANDBOX_GROUP", g)
+		// Registered before the recorder's own cleanup, so it runs after it:
+		// the network cannot go while a container is still on it.
+		t.Cleanup(func() {
+			if out, err := execRoot(t, "group", "rm", g, "-f"); err != nil {
+				t.Logf("could not remove the run's group %s: %v (%s)", g, err, strings.TrimSpace(out))
+			}
+		})
+	}
+	// The network has to exist before anything can join it, and the recorder
+	// joins it before the first cell is created. `create` would have made it —
+	// but the recorder comes first, which is the whole point of it: a cell is
+	// pointed at the recorder as it is built.
+	if out, err := execRoot(t, "group", "create", g); err != nil {
+		t.Fatalf("create the run's group %s: %v (%s)", g, err, strings.TrimSpace(out))
+	}
 }
 
 // runInBox runs one command inside a cell's sandbox, by the route its engine
@@ -452,11 +488,10 @@ func (c liveCase) baseEnv(t *testing.T) string {
 
 // upstream is the cs-vcr endpoint this case's model calls are addressed to.
 //
-// vcrHost differs by mode because the DIALLER differs. A shared sandbox dials
-// the recorder itself, so it needs the name a guest reaches this host under. A
-// lent one is dialled for, by the lender, which runs on the host — so it needs
-// a loopback address, and `host.containers.internal` would not resolve there at
-// all.
+// vcrHost is the same for both modes now, and that is the change: the recorder
+// is on the run's network, the lender is a container on the same network, and
+// neither route goes through the host. It used to differ because the lender ran
+// on the host, where the recorder was a loopback address.
 //
 // Both arrive at cs-vcr on the same path, which is what lets the two halves of
 // a pairing be compared: /c/<provider>/<case>/v1/… either way, put together by
@@ -480,9 +515,9 @@ func (c liveCase) upstream(vcrHost string) string {
 func (c liveCase) proxyEnv(t *testing.T) []string {
 	t.Helper()
 	if c.lent {
-		return []string{"--env", c.baseEnv(t) + "=" + c.upstream(vcrLoopback)}
+		return []string{"--env", c.baseEnv(t) + "=" + c.upstream(vcrGuest)}
 	}
-	guest := engine.HostReachableName + ":" + vcrPort
+	guest := vcrGuest
 	env := []string{"--env", c.baseEnv(t) + "=" + c.upstream(guest)}
 	// The half of an agent's traffic a base URL does not govern. Claude Code
 	// checks its session against api.anthropic.com and Codex reaches
@@ -501,7 +536,7 @@ func (c liveCase) proxyEnv(t *testing.T) []string {
 		env = append(env, "--env", k+"=http://"+guest)
 	}
 	for _, k := range []string{"NO_PROXY", "no_proxy"} {
-		env = append(env, "--env", k+"="+engine.HostReachableName+",127.0.0.1,localhost")
+		env = append(env, "--env", k+"="+vcrName+",127.0.0.1,localhost")
 	}
 	return env
 }
@@ -697,10 +732,10 @@ func startLiveLender(t *testing.T, home string) {
 		t.Fatal(err)
 	}
 	srv := &http.Server{Handler: lend.New(lend.Config{
-		Home:      home,
-		KeysDir:   lend.KeysDir(home),
-		Loans:     lend.NewFileLoans(paths.Instances()),
-		LocalOnly: true,
+		Home:    home,
+		KeysDir: lend.KeysDir(home),
+		Loans:   lend.NewFileLoans(paths.Instances()),
+		Callers: lend.CallersHost,
 	})}
 	go func() { _ = srv.Serve(l) }()
 	t.Cleanup(func() { _ = srv.Close() })
@@ -716,8 +751,8 @@ func startLiveLender(t *testing.T, home string) {
 func runAgentCase(t *testing.T, r *run.Exec, host hostenv.Host, c liveCase, proxied bool) string {
 	t.Helper()
 	name := c.sandbox()
-	_, _ = execRoot(t, "destroy", name, "-f")
-	t.Cleanup(func() { _, _ = execRoot(t, "destroy", name, "-f") })
+	_, _ = destroyBox(t, name)
+	t.Cleanup(func() { _, _ = destroyBox(t, name) })
 
 	// --yolo, because every case here drives the agent's INTERACTIVE client and
 	// an interactive agent that has to ask permission never finishes a turn.
@@ -776,7 +811,7 @@ func reachedRecorder(t *testing.T, r *run.Exec, host hostenv.Host, c liveCase, n
 	t.Helper()
 	base := "$" + c.baseEnv(t)
 	probe := `echo "base: ` + base + `"; ` +
-		`getent ahosts ` + engine.HostReachableName + ` || echo "(does not resolve)"; ` +
+		`getent ahosts ` + vcrName + ` || echo "(does not resolve)"; ` +
 		`curl -s -o /dev/null -w 'healthz: HTTP %{http_code} in %{time_total}s\n' --max-time 10 ` +
 		`"` + base + `/healthz"; echo "curl exit $?"; ` +
 		`ip route 2>&1 | head -5`
@@ -784,154 +819,110 @@ func reachedRecorder(t *testing.T, r *run.Exec, host hostenv.Host, c liveCase, n
 	defer cancel()
 	seen := runInBox(ctx, t, r, host, name, probe)
 	return "what the guest sees of the recorder:\n" + seen.Answer + seen.Diag +
-		"\nwhat the host offers it:\n" + hostSideOfTheHop(ctx, r)
+		"\nwhat the recorder offers it:\n" + recorderSideOfTheHop(ctx, r, vcrBoxName())
 }
 
-// hostSideOfTheHop is the other end of the probe above: what this host was
-// actually offering while the guest could not reach it.
+// recorderSideOfTheHop is the other end of the probe above: what the recorder
+// was actually offering while the guest could not reach it.
 //
 // Both halves are needed and neither substitutes for the other. "connection
 // refused" from inside the guest means one thing if the recorder is listening
-// on 0.0.0.0:8080 and quite another if it is not listening at all, and a guest
-// that times out looks the same whether the packets were dropped on the way out
-// or on the way in. This is also the half that moves when a hosted runner's
-// image changes underneath us, which is the difference a local run cannot show.
+// and quite another if it is not listening at all, and a guest that times out
+// looks the same whether the packets were dropped on the way out or on the way
+// in.
 //
-// The listener is the part to trust here. A microVM's fabric is built inside a
-// ROOTLESS NETWORK NAMESPACE, so the tap and its routes belong to that
-// namespace and not to this process -- the address and route probes below come
-// back empty for firecracker, and empty means "not visible from here" rather
-// than "not there". They are kept because they are not empty for podman, and
-// because a reader who does not know that would otherwise go looking for a
-// dedicated probe that does not exist.
-func hostSideOfTheHop(ctx context.Context, r *run.Exec) string {
+// One hop to describe, where there used to be two. While the recorder was a
+// host process the guest reached it through the rootless namespace's NAT, and a
+// microVM took a different pasta to get there than a container did — which is
+// how a CI leg came to pass every container cell and time out every microVM
+// one. Recorder and sandbox are on the same bridge now, so the question is
+// simply whether the recorder is up and whether its network answers.
+func recorderSideOfTheHop(ctx context.Context, r *run.Exec, box string) string {
 	var b strings.Builder
 	for _, probe := range [][]string{
-		{"ss", "-lntp"},
-		{"ip", "-brief", "address"},
-		{"ip", "route"},
+		{"podman", "exec", box, "ss", "-lntp"},
+		{"podman", "exec", box, "ip", "-brief", "address"},
+		{"podman", "inspect", box, "--format", "{{.State.Status}} on {{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{$v.IPAddress}}{{end}}"},
 	} {
 		res, err := r.Run(ctx, run.Opts{ReadOnly: true}, probe...)
 		out := strings.TrimSpace(res.Stdout + res.Stderr)
 		if err != nil && out == "" {
 			out = err.Error()
 		}
-		// Only the lines about this hop. `ss -lntp` on a runner is pages of
-		// unrelated listeners, and a wall of them is how a probe stops being
-		// read at all.
-		var kept []string
-		for line := range strings.SplitSeq(out, "\n") {
-			if strings.Contains(line, vcrPort) || strings.Contains(line, "169.254") ||
-				strings.Contains(line, "cs-") || strings.HasPrefix(line, "default") {
-				kept = append(kept, strings.TrimSpace(line))
-			}
+		if out == "" {
+			out = "(no answer)"
 		}
-		if len(kept) == 0 {
-			kept = []string{"(nothing matching this hop)"}
-		}
-		fmt.Fprintf(&b, "  $ %s\n    %s\n", strings.Join(probe, " "), strings.Join(kept, "\n    "))
+		fmt.Fprintf(&b, "  $ %s\n    %s\n", strings.Join(probe[2:], " "), strings.ReplaceAll(out, "\n", "\n    "))
 	}
-	b.WriteString(fromTheRootlessNetns(ctx, r))
 	return b.String()
 }
 
-// fromTheRootlessNetns asks the namespace a microVM's tap actually lives in
-// whether it can reach the host, and says which pasta answered.
+// Where the recorder listens, and what reaches it.
 //
-// This is the hop, reduced to its smallest form. A firecracker sandbox runs
-// under `podman unshare --rootless-netns`, so its guest reaches the host at
-// 169.254.1.2 through the pasta podman started FOR THAT NAMESPACE -- not the
-// per-container pasta a podman sandbox gets. The two are different invocations
-// of the same program, which is how the container cells can pass on a host
-// where every microVM cell times out.
+// The port is fixed and can stay fixed, because it is not a host port any more:
+// the recorder is a container on the run's own network, so 8080 there collides
+// with nothing on the machine — not another run's recorder, not another user's,
+// not whatever the developer already has on 8080. What a sandbox is given is
+// the NAME, which resolves on that network and nowhere else.
 //
-// Asked here rather than in a workflow step, and the timing is the point: the
-// namespace exists only while something is using the network, and the recorder
-// is listening only while the tier runs. A probe before the tests would create
-// a fresh namespace, find it healthy, and prove nothing about the one that
-// failed.
-//
-// No microVM, no agent and no cassette in the way -- so an answer here is about
-// the network alone.
-func fromTheRootlessNetns(ctx context.Context, r *run.Exec) string {
-	script := `ip -brief address 2>&1 | head -4; ip route 2>&1 | head -3; ` +
-		`curl -s -o /dev/null -w 'host at ` + engine.HostReachableIP + `:` + vcrPort +
-		` -> HTTP %{http_code} in %{time_total}s
-' --max-time 5 ` +
-		`http://` + engine.HostReachableIP + `:` + vcrPort + `/; echo "curl exit $?"`
-	res, _ := r.Run(ctx, run.Opts{ReadOnly: true},
-		"podman", "unshare", "--rootless-netns", "sh", "-c", script)
-	out := strings.TrimSpace(res.Stdout + res.Stderr)
-	if out == "" {
-		out = "(no answer)"
-	}
-	ver, _ := r.Run(ctx, run.Opts{ReadOnly: true}, "pasta", "--version")
-	return "  from inside the rootless netns (where a microVM's tap lives):\n    " +
-		strings.ReplaceAll(out, "\n", "\n    ") +
-		"\n  pasta: " + strings.TrimSpace(strings.SplitN(ver.Stdout+ver.Stderr, "\n", 2)[0]) + "\n"
-}
-
-// Where the recorder listens. Fixed rather than drawn from the ephemeral range:
-// the port is written into the sandbox's environment and into the lender's
-// upstream, and a value that moves between a recording and its replay is one
-// more thing to have to prove does not reach the wire.
+// The admin port stays on the container's own loopback, deliberately. It is the
+// control plane, and putting it on the network would let a sandbox drive the
+// recorder. Nothing but `podman exec` can reach it.
 const (
+	vcrName     = "cs-vcr"
 	vcrPort     = "8080"
 	vcrListen   = "0.0.0.0:" + vcrPort
 	vcrAdmin    = "127.0.0.1:8081"
-	vcrLoopback = "127.0.0.1:" + vcrPort
+	vcrGuest    = vcrName + ":" + vcrPort
+	vcrInternal = "127.0.0.1:" + vcrPort
 )
-
-// syncBuffer collects cs-vcr's output so it can be read WHILE it runs.
-//
-// os/exec copies a child's output on a goroutine of its own, so a plain
-// bytes.Buffer is only safe to read once Wait has returned. The recording tier
-// has to look at the log after each case, while the recorder is still serving
-// the next one.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
 
 // vcrProxy is one running cs-vcr, and the knowledge of how to stop it and read
 // what it did.
 type vcrProxy struct {
-	cmd  *exec.Cmd
-	out  *syncBuffer
+	r    *run.Exec
+	name string
 	mode string
 	// diag outlives the run: the whole log, and in replay the requests that
 	// could not be served. `cs-vcr calibrate` reads a directory of those and
 	// proposes the rules that would have matched, which is the documented way
 	// to make a real agent run replayable.
-	diag string
-	done bool
+	diag  string
+	final string // the log, kept at stop, because the container is removed then
+	done  bool
 }
 
-// startVCR runs cs-vcr on the host in record or replay mode, serving cassettes
-// from store, and returns once it is answering.
+// vcrBoxName is the recorder container for this run's network. Named after the
+// network the way the keepalive and the lender are, because that is its
+// lifetime and its scope.
+func vcrBoxName() string { return state.NetworkName(testGroup()) + "-vcr" }
+
+// startVCR runs cs-vcr in record or replay mode, serving cassettes from store,
+// and returns once it is answering.
 //
-// A host process rather than a container. A sandbox already reaches this host
-// by name (SPEC R52a), which is the same route the lender takes, so there is no
-// network to join, no image to stage and no alias to allocate. Everything a
-// container would buy here — isolation between concurrent runs — a serial tier
-// does not need.
+// A CONTAINER on this run's network, where it used to be a host process on a
+// fixed 8080. The port was the problem: one machine has one 8080, so a second
+// run — another user's, another CI job's, or a developer's own — could not
+// start a recorder at all. Worse than the collision was what followed it: the
+// harness health-checked the PORT rather than its own child, so the second run
+// adopted the first one's recorder and replayed its cassettes, or recorded its
+// prompts into the other's store.
+//
+// On the network, none of that can happen. The port is namespace-local, the
+// name resolves on this bridge and nowhere else, and a run in another group has
+// no interface to reach it on. What the guest is given is a name rather than a
+// host address, which also makes the two engines one case: a microVM and a
+// container reach a bridge neighbour the same way, where they reached the host
+// by different routes.
 func startVCR(t *testing.T, mode, store string) *vcrProxy {
 	t.Helper()
-	bin, err := exec.LookPath("cs-vcr")
-	if err != nil {
-		t.Skipf("cs-vcr is not on PATH: run `make tools`, which builds it at the go.mod pin (%v)", err)
+	bin := os.Getenv("CS_VCR_BIN")
+	if bin == "" {
+		t.Skip("set CS_VCR_BIN to a Linux cs-vcr for the image's architecture: " +
+			"`make container-bins` builds one, and the tiers that need it set the variable")
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Skipf("CS_VCR_BIN=%s: %v", bin, err)
 	}
 	if err := os.MkdirAll(store, 0o750); err != nil {
 		t.Fatal(err)
@@ -947,43 +938,93 @@ func startVCR(t *testing.T, mode, store string) *vcrProxy {
 		t.Fatal(err)
 	}
 
-	args := []string{mode, "--config", writeVCRConfig(t), "--cassettes", store,
-		"--listen", vcrListen, "--admin", vcrAdmin}
-	if mode == "replay" {
-		args = append(args, "--dump-misses", diag)
+	p := &vcrProxy{r: &run.Exec{}, name: vcrBoxName(), mode: mode, diag: diag}
+	ctx := context.Background()
+	_, _ = p.r.Run(ctx, run.Opts{}, "podman", "rm", "-f", p.name)
+
+	// The cassettes are read-only in replay and written in record, and that is
+	// the one difference between the two invocations here.
+	mount := ":ro"
+	if mode == "record" {
+		mount = ""
 	}
-	p := &vcrProxy{cmd: exec.Command(bin, args...), out: &syncBuffer{}, mode: mode, diag: diag}
-	p.cmd.Stdout, p.cmd.Stderr = p.out, p.out
-	if err := p.cmd.Start(); err != nil {
-		t.Fatalf("start cs-vcr %s: %v", mode, err)
+	argv := []string{"podman", "run", "-d",
+		"--name", p.name,
+		"--hostname", vcrName,
+		"--network", state.NetworkName(testGroup()),
+		"--network-alias", vcrName,
+		"--label", "cs-sandbox.managed=1",
+		"--label", "cs-sandbox.vcr=1",
+		// The same reason the gateway and the lender use it: these are host
+		// directories owned by the invoking user, and SELinux denies the read
+		// without either this or a relabel of the repository.
+		"--security-opt", "label=disable",
+		"-v", bin + ":/usr/local/bin/cs-vcr-host:ro",
+		"-v", store + ":" + store + mount,
+		"-v", diag + ":" + diag,
+	}
+	cfg := writeVCRConfig(t, diag)
+	argv = append(argv, "-v", cfg+":"+cfg+":ro", "--entrypoint", "/usr/local/bin/cs-vcr-host", image(t),
+		mode, "--config", cfg, "--cassettes", store, "--listen", vcrListen, "--admin", vcrAdmin)
+	if mode == "replay" {
+		argv = append(argv, "--dump-misses", diag)
+	}
+	if res, err := p.r.Run(ctx, run.Opts{}, argv...); err != nil {
+		t.Fatalf("start cs-vcr %s: %v\n%s", mode, err, strings.TrimSpace(res.Stderr))
 	}
 	t.Cleanup(func() { p.stop(t) })
 	waitForVCR(t, p)
-	t.Logf("cs-vcr %s on %s, cassettes in %s", mode, vcrListen, store)
+	t.Logf("cs-vcr %s as %s on %s, cassettes in %s", mode, vcrName, state.NetworkName(testGroup()), store)
 	return p
 }
 
-// waitForVCR blocks until the admin port answers, so no sandbox is created
-// against a recorder that is not up yet.
+// log is everything the recorder has printed so far.
+//
+// Read from the container rather than from a pipe, which is what lets the
+// recording tier look at it after each case while the recorder is still serving
+// the next one. Once stopped the container is gone, so the last read is kept.
+func (p *vcrProxy) log() string {
+	if p.final != "" {
+		return p.final
+	}
+	return p.readLog()
+}
+
+// readLog takes BOTH of the container's streams. `podman logs` keeps them
+// apart, and cs-vcr uses both: the session banner — including the promise the
+// replay tier asserts on — is logging output on stderr, while the shutdown
+// accounting is printed on stdout. Reading one of them finds half a session and
+// fails an assertion about the other half.
+func (p *vcrProxy) readLog() string {
+	res, _ := p.r.Run(context.Background(), run.Opts{ReadOnly: true}, "podman", "logs", p.name)
+	return res.Stderr + res.Stdout
+}
+
+// waitForVCR blocks until the recorder answers its own admin endpoint, so no
+// sandbox is created against a recorder that is not up yet.
+//
+// Asked from INSIDE the container, because the admin plane is on the
+// container's loopback and nothing else can reach it. That is also what makes
+// this answer about THIS recorder: the old check dialled a host port and would
+// happily accept somebody else's recorder answering on it.
 func waitForVCR(t *testing.T, p *vcrProxy) {
 	t.Helper()
-	client := &http.Client{Timeout: time.Second}
+	ctx := context.Background()
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		res, err := client.Get("http://" + vcrAdmin + "/healthz")
-		if err == nil {
-			res.Body.Close()
-			if res.StatusCode == http.StatusOK {
-				return
-			}
+		if _, err := p.r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "exec", p.name,
+			"curl", "-fsS", "-o", "/dev/null", "-m", "2", "http://"+vcrAdmin+"/healthz"); err == nil {
+			return
 		}
-		if p.cmd.ProcessState != nil {
+		out := run.Output(ctx, p.r, "podman", "container", "inspect", p.name, "--format", "{{.State.Running}}")
+		if strings.TrimSpace(out) != "true" {
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	log := p.log()
 	p.stop(t)
-	t.Fatalf("cs-vcr %s never answered on %s. Port %s in use?\n%s", p.mode, vcrAdmin, vcrPort, p.out.String())
+	t.Fatalf("cs-vcr %s never answered on %s inside %s\n%s", p.mode, vcrAdmin, p.name, log)
 }
 
 // stop interrupts cs-vcr and returns everything it printed.
@@ -996,11 +1037,25 @@ func (p *vcrProxy) stop(t *testing.T) string {
 	t.Helper()
 	if !p.done {
 		p.done = true
-		if p.cmd.Process != nil {
-			_ = p.cmd.Process.Signal(os.Interrupt)
+		ctx := context.Background()
+		// SIGINT, then wait for the process to write its summary before the
+		// log is read and the container goes.
+		//
+		// The wait is BOUNDED. `podman wait` has no deadline of its own, so a
+		// recorder that did not take the signal would hold the tier until go
+		// test's own timeout — a wedge whose message is about the whole package
+		// rather than about the recorder. Past the bound the log is read anyway
+		// and `rm -f` ends it, which costs the accounting and keeps everything
+		// else.
+		_, _ = p.r.Run(ctx, run.Opts{}, "podman", "kill", "--signal", "INT", p.name)
+		wctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if _, err := p.r.Run(wctx, run.Opts{}, "podman", "wait", "--condition", "exited", p.name); err != nil {
+			t.Logf("cs-vcr %s did not exit within 30s of SIGINT; reading what it wrote and removing it", p.mode)
 		}
-		_ = p.cmd.Wait() // exit 4 on a miss, which the summary explains
-		if err := os.WriteFile(filepath.Join(p.diag, "cs-vcr.log"), []byte(p.out.String()), 0o600); err == nil {
+		cancel()
+		p.final = p.readLog()
+		_, _ = p.r.Run(ctx, run.Opts{}, "podman", "rm", "-f", p.name)
+		if err := os.WriteFile(filepath.Join(p.diag, "cs-vcr.log"), []byte(p.final), 0o600); err == nil {
 			t.Logf("cs-vcr %s log: %s", p.mode, filepath.Join(p.diag, "cs-vcr.log"))
 		}
 		if dumped, err := filepath.Glob(filepath.Join(p.diag, "[0-9]*.json")); err == nil && len(dumped) > 0 {
@@ -1008,7 +1063,7 @@ func (p *vcrProxy) stop(t *testing.T) string {
 				len(dumped), p.diag, p.diag)
 		}
 	}
-	return p.out.String()
+	return p.final
 }
 
 // recordedTruncated reports whether cs-vcr had to record a response the client
@@ -1034,7 +1089,7 @@ func (p *vcrProxy) stop(t *testing.T) string {
 func recordedTruncated(t *testing.T, p *vcrProxy, cassette string) bool {
 	t.Helper()
 	const interrupted = "recording an interrupted response"
-	for line := range strings.SplitSeq(p.out.String(), "\n") {
+	for line := range strings.SplitSeq(p.log(), "\n") {
 		if !strings.Contains(line, interrupted) || !strings.Contains(line, "cassette="+cassette) {
 			continue
 		}
@@ -1330,9 +1385,13 @@ func agentCLIVersions(t *testing.T, r *run.Exec, img string) map[string]string {
 //
 // It names no providers. The four cs-vcr ships are the four this matrix uses,
 // so saying them again would only be a second place for them to be wrong.
-func writeVCRConfig(t *testing.T) string {
+// dir rather than t.TempDir(): the recorder container mounts this file, and on
+// macOS a container can only mount what is under $HOME. The diagnostics
+// directory is inside the repository, which is somewhere a container can always
+// reach.
+func writeVCRConfig(t *testing.T, dir string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "cs-vcr.yaml")
+	path := filepath.Join(dir, "cs-vcr.yaml")
 	// The account this run has. A sandbox gives the guest the uid and the name
 	// of whoever launched it, so a cassette recorded here says /home/<whoever
 	// recorded it> in every request that mentions a path. Blanking it on both

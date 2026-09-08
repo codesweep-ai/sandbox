@@ -19,16 +19,20 @@ type Transport struct {
 	Host    hostenv.Host
 	TierDir string
 	Name    string
-	Port    int
+	// Route is how this host reaches the sandbox: a ProxyCommand, or a
+	// published port where one was asked for.
+	Route hostcfg.Route
 }
 
 func (t Transport) sshCmd() string {
-	return hostcfg.SSHCommandString(t.Host, t.TierDir, t.Name, t.Port)
+	return hostcfg.SSHCommandString(t.Host, t.TierDir, t.Name, t.Route)
 }
 
-// remote is <user>@127.0.0.1:<dir> — the sandbox-side checkout at ~/<dir>.
+// remote is <destination>:<dir> — the sandbox-side checkout at ~/<dir>. The
+// destination is the one SSHOptions was built for, so a proxied sandbox and a
+// published one are addressed the way each is reached.
 func (t Transport) remote(dir string) string {
-	return fmt.Sprintf("%s@127.0.0.1:%s", t.Host.User, dir)
+	return fmt.Sprintf("%s:%s", hostcfg.SSHDest(t.Host, t.Name, t.Route), dir)
 }
 
 // Fetch pulls the sandbox's new commits on branch <branch> into the host source
