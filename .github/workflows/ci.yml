@@ -1168,6 +1168,12 @@ jobs:
   # to avoid. What crosses between jobs on this machine instead is the podman
   # store itself, so producing the image IS the job.
   #
+  # It waits for nothing, exactly as the hosted build-artifacts does, so the two
+  # architectures build side by side rather than one behind the other. Gating it
+  # on build-test would cost one image build on the mini whenever the unit tier
+  # goes red. The cells that consume the image gate on build-test themselves, so
+  # none of them run in that case anyway.
+  #
   # A tag of its own, not the :ci the rest of the machine uses. The smoke job
   # `podman load`s the HOSTED x86_64 tar over :ci and then rebuilds arm64 over
   # it, so a cell running in the window between those two steps would boot an
@@ -1178,7 +1184,6 @@ jobs:
   # tag into one store concurrently, which is undefined.
   build-artifacts-macos:
     name: build-artifacts (macos-arm64 / self-hosted)
-    needs: [build-test]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 25
