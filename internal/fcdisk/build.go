@@ -25,6 +25,20 @@ import (
 // base-image major bump (e.g. 44 → 45), to that release's GA kernel-core NVR.
 const DefaultKVerPin = "6.19.10-300.fc44"
 
+// extractVmlinuxRef is the linux.git tag the kernel build takes
+// scripts/extract-vmlinux from — the script that unwraps a compressed vmlinuz
+// into the vmlinux.elf firecracker boots. It deliberately names DefaultKVerPin's
+// series, so the script and the image it decompresses come from one tree and
+// both move together on a Fedora bump rather than drifting apart.
+//
+// It is pinned rather than read from master because this script's stdout IS the
+// artifact. The file sat unchanged from 2019 to 2025 and then changed twice in
+// six weeks; one of those commits added a progress line that, had it gone to
+// stdout instead of stderr, would have prepended text to every extracted kernel
+// and still exited 0. Upstream tags are signed and never move, so naming one is
+// a real anchor — v6.19 through v7.2 and master are byte-identical today.
+const extractVmlinuxRef = "v6.19"
+
 // DefaultFCVersion is the firecracker release tag the host VMM binary is pinned
 // to when CS_SANDBOX_FC_VERSION is unset. The cached binary carries an
 // `fc-version` stamp, so bumping this pin re-downloads it on the next build —
@@ -493,7 +507,7 @@ dnf install -y --setopt=install_weak_deps=False "$FC_SPEC" gcc glibc-static cpio
   || { echo "fc: dnf could not install $FC_SPEC (pinned kernel no longer in the Fedora repos? bump CS_SANDBOX_FC_KVER)" >&2; exit 1; }
 KVER=$(ls -1 /lib/modules | head -1)
 VMZ=/lib/modules/$KVER/vmlinuz; [ -f "$VMZ" ] || VMZ=/boot/vmlinuz-$KVER
-curl -fsSL https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-vmlinux -o /tmp/ev; chmod +x /tmp/ev
+curl -fsSL https://raw.githubusercontent.com/torvalds/linux/` + extractVmlinuxRef + `/scripts/extract-vmlinux -o /tmp/ev; chmod +x /tmp/ev
 mkdir -p /artifacts
 /tmp/ev "$VMZ" > /artifacts/vmlinux.elf
 ` + initramfsBuildScript + `
