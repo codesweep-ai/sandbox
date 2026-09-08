@@ -31,6 +31,13 @@ const DefaultKVerPin = "6.19.10-300.fc44"
 // series, so the script and the image it decompresses come from one tree and
 // both move together on a Fedora bump rather than drifting apart.
 //
+// The fetch retries, and says so when it gives up. A 429 from
+// raw.githubusercontent is the failure this build actually hits: it rate-limits
+// unauthenticated requests from shared CI egress, and one such request is all
+// that stands between a green run and a red one. Pinning made that visible
+// rather than causing it — the artifact cache is keyed on this package, so
+// changing the pin was simply the first thing in months to force a real rebuild.
+//
 // It is pinned rather than read from master because this script's stdout IS the
 // artifact. The file sat unchanged from 2019 to 2025 and then changed twice in
 // six weeks; one of those commits added a progress line that, had it gone to
@@ -507,7 +514,10 @@ dnf install -y --setopt=install_weak_deps=False "$FC_SPEC" gcc glibc-static cpio
   || { echo "fc: dnf could not install $FC_SPEC (pinned kernel no longer in the Fedora repos? bump CS_SANDBOX_FC_KVER)" >&2; exit 1; }
 KVER=$(ls -1 /lib/modules | head -1)
 VMZ=/lib/modules/$KVER/vmlinuz; [ -f "$VMZ" ] || VMZ=/boot/vmlinuz-$KVER
-curl -fsSL https://raw.githubusercontent.com/torvalds/linux/` + extractVmlinuxRef + `/scripts/extract-vmlinux -o /tmp/ev; chmod +x /tmp/ev
+curl -fsSL --retry 6 --retry-delay 2 --retry-max-time 180 --retry-all-errors \
+  https://raw.githubusercontent.com/torvalds/linux/` + extractVmlinuxRef + `/scripts/extract-vmlinux -o /tmp/ev \
+  || { echo "fc: could not fetch extract-vmlinux at ` + extractVmlinuxRef + ` — raw.githubusercontent rate-limits shared CI egress (HTTP 429), and this is the one build input fetched from it" >&2; exit 1; }
+chmod +x /tmp/ev
 mkdir -p /artifacts
 /tmp/ev "$VMZ" > /artifacts/vmlinux.elf
 ` + initramfsBuildScript + `
