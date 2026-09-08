@@ -10,7 +10,7 @@
   "stint": "2026-09-07 microVM host reachability",
   "evidence": {
     "commits": [
-      "5ba6e65"
+      "bea6812"
     ],
     "integrated": [],
     "verified": "go test ./... -count=1: PASS. With the hop broken, `cs-sandbox create --engine firecracker` refuses after the fabric comes up and names the requirement; the previous behaviour was a boot, and then a timeout inside the guest. `cs-sandbox build --engine firecracker` does not ask, because building a kernel and a rootfs reaches no network. A create from a cold host boots in about four seconds. In CI on ubuntu-26.04 all fourteen firecracker cells of the agent matrix replayed, each serving its cassette."

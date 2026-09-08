@@ -10,7 +10,7 @@
   "stint": "2026-09-07 microVM host reachability",
   "evidence": {
     "commits": [
-      "4ee94f8"
+      "bea6812"
     ],
     "integrated": [],
     "verified": "make test-smoke SMOKE_AGENTS=0 SMOKE_TESTS=TestFirecrackerCreateLive: the test now RUNS and passes in 24.97s, where it reported SKIP in 0.00s on the same host and the same artifacts."
