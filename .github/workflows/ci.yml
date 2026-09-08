@@ -1160,6 +1160,56 @@ jobs:
           echo "--- groups left by a test that did not finish, for the sweep ---"
           podman network ls --filter name=cs-sandbox-csgocli --format '{{.Name}}' || true
 
+  # The arm64 CI image, built on the machine that runs it.
+  #
+  # The hosted leg ships its image between jobs as an artifact tar. That cannot
+  # work here and should not: the tar is x86_64, and loading it would have these
+  # cells running emulated guests — which is the one thing an arm64 leg exists
+  # to avoid. What crosses between jobs on this machine instead is the podman
+  # store itself, so producing the image IS the job.
+  #
+  # A tag of its own, not the :ci the rest of the machine uses. The smoke job
+  # `podman load`s the HOSTED x86_64 tar over :ci and then rebuilds arm64 over
+  # it, so a cell running in the window between those two steps would boot an
+  # emulated guest and blame the agent. A separate tag removes the window rather
+  # than trying to time it.
+  #
+  # Still one writer at a time, because two RUNS would otherwise build the same
+  # tag into one store concurrently, which is undefined.
+  build-artifacts-macos:
+    name: build-artifacts (macos-arm64 / self-hosted)
+    needs: [build-test]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 25
+    concurrency:
+      group: macos-arm64-agents-image
+      cancel-in-progress: false
+    env:
+      CS_SANDBOX_IMAGE: localhost/sandbox-slim:ci-arm64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+
+      - name: ensure the podman machine is up
+        run: |
+          set -euo pipefail
+          if [ "$(podman machine inspect --format '{{.State}}' podman-machine-default)" != "running" ]; then
+            echo "machine was down; starting it"
+            podman machine start
+          fi
+
+      # CI_IMAGE on the command line, which beats the Makefile's default.
+      - name: build it
+        run: |
+          set -euo pipefail
+          make build-ci-image CI_IMAGE="$CS_SANDBOX_IMAGE"
+          podman image inspect --format 'built {{.Architecture}} {{index .RepoTags 0}}' "$CS_SANDBOX_IMAGE"
+
   # The same fourteen cells on arm64 macOS, one job per cell, on the Mac mini's
   # pool of self-hosted runners.
   #
@@ -1174,12 +1224,13 @@ jobs:
   # own arm64 image in the smoke job below, so these cells run arm64 agents on an
   # arm64 guest rather than x86_64 under emulation.
   #
-  # needs the smoke job for that image and nothing else. The cells do not build
-  # one — their tier depends on `tools`, not on setup-smoke — so they neither
-  # race on the tag nor pay three minutes each for it.
+  # It needs the same two things the hosted leg needs: the unit tier, and a job
+  # that produced the image. The cells do not build one themselves — their tier
+  # depends on `tools`, not on setup-smoke — so they neither race on the tag nor
+  # pay three minutes each for it.
   agents-podman-macos:
-    name: agents podman macos (${{ matrix.case }})
-    needs: [smoke-macos-arm64]
+    name: agents podman (macos-arm64 / ${{ matrix.case }})
+    needs: [build-test, build-artifacts-macos]
     # Skips cleanly for fork PRs, like every other job on this machine. The
     # repository's "require approval for all external contributors" setting is
     # what actually protects it.
@@ -1207,7 +1258,9 @@ jobs:
           - opencode-fireworks-lent
           - opencode-fireworks-shared
     env:
-      CS_SANDBOX_IMAGE: localhost/sandbox-slim:ci
+      # The arm64 image build-artifacts-macos made, not the :ci tag the smoke
+      # job loads an x86_64 tar over.
+      CS_SANDBOX_IMAGE: localhost/sandbox-slim:ci-arm64
       # This cell's own group, named after the cell so `podman network ls` on
       # the machine says which job owns what while four of them run.
       CS_SANDBOX_GROUP: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.case }}
@@ -1234,14 +1287,14 @@ jobs:
             podman machine start
           fi
 
-      # Built by the smoke job this one needs, and native to this machine. Named
-      # rather than assumed: without it the first thing to fail would be a cell,
-      # and it would look like the agent's fault.
-      - name: the image the smoke job built
+      # Built by build-artifacts-macos, and native to this machine. Named rather
+      # than assumed: without it the first thing to fail would be a cell, and it
+      # would look like the agent's fault.
+      - name: the image this machine built
         run: |
           set -euo pipefail
           podman image exists "$CS_SANDBOX_IMAGE" || {
-            echo "::error::$CS_SANDBOX_IMAGE is not on this machine — the smoke job builds it"
+            echo "::error::$CS_SANDBOX_IMAGE is not on this machine — build-artifacts-macos builds it"
             exit 1
           }
           podman image inspect --format 'image arch: {{.Architecture}}' "$CS_SANDBOX_IMAGE"
