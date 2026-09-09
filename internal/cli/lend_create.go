@@ -151,7 +151,7 @@ func (app *App) resolveLoans(ctx context.Context, f *createFlags, name, injected
 		plan.origins[s.ID] = u
 		plan.consumed = append(plan.consumed, s.BaseEnv)
 		plan.notes = append(plan.notes,
-			fmt.Sprintf("upstream: %s goes to %s (from %s, which the sandbox does not keep)", s.ID, u, s.BaseEnv))
+			fmt.Sprintf("upstream: %s goes to %s (from %s, replaced by the lender URL inside the sandbox)", s.ID, u, s.BaseEnv))
 		if moved != "" {
 			plan.notes = append(plan.notes, moved)
 		}
@@ -160,6 +160,35 @@ func (app *App) resolveLoans(ctx context.Context, f *createFlags, name, injected
 	guestBase, err := app.ensureLender(ctx, f.group)
 	if err != nil {
 		return nil, err
+	}
+	// The same question Available asked above, asked again in the only frame of
+	// reference that decides it.
+	//
+	// Available reads the credential from HERE, and here is the host. The lender
+	// reads it from inside a container that mounts the agent home and nothing
+	// else, so the two answers can differ — and when they do, nothing says so:
+	// the lender reports the missing file once per request, from a container log
+	// nobody opens, while the sandbox above it waits for a model turn that can
+	// never arrive. Measured: a campaign sat twelve minutes with no request
+	// reaching its recorder, and the only symptom was an agent that never
+	// answered.
+	//
+	// Here, because create is where the operator still is, where the remedy is
+	// one command, and where nothing has been provisioned that would have to be
+	// torn down.
+	if !app.dryRun() {
+		box := app.lenderBox(f.group)
+		for _, s := range lent {
+			src := s.Source(home, keysDir)
+			if err := box.canRead(ctx, src); err != nil {
+				return nil, fmt.Errorf(
+					"the lender cannot read the %s credential this create would lend: %s\n"+
+						"  it reads that path from inside a container, which mounts %s and nothing else, "+
+						"so a symlink pointing out of that tree does not resolve there\n"+
+						"  hold the file itself under that tree, or point CS_SANDBOX_AGENT_HOME at one that does",
+					s.ID, src, home)
+			}
+		}
 	}
 	for _, s := range lent {
 		g, err := s.MintGuest(name)

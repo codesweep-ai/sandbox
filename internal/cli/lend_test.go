@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -348,6 +349,50 @@ func TestALentSlotTakesTheBaseURLTheCallerNamed(t *testing.T) {
 	}
 	if notes := strings.Join(plan.notes, "\n"); !strings.Contains(notes, upstream) {
 		t.Errorf("create does not report where the traffic goes:\n%s", notes)
+	}
+}
+
+// A credential the HOST can read and the LENDER cannot is refused at create.
+//
+// The two are not the same question. Available answers it from here; the lender
+// answers it from inside a container that mounts the agent home and nothing
+// else, and a symlink out of that tree passes the first and fails the second.
+// Left to the lender, the disagreement is reported once per request into a
+// container log, while the sandbox waits for a model turn that never comes —
+// which is a hang, not an error.
+func TestACredentialTheLenderCannotReadIsRefusedAtCreate(t *testing.T) {
+	home := lendHome(t)
+	app := lendApp(t, home)
+	fake := app.Runner.(*run.Fake)
+	fake.OnStdout("container inspect", "true\n") // a lender is already up
+	fake.On("test -r", run.Result{}, errors.New("exit status 1"))
+
+	_, err := app.resolveLoans(context.Background(),
+		&createFlags{lendAPIKey: []string{"anthropic"}}, "box", "")
+	if err == nil {
+		t.Fatal("a credential the lender cannot read must not reach a sandbox")
+	}
+	// The message has to carry the path, and the reason the host disagrees with
+	// the container — which is the part nobody guesses.
+	for _, want := range []string{"anthropic", filepath.Join(home, ".cs-keys", "anthropic"), "inside a container", home} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not carry %q: %v", want, err)
+		}
+	}
+}
+
+// And the ordinary case still passes: a lender that can read it says nothing.
+func TestACredentialTheLenderCanReadIsNotRefused(t *testing.T) {
+	app := lendApp(t, lendHome(t))
+	fake := app.Runner.(*run.Fake)
+	fake.OnStdout("container inspect", "true\n")
+
+	if _, err := app.resolveLoans(context.Background(),
+		&createFlags{lendAPIKey: []string{"anthropic"}}, "box", ""); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !fake.Contains("-lender test -r") {
+		t.Errorf("the lender was never asked whether it can read it:\n%s", strings.Join(fake.Rendered(), "\n"))
 	}
 }
 

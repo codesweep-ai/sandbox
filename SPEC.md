@@ -755,6 +755,12 @@ output of any command.
 
 **R150.** The lender **MUST** read the host's credential per request, and **MUST NOT** refresh it.
 
+**R150a.** `create` **MUST** refuse a lent slot whose credential the lender cannot read, and **MUST** ask
+the lender rather than the host. *The lender reads from inside a container that mounts the agent home
+and nothing else, so a path this host resolves can be absent there. Left to the first request, the
+disagreement is reported per call into a container log nobody opens. The sandbox above it then waits
+for a turn that never comes, which reads as a hang rather than an error.*
+
 **R151.** A loan **MUST** be recorded in the instance directory at mode 600. It **MUST** stop being honoured
 when that directory is removed, and there **MUST** be no other revocation.
 

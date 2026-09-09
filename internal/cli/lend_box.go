@@ -115,6 +115,23 @@ func lenderBoxArgv(name string, s lenderBoxSpec) []string {
 		"lender", "--addr", lend.DefaultBind, "--callers", string(lend.CallersNetwork))
 }
 
+// canRead reports whether the running lender can read a path, asked from inside
+// the container rather than from here.
+//
+// The frame of reference is the whole point. The lender bind-mounts the agent
+// home and the instances root and nothing else, so a path the host resolves
+// perfectly well can be absent over there — a symlink pointing out of the
+// mounted tree is the case that costs the most, because it dangles inside the
+// container while every host-side check passes.
+//
+// `test -r` rather than a read: this asks whether the file is there and
+// readable, and must never move the credential itself (R149, R150).
+func (b lenderBox) canRead(ctx context.Context, path string) error {
+	_, err := b.Runner.Run(ctx, run.Opts{ReadOnly: true},
+		"podman", "exec", b.name(), "test", "-r", path)
+	return err
+}
+
 // ensure brings the lender up for this network and returns the base URL a
 // sandbox reaches it at.
 //
