@@ -1712,7 +1712,7 @@ func TestCLIAgentLoginInheritedFirecrackerLive(t *testing.T) {
 }
 
 // TestGatewayResolvesAMicroVMMemberLive: the gateway's whole purpose is reaching
-// members BY NAME through one published port. A group has two resolvers —
+// members BY NAME through one entrance. A group has two resolvers —
 // aardvark, which containers get by default and which knows container names, and
 // the fabric's dnsmasq, which serves microVM names — and a gateway given the
 // wrong one is reachable-but-nameless: `curl <ip>` works while `getent hosts

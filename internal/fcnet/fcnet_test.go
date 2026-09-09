@@ -264,7 +264,32 @@ func TestGatewayIsGivenTheFabricResolver(t *testing.T) {
 	}
 }
 
-// A keepalive with no published port is not a gateway — nobody jumps through it
+// A gateway takes no host port, and R49 says it must not be able to. The check
+// is on the argv rather than on a field, because the field is what was removed:
+// a `-p` creeping back in is how this requirement would be lost, and it would be
+// lost quietly — everything keeps working on the machine that added it, and the
+// second group on that machine is the one that fails.
+func TestGatewayPublishesNoHostPort(t *testing.T) {
+	f := run.NewFake()
+	f.OnStdout("network inspect", "10.89.0.1\n")
+	f.OnStdout("inspect cs-sandbox-g-keepalive", "false\n")
+	fab := Fabric{Runner: f, Network: "cs-sandbox-g", Image: "img",
+		GWSeed: "/seed", GWUser: "dev", GWHome: "/home/dev"}
+	_ = fab.keepaliveUp(context.Background())
+
+	for _, line := range f.Rendered() {
+		if !strings.Contains(line, "podman run -d --name cs-sandbox-g-keepalive") {
+			continue
+		}
+		if strings.Contains(line, " -p ") {
+			t.Errorf("the gateway published a host port:\n%s", line)
+		}
+		return
+	}
+	t.Fatalf("no gateway was created:\n%s", strings.Join(f.Rendered(), "\n"))
+}
+
+// A keepalive with no gateway seed is not a gateway — nobody jumps through it
 // — so it must not be churned for lacking a resolver it has no use for.
 func TestBridgePinningKeepaliveIsNotChurned(t *testing.T) {
 	f := run.NewFake()

@@ -7,8 +7,8 @@ import (
 )
 
 // DefaultPort is where a lender run BY HAND on the host listens. It sits above
-// the ranges R42 allocates from (2200-2399 sandboxes, 2400-2499 group
-// gateways), so a lender and a sandbox can never claim the same port.
+// the range R42 allocates from (2200-2399, sandboxes that asked to be
+// published), so a lender and a sandbox can never claim the same port.
 //
 // The lender `create` starts binds no host port at all: it runs on the group's
 // own network (SPEC R52b), where this number is namespace-local and collides

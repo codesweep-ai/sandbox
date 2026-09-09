@@ -254,8 +254,14 @@ DNS alias **MUST** stay bare, so members reach each other as plain `<name>`.
 **R35.** `group rm` **MUST** refuse while members exist, unless `-f` is given, in which case it **MUST** destroy
 them first.
 
+**R35a.** A group's tap prefix **MUST** be reserved under a host-wide lock, and the record reserving it
+**MUST** be written before the group's artifacts are built. *The pool is read to find what is free, so
+two creates that read it before either has written both take the same answer.*
+
 The tap prefix is allocated rather than derived from a hash because interface names are host-global.
-A hash collision would surface as a networking fault far from its cause.
+A hash collision would surface as a networking fault far from its cause. R35a is the same concern one
+step later: two groups holding one prefix derive one interface name, and the second tap brought up
+takes the first group's away.
 
 ### 5.2 Two layers of isolation
 
@@ -340,7 +346,7 @@ when a group's fabric is broken, and that is exactly when you need it.
 ### 6.2 The gateway
 
 **R49.** Each group **MUST** have a gateway, which is its keepalive container in a second role. It
-**MUST** be reachable from the host without a published port, and a published one **MUST** be opt-in.
+**MUST** be reachable from the host without a published port, and **MUST NOT** publish one at all.
 
 **R50.** The gateway **MUST** run against the fabric's own DNS, and `group create` **MUST** replace one that
 cannot resolve its members.

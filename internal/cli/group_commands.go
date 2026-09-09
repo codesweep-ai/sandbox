@@ -248,8 +248,10 @@ func (a *App) ensureGroupArtifacts(ctx context.Context, g *state.Group) error {
 // credential lender, a recorder — which are not members and have no alias of
 // their own on the host.
 //
-// Always, now. It used to be built only for a group that had a published port,
-// which made "is this a gateway" and "is it bound to the host" one decision.
+// Every group gets one. What makes this container a gateway rather than a bare
+// bridge pin is the seed below, which gives it an identity and the group's
+// authorized_keys; it was once the presence of a host port instead, which made
+// "is this a gateway" and "is it bound to the host" one decision.
 func (a *App) ensureGateway(ctx context.Context, g *state.Group) error {
 	seedDir := filepath.Join(state.GroupDir(a.InstDir, g.Name), ".gateway", "seed")
 	if err := os.MkdirAll(seedDir, 0o700); err != nil {
@@ -356,6 +358,3 @@ func (a *App) removeGroup(ctx context.Context, group string, force bool, out io.
 	fmt.Fprintf(out, "removed group %s\n", group)
 	return nil
 }
-
-// gatewayBind is where a group's gateway publishes its jump-host port.
-//

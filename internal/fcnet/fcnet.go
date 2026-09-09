@@ -163,12 +163,11 @@ func (f Fabric) keepaliveUp(ctx context.Context) error {
 		"--hostname", "gateway", "--network", f.Network, "--restart=always",
 		"--label", "cs-sandbox.managed=1", "--label", "cs-sandbox.keepalive=1"}
 	if f.GWSeed != "" {
-		// The gateway leg, which is no longer the same decision as publishing a
-		// port. The host reaches this container the way it reaches a sandbox —
-		// through the engine — and from inside it every member answers to its
-		// bare name over the group's own DNS. The image entrypoint already
-		// starts sshd, so the gateway needs only an identity and the group's
-		// authorized_keys.
+		// The gateway leg. The host reaches this container the way it reaches a
+		// sandbox, through the engine, and from inside it every member answers
+		// to its bare name over the group's own DNS. The image entrypoint
+		// already starts sshd, so the gateway needs only an identity and the
+		// group's authorized_keys.
 		//
 		// --dns is what makes that true. A group has two resolvers: aardvark,
 		// which containers get by default and which knows container names, and
