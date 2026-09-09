@@ -120,9 +120,16 @@ stop_background() {
         pid="$(cat "$pid_file" 2>/dev/null || true)"
         # Verify the PID still belongs to OUR runner before signalling anything: a stale
         # pid file plus OS pid reuse must not kill an unrelated process (or, via pkill -P,
-        # its children). The runner's cmdline is the per-session runner script path.
+        # its children). The runner's command line is the per-session runner script path.
+        #
+        # Asked of ps rather than of /proc, which macOS does not have at all. There the
+        # read failed, the guard could not be satisfied, and --kill therefore exited 0,
+        # removed the pid file and left the runner running — measured on 2026-09-09,
+        # with the campaign's restart ladder calling that a successful kill. -ww stops
+        # ps truncating the command to the terminal width, which would cut off the path
+        # this greps for.
         if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null \
-           && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$runner_file"; then
+           && ps -ww -o args= -p "$pid" 2>/dev/null | grep -qF -- "$runner_file"; then
             pkill -TERM -P "$pid" 2>/dev/null || true   # the ssh child
             kill -TERM "$pid" 2>/dev/null || true
             for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
@@ -222,8 +229,69 @@ REMOTE_CMD="$REMOTE_DRIVER --tmux $TOKEN --format $DRIVER_FMT --name \"$SESSION_
 [[ -n "$TURN_TIMEOUT" ]] && REMOTE_CMD="$REMOTE_CMD --timeout $TURN_TIMEOUT"
 
 LOCK_FILE="$LOCK_DIR/${SESSION_NAME}.lock"
+
+# The lock is a DIRECTORY, and mkdir is what makes it one: creating a directory
+# is atomic on every POSIX filesystem, so of two callers exactly one succeeds.
+# It used to be flock(1) on a file, which is util-linux and absent on macOS — a
+# host this project supports, and one whose sandboxes are driven from these very
+# scripts. There a turn never ran at all: flock was reported missing, the lock
+# read as unheld, and the caller was told its own session was busy.
+#
+# What flock gave for free was release-on-death: the kernel dropped the lock
+# when its holder died, however it died. A directory does not, so it records who
+# owns it. A waiter that finds that owner gone takes the lock rather than
+# spending the whole LOCK_WAIT on a process that no longer exists — better than
+# what it replaces, where a hard-killed turn blocked the next one for 900s.
+LOCK_HELD=false
+
+lock_acquire() {
+    local waited=0 owner
+    while ! mkdir "$LOCK_FILE" 2>/dev/null; do
+        owner="$(cat "$LOCK_FILE/owner" 2>/dev/null || true)"
+        # An absent owner is usually a lock a fraction of a second old: its
+        # holder makes the directory first and writes itself immediately after.
+        # Give that window a beat rather than reading it as abandoned.
+        if [[ -z "$owner" ]]; then
+            sleep 0.2
+            owner="$(cat "$LOCK_FILE/owner" 2>/dev/null || true)"
+        fi
+        if [[ ! "$owner" =~ ^[0-9]+$ ]] || ! kill -0 "$owner" 2>/dev/null; then
+            # Break it by MOVING it aside rather than deleting it in place: a
+            # rename is atomic, so of two waiters that both judged it stale
+            # exactly one wins and the loser goes back to mkdir.
+            if mv "$LOCK_FILE" "$LOCK_FILE.stale.$$" 2>/dev/null; then
+                rm -rf "$LOCK_FILE.stale.$$"
+            fi
+            continue
+        fi
+        (( waited < LOCK_WAIT )) || return 1
+        # A second at a time, because what this waits for is a TURN: the caller
+        # dispatching them polls in seconds and a turn runs for minutes.
+        sleep 1
+        waited=$(( waited + 1 ))
+    done
+    printf '%s\n' "$$" > "$LOCK_FILE/owner"
+    LOCK_HELD=true
+}
+
+# Ours, and only ours. A release that removed the directory unconditionally
+# would drop a lock this process never held, and the turn actually holding it
+# would then be serialising against nobody.
+lock_release() {
+    $LOCK_HELD || return 0
+    LOCK_HELD=false
+    [[ "$(cat "$LOCK_FILE/owner" 2>/dev/null || true)" == "$$" ]] || return 0
+    rm -rf "$LOCK_FILE"
+}
 UUID_CAPTURE="$(mktemp "${TMPDIR:-/tmp}/cs-codex-cap.XXXXXX")"
-trap 'rm -f "$UUID_CAPTURE"' EXIT
+# Every ordinary way out of this process releases the lock and removes the
+# capture file; a SIGKILL is the one that cannot, and the stale-owner check in
+# lock_acquire is what covers the lock half of that. INT and TERM are named
+# rather than left to the EXIT trap, because bash runs no EXIT trap for a signal
+# it was not asked to handle.
+trap 'rm -f "$UUID_CAPTURE"; lock_release' EXIT
+trap 'rm -f "$UUID_CAPTURE"; lock_release; exit 130' INT
+trap 'rm -f "$UUID_CAPTURE"; lock_release; exit 143' TERM
 
 # Stream the remote output, pulling out the session-id sentinel (so a new session learns its
 # codex id) and dropping that line from what the user sees.
@@ -254,12 +322,12 @@ store_uuid() {
 
 # Run one turn under the per-session lock (serializes turns to the same warm session).
 ssh_turn() {
-    exec 200>"$LOCK_FILE"
-    if ! flock -w "$LOCK_WAIT" 200; then
+    if ! lock_acquire; then
         echo "Error: session '$SESSION_NAME' is busy — could not acquire its turn lock within ${LOCK_WAIT}s." >&2
-        echo "  If you are sure none is running, the lock is stale; remove it:" >&2
-        echo "    rm -f '$LOCK_FILE'" >&2
-        exec 200>&-; return 4
+        echo "  A live process holds it, and this one waited that long for it. If you are sure" >&2
+        echo "  no turn is running, remove the lock:" >&2
+        echo "    rm -rf '$LOCK_FILE'" >&2
+        return 4
     fi
     local rc cmd
     # The codex session id is read HERE, holding the lock, rather than when this process
@@ -275,7 +343,7 @@ ssh_turn() {
     # Stored BEFORE the lock is released, so the next turn — which is blocked on that lock —
     # cannot start before the id it needs is on disk.
     store_uuid
-    flock -u 200; exec 200>&-
+    lock_release
     return $rc
 }
 
@@ -285,11 +353,12 @@ if $BACKGROUND; then
     RUNNER_FILE="$PID_DIR/${SESSION_NAME}.runner"
     rotate_log "$LOG_FILE"
     # The turn runs from a per-session runner script rather than a subshell of this
-    # process, for two reasons. It is launched with setsid, so it lands in a NEW session
-    # and survives callers that kill their tool call's process group on return (agent
-    # CLIs do exactly that) — a plain `&` child would die with them. And the runner file
-    # path appears in the runner's /proc cmdline, which is what --kill checks before it
-    # signals anything, so a stale pid file can never take out a bystander.
+    # process, for two reasons. It is launched detached below, so it lands in a session
+    # or a process group of its own and survives callers that kill their tool call's
+    # process group on return (agent CLIs do exactly that) — a plain `&` child would die
+    # with them. And the runner file path appears in the runner's own command line,
+    # which is what --kill checks before it signals anything, so a stale pid file can
+    # never take out a bystander.
     #
     # The "finished (exit N)" footer is the authoritative completion signal read by
     # `-output -s`, so it is written even when the turn fails.
@@ -316,9 +385,19 @@ if $BACKGROUND; then
     } > "$RUNNER_FILE"
     chmod 700 "$RUNNER_FILE"
     echo "--- $(date '+%Y-%m-%d %H:%M:%S') --- prompt: $PROMPT" >> "$LOG_FILE"
-    setsid nohup "$RUNNER_FILE" </dev/null >/dev/null 2>&1 &
+    # A new SESSION where setsid exists, and a new process GROUP where it does
+    # not. Either is enough for what this is for: an agent CLI that kills its
+    # tool call's process group on return must not take the turn with it. macOS
+    # ships no setsid, and `set -m` gives a background job a group of its own on
+    # every bash — measured on both. The hangup a new session would also have
+    # covered is covered by nohup and by the runner's own `trap "" HUP`.
+    if command -v setsid >/dev/null 2>&1; then
+        setsid nohup "$RUNNER_FILE" </dev/null >/dev/null 2>&1 &
+    else
+        ( set -m; nohup "$RUNNER_FILE" </dev/null >/dev/null 2>&1 & )
+    fi
     # The runner records its own pid; wait for that rather than trusting $!, which is the
-    # setsid wrapper and not the process --kill must verify.
+    # wrapper that detached it and not the process --kill must verify.
     for _ in $(seq 1 40); do [[ -s "$PID_FILE" ]] && break; sleep 0.05; done
     BG_PID="$(cat "$PID_FILE" 2>/dev/null || echo unknown)"
     echo "Session:  $SESSION_NAME"

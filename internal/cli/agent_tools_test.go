@@ -28,13 +28,18 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/covemit"
 )
 
-// The scripts target the Linux guest/host environment (GNU coreutils, /proc). Off Linux
-// they would fail for environmental reasons rather than contract violations, so CI's macOS
-// leg skips them.
+// The turn DRIVERS and the agent wrappers run inside the guest, which is Linux, and they
+// are written for it (GNU coreutils, /proc, tmux). Off Linux they would fail for
+// environmental reasons rather than contract violations, so CI's macOS leg skips them.
+//
+// The cs-<agent>-remote scripts are the other half and are NOT skipped: they run on the
+// HOST, which this project also supports on macOS, and every construct they used that
+// only Linux has was replaced with one that both have (SBX-038). The tests for that half
+// run everywhere, which is the only way the macOS host path stays working.
 func skipUnlessLinux(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
-		t.Skipf("agent-tool scripts target Linux (GNU coreutils, /proc); skipping on %s", runtime.GOOS)
+		t.Skipf("agent-tool driver scripts target the Linux guest (GNU coreutils, /proc); skipping on %s", runtime.GOOS)
 	}
 }
 
@@ -702,7 +707,6 @@ func killFixture(t *testing.T, home, prefix, mapSuffix, mapValue, name string) s
 // `-s` reports "running" forever. It also has to leave the authoritative footer behind, so a
 // cancelled turn reads as failed rather than as a crash.
 func TestRemoteKillStopsTheRunner(t *testing.T) {
-	skipUnlessLinux(t)
 	for _, fam := range remoteFamilies {
 		t.Run(fam.agent, func(t *testing.T) {
 			home, bin := agentHome(t, fam.prefix)
@@ -751,7 +755,6 @@ func TestRemoteKillStopsTheRunner(t *testing.T) {
 // an unrelated process must never be signalled. Without the cmdline check, --kill would TERM
 // a bystander and pkill -P its children.
 func TestRemoteKillLeavesUnrelatedPIDAlone(t *testing.T) {
-	skipUnlessLinux(t)
 	for _, fam := range remoteFamilies {
 		t.Run(fam.agent, func(t *testing.T) {
 			home, bin := agentHome(t, fam.prefix)
@@ -776,6 +779,61 @@ func TestRemoteKillLeavesUnrelatedPIDAlone(t *testing.T) {
 			}
 			if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
 				t.Errorf("stale PID file not cleaned: %v", err)
+			}
+			covemit.Prove(t, "interrupt", fam.agent, "", "scripts")
+		})
+	}
+}
+
+// TestRemoteBreaksALockItsOwnerNoLongerHolds: a turn lock is a DIRECTORY, and nothing
+// removes it when its holder is killed outright. The kernel used to do that, while the
+// lock was flock(1) on a file — and flock is util-linux, so a macOS host could not take
+// the lock at all and every turn dispatched from one was told its session was busy
+// (SBX-038).
+//
+// The owner pid recorded inside the directory is what replaces release-on-death: a caller
+// that finds that process gone takes the lock rather than waiting for it. Without that,
+// one hard-killed turn makes its session unusable for CS_<AGENT>_LOCK_WAIT — 900 seconds
+// by default — which is worse than what flock did, not a port of it.
+//
+// Not skipped off Linux: this is the host half of the tools, and the point of the change
+// is that the host can be a Mac.
+func TestRemoteBreaksALockItsOwnerNoLongerHolds(t *testing.T) {
+	for _, fam := range remoteFamilies {
+		t.Run(fam.agent, func(t *testing.T) {
+			home, bin := agentHome(t, fam.prefix)
+			writeStub(t, bin, "scp", "#!/bin/sh\nexit 0\n")
+			name := "stale-lock"
+			if err := os.WriteFile(filepath.Join(home, fam.prefix+"-sessions", name+fam.mapSuffix),
+				[]byte(fam.mapValue+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// A pid that has run and been reaped, rather than an invented number: an
+			// invented one can be alive on the machine running this, and the test would
+			// then assert the opposite of what it says.
+			reaped := exec.Command("sh", "-c", "exit 0")
+			if err := reaped.Run(); err != nil {
+				t.Fatal(err)
+			}
+			lock := filepath.Join(home, fam.prefix+"-locks", name+".lock")
+			if err := os.MkdirAll(lock, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(lock, "owner"),
+				[]byte(strconv.Itoa(reaped.Process.Pid)+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			// One second of patience: a lock that was waited on rather than broken would
+			// end this turn with exit 4 and the "busy" message, not with a dispatch.
+			lockWait := "CS_" + strings.ToUpper(fam.agent) + "_LOCK_WAIT=1"
+			out, exit := runScriptStdin(t, home, bin, []string{lockWait}, "",
+				"cs-"+fam.agent+"-remote", "--resume", name, "-H", "host", "hello")
+			if exit != 0 {
+				t.Fatalf("a lock whose owner is gone must not hold a turn up: exit %d: %s", exit, out)
+			}
+			if _, err := os.Stat(lock); !os.IsNotExist(err) {
+				t.Errorf("the turn finished but its lock is still there: %v", err)
 			}
 			covemit.Prove(t, "interrupt", fam.agent, "", "scripts")
 		})
@@ -1072,7 +1130,6 @@ func TestTurnDriversRejectANonNumericTimeout(t *testing.T) {
 // 2 so the status contract reports a healthy turn as failed. Verified against a live
 // member VM on 2026-08-06: the driver command line carried no --timeout at all.
 func TestRemoteBackgroundCarriesTurnTimeout(t *testing.T) {
-	skipUnlessLinux(t)
 	for _, fam := range remoteFamilies {
 		t.Run(fam.agent, func(t *testing.T) {
 			home, bin := agentHome(t, fam.prefix)
@@ -1572,7 +1629,6 @@ exit 0
 // reached CI at all. cs-claude-remote is absent on purpose: it mints the id locally and has
 // nothing to learn.
 func TestRemoteLearnsTheSessionIdBeforeTheNextTurn(t *testing.T) {
-	skipUnlessLinux(t)
 	for _, tc := range []struct{ tool, prefix, id string }{
 		{"cs-opencode-remote", ".cs-opencode-remote", openCodeTestSessionID},
 		{"cs-codex-remote", ".cs-codex-remote", "01998c4a-0000-7000-8000-000000000000"},

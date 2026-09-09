@@ -135,7 +135,9 @@ Each has its own reference next to the scripts in `~/.local/bin` — read it for
   on the environment surviving the hop to the remote host.
 - `CS_CODEX_STALL_SECS` (default 180, 0 disables) — bail early if the JSONL stops growing and the
   TUI is no longer working before a `task_complete`.
-- `CS_CODEX_LOCK_WAIT` (default 900s) — how long a turn waits for the per-session lock.
+- `CS_CODEX_LOCK_WAIT` (default 900s) — how long a turn waits for the per-session lock. The lock names the
+  process holding it, so one left behind by a hard-killed turn is taken rather than waited on;
+  reaching this limit means a live turn still holds the session.
 - `CS_CODEX_MAX_LOG_BYTES` (default 1 MiB, 0 disables) — background log rollover to `<log>.1`.
 - `CS_CODEX_TURN_SRC` — local path of the `cs-codex-turn` driver deployed to the remote.
 
