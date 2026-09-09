@@ -1,0 +1,20 @@
+{
+  "id": "SBX-038",
+  "title": "No turn can be driven from a macOS host, and --kill there reports a success it did not perform",
+  "type": "defect",
+  "severity": "high",
+  "status": "in-progress",
+  "foundBy": "session agent, bringing the campaign smoke tier up on the self-hosted Mac mini, 2026-09-09",
+  "opened": "2026-09-09",
+  "resolved": null,
+  "stint": "2026-09-09 macOS host driver",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "INSTALL.md sells driving an agent from the host: `install-agent-tools` puts the same tools on your PATH \"so you can log in with them and drive agents from here\". macOS is a documented host. On one, none of that works, in three separate places.\n\nThe per-session turn lock was `flock`, which is util-linux and absent on macOS. A turn there printed `flock: command not found`, read the lock as unheld, and then told the caller `session '<name>' is busy`. The turn never ran.\n\nThe background launcher was `setsid nohup`, also util-linux. With both stood in for by no-ops, a whole recorded campaign replayed on the Mac, so those two were the entire blocking path.\n\nThe third is silent and worse. `--kill` verifies that the recorded pid is our runner by reading `/proc/<pid>/cmdline`, which macOS does not have. The read fails, the guard cannot be satisfied, so nothing is signalled: measured on 2026-09-09, `--kill` exited 0, said \"nothing to kill\", removed the pid file, and left the runner running. The campaign's restart ladder calls --kill first, so on a Mac a restart leaks the turn it meant to replace and loses the record of it.\n\nInstalling util-linux fixes the first two and cannot fix the third. That is why this is a defect in these scripts rather than a prerequisite to document.\n\nThe tests said so all along: 22 of them call skipUnlessLinux, whose message is \"agent-tool scripts target Linux (GNU coreutils, /proc)\". That is right for the turn drivers and the wrappers, which run inside the guest. It is not right for the cs-<agent>-remote scripts, which run on the host.",
+  "notes": [],
+  "links": []
+}
