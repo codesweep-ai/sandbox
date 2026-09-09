@@ -105,7 +105,6 @@ func runScriptStdin(t *testing.T, home, bin string, extraEnv []string, stdin, na
 // the PID only as a secondary liveness signal. An orchestrator polls all three families the
 // same way, so the table is shared: an agent that drifts fails here.
 func TestRemoteOutputStatusContract(t *testing.T) {
-	skipUnlessLinux(t)
 	prompt := "--- 2026-01-01 00:00:00 --- prompt: task\n"
 	states := []struct {
 		state, log string
