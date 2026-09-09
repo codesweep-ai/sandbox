@@ -95,7 +95,7 @@ func smokeRecords(t *testing.T, instDir string) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, g := range []*state.Group{
 		{Name: state.DefaultGroup, Created: now, TapPrefix: "fd0"},
-		{Name: "smokegrp", Created: now, TapPrefix: "fd1", GWPort: 2401},
+		{Name: "smokegrp", Created: now, TapPrefix: "fd1"},
 	} {
 		if err := state.SaveGroup(instDir, g); err != nil {
 			t.Fatal(err)

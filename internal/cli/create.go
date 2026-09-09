@@ -189,7 +189,7 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	// that cannot be honoured still fails before anything the caller would have
 	// to clean up.
 	app.progress("preparing the group's isolated network and trust keys…")
-	if _, err := app.ensureGroup(ctx, f.group, false); err != nil {
+	if _, err := app.ensureGroup(ctx, f.group); err != nil {
 		return err
 	}
 

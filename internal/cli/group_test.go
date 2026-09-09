@@ -126,7 +126,7 @@ func TestConcurrentGroupsGetDistinctTapPrefixes(t *testing.T) {
 	errs := make([]error, groups)
 	for i := range groups {
 		wg.Go(func() {
-			g, err := app.reserveGroup(context.Background(), fmt.Sprintf("g%d", i), false)
+			g, err := app.reserveGroup(fmt.Sprintf("g%d", i))
 			if err != nil {
 				errs[i] = err
 				return
@@ -265,7 +265,7 @@ func TestCommandsPassBareNamesToEngines(t *testing.T) {
 func TestGroupLsJSONIsAStableInventory(t *testing.T) {
 	dir := t.TempDir()
 	if err := state.SaveGroup(dir, &state.Group{
-		Name: "cache-redis", Created: "2026-01-01T00:00:00Z", TapPrefix: "fd0001", GWPort: 2401,
+		Name: "cache-redis", Created: "2026-01-01T00:00:00Z", TapPrefix: "fd0001",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestGroupLsJSONIsAStableInventory(t *testing.T) {
 	// itself — that is how the two drift apart.
 	want := groupItem{
 		Name: "cache-redis", Network: "cs-sandbox-cache-redis",
-		Gateway: 2401, Members: 1, Created: "2026-01-01T00:00:00Z",
+		Members: 1, Created: "2026-01-01T00:00:00Z",
 	}
 	if got != want {
 		t.Errorf("group item = %+v, want %+v", got, want)
@@ -310,7 +310,7 @@ func TestGroupLsQuietPrintsNamesOnly(t *testing.T) {
 	dir := t.TempDir()
 	for _, g := range []string{"cache-redis", "web"} {
 		if err := state.SaveGroup(dir, &state.Group{
-			Name: g, Created: "2026-01-01T00:00:00Z", TapPrefix: "fd0001", GWPort: 2401,
+			Name: g, Created: "2026-01-01T00:00:00Z", TapPrefix: "fd0001",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -381,7 +381,7 @@ func TestGroupRmRetiresItsLeg(t *testing.T) {
 	t.Setenv("CS_SANDBOX_FC_NET", filepath.Join(t.TempDir(), "net"))
 	t.Setenv("CS_SANDBOX_TIER_DIR", filepath.Join(t.TempDir(), "keys"))
 	if err := state.SaveGroup(dir, &state.Group{
-		Name: "cache-redis", TapPrefix: "fd0007", GWPort: 2400, Created: "2026-01-01T00:00:00Z",
+		Name: "cache-redis", TapPrefix: "fd0007", Created: "2026-01-01T00:00:00Z",
 	}); err != nil {
 		t.Fatal(err)
 	}

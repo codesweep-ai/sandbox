@@ -191,15 +191,10 @@ func SyncSSHConfig(h hostenv.Host, tierDir, instDir string, insts []*state.Insta
 		gwKey := filepath.Join(GroupKeysDir(tierDir, g.Name), "id_cs-sandbox_user")
 		blocks++
 		fmt.Fprintf(&b, "\nHost %s-gw\n", g.Name)
-		// The same choice a sandbox gets: a published port where one was asked
-		// for, and otherwise the engine's own channel into the container.
-		if g.GWPort != 0 {
-			fmt.Fprintf(&b, "    HostName 127.0.0.1\n")
-			fmt.Fprintf(&b, "    Port %d\n", g.GWPort)
-		} else {
-			fmt.Fprintf(&b, "    ProxyCommand %s\n",
-				proxyExec(state.KeepaliveFor(state.NetworkName(g.Name))))
-		}
+		// The engine's own channel into the container, always. A gateway takes
+		// no host port, so there is never a HostName and Port to write here.
+		fmt.Fprintf(&b, "    ProxyCommand %s\n",
+			proxyExec(state.KeepaliveFor(state.NetworkName(g.Name))))
 		fmt.Fprintf(&b, "    User %s\n", h.User)
 		fmt.Fprintf(&b, "    HostKeyAlias %s-gw\n", g.Name)
 		// Only the group key, deliberately: the gateway authorizes nothing else,

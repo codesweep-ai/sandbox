@@ -187,10 +187,10 @@ gateway.
 
 The gateway is the group's ssh entry point, reached as `<group>-gw`. From inside it every member
 answers to its bare name, and so does anything else on that network, such as the credential lender or
-a recorder. It binds no host port unless you ask for one.
+a recorder. It binds no host port, and there is no flag to make it.
 
 ```
-cs-sandbox group create <group> [--publish-gateway]
+cs-sandbox group create <group>
 cs-sandbox group ls
 cs-sandbox group rm <group> [-f]     # -f destroys the group's sandboxes first
 ```
@@ -683,7 +683,7 @@ The second group changes what gets built or run.
 | `CS_SANDBOX_DNS_SUFFIX` | `cs.sandbox` | The domain `host-route` resolves sandbox names under. |
 | `CS_SANDBOX_GROUP` | `default` | The group `create` puts a sandbox in when no `--group` is given. |
 | `CS_SANDBOX_TZ` | `America/Los_Angeles` | The timezone a sandbox boots with. |
-| `CS_SANDBOX_SSH_BIND` | unset | Setting it publishes a host SSH port for each sandbox created, at this address; unset, none is published and `ssh <name>` goes through the config fragment. Any value other than `127.0.0.1` publishes beyond loopback: see [SPEC.md §13](SPEC.md#13-security-model). It is also where `group create --publish-gateway` binds. |
+| `CS_SANDBOX_SSH_BIND` | unset | Setting it publishes a host SSH port for each sandbox created, at this address; unset, none is published and `ssh <name>` goes through the config fragment. Any value other than `127.0.0.1` publishes beyond loopback: see [SPEC.md §13](SPEC.md#13-security-model). |
 
 The third group tunes the Firecracker engine. Leave these alone unless `doctor` or this manual sends
 you to one.

@@ -52,11 +52,6 @@ type Fabric struct {
 	// Suffix is the DNS suffix this fabric is authoritative for. Empty reads
 	// CS_SANDBOX_DNS_SUFFIX, then falls back to cs.sandbox.
 	Suffix string
-	// GWPort publishes this network's gateway on a host port. Zero leaves it
-	// unpublished, which is the default: the host reaches the gateway through
-	// the engine, exactly as it reaches a sandbox.
-	GWPort int
-	GWBind string // host bind address for GWPort (127.0.0.1 default)
 	GWSeed string // seed dir holding the gateway's authorized_keys
 	GWUser string // host user the gateway's sshd should accept
 	GWUID  int
@@ -197,12 +192,6 @@ func (f Fabric) keepaliveUp(ctx context.Context) error {
 			"-e", fmt.Sprintf("CS_SANDBOX_GID=%d", f.GWGID),
 			"-e", "CS_SANDBOX_HOME="+f.GWHome,
 			"-v", f.GWSeed+":/run/cs-sandbox-seed:ro")
-		// A published port is the opt-in, for a caller that cannot run a
-		// command: something on another machine, or a tool that takes a host and
-		// a port. Nothing needs it to reach the group from this host.
-		if f.GWPort != 0 {
-			argv = append(argv, "-p", fmt.Sprintf("%s:%d:22", f.GWBind, f.GWPort))
-		}
 	}
 	argv = append(argv, f.Image, "sleep", "infinity")
 	res, err := f.Runner.Run(ctx, run.Opts{}, argv...)

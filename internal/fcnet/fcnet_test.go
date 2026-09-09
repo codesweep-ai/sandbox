@@ -246,8 +246,8 @@ func TestGatewayIsGivenTheFabricResolver(t *testing.T) {
 	f := run.NewFake()
 	f.OnStdout("network inspect", "10.89.0.1\n")            // Gateway() -> prefix 10.89.0
 	f.OnStdout("inspect cs-sandbox-g-keepalive", "false\n") // not running
-	fab := Fabric{Runner: f, Network: "cs-sandbox-g", Image: "img", GWPort: 2401,
-		GWBind: "127.0.0.1", GWSeed: "/seed", GWUser: "dev", GWHome: "/home/dev"}
+	fab := Fabric{Runner: f, Network: "cs-sandbox-g", Image: "img",
+		GWSeed: "/seed", GWUser: "dev", GWHome: "/home/dev"}
 	_ = fab.keepaliveUp(context.Background())
 
 	var create string
@@ -269,8 +269,8 @@ func TestGatewayIsGivenTheFabricResolver(t *testing.T) {
 func TestBridgePinningKeepaliveIsNotChurned(t *testing.T) {
 	f := run.NewFake()
 	f.OnStdout("network inspect", "10.89.0.1\n")
-	f.OnStdout("inspect", "true\n")                                   // already running
-	fab := Fabric{Runner: f, Network: "cs-sandbox-net", Image: "img"} // GWPort 0
+	f.OnStdout("inspect", "true\n") // already running
+	fab := Fabric{Runner: f, Network: "cs-sandbox-net", Image: "img"}
 	if err := fab.keepaliveUp(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -290,8 +290,8 @@ func TestStaleGatewayWithoutTheResolverIsReplaced(t *testing.T) {
 	f.OnStdout("network inspect", "10.89.0.1\n")
 	f.OnStdout("--format {{.State.Running}}", "true\n")
 	f.OnStdout("{{range .HostConfig.Dns}}", "\n") // no --dns: the old shape
-	fab := Fabric{Runner: f, Network: "cs-sandbox-g", Image: "img", GWPort: 2401,
-		GWBind: "127.0.0.1", GWSeed: "/seed", GWUser: "dev", GWHome: "/home/dev"}
+	fab := Fabric{Runner: f, Network: "cs-sandbox-g", Image: "img",
+		GWSeed: "/seed", GWUser: "dev", GWHome: "/home/dev"}
 	_ = fab.keepaliveUp(context.Background())
 
 	rendered := strings.Join(f.Rendered(), "\n")
@@ -310,8 +310,8 @@ func TestHealthyGatewayIsLeftAlone(t *testing.T) {
 	f.OnStdout("network inspect", "10.89.0.1\n")
 	f.OnStdout("--format {{.State.Running}}", "true\n")
 	f.OnStdout("{{range .HostConfig.Dns}}", "10.89.0.53 \n")
-	fab := Fabric{Runner: f, Network: "cs-sandbox-g", Image: "img", GWPort: 2401,
-		GWBind: "127.0.0.1", GWSeed: "/seed", GWUser: "dev", GWHome: "/home/dev"}
+	fab := Fabric{Runner: f, Network: "cs-sandbox-g", Image: "img",
+		GWSeed: "/seed", GWUser: "dev", GWHome: "/home/dev"}
 	if err := fab.keepaliveUp(context.Background()); err != nil {
 		t.Fatal(err)
 	}

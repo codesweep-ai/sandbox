@@ -210,9 +210,6 @@ type Group struct {
 	// Linux interface names are host-global, so two groups that collided on a
 	// hash would produce an interface-name clash far from its cause.
 	TapPrefix string `json:"tapprefix"`
-	// GWPort is the host port publishing this group's gateway (the keepalive
-	// container, which also serves as the ssh jump host into the group).
-	GWPort int `json:"gwport,omitempty"`
 }
 
 // GroupDir is the on-disk directory holding a group's record and its members.

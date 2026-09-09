@@ -294,7 +294,7 @@ func TestSyncSSHConfigGroups(t *testing.T) {
 		{Name: "only", Group: "cache-redis", Port: 2202},    // unique, but still not default
 		{Name: "plain", Group: "default", Port: 2203},       // default group: bare alias
 	}
-	groups := []*state.Group{{Name: "cache-redis", GWPort: 2400}, {Name: "cache-memory"}}
+	groups := []*state.Group{{Name: "cache-redis"}, {Name: "cache-memory"}}
 	if err := SyncSSHConfig(h, "/tier", instDir, insts, groups); err != nil {
 		t.Fatal(err)
 	}
@@ -312,11 +312,10 @@ func TestSyncSSHConfigGroups(t *testing.T) {
 		// Each sandbox authenticates with its own group's key.
 		"IdentityFile /tier/groups/cache-redis/id_cs-sandbox_user",
 		"IdentityFile /tier/groups/cache-memory/id_cs-sandbox_user",
-		// Every group gets a gateway alias. A published port is dialled where
-		// one was asked for; otherwise the engine's own channel carries it, so
-		// the alias works with nothing bound on the host.
+		// Every group gets a gateway alias, and it always rides the engine's own
+		// channel: a gateway takes no host port, so there is nothing to dial.
 		"Host cache-redis-gw\n",
-		"Port 2400",
+		"ProxyCommand podman exec -i cs-sandbox-cache-redis-keepalive socat - TCP:127.0.0.1:22",
 		"Host cache-memory-gw\n",
 		"ProxyCommand podman exec -i cs-sandbox-cache-memory-keepalive socat - TCP:127.0.0.1:22",
 	} {

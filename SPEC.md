@@ -299,9 +299,9 @@ into a container, and for a microVM the forwarder socket in its instance directo
 that socket **MUST** be decided by the mode of the directory holding it.
 
 **R42.** A published port **MUST** be drawn from a range that cannot collide with another kind of
-ingress. Containers take 2200 to 2299, microVMs 2300 to 2399, and group gateways 2400 to 2499. A
-credential lender run by hand on the host (§10.2) takes 2500, above them all; the one `create` starts
-binds no host port at all.
+ingress. Containers take 2200 to 2299 and microVMs 2300 to 2399. A credential lender run by hand on
+the host (§10.2) takes 2500, above them both; the one `create` starts binds no host port at all. A
+group gateway is reached as R41a says and has no range, because it publishes nothing.
 
 **R43.** A port **MUST** be treated as free only when it is both unrecorded and unanswered. Allocation **MUST**
 probe loopback.
@@ -1330,8 +1330,9 @@ publishes on an interface the rest of the network can route to. Key authenticati
 because sshd takes no password and authorizes only the keys §4 gives it. R142 does not, so scope the
 variable to one command rather than exporting it.
 
-A group gateway publishes nothing either, unless `group create --publish-gateway` asks for it. That
-flag binds where this variable says, and loopback when it says nothing.
+A group gateway publishes nothing at all, and has no way to be asked to. It is reached the way R41a
+says, through the engine's own channel into the container, so a host carrying any number of groups
+carries no port for them.
 
 R105 unmasks the container's `/proc`, which is why R141 no longer names `/proc/kcore`. The masking
 was the outer of two defences, and not the load-bearing one. The container's root is an unprivileged

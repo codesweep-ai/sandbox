@@ -305,14 +305,14 @@ func TestGroupQualifiedRecords(t *testing.T) {
 // TestGroupRecords: groups round-trip and list independently of their members.
 func TestGroupRecords(t *testing.T) {
 	dir := t.TempDir()
-	if err := SaveGroup(dir, &Group{Name: "cache-redis", Created: "2026-01-01T00:00:00Z", TapPrefix: "fd0001", GWPort: 2400}); err != nil {
+	if err := SaveGroup(dir, &Group{Name: "cache-redis", Created: "2026-01-01T00:00:00Z", TapPrefix: "fd0001"}); err != nil {
 		t.Fatal(err)
 	}
 	g, err := LoadGroup(dir, "cache-redis")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if g.TapPrefix != "fd0001" || g.GWPort != 2400 {
+	if g.TapPrefix != "fd0001" {
 		t.Errorf("group round-trip lost fields: %+v", g)
 	}
 	if _, err := LoadGroup(dir, "nope"); err == nil {
