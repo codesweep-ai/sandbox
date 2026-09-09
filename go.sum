@@ -2,8 +2,8 @@ github.com/bmatcuk/doublestar/v4 v4.10.0 h1:zU9WiOla1YA122oLM6i4EXvGW62DvKZVxIe6
 github.com/bmatcuk/doublestar/v4 v4.10.0/go.mod h1:xBQ8jztBU6kakFMg+8WGxn0c6z1fTSPVIjEY1Wr7jzc=
 github.com/clipperhouse/uax29/v2 v2.7.0 h1:+gs4oBZ2gPfVrKPthwbMzWZDaAFPGYK72F0NJv2v7Vk=
 github.com/clipperhouse/uax29/v2 v2.7.0/go.mod h1:EFJ2TJMRUaplDxHKj1qAEhCtQPW2tJSwu5BF98AuoVM=
-github.com/codesweep-ai/ledger v0.0.0-20260901203653-31eebb8abefd h1:VsXJwjS8FdXuvCtBzuARrKC49HNhw8eYP24IWFigxdU=
-github.com/codesweep-ai/ledger v0.0.0-20260901203653-31eebb8abefd/go.mod h1:qlhTaf+ush5MVh1VQuqvb2xrKc/X2Yd5jc0gfmw8+6U=
+github.com/codesweep-ai/ledger v0.0.0-20260909183215-bda511aea589 h1:xgM6hiqaB6kFXIKAMqXdvdnhAeexP/FpBCOSfHWLBow=
+github.com/codesweep-ai/ledger v0.0.0-20260909183215-bda511aea589/go.mod h1:qlhTaf+ush5MVh1VQuqvb2xrKc/X2Yd5jc0gfmw8+6U=
 github.com/codesweep-ai/lint v0.0.0-20260908052410-0dfc1134ade0 h1:p5CafRD1s8mJd5f+6ff8JW7INmTu6uYz51RiapD29dA=
 github.com/codesweep-ai/lint v0.0.0-20260908052410-0dfc1134ade0/go.mod h1:0a6L5l7UHTtwmOcMmlKAOGjxzeT0qzJ+tIWxhzv+VXE=
 github.com/codesweep-ai/tracer v0.0.0-20260902020248-82ab96e43dcc h1:II8fTwv2zmeX848KYeeVQbKSzYhsbWef5V1wyzlojEQ=
