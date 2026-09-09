@@ -3,18 +3,20 @@
   "title": "No turn can be driven from a macOS host, and --kill there reports a success it did not perform",
   "type": "defect",
   "severity": "high",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, bringing the campaign smoke tier up on the self-hosted Mac mini, 2026-09-09",
   "opened": "2026-09-09",
-  "resolved": null,
+  "resolved": "2026-09-09",
   "stint": "2026-09-09 macOS host driver",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "5194ab2"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "TestRemoteBreaksALockItsOwnerNoLongerHolds, the new test, fails against the previous scripts for all three agents and passes against these. On the Mac mini the five host-side driver tests now run instead of skipping, and all pass. TestRemoteKillStopsTheRunner is among them, and that is the one that used to exit 0 having killed nothing. End to end on the same machine, with neither flock nor setsid anywhere on PATH, a recorded campaign replayed in 40s and its orchestrator reached campaign-met. On Linux `make check` is clean and the whole suite passes, so the replacement lock serialises turns there as flock did."
   },
-  "resolution": null,
-  "details": "INSTALL.md sells driving an agent from the host: `install-agent-tools` puts the same tools on your PATH \"so you can log in with them and drive agents from here\". macOS is a documented host. On one, none of that works, in three separate places.\n\nThe per-session turn lock was `flock`, which is util-linux and absent on macOS. A turn there printed `flock: command not found`, read the lock as unheld, and then told the caller `session '<name>' is busy`. The turn never ran.\n\nThe background launcher was `setsid nohup`, also util-linux. With both stood in for by no-ops, a whole recorded campaign replayed on the Mac, so those two were the entire blocking path.\n\nThe third is silent and worse. `--kill` verifies that the recorded pid is our runner by reading `/proc/<pid>/cmdline`, which macOS does not have. The read fails, the guard cannot be satisfied, so nothing is signalled: measured on 2026-09-09, `--kill` exited 0, said \"nothing to kill\", removed the pid file, and left the runner running. The campaign's restart ladder calls --kill first, so on a Mac a restart leaks the turn it meant to replace and loses the record of it.\n\nInstalling util-linux fixes the first two and cannot fix the third. That is why this is a defect in these scripts rather than a prerequisite to document.\n\nThe tests said so all along: 22 of them call skipUnlessLinux, whose message is \"agent-tool scripts target Linux (GNU coreutils, /proc)\". That is right for the turn drivers and the wrappers, which run inside the guest. It is not right for the cs-<agent>-remote scripts, which run on the host.",
+  "resolution": "The turn lock is a directory made with mkdir, which is atomic everywhere, and it names the process holding it. That pid replaces the release-on-death flock got from the kernel. A waiter whose owner is gone breaks the lock by renaming it aside, so exactly one of several waiters wins. The background turn is detached with setsid where there is one and with a job-control subshell where there is not, either of which gives it a group of its own. The runner's identity is read from ps rather than from /proc.\n\nThe tests for the host half no longer skip off Linux. What the skip still covers is the turn drivers and the wrappers, which run inside the guest and are Linux by construction.",
+  "details": "INSTALL.md sells driving an agent from the host. `install-agent-tools` puts the same tools on your PATH, it says, \"so you can log in with them and drive agents from here\". macOS is a documented host. On one, none of that works, in three separate places.\n\nThe per-session turn lock was `flock`, which is util-linux and absent on macOS. A turn there printed `flock: command not found`, read the lock as unheld, and then told the caller `session '<name>' is busy`. The turn never ran.\n\nThe background launcher was `setsid nohup`, also util-linux. With both stood in for by no-ops, a whole recorded campaign replayed on the Mac, so those two were the entire blocking path.\n\nThe third is silent and worse. `--kill` reads `/proc/<pid>/cmdline` to confirm the recorded pid is the runner it started, and macOS has no `/proc` at all. The read fails, so the guard cannot be satisfied and nothing is signalled. Measured on 2026-09-09: `--kill` exited 0, said \"nothing to kill\", removed the pid file, and left the runner running. The campaign's restart ladder calls --kill first, so on a Mac a restart leaks the turn it meant to replace and loses the record of it.\n\nInstalling util-linux fixes the first two and cannot fix the third. That is why this is a defect in these scripts rather than a prerequisite to document.\n\nThe tests said so all along: 22 of them call skipUnlessLinux, whose message is \"agent-tool scripts target Linux (GNU coreutils, /proc)\". That is right for the turn drivers and the wrappers, which run inside the guest. It is not right for the cs-<agent>-remote scripts, which run on the host.",
   "notes": [],
   "links": []
 }
