@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
@@ -99,6 +101,52 @@ func TestTapPrefixIsAllocatedNotHashed(t *testing.T) {
 		if err := state.SaveGroup(dir, &state.Group{Name: g, TapPrefix: p, Created: "2026-01-01T00:00:00Z"}); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestConcurrentGroupsGetDistinctTapPrefixes: two creates for two NEW groups,
+// started at the same moment, must not be handed the same prefix.
+//
+// allocTapPrefix answers by reading which prefixes are already recorded, so
+// without the create lock around the read AND the write both callers see an
+// empty host and both take fd0000. What that cost, measured before the lock was
+// there: the two groups' VMs derived the same interface name from that prefix,
+// the second TapUp found the first group's tap already present and re-mastered
+// it onto its own bridge, and the robbed microVM failed its create two minutes
+// later on a readiness timeout naming nothing that pointed here.
+//
+// Reserving only, so this needs no podman: reserveGroup is the half that draws
+// from the host-global pool, and building the network is the half that does not.
+func TestConcurrentGroupsGetDistinctTapPrefixes(t *testing.T) {
+	dir := t.TempDir()
+	app := &App{InstDir: dir}
+	const groups = 8
+	var wg sync.WaitGroup
+	got := make([]string, groups)
+	errs := make([]error, groups)
+	for i := range groups {
+		wg.Go(func() {
+			g, err := app.reserveGroup(context.Background(), fmt.Sprintf("g%d", i), false)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			got[i] = g.TapPrefix
+		})
+	}
+	wg.Wait()
+	seen := map[string]int{}
+	for i, p := range got {
+		if errs[i] != nil {
+			t.Fatalf("reserve g%d: %v", i, errs[i])
+		}
+		if p == "" {
+			t.Fatalf("g%d was reserved without a tap prefix", i)
+		}
+		if prev, dup := seen[p]; dup {
+			t.Fatalf("groups g%d and g%d both got tap prefix %q", prev, i, p)
+		}
+		seen[p] = i
 	}
 }
 

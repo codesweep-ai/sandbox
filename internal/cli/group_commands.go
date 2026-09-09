@@ -15,6 +15,7 @@ import (
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/fcnet"
+	"github.com/codesweep-ai/sandbox/internal/lock"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/ports"
 	"github.com/codesweep-ai/sandbox/internal/state"
@@ -185,34 +186,64 @@ func (a *App) ensureGroup(ctx context.Context, group string, publish bool) (*sta
 	if err := state.ValidGroup(group); err != nil {
 		return nil, err
 	}
-	if g, err := state.LoadGroup(a.InstDir, group); err == nil {
-		if publish && g.GWPort == 0 {
-			if err := a.publishGateway(ctx, g); err != nil {
-				return nil, err
-			}
-		}
-		return g, a.ensureGroupArtifacts(ctx, g)
-	}
-	g := &state.Group{Name: group, Created: time.Now().UTC().Format(time.RFC3339)}
-	prefix, err := a.allocTapPrefix(group)
+	g, err := a.reserveGroup(ctx, group, publish)
 	if err != nil {
 		return nil, err
 	}
-	g.TapPrefix = prefix
-	if publish {
-		port, err := a.allocGatewayPort()
-		if err != nil {
-			return nil, err
+	return g, a.ensureGroupArtifacts(ctx, g)
+}
+
+// reserveGroup returns the group's record, minting one under the host-wide
+// create lock if there is none.
+//
+// The lock is the whole point. What this hands out is drawn from host-global
+// pools by reading what is already taken — the tap prefix, and the gateway port
+// when one is asked for — so two creates for two NEW groups, started at the same
+// moment, otherwise both read those pools before either has written to them and
+// both take the lowest free answer. Measured on two concurrent creates: both
+// groups recorded tap prefix fd0000, so their VMs derived the same interface
+// name, and the second TapUp re-mastered the first group's tap onto its own
+// bridge. One microVM lost its network and its create failed two minutes later
+// on a readiness timeout that pointed nowhere near here.
+//
+// The record is written INSIDE the lock and the artifacts are built outside it,
+// which reverses the old order. It has to be that way round: the record IS the
+// reservation, so a create that built first and recorded second would hold
+// nothing while it built. The artifacts are idempotent and separately locked, so
+// a record whose artifacts failed is repaired by the next create rather than
+// stranded — and the prefix it reserved stays reserved meanwhile, which is the
+// property being bought.
+//
+// Only the reservation, deliberately. Pulling an image or building a network
+// under a host-wide lock would serialize every create on this machine for as
+// long as that takes, and neither needs it: EnsureNetwork takes this same lock
+// itself for the part of its work that does.
+func (a *App) reserveGroup(ctx context.Context, group string, publish bool) (*state.Group, error) {
+	var g *state.Group
+	err := lock.New(a.InstDir).With(func() error {
+		if existing, err := state.LoadGroup(a.InstDir, group); err == nil {
+			g = existing
+			if publish && g.GWPort == 0 {
+				return a.publishGateway(ctx, g)
+			}
+			return nil
 		}
-		g.GWPort = port
-	}
-	if err := a.ensureGroupArtifacts(ctx, g); err != nil {
-		return nil, err
-	}
-	if err := state.SaveGroup(a.InstDir, g); err != nil {
-		return nil, err
-	}
-	return g, nil
+		g = &state.Group{Name: group, Created: time.Now().UTC().Format(time.RFC3339)}
+		prefix, err := a.allocTapPrefix(group)
+		if err != nil {
+			return err
+		}
+		g.TapPrefix = prefix
+		if publish {
+			port, err := a.allocGatewayPort()
+			if err != nil {
+				return err
+			}
+			g.GWPort = port
+		}
+		return state.SaveGroup(a.InstDir, g)
+	})
+	return g, err
 }
 
 // publishGateway gives an existing group's gateway a host port.
