@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
@@ -24,10 +25,49 @@ func TestPastaIsSetUpIsAnswerFromTheHostItself(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := run.NewFake().OnStdout("unshare", tc.code)
-			if got := PastaIsSetUp(context.Background(), r); got != tc.want {
+			if got := PastaIsSetUp(context.Background(), r, 0); got != tc.want {
 				t.Errorf("PastaIsSetUp = %v, want %v when the probe returns %s", got, tc.want, tc.code)
 			}
 		})
+	}
+}
+
+// answersOnCall is a runner that starts refusing and then answers, which is
+// what a namespace podman is still bringing pasta up in looks like.
+type answersOnCall struct {
+	calls int
+	after int
+}
+
+func (a *answersOnCall) Run(context.Context, run.Opts, ...string) (run.Result, error) {
+	a.calls++
+	if a.calls < a.after {
+		return run.Result{Stdout: "000"}, nil
+	}
+	return run.Result{Stdout: "200"}, nil
+}
+
+// A probe that has to create the namespace itself waits for it.
+//
+// This is the doctor's case, and it is why the budget belongs to the caller.
+// Podman starts pasta in a namespace it has just made, and it does so
+// asynchronously, so the first ask can arrive before anything is listening.
+// Asked once, a slow host reports a fault it does not have — measured as six CI
+// legs failing a check that every one of them then went on to satisfy.
+func TestPastaIsSetUpWaitsOutASlowNamespace(t *testing.T) {
+	slow := &answersOnCall{after: 3}
+	if !PastaIsSetUp(context.Background(), slow, 5*time.Second) {
+		t.Errorf("a namespace that answered on ask %d was reported broken", slow.after)
+	}
+
+	// And with no budget it is the single attempt create relies on: create asks
+	// once the fabric is up, where waiting could not change the answer.
+	never := &answersOnCall{after: 1 << 30}
+	if PastaIsSetUp(context.Background(), never, 0) {
+		t.Error("a host that never answers must not report pasta")
+	}
+	if never.calls != 1 {
+		t.Errorf("asked %d times with no budget, want exactly 1", never.calls)
 	}
 }
 
@@ -36,7 +76,7 @@ func TestPastaIsSetUpIsAnswerFromTheHostItself(t *testing.T) {
 // A probe that asked from here would pass on a host where every guest times out.
 func TestPastaIsSetUpProbesThroughTheRootlessNetns(t *testing.T) {
 	r := run.NewFake().OnStdout("unshare", "200")
-	PastaIsSetUp(context.Background(), r)
+	PastaIsSetUp(context.Background(), r, 0)
 	for _, argv := range r.Calls {
 		if strings.Contains(strings.Join(argv, " "), "--rootless-netns") {
 			return
