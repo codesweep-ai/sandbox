@@ -146,10 +146,10 @@ holds the tiers, what each one proves, the smoke profile, and how coverage is me
 will not fit one idea, split it.
 
 **Subject**, always. Under 60 characters, imperative, no trailing period, completing *"If applied,
-this commit will …"*. Say what the change does, in plain English rather than in this project's
-internal shorthand. Use no category label: `fix(proxy):`, `bugfix:` and `[docs]` each name a class
-of change rather than the change itself, which the diff already shows. The gate fails on one, so
-amend before you push.
+this commit will …"*. Say what the change does in plain English. The test: would this subject make
+sense to someone who has not read the diff and does not know this codebase? Use no category label:
+`fix(proxy):`, `bugfix:` and `[docs]` each name a class of change rather than the change itself,
+which the diff already shows. The gate fails on one, so amend before you push.
 
 **Body**, rarely. Most commits need none. Add one only when the subject leaves a question a reader
 would otherwise have to open the diff to answer, and then answer that question. A sentence or two
