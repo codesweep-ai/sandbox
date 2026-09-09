@@ -15,7 +15,6 @@ import (
 	// report, and the package would be shadowed by it exactly where it is used.
 	eng "github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/run"
-	"time"
 )
 
 // Status is a check outcome.
@@ -221,12 +220,7 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		// it: everything else — which stack podman names, what the namespace
 		// looks like — was wrong on some real host, and a report that
 		// enumerated the ways of failing took longer to read than to act on.
-		//
-		// With a budget, because unlike create this has no fabric up: the probe
-		// creates the rootless namespace itself, and podman starts pasta in it
-		// asynchronously. Asked once, a slow host reports a fault it does not
-		// have. A host that answers pays none of this.
-		if eng.PastaIsSetUp(ctx, d.Runner, 15*time.Second) {
+		if eng.PastaIsSetUp(ctx, d.Runner) {
 			fg.add(OK, "podman's rootless network answers at "+eng.HostReachableIP+
 				", where a microVM looks for the host")
 		} else {

@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
@@ -43,24 +42,12 @@ import (
 // its loopback. Measured — the same probe bound on 127.0.0.1 is refused and on
 // 0.0.0.0 answers 200. It is the same reason the lender binds non-loopback.
 //
-// within is how long the caller is prepared to wait for an answer, and it is
-// the caller's statement about timing rather than a retry for its own sake.
+// One attempt, and the caller owns the timing. Create asks after the fabric is
+// up, where the keepalive holds the namespace and pasta is already running, so
+// there is nothing to race and nothing to retry.
 //
-// Create passes nothing. It asks once the fabric is up, where the keepalive
-// holds the namespace and pasta is already running in it, so a probe that had
-// to wait would be waiting on something that cannot arrive later.
-//
-// The doctor passes a budget, because it asks with nothing up. Its probe is
-// what CREATES the namespace, and podman starts pasta in it asynchronously; a
-// single attempt then reports a broken host on a machine that boots microVMs
-// perfectly well a moment later. Measured on a four-core hosted runner, where
-// every leg of a six-way tier failed this check and none of them had anything
-// wrong with it.
-//
-// It runs for as long as one request takes on a host that answers, because it
-// returns on the first success. The budget is only ever spent by a host that
-// is failing.
-func PastaIsSetUp(ctx context.Context, r run.Runner, within time.Duration) bool {
+// It runs for as long as one request takes, on a port the kernel picks.
+func PastaIsSetUp(ctx context.Context, r run.Runner) bool {
 	l, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		return false
@@ -78,33 +65,32 @@ func PastaIsSetUp(ctx context.Context, r run.Runner, within time.Duration) bool 
 	}
 	// Through podman's rootless netns, which is where a microVM's tap is.
 	//
-	// ONE attempt, and the caller owns the timing. Create asks after the fabric
-	// is up, where the keepalive holds the namespace and pasta is already
-	// running, so there is nothing to race and nothing to retry. A probe that
-	// creates the namespace itself is asking about one it just made, and on a
-	// slower host can outrun podman starting pasta — which reads as a broken
-	// host and is not one.
+	// The ANSWER decides this, not podman's exit status, and the two disagree
+	// on a real host.
 	//
+	// `podman unshare --rootless-netns` tears the namespace down again when
+	// nothing else is holding it, and that teardown can fail on its own terms:
+	// measured on a GitHub hosted runner, every invocation ended with "rootless
+	// netns: cleanup: kill network process: permission denied" and a non-zero
+	// exit, AFTER curl had already been answered with 200. Requiring err == nil
+	// threw the answer away and reported a host with no pasta as one that has
+	// it — on a runner that then booted microVMs perfectly well.
+	//
+	// It is also why create never saw this and the doctor always did. Create
+	// asks while the keepalive holds the namespace, so podman leaves it up and
+	// has nothing to fail at; the doctor asks with nothing up, so every one of
+	// its probes pays the teardown.
+	//
+	// A command that could not run at all returns no "200" either, so dropping
+	// the error costs nothing: this asks whether the host answered, and only
+	// the body can say so.
 	ask := func() bool {
-		res, err := r.Run(ctx, run.Opts{ReadOnly: true},
+		res, _ := r.Run(ctx, run.Opts{ReadOnly: true},
 			"podman", "unshare", "--rootless-netns", "curl", "-s", "-o", "/dev/null",
 			"-w", "%{http_code}", "--max-time", "3", "http://"+HostReachableIP+":"+port+"/")
-		return err == nil && strings.TrimSpace(res.Stdout) == "200"
+		return strings.TrimSpace(res.Stdout) == "200"
 	}
-	deadline := time.Now().Add(within)
-	for {
-		if ask() {
-			return true
-		}
-		if !time.Now().Before(deadline) {
-			return false
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
+	return ask()
 }
 
 // ErrNoPasta is what a caller gets when the hop does not work, and it is one
@@ -116,8 +102,7 @@ var ErrNoPasta = fmt.Errorf(
 		"--version` and that passt is installed", HostReachableIP)
 
 func (fe *Firecracker) ensurePasta(ctx context.Context) error {
-	// Nothing: the fabric is up by now, so the answer cannot change by waiting.
-	if PastaIsSetUp(ctx, fe.d.Runner, 0) {
+	if PastaIsSetUp(ctx, fe.d.Runner) {
 		return nil
 	}
 	return ErrNoPasta
