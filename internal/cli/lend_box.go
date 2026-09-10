@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/lend"
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
@@ -140,12 +141,12 @@ func (b lenderBox) canRead(ctx context.Context, path string) error {
 // because every create in a group calls this.
 func (b lenderBox) ensure(ctx context.Context) (string, error) {
 	if b.running(ctx) {
-		return b.guestBase(), nil
+		return b.serving(ctx), nil
 	}
 	if b.exists(ctx) {
 		if _, err := b.Runner.Run(ctx, run.Opts{}, "podman", "start", b.name()); err == nil {
 			if err := b.waitReady(ctx); err == nil {
-				return b.guestBase(), nil
+				return b.serving(ctx), nil
 			}
 		}
 		// A box that will not start again is worse than no box: it holds the
@@ -165,7 +166,7 @@ func (b lenderBox) ensure(ctx context.Context) (string, error) {
 		// there is now one. Adopt it if it serves.
 		if b.exists(ctx) {
 			if werr := b.waitReady(ctx); werr == nil {
-				return b.guestBase(), nil
+				return b.serving(ctx), nil
 			}
 		}
 		d := strings.TrimSpace(res.Stderr)
@@ -182,7 +183,50 @@ func (b lenderBox) ensure(ctx context.Context) (string, error) {
 	if err := b.waitReady(ctx); err != nil {
 		return "", err
 	}
-	return b.guestBase(), nil
+	return b.serving(ctx), nil
+}
+
+// serving is the address callers get once the box is up, and the one place the
+// interface it answers on is checked.
+func (b lenderBox) serving(ctx context.Context) string {
+	b.alignMTU(ctx)
+	return b.guestBase()
+}
+
+// alignMTU makes the lender's interface match the bridge it is plugged into.
+//
+// The value is inferred at attach, and on a rootless host the inference can be
+// wrong: the first container onto a bridge takes pasta's 65520 uplink MTU while
+// the bridge itself comes up at 1500. Nothing reports the mismatch. Every small
+// packet still passes, so DNS resolves, TCP connects and plain HTTP answers 200
+// — and the first packet over 1500 bytes is dropped in silence. A TLS
+// ClientHello is the first thing that big, so the lender accepts a loan, swaps
+// in the real credential, and then cannot finish a handshake with the provider
+// it fronts. What reaches a person is an agent retrying "API error" against a
+// credential that was never wrong.
+//
+// networkCreateArgv pins the MTU, so a network this version created cannot
+// produce the mismatch. This is for the ones earlier versions created: they
+// carry no MTU option, they are still in use, and the bridge cannot be repaired
+// without recreating the network — which is not something starting a lender may
+// do to a running group. Setting it on the container needs no restart and is a
+// no-op when the value is already right.
+//
+// Best effort, and deliberately not an error. A host where this cannot run is
+// not one where create should fail: the lender is often fine, and a lender that
+// is not says so on its first request.
+func (b lenderBox) alignMTU(ctx context.Context) {
+	res, err := b.Runner.Run(ctx, run.Opts{ReadOnly: true},
+		"podman", "inspect", b.name(), "--format", "{{.State.Pid}}")
+	if err != nil {
+		return
+	}
+	pid := strings.TrimSpace(res.Stdout)
+	if pid == "" || pid == "0" {
+		return
+	}
+	_, _ = b.Runner.Run(ctx, run.Opts{}, "podman", "unshare",
+		"nsenter", "-t", pid, "-n", "ip", "link", "set", "dev", "eth0", "mtu", engine.BridgeMTU)
 }
 
 // stage copies the binary the container will run into place.

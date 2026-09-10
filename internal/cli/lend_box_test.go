@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/lend"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/state"
@@ -180,5 +181,29 @@ func TestANonLoopbackUpstreamIsLeftAlone(t *testing.T) {
 		if got, note := lenderUpstream(u); got != u || note != "" {
 			t.Errorf("lenderUpstream(%q) = %q, %q — want it untouched", u, got, note)
 		}
+	}
+}
+
+// The MTU has to be stated when the lender comes up, not inherited.
+//
+// A network created before it was pinned still hands the first container onto
+// its bridge pasta's 65520 uplink MTU, against a bridge of 1500, and nothing
+// anywhere reports the mismatch. Small packets all pass, so the lender answers
+// every check that would be run against it. The first packet over 1500 bytes is
+// dropped in silence, and a TLS ClientHello is the first thing that big: the
+// lender takes the loan, swaps in the real credential, and then cannot finish a
+// handshake. The agent above it retries "API error" against a credential that
+// was never wrong, which is the most expensive shape this failure could take.
+func TestEnsureStatesTheLendersMTU(t *testing.T) {
+	fake := run.NewFake()
+	fake.OnStdout("{{.State.Pid}}", "4242\n")
+	fake.OnStdout("container inspect", "true\n")
+	b := lenderBox{Runner: fake, Spec: lenderBoxSpec{Network: "cs-sandbox-net", Image: "img"}}
+	if _, err := b.ensure(context.Background()); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	line := strings.Join(fake.Rendered(), "\n")
+	if !strings.Contains(line, "ip link set dev eth0 mtu "+engine.BridgeMTU) {
+		t.Errorf("the lender's MTU was left to inference:\n%s", line)
 	}
 }

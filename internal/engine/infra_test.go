@@ -73,11 +73,32 @@ func TestNetworkCreateArgvIsolates(t *testing.T) {
 	joined := strings.Join(argv, " ")
 	for _, want := range []string{
 		"podman network create", "--opt isolate=true",
+		"--opt mtu=1500",
 		"--label cs-sandbox.managed=1", "cs-sandbox-cache-redis",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("network create argv missing %q: %v", want, argv)
 		}
+	}
+}
+
+// The MTU has to be stated, not inferred. Left to itself the first container on
+// a new bridge takes pasta's 65520 uplink MTU while the bridge stays at 1500,
+// and every packet over 1500 bytes is then dropped with no error reported
+// anywhere: DNS, the TCP handshake and plain HTTP all still work, so the only
+// symptom is HTTPS hanging — a TLS ClientHello is the first thing big enough to
+// hit it. The lender is usually first onto its group's bridge, so it inherits
+// the bad value and cannot reach the provider it fronts.
+func TestNetworkCreateArgvPinsMTU(t *testing.T) {
+	argv := networkCreateArgv("cs-sandbox-net")
+	var got string
+	for i, a := range argv {
+		if a == "--opt" && i+1 < len(argv) && strings.HasPrefix(argv[i+1], "mtu=") {
+			got = argv[i+1]
+		}
+	}
+	if got != "mtu=1500" {
+		t.Errorf("network create must pin the MTU, got %q in %v", got, argv)
 	}
 }
 

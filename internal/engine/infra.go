@@ -76,6 +76,24 @@ func (d Deps) pnet(ctx context.Context, opts run.Opts, argv ...string) (run.Resu
 	return d.Runner.Run(ctx, opts, append([]string{"podman", "unshare", "--rootless-netns"}, argv...)...)
 }
 
+// BridgeMTU is the MTU every group bridge is pinned to.
+//
+// It is pinned because the inferred value is wrong here, and wrong in a way
+// that stays invisible. A rootless namespace reaches the world through pasta,
+// whose uplink carries an MTU of 65520; the first container to attach to a new
+// bridge takes that number for its own interface, while the bridge it plugs
+// into comes up at 1500. Nothing reports the mismatch. Small packets all pass
+// — DNS, a TCP handshake, plain HTTP — so the network answers every check a
+// person would think to run, and the first packet over 1500 bytes is dropped
+// with no error at either end.
+//
+// A TLS ClientHello is around 1.5 KiB, so the symptom is every HTTPS call
+// hanging until it times out while HTTP on the same host returns 200. The
+// lender is normally the first container on its group's bridge, which makes it
+// the one that loses: it accepts a loan, swaps in the real credential, and then
+// cannot complete a handshake with the provider.
+const BridgeMTU = "1500"
+
 // networkCreateArgv builds the create command for a group's network. Every
 // group network is isolated: netavark otherwise forwards traffic between
 // bridges in the same rootless namespace, so separate bridges and subnets alone
@@ -83,7 +101,8 @@ func (d Deps) pnet(ctx context.Context, opts run.Opts, argv ...string) (run.Resu
 // outbound internet that --internal would cause.
 func networkCreateArgv(network string) []string {
 	return []string{"podman", "network", "create",
-		"--opt", "isolate=true", "--label", "cs-sandbox.managed=1", network}
+		"--opt", "isolate=true", "--opt", "mtu=" + BridgeMTU,
+		"--label", "cs-sandbox.managed=1", network}
 }
 
 // verifyManagedIsolation confirms a network we are about to use really is an
