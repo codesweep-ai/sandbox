@@ -663,7 +663,7 @@ func fabricatedAgentHome(t *testing.T) string {
 		if !ok {
 			t.Fatalf("slot %q disappeared between listing and reading it", id)
 		}
-		g, err := s.MintGuest("replay")
+		g, err := s.MintGuest("replay", "")
 		if err != nil {
 			t.Fatalf("fabricate a %s login: %v", id, err)
 		}

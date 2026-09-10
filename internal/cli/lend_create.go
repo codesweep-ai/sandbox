@@ -191,7 +191,7 @@ func (app *App) resolveLoans(ctx context.Context, f *createFlags, name, injected
 		}
 	}
 	for _, s := range lent {
-		g, err := s.MintGuest(name)
+		g, err := s.MintGuest(name, home)
 		if err != nil {
 			return nil, err
 		}
@@ -203,6 +203,12 @@ func (app *App) resolveLoans(ctx context.Context, f *createFlags, name, injected
 			// client stays on the code path it takes when it is signed in. Only
 			// the base URL is set, because there is no gateway variable in play.
 			plan.seeded = append(plan.seeded, seed.LentCredential{Agent: g.Agent, File: g.File, Doc: g.Doc})
+			// Anything the client keeps outside that file and still needs to
+			// name the account, so the sandbox can say whose subscription it is
+			// spending rather than reporting a signed-out-looking login.
+			for _, e := range g.Extra {
+				plan.seeded = append(plan.seeded, seed.LentCredential{Agent: g.Agent, File: e.File, Doc: e.Doc})
+			}
 			plan.env = append(plan.env, s.BaseEnv+"="+guestBase)
 		} else {
 			plan.env = append(plan.env, s.Env(g.Wire, guestBase)...)

@@ -469,7 +469,7 @@ func TestMintGuestFabricatesTheAgentsOwnCredentialFile(t *testing.T) {
 	} {
 		t.Run(c.id, func(t *testing.T) {
 			s, _ := SlotByID(c.id)
-			g, err := s.MintGuest("feature")
+			g, err := s.MintGuest("feature", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -490,7 +490,7 @@ func TestMintGuestFabricatesTheAgentsOwnCredentialFile(t *testing.T) {
 				t.Error("the value the client will present is not in the file it reads")
 			}
 			// Two sandboxes never share one.
-			other, _ := s.MintGuest("feature")
+			other, _ := s.MintGuest("feature", "")
 			if other.Wire == g.Wire {
 				t.Error("two mints produced the same credential")
 			}
@@ -499,7 +499,7 @@ func TestMintGuestFabricatesTheAgentsOwnCredentialFile(t *testing.T) {
 	// A key needs no file: an environment variable is already the shape its
 	// client expects.
 	s, _ := SlotByID("anthropic")
-	g, err := s.MintGuest("feature")
+	g, err := s.MintGuest("feature", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +516,7 @@ func TestMintGuestFabricatesTheAgentsOwnCredentialFile(t *testing.T) {
 // account that belongs to nobody, and a claim naming the loan.
 func TestTheForgedCodexTokenIsDecodableAndObviouslyOurs(t *testing.T) {
 	s, _ := SlotByID("codex")
-	g, err := s.MintGuest("feature")
+	g, err := s.MintGuest("feature", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -752,7 +752,7 @@ func TestASlotWithNoVersionLeavesThePathAlone(t *testing.T) {
 // not more consistent.
 func TestEachFabricationTakesItsProvidersOwnForm(t *testing.T) {
 	claude, _ := SlotByID("claude")
-	g, err := claude.MintGuest("feature")
+	g, err := claude.MintGuest("feature", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -795,11 +795,102 @@ func TestEachFabricationTakesItsProvidersOwnForm(t *testing.T) {
 	// The other form, for contrast: Codex signs in with JWTs, so its file holds
 	// forged ones.
 	codex, _ := SlotByID("codex")
-	c, err := codex.MintGuest("feature")
+	c, err := codex.MintGuest("feature", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(strings.Split(c.Wire, ".")) != 3 {
 		t.Errorf("the Codex token is not a JWT: %q", c.Wire[:min(40, len(c.Wire))])
+	}
+}
+
+// A loan spends the host's subscription, so the sandbox has to be able to say
+// which one. Claude Code keeps the plan beside the token and the account in a
+// file of its own, and a sandbox given neither reports a null email against an
+// unknown plan — which reads as a broken login rather than a working loan, and
+// is what sent one owner hunting for a credential that was there all along.
+func TestALentClaudeCarriesTheHostsSubscriptionAndAccount(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".cs-claude")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"),
+		[]byte(`{"claudeAiOauth":{"accessToken":"real","subscriptionType":"max"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".claude.json"),
+		[]byte(`{"oauthAccount":{"emailAddress":"someone@example.com","organizationName":"Example Org"},"other":1}`),
+		0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := SlotByID("claude")
+	g, err := s.MintGuest("feature", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The plan is the host's, so the client names the subscription it is really
+	// spending instead of falling back to its API-billing label.
+	var cred struct {
+		OAuth struct {
+			SubscriptionType string `json:"subscriptionType"`
+			AccessToken      string `json:"accessToken"`
+		} `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(g.Doc, &cred); err != nil {
+		t.Fatal(err)
+	}
+	if cred.OAuth.SubscriptionType != "max" {
+		t.Errorf("subscriptionType = %q, want the host's %q", cred.OAuth.SubscriptionType, "max")
+	}
+	// The token itself stays fabricated: carrying the plan must not carry the
+	// credential (R149).
+	if cred.OAuth.AccessToken == "real" {
+		t.Fatal("the host's real token reached the sandbox")
+	}
+
+	// The account travels in the file the client actually reads it from.
+	if len(g.Extra) != 1 || g.Extra[0].File != "account.json" {
+		t.Fatalf("expected the account seeded as account.json, got %+v", g.Extra)
+	}
+	var profile struct {
+		OAuthAccount struct {
+			Email string `json:"emailAddress"`
+			Org   string `json:"organizationName"`
+		} `json:"oauthAccount"`
+		Other *int `json:"other"`
+	}
+	if err := json.Unmarshal(g.Extra[0].Doc, &profile); err != nil {
+		t.Fatal(err)
+	}
+	if profile.OAuthAccount.Email != "someone@example.com" || profile.OAuthAccount.Org != "Example Org" {
+		t.Errorf("account not carried: %+v", profile.OAuthAccount)
+	}
+	// Only the account. The rest of the host's .claude.json is that host's
+	// business — history, projects, per-directory trust — and none of it is
+	// what a loan needs.
+	if profile.Other != nil {
+		t.Error("the whole host .claude.json was copied; only oauthAccount should travel")
+	}
+}
+
+// A host that has never signed in, or one whose profile predates any of this,
+// still has to be lendable: the plan is simply not known, and nothing extra is
+// seeded. Failing the create instead would take away a loan that works.
+func TestALentClaudeWithoutAHostProfileStillMints(t *testing.T) {
+	for _, home := range []string{"", t.TempDir()} {
+		s, _ := SlotByID("claude")
+		g, err := s.MintGuest("feature", home)
+		if err != nil {
+			t.Fatalf("home %q: %v", home, err)
+		}
+		if len(g.Extra) != 0 {
+			t.Errorf("home %q seeded %d extra files, want none", home, len(g.Extra))
+		}
+		if !strings.Contains(string(g.Doc), "cs-sandbox-loan") {
+			t.Errorf("home %q: an unknown plan should say so, got %s", home, g.Doc)
+		}
 	}
 }

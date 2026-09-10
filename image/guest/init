@@ -189,6 +189,19 @@ fi
 # The host's Claude Code theme, carried at create; the cs-claude wrapper reads it
 # as its default. A theme chosen inside the sandbox wins over it.
 [ -f "$SEED/claude_theme" ] && install -m644 "$SEED/claude_theme" "$CC_DIR/theme"
+# The account a lent login spends. Claude Code keeps the signed-in identity in
+# .claude.json, apart from the token, so seeding only the token leaves a sandbox
+# holding a credential it cannot name — a null email against an unknown plan,
+# which reads as a broken login rather than a working loan. Merged, because that
+# file belongs to the client and carries state this must not drop; every boot,
+# and with the seed winning, so a re-lend to a different host login cannot leave
+# a stale account behind.
+if [ -f "$SEED/claude/account.json" ] && command -v jq >/dev/null 2>&1; then
+  if [ -f "$CC_DIR/.claude.json" ]; then
+    jq -s '.[0] * .[1]' "$CC_DIR/.claude.json" "$SEED/claude/account.json" > "$CC_DIR/.claude.json.tmp" 2>/dev/null \
+      && mv "$CC_DIR/.claude.json.tmp" "$CC_DIR/.claude.json" || rm -f "$CC_DIR/.claude.json.tmp"
+  else install -m600 "$SEED/claude/account.json" "$CC_DIR/.claude.json"; fi
+fi
 
 # Skip the first-run onboarding wizard only when this sandbox has credentials: doing it
 # on a login-free sandbox hides the sign-in choices and claude comes up as

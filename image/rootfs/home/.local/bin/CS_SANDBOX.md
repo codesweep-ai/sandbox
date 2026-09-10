@@ -175,7 +175,9 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
   under `$HOME` — `create` rejects paths outside it.
 - The agent login is **not** inherited by default — a sandbox starts with none. The usual choice is
   `--lend-agent-login claude` (or `codex`), which lends the host login: the sandbox gets a loan
-  token and the real credential never enters it. `--inherit-agent-login claude` (or
+  token and the real credential never enters it. It is told which account and plan the loan spends,
+  so the agent reports the subscription rather than looking signed out; that identity is readable
+  inside the sandbox. `--inherit-agent-login claude` (or
   `codex`/`opencode`, comma-separated) copies the login in instead. `create` reports what the
   sandbox ended up with either way. Without a flag, log it in with `cs-sandbox agent-login claude
   <name>`, which is also how you give a sandbox its own account instead of sharing yours.

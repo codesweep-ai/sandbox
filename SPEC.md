@@ -730,8 +730,14 @@ lender's address in the variable the agent reads for a base URL.
 **R144a.** A seeded credential file **MUST** be installed on every boot. An inherited one **MUST** be
 installed on the first boot only.
 
-**R144b.** A fabricated credential **MUST NOT** carry any real identity: not an account, not a
-subscription, not an address of a person.
+**R144b.** A fabricated credential **MUST NOT** carry a real secret. The values that identify it
+**MUST** name this tool rather than a person. That covers the token, and every claim in a forged one.
+
+**R144d.** The profile seeded beside a lent login **MUST** carry the host account that loan spends:
+its address, its organisation, and the subscription plan. *A lent sandbox spends the host's
+subscription. One that cannot name it reports itself signed out, with a null account and an unknown
+plan. Its status line then falls back to the API-billing label. The cost is that whoever holds the
+sandbox learns whose subscription it is. That price is paid only where a flag named the login.*
 
 **R145.** A loan token **MUST** carry at least 128 bits of randomness, and **MUST NOT** be a credential
 anywhere but on the host that minted it.
@@ -793,7 +799,13 @@ shape into the other's file would be less faithful rather than more consistent.
 
 Nothing fabricated survives verification anywhere, which is what R144b is for. The word `loan` sits
 at the front of an opaque token, and in a claim of a forged one. Every identity in either names this
-tool, and the lender puts the real account back on the way out.
+tool, and the lender puts the real credential back on the way out.
+
+R144d is the account, which is a different thing from the credential. It moves the other way. The
+token stays worthless and traceable. What the sandbox additionally holds is the name of the
+subscription being spent. That sits in the file the client reads it from, not in the credential.
+Keeping it back did not protect the credential, because R144b already does. It left a working loan
+looking like a broken login, which is the failure that reaches a person.
 
 R144a follows from the same place. An inherited login is refreshed in place and must never be
 clobbered by a create-time snapshot. A lent one is a placeholder, so a sandbox that overwrote it

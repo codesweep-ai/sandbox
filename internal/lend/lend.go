@@ -103,7 +103,12 @@ type Slot struct {
 	// keeps a lent sandbox on the code path its client always takes. See
 	// guest.go.
 	guestFile string
-	guestDoc  func(label, nonce string) (wire string, doc []byte, err error)
+	guestDoc  func(label, nonce, home string) (wire string, doc []byte, err error)
+
+	// guestProfile returns further files the agent's profile needs so the
+	// sandbox can name the account its loan spends. Optional: a slot whose
+	// client keeps everything in its credential file leaves it nil.
+	guestProfile func(home string) ([]GuestFile, error)
 }
 
 // slots is the table. Adding a provider is an entry here and nothing else.
@@ -113,10 +118,11 @@ var slots = []Slot{
 		Origin: "https://api.anthropic.com", Version: "/v1",
 		Header: "authorization", Prefix: "Bearer ",
 		AuthEnvs: []string{"ANTHROPIC_AUTH_TOKEN"}, BaseEnv: "ANTHROPIC_BASE_URL",
-		read:      readClaudeLogin,
-		where:     func(home, _ string) string { return filepath.Join(home, ".cs-claude", ".credentials.json") },
-		guestFile: ".credentials.json",
-		guestDoc:  claudeCredentials,
+		read:         readClaudeLogin,
+		where:        func(home, _ string) string { return filepath.Join(home, ".cs-claude", ".credentials.json") },
+		guestFile:    ".credentials.json",
+		guestDoc:     claudeCredentials,
+		guestProfile: claudeProfile,
 	},
 	{
 		ID: "codex", Kind: Login,

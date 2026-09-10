@@ -423,6 +423,11 @@ recommended way to give one an agent. Lend a credential instead of copying it, a
 is a **loan token**: an unguessable string worth nothing anywhere but this host. Your login and your
 keys stay where they are.
 
+The sandbox is also told *whose* subscription it is spending. It gets the account address, the
+organisation and the plan. A lent agent that cannot name its account reports itself signed out
+rather than lent. That identity is readable by whoever holds the sandbox. It travels only for a
+login a `--lend-agent-login` flag named.
+
 ```bash
 # The sandbox's Claude Code works. Your login never enters it.
 cs-sandbox create feature --repo ~/projects/api --lend-agent-login claude
