@@ -1,0 +1,120 @@
+# Publish codesweep.ai/sandbox/: the repository's documents, and the CI status file
+# that codesweep.ai/dashboards/ci reads.
+#
+# This moves the site from the branch-served build to a workflow build. The
+# reason is the status file rather than the documents: on a branch-served site
+# the branch *is* the published site, so publishing ci-status.json would mean
+# committing it on every build. Built here it is part of the deployment and never
+# enters the history. GitHub's own advice points the same way — use a workflow
+# "if you want to use a build process other than Jekyll or you do not want a
+# dedicated branch to hold your compiled static files".
+#
+# Settings > Pages > Source has to be set to "GitHub Actions" for this to serve.
+# Until it is, this workflow runs and its deploy step fails while the live site
+# keeps being served from the branch, so the two can be compared before the
+# switch.
+name: pages
+
+# Only on a finished build, deliberately.
+#
+# Every push to main runs ci.yml, so a workflow_run on its completion already
+# covers "the documents changed" as well as "the status changed". A `push`
+# trigger here would publish the same commit a second time, racing its own
+# deployment. The cost is that documents publish when ci finishes rather than
+# immediately, which is arguably right: nothing reaches the site from a commit
+# that has not been checked.
+#
+# `completed` rather than a success filter: a failed build is exactly the news
+# the CI dashboard exists to show, so it has to publish too.
+#
+# Only ci, and not every workflow whose runs the status reports. A push to main
+# starts ci and npm together, so naming both would publish the site twice for one
+# push, the second run superseding the first for nothing. ci is the workflow that
+# runs on every push, which makes it the one signal worth waking on.
+#
+# The cost is that a run finishing after ci does — npm usually, a tagged release
+# always — is not in the status until the next push. Its earlier runs are, and
+# the row is a few minutes behind rather than wrong.
+#
+# There is no schedule on purpose. The status file's age is meaningful — the
+# dashboard flags a project that has not built in 72 hours — and a cron would
+# refresh the timestamp without refreshing the facts, hiding a quiet repository.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read # the site is built from the tree and nothing is written back
+  actions: read # the status file is this repository's own workflow runs
+  pages: write # publish the built site
+  id-token: write # the deployment is minted from the run rather than from a key
+
+# One site, so one deploy at a time. Unlike the npm workflow a superseded run is
+# not cancelled: there is nothing to gain by racing to replace a page that is
+# about to be replaced anyway, and a deployment killed halfway is worse than a
+# page that is a minute stale.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build the site
+    # ci.yml runs on pull_request as well as on push, and workflow_run fires for
+    # either. Without this guard a pull request's build would publish that branch
+    # to the documentation URL everyone reads.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # Written before Jekyll runs, so Jekyll copies it into the site like any
+      # other static file at the repository root. It reads this repository's own
+      # workflow runs and nothing else, so the job's GITHUB_TOKEN is enough and
+      # no personal access token exists anywhere in this design.
+      #
+      # Pinned by commit rather than by branch, so a change over there cannot
+      # change what this build runs. Moving the pin is a commit here, and that
+      # commit says what moving it buys.
+      - name: write the CI status
+        uses: codesweep-ai/dashboards/action@4c204c69b8b2b79a101c65520b86944de06942a0
+        with:
+          window: "20"
+
+      - uses: actions/configure-pages@v5
+
+      # The same Jekyll, the same gem and the same repository settings the
+      # branch-served site was built with, so the documents render here exactly
+      # as they rendered there. _config.yml keeps working unchanged.
+      - uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./
+          destination: ./_site
+
+      # A missing file here would show up only as sandbox quietly dropping off the
+      # dashboard, which is the kind of failure nobody goes looking for.
+      - name: check the status file was published
+        run: test -s _site/ci-status.json
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    name: deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The environment carries the deployment's URL and whatever protection rules
+    # the repository puts on it; deploy-pages refuses to run outside one.
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
