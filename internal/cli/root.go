@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -442,11 +443,14 @@ type lsItem struct {
 	Network string       `json:"network"`
 	Yolo    bool         `json:"yolo"`
 	Solo    bool         `json:"solo"`
-	// AgentLogins are credentials this sandbox HOLDS, copied in at create.
-	// Loans are credentials it BORROWS, which stay on the host. The difference
-	// is the one worth scanning a listing for.
-	AgentLogins []string `json:"agentlogins,omitempty"`
-	Loans       []string `json:"loans,omitempty"`
+	// AgentLogins and HeldKeys are credentials this sandbox HOLDS, copied in at
+	// create; EnvCredentials are ones it holds because they were handed to it as
+	// plain variables. Loans are credentials it BORROWS, which stay on the host.
+	// The difference is the one worth scanning a listing for.
+	AgentLogins    []string `json:"agentlogins,omitempty"`
+	HeldKeys       []string `json:"heldkeys,omitempty"`
+	EnvCredentials []string `json:"envcredentials,omitempty"`
+	Loans          []string `json:"loans,omitempty"`
 }
 
 func runLsJSON(ctx context.Context, app *App, out io.Writer) error {
@@ -462,7 +466,8 @@ func runLsJSON(ctx context.Context, app *App, out io.Writer) error {
 			Status: status[engine.Qualify(in)], Created: in.Created, Type: in.Type,
 			Engine: in.Engine, Network: state.NetworkName(in.Group),
 			Yolo: in.Yolo, Solo: in.Solo,
-			AgentLogins: in.AgentLogins, Loans: loanSlots(app.InstDir, in.Group, in.Name),
+			AgentLogins: in.AgentLogins, HeldKeys: in.HeldKeys, EnvCredentials: in.EnvCredentials,
+			Loans: loanSlots(app.InstDir, in.Group, in.Name),
 		})
 	}
 	for _, o := range app.engineDeps().Orphans(ctx) {
@@ -515,12 +520,15 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 	// List already returns members grouped and sorted.
 	// CREDS earns its column: it is the difference between a sandbox holding a
 	// copy of your credentials and one that only borrows them, which is the
-	// question a listing of agent sandboxes is most often scanned for.
+	// question a listing of agent sandboxes is most often scanned for. A key
+	// passed in as a plain environment variable is held too, and the column
+	// says so rather than leaving the weakest posture looking like none.
 	fmt.Fprintln(tw, "GROUP\tNAME\tSTATUS\tAGE\tTYPE\tENGINE\tYOLO\tSOLO\tCREDS")
 	for _, in := range insts {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			in.Group, in.Name, status[engine.Qualify(in)], age(in.Created, time.Now()), in.Type, in.Engine,
-			yn(in.Yolo), yn(in.Solo), creds(in.AgentLogins, loanSlots(app.InstDir, in.Group, in.Name)))
+			yn(in.Yolo), yn(in.Solo), creds(slices.Concat(in.AgentLogins, in.HeldKeys), in.EnvCredentials,
+				loanSlots(app.InstDir, in.Group, in.Name)))
 	}
 	// Leftovers last, under the sandboxes that still exist. Only the columns the
 	// data itself answers for are filled in; the rest went with the state record.
@@ -541,16 +549,27 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 
 // creds is the CREDS column: whether this sandbox HOLDS credentials of yours,
 // BORROWS them through the lender, or has none.
-func creds(held, borrowed []string) string {
-	switch {
-	case len(held) > 0 && len(borrowed) > 0:
-		return "held+lent"
-	case len(held) > 0:
-		return "held"
-	case len(borrowed) > 0:
-		return "lent"
+//
+// Three states rather than two, because "holds" has two shapes that are worth
+// telling apart. A grant that copied a login or a provider key in is `held`; a
+// raw credential variable handed over with --env is `env`, the weakest way in.
+// A sandbox can be given more than one, so they combine with `+`: what it
+// holds first, what it borrows last.
+func creds(held, envHeld, borrowed []string) string {
+	var parts []string
+	if len(held) > 0 {
+		parts = append(parts, "held")
 	}
-	return "-"
+	if len(envHeld) > 0 {
+		parts = append(parts, "env")
+	}
+	if len(borrowed) > 0 {
+		parts = append(parts, "lent")
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, "+")
 }
 
 // age renders how long ago created (RFC3339) was, in kubectl's compact style:

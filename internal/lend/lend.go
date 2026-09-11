@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 )
@@ -179,6 +180,31 @@ func SlotByID(id string) (Slot, bool) {
 	}
 	return Slot{}, false
 }
+
+// CredentialEnvs are the variable names a real credential arrives in, across
+// every slot in the table.
+//
+// It is what lets a sandbox say it is holding a credential that came in as a
+// plain environment variable rather than through a grant. Derived from the
+// table rather than listed separately, so a provider added above is covered
+// here by having been added at all.
+//
+// BaseEnv is deliberately absent: it points a client somewhere and carries no
+// secret, so a sandbox holding only that is not holding a credential.
+func CredentialEnvs() []string {
+	var out []string
+	for _, s := range slots {
+		for _, v := range s.AuthEnvs {
+			if !slices.Contains(out, v) {
+				out = append(out, v)
+			}
+		}
+	}
+	return out
+}
+
+// IsCredentialEnv reports whether a variable name is one of them.
+func IsCredentialEnv(name string) bool { return slices.Contains(CredentialEnvs(), name) }
 
 // SlotIDs returns the slots of one kind, in table order, for a flag's help text
 // and for validating what a caller typed.

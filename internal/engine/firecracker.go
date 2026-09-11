@@ -209,9 +209,11 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	if err != nil {
 		return nil, err
 	}
-	// The ip+port claim was persisted above; record the inherited logins too.
-	if len(agentLogins) > 0 {
+	// The ip+port claim was persisted above; record what the sandbox HOLDS too.
+	if len(agentLogins) > 0 || len(s.InheritAPIKey) > 0 || len(s.EnvCredentials) > 0 {
 		inst.AgentLogins = agentLogins
+		inst.HeldKeys = s.InheritAPIKey
+		inst.EnvCredentials = s.EnvCredentials
 		if err = d.save(inst); err != nil {
 			return nil, err
 		}

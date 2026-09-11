@@ -30,6 +30,9 @@ ssh feature                     # shell in by name (preferred for interactive wo
 cs-sandbox exec feature ls      # run one command instead
 cs-sandbox ls                   # GROUP NAME STATUS AGE TYPE ENGINE YOLO SOLO CREDS
                                 # STATUS is running, stopped or removed
+                                # CREDS is held (copied in), env (handed a raw key
+                                # as a variable), lent (borrowed, the credential
+                                # stays on the host), or - for none; combine with +
 cs-sandbox ls -q                # names only, one per line — pipe it into other commands
 cs-sandbox port feature         # its published SSH port, where one was asked for (ssh <name> needs none)
 
@@ -184,6 +187,15 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
 - LLM API keys work the same way, from the host's `~/.cs-keys/<provider>`:
   `--lend-api-key anthropic` lends one, `--inherit-api-key anthropic` copies it in. A key for
   anything else still goes in with `--env`, and a credential file with `--snapshot`.
+  Save a key the host can lend with:
+  `mkdir -p ~/.cs-keys && printf %s "$OPENAI_API_KEY" > ~/.cs-keys/openai && chmod 600 ~/.cs-keys/openai`
+  (`cs-sandbox doctor` lists which providers are lendable).
+- **Prefer lending.** A lent sandbox holds a token that is worth nothing off this host and stops
+  working when the sandbox is destroyed; one that inherited a credential, or was handed a key with
+  `--env`, holds the real secret until you delete the machine, and nothing on the host can revoke
+  it. `create` says which it ended up with, and `ls` keeps saying so in CREDS — `env` in that column
+  means a raw key went in as a plain variable, which is the weakest of the three. That column knows
+  the variables the providers above read; a key for anything else reads as `-`.
 - Agents sometimes call their provider outside the base URL. A lent sandbox holds no credential for
   those, so the calls are refused locally rather than left to go out and fail.
   `--block-side-calls=false` turns that off.

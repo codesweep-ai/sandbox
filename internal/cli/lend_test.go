@@ -217,19 +217,102 @@ func TestLoansAreReportedWithoutTheirTokens(t *testing.T) {
 }
 
 // The CREDS column is the difference between a sandbox that holds your
-// credentials and one that only borrows them.
+// credentials and one that only borrows them — and, within holding, between a
+// credential that arrived through a grant and one handed over as a plain
+// variable. The last of those read as "-" until it was recorded, which is how a
+// sandbox holding a live API key looked exactly like one holding nothing.
 func TestCredsColumn(t *testing.T) {
 	for _, c := range []struct {
-		held, borrowed []string
-		want           string
+		held, env, borrowed []string
+		want                string
 	}{
-		{nil, nil, "-"},
-		{[]string{"claude"}, nil, "held"},
-		{nil, []string{"claude"}, "lent"},
-		{[]string{"codex"}, []string{"anthropic"}, "held+lent"},
+		{nil, nil, nil, "-"},
+		{[]string{"claude"}, nil, nil, "held"},
+		{nil, nil, []string{"claude"}, "lent"},
+		{nil, []string{"OPENAI_API_KEY"}, nil, "env"},
+		{[]string{"codex"}, nil, []string{"anthropic"}, "held+lent"},
+		{nil, []string{"OPENAI_API_KEY"}, []string{"claude"}, "env+lent"},
+		{[]string{"codex"}, []string{"FIREWORKS_API_KEY"}, []string{"claude"}, "held+env+lent"},
 	} {
-		if got := creds(c.held, c.borrowed); got != c.want {
-			t.Errorf("creds(%v, %v) = %q, want %q", c.held, c.borrowed, got, c.want)
+		if got := creds(c.held, c.env, c.borrowed); got != c.want {
+			t.Errorf("creds(%v, %v, %v) = %q, want %q", c.held, c.env, c.borrowed, got, c.want)
+		}
+	}
+}
+
+// The whole path, from what create recorded to what a listing says: a sandbox
+// given a key through --env must read as holding one, in the table and in the
+// JSON, and the value must not appear in either.
+func TestLsReportsAnEnvHeldCredential(t *testing.T) {
+	dir := t.TempDir()
+	if err := state.Save(dir, &state.Instance{
+		Name: "box", Group: state.DefaultGroup, Type: "agent", Engine: state.Podman,
+		Port: 2200, Created: "2026-09-10T10:00:00Z",
+		EnvCredentials: []string{"OPENAI_API_KEY"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{InstDir: dir, TierDir: t.TempDir(), Runner: run.NewFake()}
+	var buf bytes.Buffer
+	if err := runLs(context.Background(), app, &buf, false); err != nil {
+		t.Fatal(err)
+	}
+	// The point of the change: this row used to be indistinguishable from a
+	// sandbox that held nothing.
+	if !strings.Contains(buf.String(), "env") {
+		t.Errorf("ls must mark a sandbox holding an env credential:\n%s", buf.String())
+	}
+	buf.Reset()
+	if err := runLsJSON(context.Background(), app, &buf); err != nil {
+		t.Fatal(err)
+	}
+	var items []lsItem
+	if err := json.Unmarshal(buf.Bytes(), &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || !slices.Equal(items[0].EnvCredentials, []string{"OPENAI_API_KEY"}) {
+		t.Errorf("ls --json envcredentials = %+v, want [OPENAI_API_KEY]", items)
+	}
+}
+
+// `ls` gives one word per sandbox; inspect is where you find out which
+// credential and how it got there. All three kinds have to be legible, and a
+// sandbox that holds one must never read as a sandbox that borrows one.
+func TestInspectTableDistinguishesHeldFromBorrowed(t *testing.T) {
+	var out bytes.Buffer
+	if err := writeInspectTable(&out, inspectItem{
+		Ref: "box.default", Group: state.DefaultGroup, Status: "running",
+		Engine: state.Podman, Network: "cs-sandbox-net", Port: 2200,
+		AgentLogins: []string{"claude"}, HeldKeys: []string{"openai"},
+		EnvCredentials: []string{"FIREWORKS_API_KEY"}, Loans: []string{"anthropic"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"AGENT LOGINS", "API KEYS", "openai", "copied in",
+		"ENV CREDENTIALS", "FIREWORKS_API_KEY", "plain variables",
+		"LOANS", "anthropic", "stay on the host",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("inspect output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// What makes the column possible: a credential handed in with --env is
+// recognised as one, by name, off the same slot table the lender uses. A
+// variable that merely points a client somewhere is not a credential.
+func TestEnvCredentialsAreRecognisedByName(t *testing.T) {
+	got := envCredentialNames("OPENAI_API_KEY=sk-xxx\nPATH=/usr/bin\nANTHROPIC_BASE_URL=http://x\nFIREWORKS_API_KEY=fw\n")
+	want := []string{"OPENAI_API_KEY", "FIREWORKS_API_KEY"}
+	if !slices.Equal(got, want) {
+		t.Errorf("envCredentialNames = %v, want %v", got, want)
+	}
+	// The names are what is kept. A value reaching state would put a live
+	// credential in a file this tool prints without thinking about it.
+	for _, n := range got {
+		if strings.Contains(n, "=") || strings.Contains(n, "sk-") {
+			t.Errorf("a value leaked into the recorded name: %q", n)
 		}
 	}
 }

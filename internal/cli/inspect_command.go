@@ -43,8 +43,14 @@ type inspectItem struct {
 	IP     string `json:"ip,omitempty"`
 	CPUs   int    `json:"cpus,omitempty"`
 	MemMiB int    `json:"mem,omitempty"`
-	// AgentLogins are the agents whose host login was inherited at create.
-	AgentLogins []string `json:"agentlogins,omitempty"`
+	// AgentLogins are the agents whose host login was inherited at create, and
+	// HeldKeys the providers whose key was. EnvCredentials are the credential
+	// variables handed in with --env: the same posture arrived at by the weakest
+	// route, named so it cannot be mistaken for holding nothing. Names only —
+	// the values are secrets and this output is not.
+	AgentLogins    []string `json:"agentlogins,omitempty"`
+	HeldKeys       []string `json:"heldkeys,omitempty"`
+	EnvCredentials []string `json:"envcredentials,omitempty"`
 	// Loans are the credentials this sandbox borrows rather than holds: the
 	// slot names only, because the tokens are secrets and this output is not.
 	Loans     []string `json:"loans,omitempty"`
@@ -97,7 +103,8 @@ func (a *App) inspectOne(ctx context.Context, in *state.Instance) inspectItem {
 		Network: state.NetworkName(in.Group), Created: in.Created,
 		Yolo: in.Yolo, Solo: in.Solo, Port: in.Port,
 		IP: in.FCIP, CPUs: in.CPUs, MemMiB: in.MemMiB,
-		AgentLogins: in.AgentLogins, Snapshots: in.Snapshots,
+		AgentLogins: in.AgentLogins, HeldKeys: in.HeldKeys, EnvCredentials: in.EnvCredentials,
+		Snapshots:   in.Snapshots,
 		ImageStores: in.Shared, Loans: loanSlots(a.InstDir, in.Group, in.Name),
 	}
 	for _, rc := range in.RepoClones {
@@ -131,6 +138,12 @@ func writeInspectTable(out io.Writer, item inspectItem) error {
 	row("SOLO", yn(item.Solo))
 	if len(item.AgentLogins) > 0 {
 		row("AGENT LOGINS", strings.Join(item.AgentLogins, ", "))
+	}
+	if len(item.HeldKeys) > 0 {
+		row("API KEYS", strings.Join(item.HeldKeys, ", ")+" (copied in; this sandbox holds the key)")
+	}
+	if len(item.EnvCredentials) > 0 {
+		row("ENV CREDENTIALS", strings.Join(item.EnvCredentials, ", ")+" (passed in as plain variables; this sandbox holds the value)")
 	}
 	if len(item.Loans) > 0 {
 		row("LOANS", strings.Join(item.Loans, ", ")+" (borrowed; the credentials stay on the host)")

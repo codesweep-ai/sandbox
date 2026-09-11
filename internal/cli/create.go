@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
@@ -178,6 +179,11 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	for _, w := range warns {
 		fmt.Fprintln(os.Stderr, "cs-sandbox: "+w)
 	}
+	// Read before the loan env is merged in below, so this names only what the
+	// CALLER injected. A lent sandbox also ends up with a credential variable —
+	// holding a loan token, which is the opposite posture and already reported
+	// as such.
+	envCreds := envCredentialNames(injected)
 
 	// The group's artifacts (network, keys, gateway) and its record must exist
 	// before Deps is built: the engines take a COPY of Deps, so a field set
@@ -249,6 +255,7 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		Name: name, Group: f.group, Type: f.typ, Yolo: f.yolo, Solo: f.solo, Privileged: f.privileged,
 		CPUs: f.cpus, MemMiB: f.mem, DiskGB: f.disk, Snapshots: snaps, RepoClones: repos,
 		ImageStores: f.imageStores, InjectedEnv: injected, InheritAgentLogin: f.inheritAgentLogin,
+		InheritAPIKey: f.inheritAPIKey, EnvCredentials: envCreds,
 		LentCredentials: plan.seeded,
 	}
 	inst, err := eng.Create(ctx, cs)
@@ -297,6 +304,12 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		fmt.Fprintf(out, "  agent login: none — add --lend-agent-login %s to lend yours, --inherit-agent-login %s to copy it in, or run 'cs-sandbox agent-login %s %s'\n",
 			seed.AgentNames()[0], seed.AgentNames()[0], seed.AgentNames()[0], name)
 	}
+	// Said at create, not only in `ls` afterwards: this is the cheapest moment
+	// to notice that a sandbox was handed the credential itself.
+	if len(envCreds) > 0 {
+		fmt.Fprintf(out, "  env credentials: %s (passed in as plain variables — this sandbox holds the value; --lend-api-key keeps it on the host)\n",
+			strings.Join(envCreds, " + "))
+	}
 	for _, n := range plan.notes {
 		fmt.Fprintf(out, "  %s\n", n)
 	}
@@ -327,6 +340,29 @@ func resolveEnv(f *createFlags) (string, []string) {
 	}
 	block, w := seed.ResolveInjectedEnv(f.envs, fileSets, os.LookupEnv)
 	return block, append(warns, w...)
+}
+
+// envCredentialNames picks the credential-bearing variables out of a resolved
+// env block, by name.
+//
+// A sandbox handed OPENAI_API_KEY through --env holds a real key exactly as
+// much as one that inherited it through a grant, but nothing recorded it, so
+// `ls` showed it as holding nothing — the same as an empty sandbox. This is
+// what lets the listing tell those apart.
+//
+// Names only. The values are credentials and stay out of state.
+func envCredentialNames(block string) []string {
+	var out []string
+	for line := range strings.SplitSeq(block, "\n") {
+		name, _, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		if lend.IsCredentialEnv(name) && !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func envOr(key, def string) string {

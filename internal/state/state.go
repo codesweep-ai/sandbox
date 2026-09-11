@@ -317,9 +317,22 @@ type Instance struct {
 	Shared  []string `json:"shared,omitempty"` // image-store names
 	// AgentLogins are the agents whose host login was inherited at create
 	// (--inherit-agent-login), so `ls` can show which sandboxes hold credentials.
-	AgentLogins []string    `json:"agentlogins,omitempty"`
-	Snapshots   []string    `json:"snapshots,omitempty"` // "hostpath:name"
-	RepoClones  []RepoClone `json:"repoclones,omitempty"`
+	AgentLogins []string `json:"agentlogins,omitempty"`
+	// HeldKeys are the providers whose key was copied in (--inherit-api-key).
+	// Recorded for the same reason as the logins above: a copied key is a
+	// credential this sandbox holds, and a listing that showed one and not the
+	// other would call the same posture two different things.
+	HeldKeys []string `json:"heldkeys,omitempty"`
+	// EnvCredentials are credential-bearing variables that arrived as plain
+	// --env / --env-file injections rather than through a grant.
+	//
+	// The weakest way in and, until it was recorded here, the only one that was
+	// invisible: the sandbox held a real key and `ls` showed it the same as a
+	// sandbox holding nothing at all. What is stored is the variable NAME. The
+	// value is the credential and is never written to state.
+	EnvCredentials []string    `json:"envcredentials,omitempty"`
+	Snapshots      []string    `json:"snapshots,omitempty"` // "hostpath:name"
+	RepoClones     []RepoClone `json:"repoclones,omitempty"`
 }
 
 // Dir returns the on-disk instance directory. Identity is (group, name), so the

@@ -31,6 +31,11 @@ type CreateSpec struct {
 	ImageStores       []string
 	InjectedEnv       string   // resolved KEY=VALUE block
 	InheritAgentLogin []string // --inherit-agent-login: agents whose host login to carry in
+	InheritAPIKey     []string // --inherit-api-key: providers whose key is copied in
+	// EnvCredentials are credential-bearing variable NAMES that came in through
+	// --env / --env-file. Recorded on the instance so a listing can tell a
+	// sandbox holding a raw key from one holding nothing.
+	EnvCredentials []string
 	// LentCredentials are the fabricated credential files a lent sandbox holds
 	// in place of a real login: the agent's own file shape, with a value only
 	// the host's lender can spend.

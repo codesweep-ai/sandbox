@@ -246,7 +246,8 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 	}
 	inst = &state.Instance{
 		Name: s.Name, Group: p.d.group(), Type: s.Type, Engine: state.Podman, Yolo: s.Yolo, Solo: s.Solo,
-		Shared: s.ImageStores, AgentLogins: agentLogins, Created: nowUTC(),
+		Shared: s.ImageStores, AgentLogins: agentLogins, HeldKeys: s.InheritAPIKey,
+		EnvCredentials: s.EnvCredentials, Created: nowUTC(),
 	}
 	// Serialize the race-sensitive prefix — port allocation through the claim —
 	// as the firecracker engine does for its ip+port. Without this, two parallel

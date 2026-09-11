@@ -97,6 +97,13 @@ Firecracker where the host has KVM, and to Podman otherwise.
 assumption. Prefer the `--lend-…` pair: they give an agent everything it needs while your credential
 stays on the host. [Lending a credential](#lending-a-credential) is the whole of that story.
 
+A credential can also arrive as a plain variable, as in `--env OPENAI_API_KEY`. That is the weakest
+of the three ways in. The sandbox holds the real key for as long as the sandbox exists, and nothing
+on the host can revoke it. `create` names the credential variables it injected, and `ls` marks the
+sandbox `env` in its CREDS column. Both cover the variables the lendable providers read, which
+[Lending a credential](#lending-a-credential) lists. A key for any other provider is an ordinary
+variable to this tool, and the column stays `-`.
+
 A directory shared with `--repo` or `--snapshot` arrives owned by your user inside the sandbox,
 whoever owns it on the host. The host source keeps the ownership it has.
 
@@ -141,6 +148,7 @@ sandbox shares several.
 
 ```
 cs-sandbox ls [--json] [-q]         # GROUP NAME STATUS AGE TYPE ENGINE YOLO SOLO CREDS
+                                    # CREDS: held | env | lent | - (combining with +)
 cs-sandbox inspect <name> [--json]  # everything recorded about one
 cs-sandbox stop <name>              # shut it down, keep everything
 cs-sandbox start <name>             # bring it back
