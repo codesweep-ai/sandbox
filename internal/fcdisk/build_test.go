@@ -657,6 +657,77 @@ func TestWithArtifactLockReports(t *testing.T) {
 // TestEnsureArtifactsTakesTheLock: the guarantee has to hold at the real entry
 // point, not just in the helper. EnsureArtifacts fails here (the fake runner
 // downloads nothing) — what matters is that it locked the cache on the way.
+// TestEnsureArtifactsSaysWhatIsReady: a second `build` on a host where every
+// artifact is fresh does no work and so said nothing, ending on the "setting
+// up…" line with the one question it was asked — is it there and current? —
+// answered only by the absence of an error.
+func TestEnsureArtifactsSaysWhatIsReady(t *testing.T) {
+	const pin = "6.19.10-300.fc44"
+	dir := t.TempDir()
+	src := filepath.Join(dir, "initramfs-init.c")
+	if err := os.WriteFile(src, []byte("int main(void){return 0;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := Cache{Dir: t.TempDir()}
+	var said []string
+	c.Progress = func(m string) { said = append(said, m) }
+	bc := BuildConfig{Kernel: "fedora", KVerPin: pin, Image: "img", InitramfsSrc: src,
+		InitPath: filepath.Join(dir, "init")}.Defaulted()
+	writeFile(t, bc.InitPath)
+
+	// A cache with nothing left to do: the VMM, the kernel, and a rootfs whose
+	// stamp matches the image the fake reports.
+	writeFile(t, c.FirecrackerBin())
+	writeFile(t, c.Kernel())
+	writeFile(t, c.Initrd())
+	writeFile(t, filepath.Join(c.Dir, "modules.tar"))
+	writeExt4(t, c.BaseRootfs(bc.Image))
+	initData, err := os.ReadFile(bc.InitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inithash := sha256.Sum256(initData)
+	for k, v := range map[string]string{
+		"fc-version":    bc.FCVersion,
+		"kver":          pin + ".x86_64",
+		"kernel-mode":   "fedora",
+		"kver-pin":      pin,
+		"initramfs-src": initramfsStamp(bc),
+		baseRootfsStampName(bc.Image): baseRootfsStamp("sha256:cafe", pin+".x86_64", "fedora",
+			hex.EncodeToString(inithash[:])[:12], bc.RootfsGB),
+	} {
+		if err := c.writeStamp(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	f := run.NewFake().OnStdout("image inspect", "sha256:cafe 123")
+	if err := c.EnsureArtifacts(context.Background(), f, bc); err != nil {
+		t.Fatalf("EnsureArtifacts over a fresh cache = %v, want nil", err)
+	}
+	var ready string
+	for _, m := range said {
+		if strings.HasPrefix(m, "ready:") {
+			ready = m
+		}
+	}
+	if ready == "" {
+		t.Fatalf("nothing said what the cache holds; said %q", said)
+	}
+	for _, want := range []string{bc.FCVersion, pin + ".x86_64", "base filesystem"} {
+		if !strings.Contains(ready, want) {
+			t.Errorf("ready line = %q, want it to name %q", ready, want)
+		}
+	}
+	// And it really was a no-op: the only command is the image inspect the stamp
+	// is checked against.
+	for _, call := range f.Calls {
+		if len(call) > 1 && call[1] != "image" {
+			t.Errorf("a fresh cache shelled out: %s", f)
+		}
+	}
+}
+
 func TestEnsureArtifactsTakesTheLock(t *testing.T) {
 	c := Cache{Dir: t.TempDir()}
 	if err := c.EnsureArtifacts(context.Background(), run.NewFake(), BuildConfig{}); err == nil {

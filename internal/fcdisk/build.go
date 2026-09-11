@@ -219,9 +219,45 @@ func (c Cache) EnsureArtifacts(ctx context.Context, r run.Runner, bc BuildConfig
 		if err := c.ensureKernel(ctx, r, bc); err != nil {
 			return err
 		}
-		return c.ensureBaseRootfs(ctx, r, bc)
+		if err := c.ensureBaseRootfs(ctx, r, bc); err != nil {
+			return err
+		}
+		c.sayArtifactsReady(bc)
+		return nil
 	})
 }
+
+// sayArtifactsReady closes the artifact step by naming what the cache now holds.
+//
+// Each step above is silent when it has nothing to do, which is the right shape
+// while a build is working and the wrong one when it finishes: a second `build`
+// on a host where everything is fresh printed the "setting up…" line and then
+// nothing at all, leaving the one question it was asked — is the thing there and
+// current? — answered only by the absence of an error.
+//
+// The figures come from the cache rather than from the steps, so the line reads
+// the same whether a step built its artifact just now or found it already built.
+// Anything missing is left out rather than reported as empty; the only way to
+// reach this line with a gap is a kernel mode that records no version.
+func (c Cache) sayArtifactsReady(bc BuildConfig) {
+	parts := make([]string, 0, 3)
+	if v := c.readStamp("fc-version"); v != "" {
+		parts = append(parts, "firecracker "+v)
+	}
+	if k := c.readStamp("kver"); k != "" {
+		parts = append(parts, "guest kernel "+k)
+	}
+	if b := c.BaseRootfsBytes(bc.Image); b > 0 {
+		parts = append(parts, "base filesystem "+gib(b))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	c.say("ready: %s", strings.Join(parts, ", "))
+}
+
+// gib renders a size the way every line here quotes one.
+func gib(b int64) string { return fmt.Sprintf("%.1f GiB", float64(b)/(1<<30)) }
 
 // artifactLock is the lock file serializing access to one artifact cache.
 const artifactLock = ".artifacts.lock"
@@ -831,7 +867,7 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 	// its own; the size is the cheap proof that a filesystem was written rather
 	// than a hole, since the file is a 32 GiB sparse one either way.
 	if b := c.BaseRootfsBytes(bc.Image); b > 0 {
-		c.say("built the base sandbox filesystem: %.1f GiB in %s", float64(b)/(1<<30), time.Since(start).Round(time.Second))
+		c.say("built the base sandbox filesystem: %s in %s", gib(b), time.Since(start).Round(time.Second))
 	} else {
 		c.say("built the base sandbox filesystem in %s", time.Since(start).Round(time.Second))
 	}
