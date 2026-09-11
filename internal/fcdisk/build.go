@@ -26,26 +26,44 @@ import (
 // base-image major bump (e.g. 44 → 45), to that release's GA kernel-core NVR.
 const DefaultKVerPin = "6.19.10-300.fc44"
 
-// extractVmlinuxRef is the linux.git tag the kernel build takes
-// scripts/extract-vmlinux from — the script that unwraps a compressed vmlinuz
-// into the vmlinux.elf firecracker boots. It deliberately names DefaultKVerPin's
-// series, so the script and the image it decompresses come from one tree and
-// both move together on a Fedora bump rather than drifting apart.
+// unwrapVmlinuxScript turns the packaged bzImage into the uncompressed ELF
+// firecracker boots (R119), which is a scan for the compressed payload inside it
+// followed by the matching decompressor.
 //
-// The fetch retries, and says so when it gives up. A 429 from
-// raw.githubusercontent is the failure this build actually hits: it rate-limits
-// unauthenticated requests from shared CI egress, and one such request is all
-// that stands between a green run and a red one. Pinning made that visible
-// rather than causing it — the artifact cache is keyed on this package, so
-// changing the pin was simply the first thing in months to force a real rebuild.
+// It is in this repository rather than fetched because the alternative was one
+// unauthenticated request to raw.githubusercontent on every kernel build — for
+// upstream's scripts/extract-vmlinux — and that host rate-limits shared CI
+// egress with a 429. One such request stood between a green run and a red one,
+// for a file whose whole content is the twelve lines below.
 //
-// It is pinned rather than read from master because this script's stdout IS the
-// artifact. The file sat unchanged from 2019 to 2025 and then changed twice in
-// six weeks; one of those commits added a progress line that, had it gone to
-// stdout instead of stderr, would have prepended text to every extracted kernel
-// and still exited 0. Upstream tags are signed and never move, so naming one is
-// a real anchor — v6.19 through v7.2 and master are byte-identical today.
-const extractVmlinuxRef = "v6.19"
+// This output IS the artifact, which is why the step is careful about what it
+// accepts: a decompressor that succeeds on the wrong offset, or one that writes
+// a diagnostic to stdout, would hand the guest a kernel with something else in
+// front of it. Only an output `readelf` recognises as an ELF is taken, and every
+// decompressor writes to a file rather than to the pipeline's stdout.
+//
+// Verified against the fetched script it replaces: both produce the same
+// 75,346,184-byte vmlinux.elf, sha256 906957f7…, from the pinned F44 kernel.
+//
+// The formats are in the order a distro is likely to use, and zstd is first
+// because Fedora's kernel is zstd-compressed. A format whose decompressor is not
+// in the image is skipped rather than failed, so this stays correct on an image
+// that carries fewer of them.
+const unwrapVmlinuxScript = `unwrap_vmlinux() {
+  _img=$1; _out=$2
+  for _spec in '\050\265\057\375:zstd -dc' '\037\213\010:gzip -dc' '\375\067\172\130\132\000:xz -dc' \
+               '\135\000\000\000:lzma -dc' '\102\132\150:bzip2 -dc' '\002\041\114\030:lz4 -dc'; do
+    _magic=${_spec%%:*}; _dec=${_spec#*:}
+    command -v ${_dec%% *} >/dev/null 2>&1 || continue
+    for _pos in $(LC_ALL=C grep -abo "$(printf "$_magic")" "$_img" 2>/dev/null | cut -d: -f1); do
+      tail -c "+$((_pos + 1))" "$_img" | $_dec > "$_out" 2>/dev/null || true
+      if readelf -h "$_out" >/dev/null 2>&1; then return 0; fi
+    done
+  done
+  echo "fc: no compressed kernel found inside $_img" >&2
+  return 1
+}
+`
 
 // DefaultFCVersion is the firecracker release tag the host VMM binary is pinned
 // to when CS_SANDBOX_FC_VERSION is unset. The cached binary carries an
@@ -511,17 +529,14 @@ func (c Cache) buildFedoraBootArtifacts(ctx context.Context, r run.Runner, bc Bu
 		return fmt.Errorf("fc: reading initramfs source %s: %w", bc.InitramfsSrc, err)
 	}
 	script := `set -e
+` + unwrapVmlinuxScript + `
 FC_SPEC="$FC_KPKG.$(uname -m)"
 dnf install -y --setopt=install_weak_deps=False "$FC_SPEC" gcc glibc-static cpio zstd xz gzip binutils file >/dev/null \
   || { echo "fc: dnf could not install $FC_SPEC (pinned kernel no longer in the Fedora repos? bump CS_SANDBOX_FC_KVER)" >&2; exit 1; }
 KVER=$(ls -1 /lib/modules | head -1)
 VMZ=/lib/modules/$KVER/vmlinuz; [ -f "$VMZ" ] || VMZ=/boot/vmlinuz-$KVER
-curl -fsSL --retry 6 --retry-delay 2 --retry-max-time 180 --retry-all-errors \
-  https://raw.githubusercontent.com/torvalds/linux/` + extractVmlinuxRef + `/scripts/extract-vmlinux -o /tmp/ev \
-  || { echo "fc: could not fetch extract-vmlinux at ` + extractVmlinuxRef + ` — raw.githubusercontent rate-limits shared CI egress (HTTP 429), and this is the one build input fetched from it" >&2; exit 1; }
-chmod +x /tmp/ev
 mkdir -p /artifacts
-/tmp/ev "$VMZ" > /artifacts/vmlinux.elf
+unwrap_vmlinux "$VMZ" /artifacts/vmlinux.elf
 ` + initramfsBuildScript + `
 tar -C /lib/modules -cf /artifacts/modules.tar "$KVER"
 echo "$KVER" > /artifacts/kver`

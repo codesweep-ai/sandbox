@@ -1125,18 +1125,23 @@ PVH boot protocol.
 **R120.** The default kernel **MUST** be built from the sandbox image in a throwaway container, pinned by
 version. The same kernel then boots on any host, with no dependency on the host's `/boot`.
 
-**R120a.** The script that unwraps the packaged kernel into that ELF **MUST** be pinned to an upstream
-tag, in the same series as the kernel it unwraps.
+**R120a.** The step that unwraps the packaged kernel into that ELF **MUST** be part of this
+repository rather than fetched at build time. It **MUST** accept only an output the toolchain
+recognises as an ELF.
 
 **R121.** The initrd **MUST** be purpose-built rather than generated with `dracut`.
 
 **R122.** The cached initrd **MUST** be keyed by a hash of its source, so editing the source rebuilds the
 boot artifacts.
 
-R120a is about what the pin protects. This script's stdout IS the artifact, so a line printed to the
-wrong stream would prepend text to every kernel it extracts and still exit 0. The file sat unchanged
-from 2019 to 2025 and then changed twice in six weeks. Naming a tag is a real anchor, because
-upstream tags are signed and never move.
+R120a is about what a kernel build is allowed to depend on. This step's output IS the artifact. A
+decompressor that succeeds at the wrong offset, or one that writes a diagnostic to stdout, would put
+bytes in front of the kernel and still exit 0. That is what the ELF check on its output is for.
+
+The job was upstream's `extract-vmlinux`, fetched from raw.githubusercontent on every kernel
+build and pinned to a tag against exactly that risk. The fetch turned out to be the larger risk,
+because that host throttles shared CI egress with a 429. One such request stood between a green run
+and a red one, for twelve lines the build can carry itself.
 
 An initrd is unavoidable, because Fedora builds `CONFIG_VIRTIO_MMIO` as a module: no block device
 exists until it is loaded, so the kernel cannot mount its root on its own. The purpose-built init
