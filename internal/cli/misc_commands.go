@@ -12,6 +12,7 @@ import (
 
 	assets "github.com/codesweep-ai/sandbox"
 	"github.com/codesweep-ai/sandbox/internal/engine"
+	"github.com/codesweep-ai/sandbox/internal/fcdisk"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/spf13/cobra"
 )
@@ -97,6 +98,14 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim, localSandbox
 		return err
 	}
 
+	// The VMM download needs neither the image nor the kernel, and it is ~7 MB
+	// against the 2.14 GB below it. Start it here and collect it after, so it
+	// costs the wall clock of whichever is slower rather than the sum.
+	var vmm *fcdisk.Download
+	if wantFC {
+		vmm = engine.NewFirecracker(app.engineDeps()).StartVMM(cmd.Context())
+	}
+
 	// Prefer the published image. It is named after the version that would build
 	// it, so pulling is not a shortcut to a lesser thing — it is the same image,
 	// in a fraction of the time. Nothing is published for a dirty tree or an
@@ -116,6 +125,18 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim, localSandbox
 	// the image just produced. Prepare() preflights first, so a host missing the
 	// FC packages or /dev/kvm fails fast with an actionable error.
 	if wantFC {
+		// The VMM was fetched alongside everything above. Draw its bar only now:
+		// on a link where it is already finished this prints nothing at all, and
+		// on one where it is not, the terminal is finally free to say so — until
+		// this point `podman pull` was attached to it, drawing bars of its own.
+		if label := vmm.Label(); label != "" {
+			stop := app.bars().Watch(label, func() (int64, int64) { return vmm.Bytes(), vmm.Total() })
+			err := vmm.Wait()
+			stop()
+			if err != nil {
+				return err
+			}
+		}
 		app.phase("setting up firecracker artifacts…")
 		// The FC build emits top-level phase lines (guest kernel, base rootfs,
 		// firecracker download), so route this engine's callback to phase (shown

@@ -19,6 +19,7 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/paths"
+	"github.com/codesweep-ai/sandbox/internal/progress"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/state"
 	"github.com/spf13/cobra"
@@ -222,8 +223,20 @@ func (a *App) engineDepsBase() engine.Deps {
 		StartTimeout: a.Timeout,
 		Progress:     a.progress,
 		Note:         a.note,
+		Bars:         a.bars(),
 		DryRun:       a.Exec != nil && a.Exec.DryRun,
 	}
+}
+
+// bars is the progress-bar reporter for the long steps of a build, drawn on the
+// same stream as the phase lines they sit under. --quiet turns them off with
+// everything else; off a terminal the reporter draws nothing of its own accord,
+// so a log keeps the phase lines and none of the redrawing.
+func (a *App) bars() *progress.Reporter {
+	if a.Quiet {
+		return nil
+	}
+	return &progress.Reporter{W: a.stderr()}
 }
 
 // note prints an always-shown advisory to stderr (not verbosity-gated) — e.g. the

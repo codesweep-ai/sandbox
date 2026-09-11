@@ -21,6 +21,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/codesweep-ai/sandbox/internal/progress"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/seed"
 )
@@ -29,6 +30,10 @@ import (
 type Cache struct {
 	Dir      string       // firecracker artifact cache dir (XDG cache: $XDG_CACHE_HOME/cs-sandbox)
 	Progress func(string) // optional sink for human-facing progress lines; nil = silent
+	// Bars draws the in-place progress bars for the two steps here that are a
+	// minute of one silent subprocess. nil draws none, which is what tests and a
+	// non-terminal caller get.
+	Bars *progress.Reporter
 }
 
 // say emits a progress line, or nothing when no reporter is wired (e.g. tests).

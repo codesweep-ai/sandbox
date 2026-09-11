@@ -374,6 +374,66 @@ func TestFCRefreshReason(t *testing.T) {
 
 // TestEnsureFirecrackerBinReusesFreshCache: a cache already at the pinned
 // version must not curl anything.
+// TestStartFirecrackerBinIsSilentAndNilWhenCached: the download runs alongside
+// `podman pull`, which is attached to the terminal drawing bars of its own.
+// Anything this said while that happens would land in the middle of them, so it
+// says nothing and the caller reports it afterwards. A cache that already holds
+// the pinned release starts nothing at all.
+func TestStartFirecrackerBinIsSilentAndNilWhenCached(t *testing.T) {
+	bc := BuildConfig{}.Defaulted()
+	c := Cache{Dir: t.TempDir()}
+	var said []string
+	c.Progress = func(m string) { said = append(said, m) }
+
+	writeFile(t, c.FirecrackerBin())
+	if err := c.writeStamp("fc-version", bc.FCVersion); err != nil {
+		t.Fatal(err)
+	}
+	if d := c.StartFirecrackerBin(context.Background(), run.NewFake(), bc); d != nil {
+		t.Errorf("StartFirecrackerBin with the pinned release cached = %v, want nil", d)
+	}
+
+	// Stale instead: it starts, and still says nothing.
+	if err := c.writeStamp("fc-version", "v0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	d := c.StartFirecrackerBin(context.Background(), run.NewFake(), bc)
+	if d == nil {
+		t.Fatal("StartFirecrackerBin with a stale cache = nil, want a download")
+	}
+	if !strings.Contains(d.Label(), bc.FCVersion) {
+		t.Errorf("label = %q, want it to name %s", d.Label(), bc.FCVersion)
+	}
+	_ = d.Wait()
+	if len(said) != 0 {
+		t.Errorf("the background download said %q; podman's pull owns the terminal while it runs", said)
+	}
+}
+
+// TestDownloadIsNilSafe: a build with no firecracker to fetch holds a nil
+// handle and must be able to treat it like any other.
+func TestDownloadIsNilSafe(t *testing.T) {
+	var d *Download
+	if d.Label() != "" || d.Total() != 0 || d.Bytes() != 0 || d.Wait() != nil {
+		t.Error("a nil *Download must read as nothing to do")
+	}
+}
+
+// TestContentLengthTakesTheLastHeader: -L follows GitHub's redirect to the host
+// that actually serves the asset, and every hop carries a content-length of its
+// own. The redirect's is the size of the redirect.
+func TestContentLengthTakesTheLastHeader(t *testing.T) {
+	f := run.NewFake().OnStdout("curl -fsSLI", "HTTP/2 302\r\ncontent-length: 0\r\n\r\nHTTP/2 200\r\nContent-Length: 3538944\r\n\r\n")
+	if got := contentLength(context.Background(), f, "https://example.invalid/x.tgz"); got != 3538944 {
+		t.Errorf("contentLength = %d, want the last header's 3538944", got)
+	}
+	// A failed HEAD is not a failed download: the bar just loses its proportion.
+	bad := run.NewFake().On("curl -fsSLI", run.Result{ExitCode: 1}, &run.ExitError{ExitCode: 1})
+	if got := contentLength(context.Background(), bad, "https://example.invalid/x.tgz"); got != 0 {
+		t.Errorf("contentLength after a failed HEAD = %d, want 0", got)
+	}
+}
+
 func TestEnsureFirecrackerBinReusesFreshCache(t *testing.T) {
 	bc := BuildConfig{}.Defaulted()
 	c := Cache{Dir: t.TempDir()}

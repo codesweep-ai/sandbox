@@ -59,7 +59,18 @@ func (fe *Firecracker) fabric() fcnet.Fabric {
 }
 
 func (fe *Firecracker) cache() fcdisk.Cache {
-	return fcdisk.Cache{Dir: fe.d.FCCache, Progress: fe.d.Progress}
+	return fcdisk.Cache{Dir: fe.d.FCCache, Progress: fe.d.Progress, Bars: fe.d.Bars}
+}
+
+// StartVMM begins the firecracker binary download in the background, for a
+// caller with something else to do first — `build` starts it alongside the image
+// pull, which it needs nothing from. The returned handle MUST be waited on
+// before Prepare: the download holds the artifact lock while it runs.
+//
+// No preflight here. This is 3.4 MB fetched on speculation, and Prepare is where
+// a host missing /dev/kvm or an FC package is told so.
+func (fe *Firecracker) StartVMM(ctx context.Context) *fcdisk.Download {
+	return fe.cache().StartFirecrackerBin(ctx, fe.d.Runner, fe.buildConfig())
 }
 
 // buildConfig gathers the inputs the artifact BUILD path needs. An empty

@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/lock"
@@ -278,6 +279,133 @@ func (c Cache) fcRefreshReason(bc BuildConfig) string {
 	return ""
 }
 
+// Download is a firecracker VMM download running in the background, and the
+// handle whoever started it renders and waits on.
+//
+// It exists because the VMM is ~7 MB of network that used to queue behind a
+// 2.14 GB image pull for no reason: it needs neither the image nor the kernel.
+// Started alongside the pull it is usually finished before the pull is, and on a
+// link slow enough that it is not, the caller draws the bar for the remainder.
+//
+// The bar belongs to the caller rather than to this download for one practical
+// reason: `podman pull` runs attached to the terminal and draws bars of its own,
+// so anything written from here while it runs lands in the middle of them. This
+// download stays silent, and the caller — which knows when the pull is over —
+// decides when the line is free.
+//
+// Every method is nil-safe, so a caller with no firecracker to fetch holds a nil
+// *Download and treats it like any other.
+type Download struct {
+	label string
+	path  string       // the file curl is writing, which is how far it has got
+	total atomic.Int64 // Content-Length, set once the HEAD lands; 0 = unknown
+	done  chan error
+}
+
+// Label names what is being fetched, or "" when nothing is.
+func (d *Download) Label() string {
+	if d == nil {
+		return ""
+	}
+	return d.label
+}
+
+// Total is the size the server promised, or 0 before the HEAD lands and where it
+// did not say.
+func (d *Download) Total() int64 {
+	if d == nil {
+		return 0
+	}
+	return d.total.Load()
+}
+
+// Bytes is how much of it is on disk.
+func (d *Download) Bytes() int64 {
+	if d == nil {
+		return 0
+	}
+	fi, err := os.Stat(d.path)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
+}
+
+// Wait blocks until the download and its verification finish, and reports what
+// happened. Calling it more than once is a programming error; there is one
+// result to hand out.
+func (d *Download) Wait() error {
+	if d == nil || d.done == nil {
+		return nil
+	}
+	return <-d.done
+}
+
+// StartFirecrackerBin begins the VMM download in the background, or returns a
+// handle with nothing to do when the cache already holds the pinned release.
+// The caller MUST Wait before anything else touches the artifact cache: this
+// holds the artifact lock while it runs.
+func (c Cache) StartFirecrackerBin(ctx context.Context, r run.Runner, bc BuildConfig) *Download {
+	bc = bc.Defaulted()
+	if c.fcRefreshReason(bc) == "" {
+		return nil
+	}
+	arch, err := fcArch()
+	if err != nil {
+		d := &Download{done: make(chan error, 1)}
+		d.done <- err
+		return d
+	}
+	tgz := fmt.Sprintf("firecracker-%s-%s.tgz", bc.FCVersion, arch)
+	d := &Download{
+		label: "  firecracker " + bc.FCVersion,
+		path:  filepath.Join(c.Dir, tgz),
+		done:  make(chan error, 1),
+	}
+	// Silent while it runs: see the type comment. The lock is taken here rather
+	// than left to EnsureArtifacts because this runs before it, and flock is per
+	// *Lock rather than per process — the two must not overlap.
+	quiet := c
+	quiet.Progress, quiet.Bars = nil, nil
+	go func() {
+		d.total.Store(contentLength(ctx, r, fcReleaseURL(bc.FCVersion)+"/"+tgz))
+		d.done <- quiet.withArtifactLock(func() error {
+			return quiet.ensureFirecrackerBin(ctx, r, bc)
+		})
+	}()
+	return d
+}
+
+// fcReleaseURL is the release directory one firecracker version's assets live in.
+func fcReleaseURL(version string) string {
+	return "https://github.com/firecracker-microvm/firecracker/releases/download/" + version
+}
+
+// contentLength asks how big a download will be, for a progress bar's total.
+//
+// -I is a HEAD: one round trip that moves no payload. The LAST content-length
+// wins, because -L follows GitHub's redirect to the host actually serving the
+// asset and every hop carries a header of its own. Zero on any failure, which
+// draws a bar without a proportion — a progress bar is not worth failing a
+// download over, and the download itself reports its own errors.
+func contentLength(ctx context.Context, r run.Runner, url string) int64 {
+	res, err := r.Run(ctx, run.Opts{ReadOnly: true}, "curl", "-fsSLI", url)
+	if err != nil {
+		return 0
+	}
+	var n int64
+	for line := range strings.SplitSeq(res.Stdout, "\n") {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(k), "content-length") {
+			continue
+		}
+		if parsed, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+			n = parsed
+		}
+	}
+	return n
+}
+
 // ensureFirecrackerBin downloads + checksum-verifies the firecracker binary when
 // the cache is missing it or holds a different release than bc pins.
 func (c Cache) ensureFirecrackerBin(ctx context.Context, r run.Runner, bc BuildConfig) error {
@@ -293,7 +421,7 @@ func (c Cache) ensureFirecrackerBin(ctx context.Context, r run.Runner, bc BuildC
 	if err := os.MkdirAll(filepath.Join(c.Dir, "bin"), 0o755); err != nil {
 		return err
 	}
-	base := "https://github.com/firecracker-microvm/firecracker/releases/download/" + bc.FCVersion
+	base := fcReleaseURL(bc.FCVersion)
 	tgz := fmt.Sprintf("firecracker-%s-%s.tgz", bc.FCVersion, arch)
 	dl := filepath.Join(c.Dir, tgz)
 	if _, err := r.Run(ctx, run.Opts{}, "curl", "-fsSL", "-o", dl, base+"/"+tgz); err != nil {
@@ -595,9 +723,20 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 	if bc.Kernel == "host" && kver == "" {
 		kver = run.Output(ctx, r, "uname", "-r")
 	}
-	imgid := ""
+	imgid, imgsize := "", int64(0)
 	if bc.Image != "" {
-		imgid = run.Output(ctx, r, "podman", "image", "inspect", bc.Image, "--format", "{{.Id}}")
+		// Id and Size in one inspect. The size is the bar's total below: the
+		// filesystem is written from this image's own tree, so what the image
+		// occupies is what the ext4 is about to. It is an estimate — ext4 rounds
+		// every one of 145k files up to a block, so the real disk runs a few
+		// percent over — and the bar treats it as one.
+		fields := strings.Fields(run.Output(ctx, r, "podman", "image", "inspect", bc.Image, "--format", "{{.Id}} {{.Size}}"))
+		if len(fields) > 0 {
+			imgid = fields[0]
+		}
+		if len(fields) > 1 {
+			imgsize, _ = strconv.ParseInt(fields[1], 10, 64)
+		}
 	}
 	inithash := ""
 	if bc.InitPath != "" {
@@ -666,11 +805,24 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 	if bc.Kernel != "host" {
 		modTar = filepath.Join(c.Dir, "modules.tar")
 	}
+	// The bar watches the filesystem being written grow towards the image it is
+	// being written from, because mke2fs reports nothing while it copies. Its
+	// total includes the guest modules, which are unpacked into the tree the same
+	// pass reads.
+	total := imgsize
+	if fi, err := os.Stat(modTar); err == nil {
+		total += fi.Size()
+	}
+	sample := func() (int64, int64) { return c.BaseRootfsBytes(bc.Image), total }
+	stop := c.Bars.Watch("  base filesystem", sample)
 	err := c.buildBaseRootfsMounted(ctx, r, bc, rootfs, tmp, modTar, kver)
 	if errors.Is(err, errNoOverlayMount) {
+		stop()
 		c.say("%v — building it the slower way, by exporting the image", err)
+		stop = c.Bars.Watch("  base filesystem", sample)
 		err = c.buildBaseRootfsExported(ctx, r, bc, rootfs, tmp, modTar, kver)
 	}
+	stop()
 	_ = os.RemoveAll(tmp)
 	if err != nil {
 		return err
