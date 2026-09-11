@@ -87,3 +87,41 @@ func TestWith(t *testing.T) {
 		t.Fatalf("depth should be 0 after With, got %d", l.depth)
 	}
 }
+
+// TestSharedHoldersCoexistAndBlockTheExclusiveOne is the whole reason the shared
+// mode exists: several callers say "this is in use" at once, and the one caller
+// that would take the resource away is refused for as long as any of them does.
+func TestSharedHoldersCoexistAndBlockTheExclusiveOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".in-use.lock")
+	first, second, remover := NewAt(path), NewAt(path), NewAt(path)
+
+	if err := first.AcquireShared(); err != nil {
+		t.Fatal(err)
+	}
+	// The second user is not contention. Two creates lending out of one group
+	// are both using the lender, and neither waits on the other.
+	if err := second.AcquireShared(); err != nil {
+		t.Fatalf("a second shared holder was refused: %v", err)
+	}
+
+	ok, err := remover.TryAcquire()
+	if err != nil {
+		t.Fatalf("TryAcquire against shared holders = %v, want no error", err)
+	}
+	if ok {
+		t.Fatal("the lender would have been removed while a create was still using it")
+	}
+
+	// One user leaving is not all of them, and the count is what decides.
+	first.Release()
+	if ok, _ := remover.TryAcquire(); ok {
+		t.Fatal("the lender would have been removed while the second create was still using it")
+	}
+
+	second.Release()
+	ok, err = remover.TryAcquire()
+	if err != nil || !ok {
+		t.Fatalf("TryAcquire once nothing is using it = (%v, %v), want (true, nil)", ok, err)
+	}
+	remover.Release()
+}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -448,7 +447,12 @@ func TestACredentialTheLenderCannotReadIsRefusedAtCreate(t *testing.T) {
 	app := lendApp(t, home)
 	fake := app.Runner.(*run.Fake)
 	fake.OnStdout("container inspect", "true\n") // a lender is already up
-	fake.On("test -r", run.Result{}, errors.New("exit status 1"))
+	// Exit 1 is `test -r` itself answering no, which is what this case is. A
+	// bare error would stand in for podman failing to ask, which is a different
+	// refusal with a different remedy.
+	fake.On("test -r", run.Result{ExitCode: 1}, &run.ExitError{
+		Argv: []string{"podman", "exec", "lender", "test", "-r"}, ExitCode: 1,
+	})
 
 	_, err := app.resolveLoans(context.Background(),
 		&createFlags{lendAPIKey: []string{"anthropic"}}, "box", "")
@@ -460,6 +464,41 @@ func TestACredentialTheLenderCannotReadIsRefusedAtCreate(t *testing.T) {
 	for _, want := range []string{"anthropic", filepath.Join(home, ".cs-keys", "anthropic"), "inside a container", home} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal does not carry %q: %v", want, err)
+		}
+	}
+}
+
+// A lender that is GONE is not a credential that cannot be read.
+//
+// The two arrived as one message for as long as create looked only at whether
+// the exec failed. What a reader then got, for a lender another command had just
+// removed, was a confident account of a symlink pointing out of the mounted tree
+// — in an agent home that held no symlink, about a file that was readable the
+// whole time. The remedies share no word, so neither may borrow the other's
+// sentence.
+func TestALenderThatIsGoneIsNotReportedAsABadCredential(t *testing.T) {
+	home := lendHome(t)
+	app := lendApp(t, home)
+	fake := app.Runner.(*run.Fake)
+	fake.OnStdout("container inspect", "true\n")
+	fake.On("test -r", run.Result{ExitCode: 125}, &run.ExitError{
+		Argv:     []string{"podman", "exec", "lender", "test", "-r"},
+		ExitCode: 125,
+		Stderr:   "Error: no container with ID 538f1e found in database: no such container",
+	})
+
+	_, err := app.resolveLoans(context.Background(),
+		&createFlags{lendAPIKey: []string{"anthropic"}}, "box", "")
+	if err == nil {
+		t.Fatal("a create whose lender vanished must not report success")
+	}
+	if strings.Contains(err.Error(), "symlink") {
+		t.Errorf("a missing container was reported as a bad credential: %v", err)
+	}
+	// And it has to say what actually happened, in podman's own words.
+	for _, want := range []string{"could not be asked", "no such container"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not carry %q: %v", want, err)
 		}
 	}
 }
@@ -546,5 +585,37 @@ func TestAKeySeedsEveryVariableItsClientsRead(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestALenderInUseIsNotStoppedAsIdle: a destroy must not take the lender away
+// from a create that is still building the sandbox whose loan would have kept
+// it alive.
+//
+// Until that loan is on disk the group reads as idle, and reading it that way is
+// what removed the lender out from under cells of the replay matrix — as a
+// create that died on "no container with ID … in database", and, when the
+// container went a moment later, as a create that succeeded into a sandbox whose
+// agent then spent its whole turn dialling a name that resolved to nothing.
+func TestALenderInUseIsNotStoppedAsIdle(t *testing.T) {
+	fake := run.NewFake()
+	app := &App{InstDir: t.TempDir(), TierDir: t.TempDir(), Runner: fake}
+
+	use := app.lenderUse(state.DefaultGroup)
+	if err := use.AcquireShared(); err != nil {
+		t.Fatal(err)
+	}
+	app.stopLenderIfIdle(context.Background(), state.DefaultGroup)
+	if fake.Contains("podman rm") {
+		t.Fatalf("a lender a create was still using was stopped as idle:\n%s",
+			strings.Join(fake.Rendered(), "\n"))
+	}
+
+	// And once nothing is using it, idle still means idle: the guard must not
+	// have turned the stop off altogether.
+	use.Release()
+	app.stopLenderIfIdle(context.Background(), state.DefaultGroup)
+	if !fake.Contains("podman rm") {
+		t.Fatalf("an idle lender was left running:\n%s", strings.Join(fake.Rendered(), "\n"))
 	}
 }

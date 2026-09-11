@@ -199,6 +199,36 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		return err
 	}
 
+	// Said to be in use BEFORE the lender is started, and still said until the
+	// loan that keeps it alive is on disk — the whole window in which this
+	// create depends on a lender that nothing in the group would keep. A
+	// destroy running beside it reads the group as idle otherwise and removes
+	// the lender out from under this command.
+	//
+	// Only a create that lends takes it, because resolveLoans starts no lender
+	// for one that does not.
+	if len(f.lendAgentLogin)+len(f.lendAPIKey) > 0 {
+		use := app.lenderUse(f.group)
+		if err := use.AcquireShared(); err != nil {
+			return err
+		}
+		// Released before the stop, never after: the stop takes this same lock
+		// exclusively, and a process waiting on a lock it is itself holding
+		// waits forever.
+		//
+		// The stop is here because resolving the loans started the group's
+		// lender, and from this point a failure can leave it running with
+		// nothing to lend: no sandbox exists yet, so no destroy will ever come
+		// along to stop it. Idle either way, but a container that outlives the
+		// command that started it is one nobody goes looking for.
+		defer func() {
+			use.Release()
+			if err != nil {
+				app.stopLenderIfIdle(ctx, f.group)
+			}
+		}()
+	}
+
 	// Credentials, before anything is provisioned: a flag naming a login the
 	// host does not hold, or a cs-vcr that is not answering, is a mistake to
 	// report now rather than one to discover from inside the sandbox.
@@ -206,15 +236,6 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	if err != nil {
 		return err
 	}
-	// Resolving the loans started the group's lender, and from here a failure
-	// can leave it running with nothing to lend: no sandbox exists yet, so no
-	// destroy will ever come along to stop it. Idle either way, but a container
-	// that outlives the command that started it is one nobody goes looking for.
-	defer func() {
-		if err != nil {
-			app.stopLenderIfIdle(ctx, f.group)
-		}
-	}()
 	if injected, err = mergeLoanEnv(injected, plan.env, plan.consumed); err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -128,10 +129,33 @@ func lenderBoxArgv(name string, s lenderBoxSpec) []string {
 // `test -r` rather than a read: this asks whether the file is there and
 // readable, and must never move the credential itself (R149, R150).
 func (b lenderBox) canRead(ctx context.Context, path string) error {
-	_, err := b.Runner.Run(ctx, run.Opts{ReadOnly: true},
-		"podman", "exec", b.name(), "test", "-r", path)
-	return err
+	if _, err := b.Runner.Run(ctx, run.Opts{ReadOnly: true},
+		"podman", "exec", b.name(), "test", "-r", path); err != nil {
+		return classifyRead(path, err)
+	}
+	return nil
 }
+
+// classifyRead tells `test` answering no from podman failing to ask.
+//
+// Exit 1 is `test` itself, and it is the only answer that says anything about
+// the path. Everything else is podman unable to put the question — no such
+// container, the container removed mid-exec, no podman at all — and reporting
+// those as an unreadable credential sends the reader to inspect a file that was
+// never the problem. Measured: a lender removed beside a running create reported
+// itself as a symlink pointing out of the mounted tree, in an agent home that
+// held no symlink.
+func classifyRead(path string, err error) error {
+	var exit *run.ExitError
+	if errors.As(err, &exit) && exit.ExitCode == 1 {
+		return errUnreadable
+	}
+	return fmt.Errorf("asking the lender to read %s: %w", path, err)
+}
+
+// errUnreadable is `test -r` answering no: the lender is there and answered, and
+// the path is the thing at fault.
+var errUnreadable = errors.New("the lender container cannot read it")
 
 // ensure brings the lender up for this network and returns the base URL a
 // sandbox reaches it at.

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/doctor"
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/lend"
+	"github.com/codesweep-ai/sandbox/internal/lock"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/seed"
 	"github.com/codesweep-ai/sandbox/internal/state"
@@ -181,6 +183,13 @@ func (app *App) resolveLoans(ctx context.Context, f *createFlags, name, injected
 		for _, s := range lent {
 			src := s.Source(home, keysDir)
 			if err := box.canRead(ctx, src); err != nil {
+				if !errors.Is(err, errUnreadable) {
+					// The question could not be asked, which says nothing about
+					// the credential. Reported as itself rather than as a
+					// missing file, because the remedies share no word.
+					return nil, fmt.Errorf(
+						"the lender could not be asked whether it can read the %s credential: %w", s.ID, err)
+				}
 				return nil, fmt.Errorf(
 					"the lender cannot read the %s credential this create would lend: %s\n"+
 						"  it reads that path from inside a container, which mounts %s and nothing else, "+
@@ -441,15 +450,52 @@ func mergeLoanEnv(block string, loanEnv, consumed []string) (string, error) {
 	return b.String(), nil
 }
 
+// lenderUse is the declaration that this group's lender is being relied on by
+// something no loan record names yet.
+//
+// A loan is what keeps a lender alive, and a create writes one only once its
+// sandbox exists — several seconds after it started the lender, checked the
+// credential through it, and minted the token. For that whole stretch the group
+// holds no loan at all, so a destroy running beside it reads the group as idle
+// and removes a lender that is about to be, or already is, in use.
+//
+// Measured, on the replay matrix, where cells create and destroy in parallel in
+// one group: the create fails outright when the container goes between the
+// ensure and the readability check ("no container with ID … in database"), and
+// fails far worse when it goes just after — create succeeds, the loan lands, and
+// nothing ever starts a lender again, so the agent spends its whole turn
+// dialling a name that resolves to nothing. Both shapes were flakes in the tier
+// that runs on every push.
+//
+// Shared, and held by every create that lends, because creates do not race each
+// other here: they are all saying the same true thing. Exclusive only on the
+// side that would take the lender away.
+func (app *App) lenderUse(group string) *lock.Lock {
+	return lock.NewAt(filepath.Join(state.GroupDir(app.InstDir, group), ".lender", "in-use.lock"))
+}
+
 // stopLenderIfIdle ends the lender once no sandbox on this host holds a loan.
 //
 // It holds refreshed credentials in memory, so the fewer minutes it exists the
 // smaller the window; and a process still running for nobody is one a reader
 // has to explain.
+//
+// "Idle" is read under lenderUse, exclusively, so that a create between its own
+// ensure and its own loan record counts as a user of the lender rather than as
+// nothing. Try rather than wait: a create holds that lock for as long as it
+// takes to build a sandbox, and a destroy that queued behind one would hold up
+// the command a person is watching. A skipped stop is not a leak — the next
+// destroy in the group takes it, and tearing the group down removes the lender
+// with the network either way.
 func (app *App) stopLenderIfIdle(ctx context.Context, group string) {
 	if app.dryRun() {
 		return
 	}
+	use := app.lenderUse(group)
+	if held, err := use.TryAcquire(); err != nil || !held {
+		return
+	}
+	defer use.Release()
 	insts, err := state.List(app.InstDir)
 	if err != nil {
 		return

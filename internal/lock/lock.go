@@ -14,11 +14,18 @@ import (
 )
 
 // Lock is a reentrant, process-wide file lock over a lock path.
+//
+// A Lock is taken either exclusively or shared, and one instance is used in one
+// mode for its whole life. Mixing them on the same path from one process is a
+// deadlock rather than an upgrade: flock resolves modes per open file
+// description, so a second instance asking for LOCK_EX waits on the LOCK_SH the
+// first one is holding, and both are this process.
 type Lock struct {
-	path  string
-	mu    sync.Mutex
-	depth int
-	f     *os.File
+	path   string
+	mu     sync.Mutex
+	depth  int
+	shared bool
+	f      *os.File
 }
 
 // New returns a Lock over <dir>/.create.lock.
@@ -32,9 +39,28 @@ func New(instDir string) *Lock {
 // has to be serialized on the cache rather than on any one root.
 func NewAt(path string) *Lock { return &Lock{path: path} }
 
-// Acquire takes the lock (blocking). Nested acquires in the same process just
-// bump the depth counter.
+// Acquire takes the lock exclusively (blocking). Nested acquires in the same
+// process just bump the depth counter.
 func (l *Lock) Acquire() error {
+	_, err := l.acquire(true)
+	return err
+}
+
+// AcquireShared takes the lock in SHARED mode (blocking), so that several
+// holders can say a resource is in use at once while a would-be remover of it
+// cannot act.
+//
+// Shared rather than exclusive because these holders do not race each other:
+// what each is saying is "I am using this", and any number of them can say it
+// truthfully at the same time. Only the side that would take the resource away
+// needs the exclusive mode, and it needs it against all of them.
+//
+// Blocking, where the remover's side does not block: waiting here is waiting out
+// one idle check, and waiting there would be waiting out every create.
+func (l *Lock) AcquireShared() error {
+	l.mu.Lock()
+	l.shared = true
+	l.mu.Unlock()
 	_, err := l.acquire(true)
 	return err
 }
@@ -62,6 +88,9 @@ func (l *Lock) acquire(block bool) (bool, error) {
 		return false, err
 	}
 	how := unix.LOCK_EX
+	if l.shared {
+		how = unix.LOCK_SH
+	}
 	if !block {
 		how |= unix.LOCK_NB
 	}
