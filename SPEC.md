@@ -1185,8 +1185,8 @@ R126 is a memory argument. The host page cache is per inode, so a per-sandbox co
 hold the same bytes in host RAM once for every sandbox reading it. Sharing one inode is safe
 because the guest mounts it read-only.
 
-R124 names the image because the base rootfs **is** that image, exported from a container made from
-it. One file for all of them let whoever built last decide what every later sandbox booted. `create`
+R124 names the image because the base rootfs **is** that image, written from the image's own mounted
+tree. One file for all of them let whoever built last decide what every later sandbox booted. `create`
 never noticed: it checks that the disk is a filesystem, not which image it came from. So a host
 that had built the slim rootfs served it to a sandbox asking for the shipped image, silently.
 Kept per image, that sandbox finds no rootfs under the name it asked for and is told to build one.

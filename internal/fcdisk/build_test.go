@@ -747,10 +747,86 @@ func TestEnsureBaseRootfsAdoptsLegacyRootfs(t *testing.T) {
 	if got := c.readStamp(baseRootfsStampName(img)); got != cur {
 		t.Errorf("adopted stamp = %q, want %q", got, cur)
 	}
-	// Adoption is a rename, so nothing was exported or packed.
-	for _, call := range r.Calls {
-		if len(call) > 1 && call[0] == "podman" && call[1] == "export" {
-			t.Error("rebuilt the rootfs instead of adopting the one already there")
+	// Adoption is a rename, so no filesystem was made — by either build path.
+	for _, marker := range []string{"podman unshare", "podman export", "mke2fs"} {
+		if r.Contains(marker) {
+			t.Errorf("rebuilt the rootfs (%s) instead of adopting the one already there", marker)
 		}
+	}
+}
+
+// baseRootfsBuild is the fixture the three build tests share: a cache with
+// nothing in it, and the inputs ensureBaseRootfs needs to build.
+func baseRootfsBuild(t *testing.T) (Cache, BuildConfig) {
+	t.Helper()
+	c := Cache{Dir: t.TempDir()}
+	bc := BuildConfig{Image: "img", InitPath: filepath.Join(t.TempDir(), "init"), Kernel: "fedora"}
+	writeFile(t, bc.InitPath)
+	return c, bc
+}
+
+// TestEnsureBaseRootfsBuildsFromTheImageMount: the filesystem is written from
+// the image's own mounted tree, in one `podman unshare`. The three copies that
+// path replaced — export to a tar, unpack it, read it back — must be gone, and
+// so must the fakeroot that wrapped them.
+func TestEnsureBaseRootfsBuildsFromTheImageMount(t *testing.T) {
+	c, bc := baseRootfsBuild(t)
+	r := run.NewFake().OnStdout("image inspect", "sha256:cafe")
+
+	if err := c.ensureBaseRootfs(context.Background(), r, bc); err != nil {
+		t.Fatalf("ensureBaseRootfs = %v, want nil", err)
+	}
+	for _, want := range []string{"podman unshare bash -c", "podman image mount", "mke2fs -F -q -t ext4 -d"} {
+		if !r.Contains(want) {
+			t.Errorf("no %q in the build; got %s", want, r)
+		}
+	}
+	for _, gone := range []string{"podman export", "podman create", "fakeroot"} {
+		if r.Contains(gone) {
+			t.Errorf("%q is still in the build path; got %s", gone, r)
+		}
+	}
+}
+
+// TestEnsureBaseRootfsFallsBackWithoutOverlay: a host that cannot make the
+// merged mount says so with one exit status, and gets the export build instead
+// of an error. This is the only failure that earns a second attempt.
+func TestEnsureBaseRootfsFallsBackWithoutOverlay(t *testing.T) {
+	c, bc := baseRootfsBuild(t)
+	refused := &run.ExitError{ExitCode: overlayUnavailable, Stderr: "mount: overlay: permission denied"}
+	r := run.NewFake().OnStdout("image inspect", "sha256:cafe").
+		On("podman unshare", run.Result{ExitCode: overlayUnavailable}, refused)
+
+	if err := c.ensureBaseRootfs(context.Background(), r, bc); err != nil {
+		t.Fatalf("ensureBaseRootfs = %v, want the export fallback to carry it", err)
+	}
+	for _, want := range []string{"podman export fcbuild", "fakeroot"} {
+		if !r.Contains(want) {
+			t.Errorf("no %q after the overlay was refused; got %s", want, r)
+		}
+	}
+	if got := c.readStamp(baseRootfsStampName(bc.Image)); got == "" {
+		t.Error("the fallback build left no stamp, so the next run rebuilds")
+	}
+}
+
+// TestEnsureBaseRootfsDoesNotFallBackOnBuildFailure: every failure after the
+// mount is the build's own, and re-running it the slow way would only reproduce
+// it — minutes later, with 11 GB written on the way.
+func TestEnsureBaseRootfsDoesNotFallBackOnBuildFailure(t *testing.T) {
+	c, bc := baseRootfsBuild(t)
+	r := run.NewFake().OnStdout("image inspect", "sha256:cafe").
+		On("podman unshare", run.Result{ExitCode: 1},
+			&run.ExitError{ExitCode: 1, Stderr: "mke2fs: No space left on device"})
+
+	err := c.ensureBaseRootfs(context.Background(), r, bc)
+	if err == nil {
+		t.Fatal("ensureBaseRootfs = nil, want the mke2fs failure")
+	}
+	if r.Contains("podman export") {
+		t.Errorf("fell back to the export build after a real build failure; got %s", r)
+	}
+	if got := c.readStamp(baseRootfsStampName(bc.Image)); got != "" {
+		t.Errorf("stamp = %q after a failed build, want none so the next run rebuilds", got)
 	}
 }

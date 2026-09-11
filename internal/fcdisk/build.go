@@ -183,10 +183,11 @@ func (c Cache) VerifyArtifacts(image string) error {
 // + initrd + modules, and the base rootfs). Only what is missing/stale is rebuilt
 // — a fully-populated cache is left untouched.
 //
-// The build path shells out to podman (kernel + rootfs export), fakeroot + mke2fs
-// (rootfs image) and curl (firecracker download) through the Runner. It requires
-// bc.Image and, for the rootfs, bc.InitPath. If the build inputs are unavailable
-// and an artifact is missing, it returns an actionable error.
+// The build path shells out to podman (a throwaway container for the kernel, a
+// read-only image mount for the rootfs), mke2fs (rootfs image) and curl
+// (firecracker download) through the Runner. It requires bc.Image and, for the
+// rootfs, bc.InitPath. If the build inputs are unavailable and an artifact is
+// missing, it returns an actionable error.
 // It holds the artifact lock throughout, so a `build` and a `create` (or two
 // creates) cannot interleave here — see withArtifactLock.
 func (c Cache) EnsureArtifacts(ctx context.Context, r run.Runner, bc BuildConfig) error {
@@ -570,7 +571,9 @@ func baseRootfsStampName(image string) string {
 }
 
 // ensureBaseRootfs builds/refreshes the base rootfs ext4 when the stamp (see
-// baseRootfsStamp) changed or the disk is missing.
+// baseRootfsStamp) changed or the disk is missing. The filesystem is written
+// from the image's own mounted tree (baseRootfsMountedScript), falling back to
+// the export path on a host that cannot make the merged mount.
 func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfig) error {
 	kver := c.readStamp("kver")
 	if bc.Kernel == "host" && kver == "" {
@@ -627,7 +630,153 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 	_ = os.Remove(c.stampPath(stamp))
 	_ = os.Remove(rootfs)
 	tmp := filepath.Join(c.Dir, "build")
+	_ = os.RemoveAll(tmp)
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		return err
+	}
+	if _, err := r.Run(ctx, run.Opts{}, "truncate", "-s", strconv.Itoa(bc.RootfsGB)+"G", rootfs); err != nil {
+		return err
+	}
+	// The fedora path pulls guest /lib/modules from modules.tar; host mode copies
+	// the host's /lib/modules/<kver>.
+	modTar := ""
+	if bc.Kernel != "host" {
+		modTar = filepath.Join(c.Dir, "modules.tar")
+	}
+	err := c.buildBaseRootfsMounted(ctx, r, bc, rootfs, tmp, modTar, kver)
+	if errors.Is(err, errNoOverlayMount) {
+		c.say("%v — building it the slower way, by exporting the image", err)
+		err = c.buildBaseRootfsExported(ctx, r, bc, rootfs, tmp, modTar, kver)
+	}
+	_ = os.RemoveAll(tmp)
+	if err != nil {
+		return err
+	}
+	return c.writeStamp(stamp, cur)
+}
+
+// errNoOverlayMount reports the one failure of the mounted build that belongs to
+// the host's configuration rather than to the build: no unprivileged overlay
+// mount. It is what selects the export fallback below.
+var errNoOverlayMount = errors.New("fc: this host cannot make an unprivileged overlay mount")
+
+// overlayUnavailable is the exit status baseRootfsMountedScript leaves when the
+// merged mount fails. That failure gets a status of its own because it is the
+// only one worth retrying differently: it happens before any expensive step, and
+// everything after the mount is a real build error that a second, slower attempt
+// would only reproduce. The value has only to be one podman, tar, install and
+// mke2fs never return; 75 is EX_TEMPFAIL.
+const overlayUnavailable = 75
+
+// baseRootfsMountedScript writes the ext4 straight from the image's own tree.
+//
+// `podman image mount` hands back the merged image with no copy at all, and an
+// overlay whose upper carries the two things the image lacks — /fc-init and
+// /lib/modules — supplies them without writing into the image, which is mounted
+// read-only. One `mke2fs -d` over the merged mount then makes the filesystem in
+// a single pass.
+//
+// What that replaces was three passes over the same 5.4 GB: `podman export`
+// wrote the image out as a tar, `tar -x` wrote it again as files, and `mke2fs -d`
+// read those back to write it a third time. Two of the three existed only to
+// hand bytes to the next step, and those bytes already sat unpacked in podman's
+// store. Measured on the shipped image, 2m01s became 50s and ~11 GB of transient
+// writes became none.
+//
+// All of it MUST run in one `podman unshare`: the image mount lives in that
+// process's mount namespace and goes when it exits. Being namespaced root there
+// is also what retires `fakeroot` from this path — the image's files already
+// carry their in-image ownership, so nothing has to fake it, and the `chmod u+rX`
+// pre-pass that existed only because the caller could not read the image's
+// mode-0000 files goes with it.
+//
+// It is also the more faithful of the two. Compared entry by entry against an
+// export build of the same image, all 145,614 of them agree except where this
+// one is right: the export path dropped every `security.capability` xattr the
+// image carried (`arping`, `clockdiff`, `dumpcap`), and its `chmod u+rX` left
+// /etc/shadow and /etc/gshadow at 0400 in the guest where the image has 0000.
+//
+// The extras are written THROUGH the merged mount rather than into the upper
+// directly, so /lib being a symlink to usr/lib resolves exactly as it did when
+// the tree was extracted, and so the mount is attempted before the 105 MB of
+// modules are unpacked rather than after.
+//
+// The trap runs on every exit path. The overlay and the temp dirs would go with
+// the namespace anyway, but podman records the image mount in its own store, so
+// a skipped `image umount` leaks a refcount that `podman image umount --all`
+// then has to clear.
+var baseRootfsMountedScript = `set -e
+m=$(podman image mount "$FC_IMAGE")
+trap 'umount "$FC_MERGED" 2>/dev/null; podman image umount "$FC_IMAGE" >/dev/null 2>&1; rm -rf "$FC_UPPER" "$FC_WORK"' EXIT
+mkdir -p "$FC_UPPER" "$FC_WORK" "$FC_MERGED"
+mount -t overlay overlay -o lowerdir="$m",upperdir="$FC_UPPER",workdir="$FC_WORK" "$FC_MERGED" || exit ` + strconv.Itoa(overlayUnavailable) + `
+mkdir -p "$FC_MERGED/lib/modules"
+if [ -n "$FC_MOD_TAR" ]; then tar -C "$FC_MERGED/lib/modules" -xf "$FC_MOD_TAR"
+else cp -a "/lib/modules/$FC_KVER" "$FC_MERGED/lib/modules/"; fi
+install -m0755 "$FC_INIT" "$FC_MERGED/fc-init"
+mke2fs -F -q -t ext4 -d "$FC_MERGED" "$FC_ROOTFS_IMG"`
+
+// buildBaseRootfsMounted builds the base rootfs from the mounted image. It
+// returns errNoOverlayMount, and nothing else, when the host cannot make the
+// merged mount.
+func (c Cache) buildBaseRootfsMounted(ctx context.Context, r run.Runner, bc BuildConfig, rootfs, tmp, modTar, kver string) error {
+	env := []string{
+		"FC_IMAGE=" + bc.Image,
+		"FC_UPPER=" + filepath.Join(tmp, "upper"),
+		"FC_WORK=" + filepath.Join(tmp, "work"),
+		"FC_MERGED=" + filepath.Join(tmp, "merged"),
+		"FC_ROOTFS_IMG=" + rootfs,
+		"FC_MOD_TAR=" + modTar,
+		"FC_KVER=" + kver,
+		"FC_INIT=" + bc.InitPath,
+	}
+	_, err := r.Run(ctx, run.Opts{Env: env}, "podman", "unshare", "bash", "-c", baseRootfsMountedScript)
+	var exit *run.ExitError
+	if errors.As(err, &exit) && exit.ExitCode == overlayUnavailable {
+		// Carry the kernel's own words: "cannot make an overlay mount" says nothing
+		// about which of the several reasons for that this host has.
+		if detail := strings.TrimSpace(exit.Stderr); detail != "" {
+			return fmt.Errorf("%w (%s)", errNoOverlayMount, detail)
+		}
+		return errNoOverlayMount
+	}
+	if err != nil {
+		return fmt.Errorf("fc: base rootfs: build: %w", err)
+	}
+	return nil
+}
+
+// baseRootfsExportScript is the fallback assembly: unpack the exported image,
+// add the guest modules and /fc-init, and pack the tree into the ext4 — all
+// under one fakeroot, so the ownership the image records survives into the
+// filesystem rather than becoming the invoking user's. The `chmod u+rX` pre-pass
+// is there because that user cannot otherwise read the image's mode-0000 files.
+const baseRootfsExportScript = `set -e
+tar -C "$FC_TMP" -xpf "$FC_ROOTFS_TAR"
+mkdir -p "$FC_TMP/lib/modules"
+if [ -n "$FC_MOD_TAR" ]; then tar -C "$FC_TMP/lib/modules" -xf "$FC_MOD_TAR"
+else cp -a "/lib/modules/$FC_KVER" "$FC_TMP/lib/modules/"; fi
+install -m0755 "$FC_INIT" "$FC_TMP/fc-init"
+find "$FC_TMP" ! -readable -exec chmod u+rX {} + 2>/dev/null || true
+mke2fs -F -q -t ext4 -d "$FC_TMP" "$FC_ROOTFS_IMG"`
+
+// buildBaseRootfsExported is the fallback for a host that cannot make the merged
+// mount — a kernel older than 5.11, a graph driver or a policy that refuses one.
+// It writes the image out as a 5.4 GB tar, unpacks it into a second full copy,
+// and reads that back into the filesystem, which is ~11 GB written and then
+// deleted to move bytes podman already holds unpacked. Nothing here is better
+// than the path above: it is only more portable, and it loses the file
+// capabilities and the unreadable files' modes that the mounted build keeps.
+func (c Cache) buildBaseRootfsExported(ctx context.Context, r run.Runner, bc BuildConfig, rootfs, tmp, modTar, kver string) error {
+	// Start from an empty tree: the mounted attempt this follows leaves its
+	// (empty) merge point behind, and untarring the image around it would put a
+	// stray directory in the guest's root.
+	_ = os.RemoveAll(tmp)
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		return err
+	}
 	tarPath := filepath.Join(c.Dir, "rootfs.tar")
+	defer func() { _ = os.Remove(tarPath) }()
 	_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fcbuild")
 	if _, err := r.Run(ctx, run.Opts{}, "podman", "create", "--name", "fcbuild", bc.Image, "sleep", "infinity"); err != nil {
 		return fmt.Errorf("fc: base rootfs: podman create: %w", err)
@@ -637,28 +786,6 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 		return fmt.Errorf("fc: base rootfs: podman export: %w", err)
 	}
 	_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fcbuild")
-	_ = os.RemoveAll(tmp)
-	if err := os.MkdirAll(tmp, 0o755); err != nil {
-		return err
-	}
-	if _, err := r.Run(ctx, run.Opts{}, "truncate", "-s", strconv.Itoa(bc.RootfsGB)+"G", rootfs); err != nil {
-		return err
-	}
-	// The fedora path pulls guest /lib/modules from modules.tar; host mode copies
-	// the host's /lib/modules/<kver>. Assemble + pack under one fakeroot so the
-	// logical ownership survives into the ext4 image.
-	modTar := ""
-	if bc.Kernel != "host" {
-		modTar = filepath.Join(c.Dir, "modules.tar")
-	}
-	script := `set -e
-tar -C "$FC_TMP" -xpf "$FC_ROOTFS_TAR"
-mkdir -p "$FC_TMP/lib/modules"
-if [ -n "$FC_MOD_TAR" ]; then tar -C "$FC_TMP/lib/modules" -xf "$FC_MOD_TAR"
-else cp -a "/lib/modules/$FC_KVER" "$FC_TMP/lib/modules/"; fi
-install -m0755 "$FC_INIT" "$FC_TMP/fc-init"
-find "$FC_TMP" ! -readable -exec chmod u+rX {} + 2>/dev/null || true
-mke2fs -F -q -t ext4 -d "$FC_TMP" "$FC_ROOTFS_IMG"`
 	env := []string{
 		"FC_TMP=" + tmp,
 		"FC_ROOTFS_TAR=" + tarPath,
@@ -667,12 +794,8 @@ mke2fs -F -q -t ext4 -d "$FC_TMP" "$FC_ROOTFS_IMG"`
 		"FC_KVER=" + kver,
 		"FC_INIT=" + bc.InitPath,
 	}
-	if _, err := r.Run(ctx, run.Opts{Env: env}, "fakeroot", "--", "bash", "-c", script); err != nil {
-		_ = os.RemoveAll(tmp)
-		_ = os.Remove(tarPath)
+	if _, err := r.Run(ctx, run.Opts{Env: env}, "fakeroot", "--", "bash", "-c", baseRootfsExportScript); err != nil {
 		return fmt.Errorf("fc: base rootfs: build: %w", err)
 	}
-	_ = os.RemoveAll(tmp)
-	_ = os.Remove(tarPath)
-	return c.writeStamp(stamp, cur)
+	return nil
 }
