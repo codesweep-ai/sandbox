@@ -185,6 +185,13 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	// as such.
 	envCreds := envCredentialNames(injected)
 
+	// The image, before the group that is made of containers from it. Everything
+	// below is built FROM the image, so this is where a host that cannot obtain
+	// one finds out — before a network, a key or a filesystem has been made.
+	if err := app.ensureImage(ctx); err != nil {
+		return err
+	}
+
 	// The group's artifacts (network, keys, gateway) and its record must exist
 	// before Deps is built: the engines take a COPY of Deps, so a field set
 	// afterwards — the allocated tap prefix — would never reach them.
@@ -240,10 +247,8 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		return err
 	}
 	d := app.engineDepsFor(f.group)
-	var eng engine.Engine
 	switch f.engine {
 	case "podman":
-		eng = engine.NewPodman(d)
 	case "firecracker":
 		if f.cpus <= 0 {
 			return errors.New("--cpus must be greater than zero")
@@ -254,14 +259,19 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		if f.disk < 0 {
 			return errors.New("--disk must not be negative")
 		}
-		eng = engine.NewFirecracker(d)
 	default:
 		return fmt.Errorf("--engine must be podman or firecracker, got %q", f.engine)
 	}
-	// The build artifacts (image / firecracker cache) are `cs-sandbox build`'s
-	// job. Fail with an actionable message rather than building them under the
-	// covers, so create stays fast and predictable.
-	if err := eng.Verify(ctx); err != nil {
+	eng := newEngine(d, f.engine)
+
+	// Preparing gets its own engine, differing in one field: where create's own
+	// progress is verbose-only, a first create on a host with no artifacts spends
+	// minutes here and has to say so at the level `build` says it. The lines are
+	// the same lines, and this is the same decision runBuild makes for the same
+	// reason.
+	prep := d
+	prep.Progress = app.phase
+	if err := app.ensureCreatable(ctx, newEngine(prep, f.engine)); err != nil {
 		return err
 	}
 
@@ -344,6 +354,79 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		fmt.Fprintf(out, "  repo:     ~/%s on branch %s\n", rc.Dir, rc.Branch)
 	}
 	return nil
+}
+
+// newEngine builds the engine f names. The flags it needs were validated by the
+// caller, which is also where an unknown name is refused.
+func newEngine(d engine.Deps, name string) engine.Engine {
+	if name == "firecracker" {
+		return engine.NewFirecracker(d)
+	}
+	return engine.NewPodman(d)
+}
+
+// ensureImage fetches the sandbox image when this host does not have it, rather
+// than sending the caller to `build` for it (R162).
+//
+// The registry is asked before anything is fetched, and that question is the
+// gate on everything create prepares. A published image is pulled and the work
+// that follows is worth starting; an image nobody can serve ends the command
+// here, before a pull that would fail and long before the minutes of building
+// that would have followed it.
+//
+// Nothing runs here on a host that has the image: the check is local and costs
+// milliseconds, which is what keeps create the fast command it has been.
+//
+// A dry run fetches nothing, because fetching is a mutation. What is missing is
+// then reported by the group setup below, exactly as create reported it before.
+func (a *App) ensureImage(ctx context.Context) error {
+	if a.dryRun() {
+		return nil
+	}
+	if err := engine.VerifyImage(ctx, a.Runner, a.Image); err == nil {
+		return nil
+	}
+	if reg := engine.CheckRegistry(ctx, a.Runner, a.Image); !reg.Fetchable {
+		return fmt.Errorf("sandbox image %q is not on this host and could not be fetched%s — make it here with:  cs-sandbox build",
+			a.Image, inParens(reg.Detail))
+	}
+	if !a.pullImage(ctx) {
+		return fmt.Errorf("sandbox image %q could not be fetched — make it here with:  cs-sandbox build", a.Image)
+	}
+	a.phase("pulled " + a.Image)
+	return nil
+}
+
+// ensureCreatable builds whatever the engine still needs from the image that
+// ensureImage has by now put on this host (R162).
+//
+// For firecracker that is the VMM, the guest kernel and the base rootfs, which
+// is minutes on a host that has none of them. Podman needs nothing, and its
+// Prepare does nothing. The Verify either side of it is the point: the first
+// says whether there is anything to do, and the second that doing it worked.
+//
+// A dry run prepares nothing, because preparing is a mutation. It reports what
+// is missing, exactly as create did before.
+func (a *App) ensureCreatable(ctx context.Context, eng engine.Engine) error {
+	if a.dryRun() {
+		return eng.Verify(ctx)
+	}
+	if err := eng.Verify(ctx); err == nil {
+		return nil
+	}
+	if err := eng.Prepare(ctx); err != nil {
+		return err
+	}
+	return eng.Verify(ctx)
+}
+
+// inParens wraps a detail for an error message, or contributes nothing when
+// there is no detail to give.
+func inParens(detail string) string {
+	if detail == "" {
+		return ""
+	}
+	return " (" + detail + ")"
 }
 
 // resolveEnv builds the injected env block from --env tokens and --env-file

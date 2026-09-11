@@ -8,18 +8,17 @@ import (
 
 // baseRootfsCheck is the doctor line for the disk every microVM is copied from.
 //
-// It is the one firecracker prerequisite `create` does not supply for itself.
-// The binary above is fetched on first use and the tier keys are made on first
-// create; the base rootfs is built by `cs-sandbox build` and by nothing else, so
-// a host without it boots nothing — it dies on the first member, after the group
-// and the network are already up.
-//
-// An issue rather than a note, and that is the distinction the lines above draw:
+// A note rather than an issue, which is the distinction the lines above draw:
 // what create repairs on its own is informational, and what only a build repairs
-// is a real problem. Reported here because until it was, nothing reported it at
-// all — `cs-sandbox state` above asks whether the IMAGE is present, the rootfs is
-// a separate artifact made FROM that image, and a host that had pulled the one
-// without building the other was told it was ready and then failed mid-create.
+// is a real problem. This used to be the second kind and is now the first, since
+// create builds the artifacts it is missing (R162). What the line carries now is
+// the cost rather than a command: a first create that has to make this one spends
+// a minute on it before the sandbox appears.
+//
+// Reported here because until it was, nothing reported it at all — `cs-sandbox
+// state` above asks whether the IMAGE is present, the rootfs is a separate
+// artifact made FROM that image, and a host that had pulled the one without
+// building the other was told it was ready and then failed mid-create.
 //
 // Keyed by image, like the file itself: a host keeps one slot per image variant,
 // so the shipped image being ready says nothing about the slim one. That is not
@@ -33,34 +32,39 @@ func baseRootfsCheck(d Deps) (Status, string) {
 	if fileExists(path) {
 		return OK, "base rootfs built for " + d.Image
 	}
-	return NO, "no base rootfs for " + d.Image + " (" + path + ") — build it with:  " + buildHint(d.Image, "firecracker")
+	return HM, "no base rootfs for " + d.Image + " yet — the first 'cs-sandbox create' builds it (about a minute), or now with:  " + d.buildHint("firecracker")
 }
 
-// buildHint is the command that builds one image, and the artifacts one engine
-// needs from it, exactly.
+// buildHint is the command that builds this image, and the artifacts one engine
+// needs from it, exactly — and nothing the reader's own host already implies.
 //
-// Every part of it is load-bearing, and a shorter form repairs the wrong thing.
-// A bare `cs-sandbox build` retargets to the SHIPPED image, so run against a
-// missing slim artifact it builds the other variant and leaves this one as
-// absent as it found it — with the doctor still reporting the same line. So the
-// variant is passed when the name says slim, because --slim is what selects the
-// ci-slim.sh Containerfiles.
+// Each part is carried only when a bare `cs-sandbox build` would do something
+// else. A shorter hint that repairs the wrong thing is worse than a longer one,
+// and a longer one that repeats what the default already does is a command
+// nobody reads.
 //
-// CS_SANDBOX_IMAGE is named rather than left to the default. It is redundant
-// when the image IS the default for its variant and required when it is not —
-// CI pins a build to localhost/sandbox-slim:ci, and no combination of flags
-// reaches that one. Spelling it out is right in both cases, and a hint that is
-// right only sometimes is worse than a longer one.
+// CS_SANDBOX_IMAGE is what pins a build to a name the flags cannot reach: CI
+// builds localhost/sandbox-slim:ci, and no combination of them gets there. It is
+// carried only where the name was overridden, because otherwise it says what the
+// binary would have worked out for itself.
 //
-// The engine is the one the report is about. Left off, a build makes firecracker
-// artifacts only where the host's automatic engine is firecracker, which is a
-// property of the machine reading the message rather than of what it is missing.
-func buildHint(image, engine string) string {
-	flags := " --engine " + engine
-	if isSlim(image) {
-		flags += " --slim"
+// The engine is carried where it is not the one this host picks on its own,
+// which is a property of the machine reading the message rather than of what it
+// is missing. --slim is carried by the name, because a bare build retargets to
+// the SHIPPED image: run against a missing slim artifact it would build the
+// other variant and leave this one as absent as it found it.
+func (d Deps) buildHint(engine string) string {
+	cmd := "cs-sandbox build"
+	if !d.ImageIsDefault {
+		cmd = "CS_SANDBOX_IMAGE=" + d.Image + " " + cmd
 	}
-	return "CS_SANDBOX_IMAGE=" + image + " cs-sandbox build" + flags
+	if engine != d.DefaultEngine {
+		cmd += " --engine " + engine
+	}
+	if isSlim(d.Image) {
+		cmd += " --slim"
+	}
+	return cmd
 }
 
 // isSlim reports whether a reference names a slim image, by its repository

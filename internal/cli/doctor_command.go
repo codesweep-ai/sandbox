@@ -67,9 +67,14 @@ func newDoctorCmd(app *App) *cobra.Command {
 				User:    app.Host.User,
 				TierDir: app.TierDir,
 				Image:   app.Image,
-				Network: app.Network,
-				IsMacOS: app.Host.IsMacOS,
-				IsWSL:   app.Host.IsWSL,
+				// What the hints may leave unsaid: a name nothing overrode is
+				// the one a bare build reaches, and the engine this host picks
+				// on its own needs no flag to ask for.
+				ImageIsDefault: os.Getenv("CS_SANDBOX_IMAGE") == "",
+				DefaultEngine:  autoEngine(app.Host.IsMacOS),
+				Network:        app.Network,
+				IsMacOS:        app.Host.IsMacOS,
+				IsWSL:          app.Host.IsWSL,
 
 				HostRouteOn:   hr.Active(),
 				HostRouteLegs: hr.HostLegs(),

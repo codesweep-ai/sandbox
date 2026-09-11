@@ -55,12 +55,12 @@ type Engine interface {
 	// Prepare builds/warms this engine's reusable, host-wide artifacts (assuming
 	// the shared image already exists). Podman needs none — the image is the
 	// artifact. Firecracker builds its binary + guest kernel + base rootfs.
-	// Invoked by `cs-sandbox build`; may be slow and may hard-fail on missing
-	// host packages.
+	// Invoked by `cs-sandbox build`, and by a `create` that found something
+	// missing (R162); may be slow and may hard-fail on missing host packages.
 	Prepare(ctx context.Context) error
 	// Verify checks that everything Create needs is already present, returning an
-	// actionable error (pointing at `cs-sandbox build`) when it is not. Create
-	// calls this instead of building anything implicitly.
+	// actionable error when it is not. Create calls it to decide whether it has
+	// anything to prepare, and again afterwards to confirm that it worked.
 	Verify(ctx context.Context) error
 	Create(ctx context.Context, s CreateSpec) (*state.Instance, error)
 	Start(ctx context.Context, name string) error

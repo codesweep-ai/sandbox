@@ -319,12 +319,14 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 func (p *Podman) Prepare(ctx context.Context) error { return nil }
 
 // Verify confirms the shared image is on this host, so create fails cleanly
-// (pointing at build) instead of with a raw "image not known" from podman run.
+// (pointing at what will fix it) instead of with a raw "image not known" from
+// podman run.
 //
-// This check is also what keeps create from fetching anything. `podman create`
-// defaults to --pull=missing and would pull the image itself, and a create that
-// quietly moves gigabytes is not what anybody asked for; failing here first is
-// what makes the pull a thing you ask for by name.
+// It reports rather than repairs. `create` asks first and then fetches what is
+// missing (R162), which is why this stays a question: the caller needs to know
+// what is absent before deciding whether it can be had. Letting `podman create`
+// pull it instead would answer neither, since its failure is a registry error
+// three retries deep naming a host nobody meant to contact.
 func (p *Podman) Verify(ctx context.Context) error {
 	return VerifyImage(ctx, p.d.Runner, p.d.Image)
 }
@@ -344,6 +346,69 @@ func VerifyImage(ctx context.Context, r run.Runner, image string) error {
 			"(it pulls that image when one is published, and builds it when none is)", image)
 	}
 	return nil
+}
+
+// RegistryCheck is what this host could learn about fetching an image it does
+// not have.
+//
+// Fetchable is deliberately not "published": a registry that cannot be reached
+// and one that does not have the image are the same answer to the question being
+// asked, which is whether fetching it is going to work. Detail carries which, in
+// the registry's own words.
+type RegistryCheck struct {
+	Fetchable bool   // the registry served a manifest for it
+	Detail    string // why it could not be had, for an error a person reads
+}
+
+// CheckRegistry asks whether an image can still be fetched, without fetching it.
+//
+// `create` uses it to decide whether to prepare this host itself or to send the
+// caller to `build`, and `doctor` uses it to say which of those a missing image
+// means. Neither can answer from the local store, and neither may answer by
+// pulling, since the pull is the expensive thing being decided about.
+//
+// The answer is the MANIFEST rather than the exit status, and that is the whole
+// subtlety here. `podman manifest inspect` fetches the manifest and then, on a
+// single-architecture image, refuses to treat it as a manifest list — printing
+// what it fetched and failing anyway. So a registry that served the manifest can
+// exit non-zero, and only the presence of the manifest tells the two apart.
+//
+// Podman rather than skopeo, which answers with a clean status but is one more
+// thing a host has to have. This runs the tool every host already has, and gets
+// its registry credentials for free along with it.
+//
+// A localhost/ reference names an image that exists only in a local store, so
+// there is no registry to ask and the answer is a definite no.
+func CheckRegistry(ctx context.Context, r run.Runner, image string) RegistryCheck {
+	if image == "" || strings.HasPrefix(image, "localhost/") {
+		return RegistryCheck{}
+	}
+	res, err := r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "manifest", "inspect", image)
+	if err == nil || strings.Contains(res.Stdout+res.Stderr, `"schemaVersion"`) {
+		return RegistryCheck{Fetchable: true}
+	}
+	return RegistryCheck{Detail: registryDetail(res.Stderr)}
+}
+
+// registryDetail reduces podman's failure to the sentence worth repeating.
+//
+// It names the reference again inside its message — `Error: reading image
+// "docker://ghcr.io/x:v1": reading manifest v1 in ghcr.io/x: manifest unknown` —
+// and the caller has just printed that. What a reader needs is the tail, so both
+// wrappers come off. Anything unrecognised passes through whole rather than
+// mangled.
+func registryDetail(stderr string) string {
+	s := strings.TrimSpace(stderr)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimPrefix(s, "Error: ")
+	if rest, ok := strings.CutPrefix(s, `reading image "`); ok {
+		if _, after, found := strings.Cut(rest, `": `); found {
+			s = after
+		}
+	}
+	return s
 }
 
 func (p *Podman) Start(ctx context.Context, name string) error {

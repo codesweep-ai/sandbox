@@ -460,7 +460,25 @@ func (c Cache) ensureFirecrackerBin(ctx context.Context, r run.Runner, bc BuildC
 	base := fcReleaseURL(bc.FCVersion)
 	tgz := fmt.Sprintf("firecracker-%s-%s.tgz", bc.FCVersion, arch)
 	dl := filepath.Join(c.Dir, tgz)
-	if _, err := r.Run(ctx, run.Opts{}, "curl", "-fsSL", "-o", dl, base+"/"+tgz); err != nil {
+	// A bar for the download, on the path that has one to draw. `build` fetches
+	// this alongside the image pull and renders the handle itself (see Download),
+	// so there it arrives here with no reporter and this adds nothing. A `create`
+	// preparing a host for itself has the terminal to itself, and this is the
+	// only place that download can say how far along it is.
+	stop := func() {}
+	if c.Bars != nil {
+		total := contentLength(ctx, r, base+"/"+tgz)
+		stop = c.Bars.Watch("  firecracker "+bc.FCVersion, func() (int64, int64) {
+			fi, err := os.Stat(dl)
+			if err != nil {
+				return 0, total
+			}
+			return fi.Size(), total
+		})
+	}
+	_, err = r.Run(ctx, run.Opts{}, "curl", "-fsSL", "-o", dl, base+"/"+tgz)
+	stop() // the line is wanted back before anything below reports on it
+	if err != nil {
 		return fmt.Errorf("fc: failed to download %s: %w", tgz, err)
 	}
 	want, pinned, err := c.fcWantDigest(ctx, r, bc, arch, base, tgz)

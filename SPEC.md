@@ -82,8 +82,23 @@ package `ghcr.io/codesweep-ai/sandbox`, and a sandbox **MUST** run the image its
 **R161.** A binary that reports no version **MUST** refuse to name or build an image, rather than
 installing an unnamed `cs-sandbox` into one.
 
-**R162.** `build` **MUST** try the registry before building, and `create` **MUST** do neither: a
-missing image is an error naming `build`.
+**R162.** `build` **MUST** try the registry before building. `create` **MUST** fetch a published
+image it does not have, and **MUST** then build whatever engine artifacts are missing. `create`
+**MUST NOT** build the image itself. Where the image is neither present nor published, `create`
+**MUST** fail with an error naming `build`, before fetching or building anything.
+
+R162 used to say that `create` did neither, on the grounds that it stayed fast and predictable. The
+cost was that a new host had to know to run `build` first, and the error was the only thing that
+told it. What replaces it keeps the predictability where it was earned. Both checks are local and
+cost milliseconds, so a prepared host is unaffected, and the order is the gate. The image is first
+and every artifact is built from it, so a host that cannot obtain one fails before the minutes of
+work rather than after them. A dry run prepares nothing, because preparing is a mutation.
+
+Deciding that needs an answer the local store does not hold, so it is asked of the registry without
+pulling, through the podman every host already has. The manifest that comes back is the answer
+rather than the exit status. `podman manifest inspect` fetches the manifest and then refuses to
+treat a single-architecture image as a manifest list, so a registry that has the image can still
+report a failure.
 
 The image carries the `cs-sandbox` that built it. The version is therefore the only thing that says
 what is inside, which is why the tag is the version string rather than the revision. The same commit

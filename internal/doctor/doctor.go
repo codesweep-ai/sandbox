@@ -51,9 +51,15 @@ type Deps struct {
 	User    string
 	TierDir string
 	Image   string
-	Network string
-	IsMacOS bool
-	IsWSL   bool
+	// ImageIsDefault is true when nothing overrode the image name, so a bare
+	// `cs-sandbox build` reaches it and buildHint need not spell it out.
+	ImageIsDefault bool
+	// DefaultEngine is the engine this host picks when none is named, so a hint
+	// carries --engine only where the report is about the other one.
+	DefaultEngine string
+	Network       string
+	IsMacOS       bool
+	IsWSL         bool
 
 	// Host-route state. HostRouteLegs are the host-side veth names, one per
 	// group; empty when the feature has never been enabled.
@@ -164,10 +170,19 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 	} else if _, err := d.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "image", "exists", d.Image); err == nil {
 		cg.add(OK, "image present ("+d.Image+")")
 	} else {
-		// Named in full, for the reason buildHint gives: a bare `cs-sandbox
-		// build` makes the shipped image, so on a report about the slim one it
-		// leaves this line saying exactly what it said before.
-		cg.add(HM, "image not built yet — build it with:  "+buildHint(d.Image, engine))
+		// A missing image stopped being something to fix when create started
+		// fetching one the registry has (R162). Which of the two this host is
+		// looking at cannot be read off the local store, so ask the registry.
+		//
+		// Named in full where a build is the answer, for the reason buildHint
+		// gives: a bare `cs-sandbox build` makes the shipped image, so on a
+		// report about the slim one it leaves this line saying exactly what it
+		// said before.
+		if eng.CheckRegistry(ctx, d.Runner, d.Image).Fetchable {
+			cg.add(OK, "image not here yet — the first 'cs-sandbox create' fetches it")
+		} else {
+			cg.add(HM, "image not here and not in the registry — make it with:  "+d.buildHint(engine))
+		}
 	}
 	if fileExists(d.TierDir + "/id_cs-sandbox_user") {
 		cg.add(OK, "tier keys generated")
@@ -239,9 +254,9 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		// this binary and rebuild the OTHER variant's image and rootfs on the
 		// way past, which is a lot of work nobody asked for.
 		case d.FCVersionCache == "":
-			fg.add(HM, "firecracker binary cached, version unrecorded (downloaded before it was tracked) — re-fetched and digest-verified by:  "+buildHint(d.Image, "firecracker"))
+			fg.add(HM, "firecracker binary cached, version unrecorded (downloaded before it was tracked) — re-fetched and digest-verified by:  "+d.buildHint("firecracker"))
 		case d.FCVersionCache != d.FCVersionPin:
-			fg.add(HM, "firecracker binary cached ("+d.FCVersionCache+") but pinned to "+d.FCVersionPin+" — refreshed by:  "+buildHint(d.Image, "firecracker"))
+			fg.add(HM, "firecracker binary cached ("+d.FCVersionCache+") but pinned to "+d.FCVersionPin+" — refreshed by:  "+d.buildHint("firecracker"))
 		default:
 			fg.add(OK, "firecracker binary cached ("+d.FCVersionCache+")")
 		}

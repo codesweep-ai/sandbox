@@ -19,16 +19,19 @@ func slotFor(t *testing.T, cache string) string {
 	return filepath.Join(cache, "base-rootfs-ghcr.io-codesweep-ai-sandbox-slim.ext4")
 }
 
-// TestBaseRootfsCheckFailsWhenTheImageHasNoRootfs: the case that reached a user.
-// The image is present and every other prerequisite is met, and create still
-// cannot boot a member, so this has to count as an issue rather than a note.
-func TestBaseRootfsCheckFailsWhenTheImageHasNoRootfs(t *testing.T) {
+// TestBaseRootfsCheckReportsAMissingRootfs: the case that reached a user, whose
+// answer has changed. The image being present said nothing about the rootfs made
+// from it, and a host with one and not the other was called ready and then
+// failed mid-create. It is still reported, and it is now a note rather than an
+// issue, because create builds what it is missing (R162) — so the line carries
+// what that will cost instead of a command the user must run first.
+func TestBaseRootfsCheckReportsAMissingRootfs(t *testing.T) {
 	cache := t.TempDir()
 	status, msg := baseRootfsCheck(Deps{FCCache: cache, Image: testImage})
-	if status != NO {
-		t.Errorf("status = %v, want NO (create cannot run without it)", status)
+	if status != HM {
+		t.Errorf("status = %v, want HM (create builds it, so it is not an issue)", status)
 	}
-	for _, want := range []string{testImage, "cs-sandbox build"} {
+	for _, want := range []string{testImage, "cs-sandbox create", "cs-sandbox build"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message missing %q: %s", want, msg)
 		}
@@ -52,12 +55,12 @@ func TestBuildHintBuildsTheVariantThatIsMissing(t *testing.T) {
 		{"ghcr.io/codesweep-ai/sandbox:v1", false},
 		{"ghcr.io/codesweep-ai/sandbox:slim-sounding-tag", false},
 	} {
-		hint := buildHint(c.image, "firecracker")
+		hint := Deps{Image: c.image, DefaultEngine: "podman"}.buildHint("firecracker")
 		if got := strings.Contains(hint, "--slim"); got != c.wantSlim {
 			t.Errorf("%s: --slim = %v, want %v: %s", c.image, got, c.wantSlim, hint)
 		}
 		if !strings.Contains(hint, "CS_SANDBOX_IMAGE="+c.image) {
-			t.Errorf("%s: hint does not pin the image: %s", c.image, hint)
+			t.Errorf("%s: hint does not pin an overridden image: %s", c.image, hint)
 		}
 		if !strings.Contains(hint, "--engine firecracker") {
 			t.Errorf("%s: hint does not ask for the engine: %s", c.image, hint)
@@ -71,9 +74,36 @@ func TestBuildHintBuildsTheVariantThatIsMissing(t *testing.T) {
 // for, and on a host with no KVM it would simply fail.
 func TestBuildHintNamesTheReportsEngine(t *testing.T) {
 	for _, engine := range []string{"podman", "firecracker"} {
-		if hint := buildHint(testImage, engine); !strings.Contains(hint, "--engine "+engine) {
+		// The other engine is this host's default, so the report's own has to be
+		// asked for by name.
+		other := "podman"
+		if engine == "podman" {
+			other = "firecracker"
+		}
+		d := Deps{Image: testImage, DefaultEngine: other}
+		if hint := d.buildHint(engine); !strings.Contains(hint, "--engine "+engine) {
 			t.Errorf("hint for %s names the wrong engine: %s", engine, hint)
 		}
+	}
+}
+
+// TestBuildHintLeavesOutWhatTheHostImplies: the hint is read by somebody who
+// has just been told something is missing, and every part of it they would have
+// got for free is one more thing to read past. A default image on a host whose
+// own engine is the one being reported is a bare `cs-sandbox build`.
+func TestBuildHintLeavesOutWhatTheHostImplies(t *testing.T) {
+	d := Deps{Image: testImage, ImageIsDefault: true, DefaultEngine: "firecracker"}
+	if got := d.buildHint("firecracker"); got != "cs-sandbox build --slim" {
+		t.Errorf("hint = %q, want a bare build (--slim carries the variant)", got)
+	}
+	shipped := Deps{Image: "ghcr.io/codesweep-ai/sandbox:v1", ImageIsDefault: true, DefaultEngine: "firecracker"}
+	if got := shipped.buildHint("firecracker"); got != "cs-sandbox build" {
+		t.Errorf("hint = %q, want nothing but the command", got)
+	}
+	// An overridden name is the one thing flags cannot reach, so it stays.
+	pinned := Deps{Image: "localhost/sandbox-slim:ci", DefaultEngine: "firecracker"}
+	if got := pinned.buildHint("firecracker"); !strings.HasPrefix(got, "CS_SANDBOX_IMAGE=localhost/sandbox-slim:ci ") {
+		t.Errorf("hint = %q, want the pinned name spelled out", got)
 	}
 }
 
@@ -88,9 +118,15 @@ func TestBaseRootfsCheckIsPerImage(t *testing.T) {
 	if status, msg := baseRootfsCheck(Deps{FCCache: cache, Image: testImage}); status != OK {
 		t.Errorf("status = %v (%s), want OK — this image's rootfs is built", status, msg)
 	}
+	// A note rather than an issue since create builds what it is missing, but
+	// still a different answer for a different image, which is the whole point.
 	other := "ghcr.io/codesweep-ai/sandbox:v1"
-	if status, _ := baseRootfsCheck(Deps{FCCache: cache, Image: other}); status != NO {
-		t.Errorf("status = %v for %s, want NO — only the slim rootfs is built", status, other)
+	status, msg := baseRootfsCheck(Deps{FCCache: cache, Image: other})
+	if status != HM {
+		t.Errorf("status = %v for %s, want HM — only the slim rootfs is built", status, other)
+	}
+	if !strings.Contains(msg, other) {
+		t.Errorf("message = %q, want it to name %s", msg, other)
 	}
 }
 
