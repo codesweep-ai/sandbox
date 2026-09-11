@@ -54,6 +54,46 @@ func TestEnsureImageFetchesAnImageItCanGet(t *testing.T) {
 	}
 }
 
+// TestEnsureCreatableAlwaysPrepares: the bug this exists to stop. A base rootfs
+// is kept per image repository, so an upgrade that moves the tag leaves one that
+// exists and mounts and is the PREVIOUS image. Verify passes on it. Only the
+// same Prepare `build` runs notices, so create has to run it whether or not
+// anything looks missing.
+func TestEnsureCreatableAlwaysPrepares(t *testing.T) {
+	prepared := false
+	eng := &fakeEngine{prepare: func() error { prepared = true; return nil }}
+	app := creatableApp(run.NewFake())
+
+	if err := app.ensureCreatable(context.Background(), eng); err != nil {
+		t.Fatalf("ensureCreatable = %v, want nil", err)
+	}
+	if !prepared {
+		t.Error("create skipped Prepare because Verify was happy; a stale rootfs boots that way")
+	}
+	if eng.verifies != 1 {
+		t.Errorf("Verify ran %d times, want once — after preparing, to confirm it worked", eng.verifies)
+	}
+}
+
+// fakeEngine records what the create path asks of an engine.
+type fakeEngine struct {
+	engine.Engine
+	prepare  func() error
+	verifies int
+}
+
+func (f *fakeEngine) Prepare(context.Context) error {
+	if f.prepare != nil {
+		return f.prepare()
+	}
+	return nil
+}
+
+func (f *fakeEngine) Verify(context.Context) error {
+	f.verifies++
+	return nil
+}
+
 // TestEnsureNothingHappensOnAPreparedHost: create is the command people
 // run all day, and the checks that decide all this are local and must stay the
 // only cost on a host with nothing missing.

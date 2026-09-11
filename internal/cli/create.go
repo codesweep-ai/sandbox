@@ -397,22 +397,27 @@ func (a *App) ensureImage(ctx context.Context) error {
 	return nil
 }
 
-// ensureCreatable builds whatever the engine still needs from the image that
-// ensureImage has by now put on this host (R162).
+// ensureCreatable runs the same preparation `build` runs, so that a sandbox is
+// made of what its image says and not of whatever was left in the cache (R162).
 //
-// For firecracker that is the VMM, the guest kernel and the base rootfs, which
-// is minutes on a host that has none of them. Podman needs nothing, and its
-// Prepare does nothing. The Verify either side of it is the point: the first
-// says whether there is anything to do, and the second that doing it worked.
+// It calls Prepare unconditionally rather than only where Verify complains, and
+// that is the point. Verify asks whether the artifacts are THERE; only Prepare
+// asks whether they are the ones this image needs. A base rootfs is kept per
+// image REPOSITORY (R124), so an upgrade that moves the tag leaves a filesystem
+// that exists, mounts, and carries the previous image — which Verify passes and
+// a sandbox then boots. That reached a user: a create from a freshly pulled
+// image gave them a guest whose cs-sandbox reported the version before it.
+//
+// Prepare is the one place that decides what current means, and it is the same
+// call `build` makes. Where everything already matches it does nothing but
+// stat the cache and ask podman for the image's id, which is why create can
+// afford to ask on every run.
 //
 // A dry run prepares nothing, because preparing is a mutation. It reports what
 // is missing, exactly as create did before.
 func (a *App) ensureCreatable(ctx context.Context, eng engine.Engine) error {
 	if a.dryRun() {
 		return eng.Verify(ctx)
-	}
-	if err := eng.Verify(ctx); err == nil {
-		return nil
 	}
 	if err := eng.Prepare(ctx); err != nil {
 		return err
