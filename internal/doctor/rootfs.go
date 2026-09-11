@@ -1,9 +1,7 @@
 package doctor
 
 import (
-	"os"
 	"strings"
-	"syscall"
 
 	"github.com/codesweep-ai/sandbox/internal/fcdisk"
 )
@@ -86,23 +84,16 @@ func baseRootfsPath(fcCache, image string) string {
 	return fcdisk.Cache{Dir: fcCache}.BaseRootfs(image)
 }
 
-// baseRootfsRealBytes is the disk a non-reflink host pays per sandbox: the base
-// rootfs's *allocated* size, not its apparent one. The fallback copy preserves
-// holes (GNU cp defaults to --sparse=auto), so a 32 GiB disk holding 6 GiB costs
-// 6, and quoting the apparent size would overstate it fivefold. Zero when the
-// base has not been built yet, in which case the caller omits the figure.
+// baseRootfsRealBytes is the disk a non-reflink host pays per sandbox: what the
+// base rootfs allocates, which fcdisk measures. The fallback copy preserves holes
+// (GNU cp defaults to --sparse=auto), so a 32 GiB disk holding 6 GiB costs 6, and
+// quoting the apparent size would overstate it fivefold. Zero when the base has
+// not been built yet, in which case the caller omits the figure.
 //
 // It takes the image because the cache is keyed by one. It used to stat an
 // unkeyed base-rootfs.ext4, which per-image slots (SPEC R124) replaced — so on
 // every host since, it found nothing, returned zero, and quietly dropped the
 // figure the warning exists to carry.
 func baseRootfsRealBytes(fcCache, image string) int64 {
-	fi, err := os.Stat(baseRootfsPath(fcCache, image))
-	if err != nil {
-		return 0
-	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Blocks > 0 {
-		return st.Blocks * 512 // st_blocks is always 512-byte units
-	}
-	return fi.Size()
+	return fcdisk.Cache{Dir: fcCache}.BaseRootfsBytes(image)
 }

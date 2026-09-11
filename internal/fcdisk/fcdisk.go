@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/seed"
@@ -76,6 +77,23 @@ func (c Cache) BaseRootfs(image string) string {
 		return filepath.Join(c.Dir, legacyBaseRootfs)
 	}
 	return filepath.Join(c.Dir, "base-rootfs-"+imageSlot(image)+".ext4")
+}
+
+// BaseRootfsBytes is what one image's base rootfs actually occupies: its
+// ALLOCATED size, not its apparent one. The disk is a sparse file sized to
+// RootfsGB, so its apparent size is that ceiling on every host and says nothing
+// about whether anything was written into it — which is exactly what a caller
+// reporting the figure wants to know. Zero when it cannot be read, in which case
+// the caller omits the figure rather than printing a nought.
+func (c Cache) BaseRootfsBytes(image string) int64 {
+	fi, err := os.Stat(c.BaseRootfs(image))
+	if err != nil {
+		return 0
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Blocks > 0 {
+		return st.Blocks * 512 // st_blocks is always 512-byte units
+	}
+	return fi.Size()
 }
 
 // imageSlot is the filename key for one image: its repository, with the tag or

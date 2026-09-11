@@ -810,6 +810,66 @@ func TestEnsureBaseRootfsFallsBackWithoutOverlay(t *testing.T) {
 	}
 }
 
+// TestEnsureBaseRootfsSaysWhatItIsDoing: the build is a minute inside one
+// subprocess that says nothing, so the line before it has to name the wait and
+// the line after it has to say something came out. With neither, a user cannot
+// tell a slow build from a wedged one — which is the whole reason these lines
+// exist and the reason a test holds them.
+func TestEnsureBaseRootfsSaysWhatItIsDoing(t *testing.T) {
+	c, bc := baseRootfsBuild(t)
+	var said []string
+	c.Progress = func(m string) { said = append(said, m) }
+	r := run.NewFake().OnStdout("image inspect", "sha256:cafe")
+
+	if err := c.ensureBaseRootfs(context.Background(), r, bc); err != nil {
+		t.Fatalf("ensureBaseRootfs = %v, want nil", err)
+	}
+	var announced, reported bool
+	for _, m := range said {
+		if strings.HasPrefix(m, "building the base sandbox filesystem") && strings.Contains(m, "minute") {
+			announced = true
+		}
+		if strings.HasPrefix(m, "built the base sandbox filesystem") {
+			reported = true
+		}
+	}
+	if !announced {
+		t.Errorf("nothing warned that the build is about to go quiet; said %q", said)
+	}
+	if !reported {
+		t.Errorf("nothing reported that the filesystem was built; said %q", said)
+	}
+}
+
+// TestBaseRootfsBytesIsTheAllocatedSize: the disk is sparse and sized to a
+// ceiling, so its apparent size is the same on every host whatever was written.
+// Reporting that instead would say 32 GiB for a filesystem that is empty.
+func TestBaseRootfsBytesIsTheAllocatedSize(t *testing.T) {
+	c := Cache{Dir: t.TempDir()}
+	const img = "ghcr.io/codesweep-ai/sandbox:v0.1.0"
+	if got := c.BaseRootfsBytes(img); got != 0 {
+		t.Errorf("BaseRootfsBytes with no rootfs = %d, want 0 so the caller omits the figure", got)
+	}
+	f, err := os.Create(c.BaseRootfs(img))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(make([]byte, 8192)); err != nil {
+		t.Fatal(err)
+	}
+	// A hole past the written blocks, which is the shape of the real disk.
+	if err := f.Truncate(1 << 30); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got := c.BaseRootfsBytes(img)
+	if got == 0 || got >= 1<<30 {
+		t.Errorf("BaseRootfsBytes = %d, want the written blocks rather than the 1 GiB apparent size", got)
+	}
+}
+
 // TestEnsureBaseRootfsDoesNotFallBackOnBuildFailure: every failure after the
 // mount is the build's own, and re-running it the slow way would only reproduce
 // it — minutes later, with 11 GB written on the way.

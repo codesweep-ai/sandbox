@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/lock"
 	"github.com/codesweep-ai/sandbox/internal/run"
@@ -622,7 +623,14 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 	if bc.Image == "" || bc.InitPath == "" {
 		return errors.New("fc: base rootfs missing/stale and cannot build (need image + init path)")
 	}
-	c.say("building the base sandbox filesystem…")
+	// Say how long this is about to be quiet for. What follows is one mke2fs pass
+	// over every file in the image, and mke2fs has nothing to say while it runs —
+	// without -q it prints its stage lines and then sits on "Copying files into
+	// the device:" for the whole of it, because the stages that carry a progress
+	// meter are the fast ones. So the wait is the thing to announce, the way the
+	// guest kernel step above announces its own.
+	c.say("building the base sandbox filesystem (this can take a minute)…")
+	start := time.Now()
 	// Drop the stamp before deleting what it describes, so an interrupted build
 	// leaves "no stamp" (rebuild next time) rather than a stamp vouching for the
 	// empty truncate placeholder below — the state VerifyArtifacts would accept
@@ -651,6 +659,14 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 	_ = os.RemoveAll(tmp)
 	if err != nil {
 		return err
+	}
+	// And say what came out. After a minute of silence "done" is worth little on
+	// its own; the size is the cheap proof that a filesystem was written rather
+	// than a hole, since the file is a 32 GiB sparse one either way.
+	if b := c.BaseRootfsBytes(bc.Image); b > 0 {
+		c.say("built the base sandbox filesystem: %.1f GiB in %s", float64(b)/(1<<30), time.Since(start).Round(time.Second))
+	} else {
+		c.say("built the base sandbox filesystem in %s", time.Since(start).Round(time.Second))
 	}
 	return c.writeStamp(stamp, cur)
 }
