@@ -373,6 +373,20 @@ type RegistryCheck struct {
 // what it fetched and failing anyway. So a registry that served the manifest can
 // exit non-zero, and only the presence of the manifest tells the two apart.
 //
+// The manifest arrives ESCAPED when it arrives that way, inside the message:
+//
+//	Error: parsing manifest blob "{\"schemaVersion\":2,\"mediaType\":…}" as a …
+//
+// so the bare key is what to look for. Matching `"schemaVersion"` with its quotes
+// finds the success case and misses every failure-that-is-really-a-success, which
+// is every single-architecture image — and this repository publishes nothing else.
+// That shipped, and refused a create for an image the registry had.
+//
+// Where the two readings disagree the answer leans to yes, and deliberately. A
+// false yes costs one pull that fails with podman's own words; a false no refuses
+// a create that would have worked, and sends somebody to build an image they
+// could have fetched.
+//
 // Podman rather than skopeo, which answers with a clean status but is one more
 // thing a host has to have. This runs the tool every host already has, and gets
 // its registry credentials for free along with it.
@@ -384,7 +398,7 @@ func CheckRegistry(ctx context.Context, r run.Runner, image string) RegistryChec
 		return RegistryCheck{}
 	}
 	res, err := r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "manifest", "inspect", image)
-	if err == nil || strings.Contains(res.Stdout+res.Stderr, `"schemaVersion"`) {
+	if err == nil || strings.Contains(res.Stdout+res.Stderr, "schemaVersion") {
 		return RegistryCheck{Fetchable: true}
 	}
 	return RegistryCheck{Detail: registryDetail(res.Stderr)}
@@ -406,6 +420,22 @@ func registryDetail(stderr string) string {
 	if rest, ok := strings.CutPrefix(s, `reading image "`); ok {
 		if _, after, found := strings.Cut(rest, `": `); found {
 			s = after
+		}
+	}
+	// Whatever is left goes inside a sentence somebody reads, so it is capped.
+	// Podman can quote an ENTIRE MANIFEST back — three kilobytes of escaped JSON
+	// — and an error that has to be scrolled says less than one that fits on a
+	// line.
+	//
+	// The tail is what survives, never the head. Podman nests these as
+	// `outer: inner: reason`, so where it has quoted a manifest the front is the
+	// part worth losing and the last clause is the one that says what happened.
+	const most = 160
+	if len(s) > most {
+		if i := strings.LastIndex(s, ": "); i >= 0 && len(s)-i-2 > 0 && len(s)-i-2 <= most {
+			s = s[i+2:]
+		} else {
+			s = "…" + strings.ToValidUTF8(s[len(s)-most:], "")
 		}
 	}
 	return s
