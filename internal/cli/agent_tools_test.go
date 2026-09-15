@@ -1635,20 +1635,36 @@ func TestRemoteLearnsTheSessionIdBeforeTheNextTurn(t *testing.T) {
 		t.Run(tc.tool, func(t *testing.T) {
 			home, bin := agentHome(t, tc.prefix)
 			trace := filepath.Join(home, "trace")
+			contended := filepath.Join(home, "contended")
 			// ssh stands in for the remote driver. A driven turn (the call carrying --tmux)
-			// records its argv, holds long enough for the next turn to start behind it, and
-			// then emits the sentinel the caller learns the id from.
+			// records its argv, holds until the next turn has found the lock taken, and then
+			// emits the sentinel the caller learns the id from.
+			//
+			// Held on that event rather than for a fixed time, because a fixed time is a bet
+			// on how fast a loaded runner starts a process. The bet was a 300ms head start and
+			// a one-second hold, and a macOS runner under -race lost it: the second turn
+			// started before the first had written the session's token, and failed outright.
+			// The hold still gives up after 10s, so a turn that never waits is reported below
+			// rather than hanging the test.
 			writeStub(t, bin, "ssh", `#!/bin/sh
 case "$*" in
   *--tmux*)
     echo "$@" >> `+trace+`
     cat >/dev/null
-    sleep 1
+    i=0
+    while [ ! -f `+contended+` ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
     echo '__CS_OPENCODE_SESSION_ID__ `+tc.id+`'
     echo '__CS_CODEX_SESSION_ID__ `+tc.id+`'
     ;;
   *) exit 0 ;;
 esac
+`)
+			// The lock is a directory, so a turn that finds it taken is a mkdir that failed.
+			writeStub(t, bin, "mkdir", `#!/bin/sh
+/bin/mkdir "$@" && exit 0
+rc=$?
+case "$*" in *.lock) : >> `+contended+` ;; esac
+exit $rc
 `)
 			writeStub(t, bin, "uuidgen", "#!/bin/sh\necho 11111111-2222-3333-4444-555555555555\n")
 
@@ -1657,13 +1673,30 @@ esac
 				out, _ := runScript(t, home, bin, tc.tool, "--new", "--name", "s1", "first turn")
 				first <- out
 			}()
-			// Long enough that the first turn holds the lock, short enough to be inside its
-			// hold. The second turn then blocks where a campaign's next dispatch would.
-			time.Sleep(300 * time.Millisecond)
+			// The second turn starts once the first is inside its driven call, so the first
+			// holds the lock and has written the session's token. The second then blocks
+			// where a campaign's next dispatch would.
+			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+				if _, err := os.Stat(trace); err == nil {
+					break
+				}
+				select {
+				case out := <-first:
+					t.Fatalf("the first turn ended without driving a turn:\n%s", out)
+				default:
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the first turn did not drive a turn within 10s")
+				}
+			}
 			if out, exit := runScript(t, home, bin, tc.tool, "--resume", "s1", "second turn"); exit != 0 {
 				t.Fatalf("second turn: exit %d: %s", exit, out)
 			}
 			<-first
+			if _, err := os.Stat(contended); err != nil {
+				t.Errorf("the second turn never found the first holding the lock, so the turns " +
+					"did not overlap and nothing here was tested")
+			}
 
 			b, err := os.ReadFile(trace)
 			if err != nil {
