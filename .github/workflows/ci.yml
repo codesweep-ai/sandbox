@@ -43,6 +43,11 @@
 #                    Its podman machine is started at system BOOT by a
 #                    LaunchDaemon (nobody logs into that box), so unlike the
 #                    Intel job nothing here installs podman or inits a machine.
+#                    Only codesweep-ai has it. A fork has no runner with those
+#                    labels, and a job asking for one does not fail: it queues
+#                    for a day, holding every job that needs it. So each job for
+#                    this machine asks for github.repository_owner first, and a
+#                    fork runs the other hosts without it.
 #
 # Every host that runs the profile has a real engine, so its live members run
 # rather than skip. They still skip themselves where no engine is present, which
@@ -119,30 +124,39 @@ jobs:
     name: build-test (${{ matrix.label }})
     strategy:
       fail-fast: false
+      # The legs as JSON, because the self-hosted macOS runner's leg is only in
+      # codesweep-ai (see the header). A leg cannot skip itself — a job's `if` is
+      # decided before the matrix expands, so it cannot name one leg — but the
+      # matrix can be built without it, and `strategy` may read `github`.
+      # Left out rather than failed: in codesweep-ai every job that needs this one
+      # still waits for the macOS arm64 leg, and in a fork the matrix completes
+      # without it.
+      #
+      # Each leg is its own format() argument, never part of the format string,
+      # where JSON's braces would be read as placeholders. That is also what lets
+      # WSL's `wsl-bash {0}` through untouched.
+      #
+      # A plain scalar, not a `>-` block: GitHub's TypeScript workflow parser
+      # (the one behind the editor tooling) reads a block scalar's indentation
+      # and final newline into the value, and turns this list into a string. A
+      # plain scalar has one rule of its own: no space after a JSON colon, since
+      # ": " would end it.
+      #
+      # covlabel: artifact names take neither "/" nor a space, both of which
+      # label carries, so the coverage artifact is named with this.
+      #
+      # The macOS arm64 leg's os is an array, not a label string: self-hosted
+      # runners are selected by ANDing labels, and these three are the ones the
+      # runner registers automatically. No custom label is needed while this is
+      # the only self-hosted pool on the repo — add one before there is a second.
       matrix:
-        include:
-          - os: ubuntu-26.04
-            label: ubuntu-26.04
-            # Artifact names take neither "/" nor a space, both of which
-            # matrix.label carries, so the coverage artifact is named with this.
-            covlabel: ubuntu-26.04
-            shell: bash
-          # An array, not a label string: self-hosted runners are selected by
-          # ANDing labels, and these three are the ones the runner registers
-          # automatically. No custom label is needed while this is the only
-          # self-hosted runner on the repo — add one before there is a second.
-          - os: [self-hosted, macOS, ARM64]
-            label: macos-arm64 / self-hosted
-            covlabel: macos-arm64-self-hosted
-            shell: bash
-          - os: macos-15-intel
-            label: macos-15-intel
-            covlabel: macos-15-intel
-            shell: bash
-          - os: windows-2025
-            label: windows-2025 / WSL2
-            covlabel: windows-2025-wsl2
-            shell: wsl-bash {0}
+        include: ${{ fromJSON(format('[{0},{1},{2}{3}]',
+          '{"os":"ubuntu-26.04","label":"ubuntu-26.04","covlabel":"ubuntu-26.04","shell":"bash"}',
+          '{"os":"macos-15-intel","label":"macos-15-intel","covlabel":"macos-15-intel","shell":"bash"}',
+          '{"os":"windows-2025","label":"windows-2025 / WSL2","covlabel":"windows-2025-wsl2","shell":"wsl-bash {0}"}',
+          github.repository_owner == 'codesweep-ai'
+            && ',{"os":["self-hosted","macOS","ARM64"],"label":"macos-arm64 / self-hosted","covlabel":"macos-arm64-self-hosted","shell":"bash"}'
+            || '')) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     # The shell has to be set HERE and not per step: `steps.*.shell` accepts no
@@ -162,8 +176,9 @@ jobs:
       # setting — no fork PR runs anything until a maintainer approves it. This
       # catches the case where that setting is loosened by mistake.
       #
-      # It fails rather than skips because a matrix leg cannot skip itself, and
-      # a green check that silently tested nothing is worse than a red one.
+      # It fails rather than dropping the leg. A fork's PR runs as codesweep-ai,
+      # so the matrix above keeps the macOS arm64 leg for it, and a green check
+      # that silently tested nothing is worse than a red one.
       - name: refuse fork PRs on the self-hosted runner
         if: matrix.label == 'macos-arm64 / self-hosted' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: |
@@ -1048,11 +1063,15 @@ jobs:
     # goes red — this one means go look at the Mac mini, not at GitHub.
     name: smoke (macos-arm64 / self-hosted)
     needs: [build-test, build-artifacts]
-    # Skips cleanly for fork PRs — unlike the build-test leg, which is inside a
-    # matrix and has to fail instead. Same accident-guard caveat applies: the
+    # Only in codesweep-ai, the one owner with this machine (see the header).
+    #
+    # And skips cleanly for fork PRs — unlike the build-test leg, which is
+    # inside a matrix and fails instead. Same accident-guard caveat applies: the
     # repository's "require approval for all external contributors" setting is
     # what actually protects this machine.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.repository_owner == 'codesweep-ai' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 35
     # One writer of localhost/sandbox-slim:ci at a time. setup-smoke rebuilds
@@ -1184,7 +1203,11 @@ jobs:
   # tag into one store concurrently, which is undefined.
   build-artifacts-macos:
     name: build-artifacts (macos-arm64 / self-hosted)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Only in codesweep-ai, and never for a fork's PR: the same gate as every
+    # other job on this machine.
+    if: >-
+      github.repository_owner == 'codesweep-ai' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 25
     concurrency:
@@ -1236,10 +1259,14 @@ jobs:
   agents-podman-macos:
     name: agents podman (macos-arm64 / ${{ matrix.case }})
     needs: [build-test, build-artifacts-macos]
-    # Skips cleanly for fork PRs, like every other job on this machine. The
-    # repository's "require approval for all external contributors" setting is
-    # what actually protects it.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Only in codesweep-ai, and skips cleanly for fork PRs, like every other job
+    # on this machine. Skipping build-artifacts-macos would skip this too, but
+    # the gate is spelled out so it does not depend on that need staying here.
+    # The repository's "require approval for all external contributors" setting
+    # is what actually protects the machine.
+    if: >-
+      github.repository_owner == 'codesweep-ai' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 30
     strategy:
@@ -1358,6 +1385,14 @@ jobs:
   # smoke leg never runs the unit tier. The smoke tier alone arrives from four
   # jobs and three operating systems — merged here they are one picture, which
   # is the only one worth reporting or gating on.
+  #
+  # Outside codesweep-ai the self-hosted macOS runner's smoke is skipped (see the
+  # header), and a skipped need skips everything after it unless the job says
+  # otherwise. So a skip is accepted there and only there. In codesweep-ai every
+  # need must pass, which is exactly what the default demands; a need that
+  # failed or was cancelled stops this job everywhere. The gate itself needs
+  # nothing from that runner: the baseline is still reached without its data,
+  # checked against a green run's artifacts with every macOS arm64 one removed.
   coverage:
     name: coverage
     runs-on: ubuntu-26.04
@@ -1367,6 +1402,11 @@ jobs:
       - smoke-firecracker
       - smoke-wsl
       - smoke-macos-arm64
+    if: >-
+      !cancelled() &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled') &&
+      (github.repository_owner != 'codesweep-ai' || !contains(needs.*.result, 'skipped'))
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
