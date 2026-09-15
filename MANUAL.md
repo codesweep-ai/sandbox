@@ -693,7 +693,7 @@ without disturbing your real one, which is what the test suite does.
 | `XDG_DATA_HOME`, `XDG_CACHE_HOME` | The defaults the paths above derive from. |
 | `CS_SANDBOX_AGENT_HOME` | Where a login or a key is read from, by `--inherit-agent-login` and by the lender alike. Your home, unless this names another profile tree. |
 | `CS_SANDBOX_LEND_ADDR` | The address `cs-sandbox lender` listens on when you run one yourself. Default `0.0.0.0:2500`. The group's own lender container is not configured by it. |
-| `CS_SANDBOX_LENDER_BIN` | A Linux `cs-sandbox` for the image's architecture, run by the group's lender container instead of the image's own. Set it where the image carries no `cs-sandbox` (a slimmed one) or where you want the lender to be your own build. Empty means "use the image's". |
+| `CS_SANDBOX_LENDER_BIN` | A Linux `cs-sandbox` for the image's architecture, run by the group's lender container instead of the image's own. Unset or empty, the image's own runs. Set it where the image carries no `cs-sandbox` (a slimmed one) or where you want the lender to be your own build. |
 
 The second group changes what gets built or run.
 

@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
@@ -335,38 +334,18 @@ func (app *App) lenderBox(group string) lenderBox {
 // lenderBinary is the cs-sandbox the lender container runs, or "" to let the
 // image supply it.
 //
-// This executable, on Linux, because then the lender under test is the one this
-// checkout built — which is the only way the lent tier says anything about a
-// change to the lender. It is safe to hand over: the release build is
-// CGO_ENABLED=0, so it needs no loader the image might not have.
+// The image's own unless CS_SANDBOX_LENDER_BIN names another. A cs-sandbox
+// names an image built from its own revision, and that image ships the
+// cs-sandbox that made it, so the lender inside already matches the create
+// that writes its loans. Nothing needs copying in (SBX-041).
 //
-// Not on macOS, where this binary is Mach-O and the container is Linux. There
-// the image's own cs-sandbox serves, which for a released build is the matching
-// version by construction.
-//
-// CS_SANDBOX_LENDER_BIN overrides both, and an empty value is a deliberate
-// "use the image's": it is how a cross-built binary reaches a container whose
-// architecture is not this host's, and how a macOS run puts its own build in.
+// The variable is for the two cases where that does not hold. The slim image
+// the test tiers boot carries no cs-sandbox at all, and a change to the lender
+// reaches a sandbox without an image rebuild only this way. The binary named
+// must be a Linux one for the image's architecture, and create stages a copy
+// of it (see lenderBoxSpec.Stage).
 func lenderBinary() string {
-	if v, ok := os.LookupEnv("CS_SANDBOX_LENDER_BIN"); ok {
-		return v
-	}
-	if runtime.GOOS != "linux" {
-		return ""
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	// Only when this process IS cs-sandbox. Under `go test` os.Executable is
-	// the test binary, and mounting that would start a container that runs the
-	// test suite with `lender --addr …` as its arguments — a failure whose
-	// message is about testing flags and mentions none of this. A tier that
-	// wants its own build in there names it, which is the honest way round.
-	if filepath.Base(exe) != "cs-sandbox" {
-		return ""
-	}
-	return exe
+	return os.Getenv("CS_SANDBOX_LENDER_BIN")
 }
 
 // lenderUpstream retargets an upstream that names the loopback at the host.

@@ -239,9 +239,8 @@ WITH_TOOLS := PATH="$(TOOLSDIR):$$PATH"
 ## one wherever an amd64 image is being run under emulation.
 ##
 ## Named explicitly for every tier that boots a sandbox, and that is not
-## belt-and-braces: `create` defaults this to its own executable, which under
-## `go test` is the TEST binary rather than cs-sandbox — and the slim image the
-## tiers boot carries no cs-sandbox of its own to fall back to.
+## belt-and-braces: unnamed, the lender runs the image's own cs-sandbox, and the
+## slim image the tiers boot carries none.
 LENDER_BIN  := $(abspath bin/cs-sandbox-lender)
 WITH_LENDER  = CS_SANDBOX_LENDER_BIN=$(LENDER_BIN)
 

@@ -32,7 +32,7 @@ import (
 //
 // The trust model is unchanged. The credential still lives in the host's
 // filesystem and is read per request (R150); the mount is a view of the same
-// file, not a copy of it. The binary is the one this checkout built, handed in
+// file, not a copy of it. The binary is the image's own unless one is handed in
 // from the host — see lenderBinary.
 //
 // Lives here rather than in internal/lend because that package is held to
@@ -259,6 +259,12 @@ func (b lenderBox) alignMTU(ctx context.Context) {
 // safe while an older lender is still running: rename replaces the name without
 // touching the inode the running container has mapped. Truncating in place
 // would fail with ETXTBSY, which is the whole failure this exists to avoid.
+//
+// Each call writes under a temporary name of its own. Every create in a group
+// stages while the lender is down, and a matrix starts several at once. With one
+// shared name, one create's rename took the file another was still writing or
+// about to rename (SBX-040). Now each renames only the complete copy it wrote,
+// and the last rename wins with the same bytes.
 func (b lenderBox) stage() error {
 	if b.Spec.Bin == "" {
 		return nil
@@ -267,15 +273,26 @@ func (b lenderBox) stage() error {
 	if err != nil {
 		return fmt.Errorf("read the lender binary %s: %w", b.Spec.Bin, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(b.Spec.Stage), 0o700); err != nil {
+	dir := filepath.Dir(b.Spec.Stage)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := b.Spec.Stage + ".new"
-	if err := os.WriteFile(tmp, src, 0o755); err != nil {
+	tmp, err := os.CreateTemp(dir, filepath.Base(b.Spec.Stage)+".*.new")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, b.Spec.Stage); err != nil {
-		_ = os.Remove(tmp)
+	_, err = tmp.Write(src)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp.Name(), 0o755)
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), b.Spec.Stage)
+	}
+	if err != nil {
+		_ = os.Remove(tmp.Name())
 		return err
 	}
 	return nil

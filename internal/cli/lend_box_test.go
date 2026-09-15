@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
@@ -125,6 +127,63 @@ func TestStagingReplacesTheNameNotTheFile(t *testing.T) {
 	}
 	if fi, err := os.Stat(stage); err != nil || fi.Mode().Perm() != 0o755 {
 		t.Errorf("the staged copy is not executable: %v %v", fi, err)
+	}
+}
+
+// Every create in a group stages the lender while it is down, and a matrix
+// starts several creates at once. Each has to land a complete copy. With one
+// shared temporary name, one create's rename took the file another was writing
+// or about to rename, which failed that create with ENOENT (SBX-040).
+func TestCreatesStagingTogetherEachLandACompleteCopy(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	// Big enough that one create is still writing when another renames.
+	want := bytes.Repeat([]byte("lender build\n"), 256<<10)
+	if err := os.WriteFile(src, want, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stage := filepath.Join(dir, "grp", ".lender", "cs-sandbox")
+	b := lenderBox{Spec: lenderBoxSpec{Bin: src, Stage: stage}}
+
+	const creates = 8
+	for round := range 10 {
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		errs := make(chan error, creates)
+		for range creates {
+			wg.Go(func() {
+				<-start
+				errs <- b.stage()
+			})
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: stage: %v", round, err)
+			}
+		}
+		got, err := os.ReadFile(stage)
+		if err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("round %d: the staged copy holds %d bytes, want the complete %d", round, len(got), len(want))
+		}
+	}
+	// Only the stage itself is left: a create that renamed its copy leaves no
+	// temporary file behind.
+	entries, err := os.ReadDir(filepath.Dir(stage))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(stage) {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("the lender directory holds %v, want only %s", names, filepath.Base(stage))
 	}
 }
 
