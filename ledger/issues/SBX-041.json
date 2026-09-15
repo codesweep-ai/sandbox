@@ -3,17 +3,19 @@
   "title": "On Linux every lender start copies the host's cs-sandbox into the group, though the image already carries a matching one",
   "type": "improvement",
   "severity": "low",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "maintainer, while reviewing the fix for SBX-040, 2026-09-15",
   "opened": "2026-09-15",
-  "resolved": null,
+  "resolved": "2026-09-15",
   "stint": "2026-09-15 lender stage race",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "c7f53bc"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "`lenderBinary` now returns `CS_SANDBOX_LENDER_BIN` and nothing else, so with the variable unset there is no binary to stage. With no binary, TestLenderBoxJoinsOneNetworkAndNothingElse pins `--entrypoint cs-sandbox`, which runs the copy the image carries.\n\nThe old default was never used by a test. Every lending test drives the CLI in process through `execRoot`, where the executable is the test binary, and each make target that runs them sets the variable. `make test-smoke` passes all 14 TestAgentReplay cells and TestCLILendKeyLive with it set, and `make check` exits 0. A lent create on Linux against a full image, which is the new default path, was not run."
   },
-  "resolution": null,
+  "resolution": "The lender runs the image's own cs-sandbox unless `CS_SANDBOX_LENDER_BIN` names one, so a released cs-sandbox copies nothing into the group. The test tiers still name a binary, because the slim image they boot has none.",
   "details": "When `create` starts a group's lender container on Linux, `lenderBinary` in internal/cli/lend_create.go picks the running cs-sandbox. `lenderBox.stage` then copies that binary, about 10 MB, into `<group>/.lender/`, and the container runs the copy.\n\nFor a released cs-sandbox the copy buys nothing. The binary names an image built from its own revision, and image/Containerfile installs the cs-sandbox that made it. The container therefore already holds a matching lender, which is what macOS runs today.\n\nThe copy is needed in two cases only. The slim image the test tiers boot carries no cs-sandbox at all, and a developer changing the lender wants their build without rebuilding the image. Both can name a binary with `CS_SANDBOX_LENDER_BIN`, and the Makefile already does for the tiers. The copy is also the step whose shared temporary name caused the race in SBX-040.",
   "notes": [],
   "links": [

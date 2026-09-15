@@ -3,17 +3,19 @@
   "title": "Creates that start together in one group race to stage the lender binary, so one fails or the lender runs a partial copy",
   "type": "defect",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, while investigating the failed base-images run 34996055477, 2026-09-15",
   "opened": "2026-09-15",
-  "resolved": null,
+  "resolved": "2026-09-15",
   "stint": "2026-09-15 lender stage race",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "c7f53bc"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "On the unfixed code, `go test -count=1 -run TestCreatesStagingTogetherEachLandACompleteCopy ./internal/cli/` failed 3 runs of 3 in its first round. The error was the one CI hit: `rename .../cs-sandbox.new .../cs-sandbox: no such file or directory`.\n\nWith c7f53bc, that test and TestStagingReplacesTheNameNotTheFile pass 20 runs in a row, and 5 more under `-race`. `make test-smoke` on an x86_64 host with podman 5.8.2 passes all 14 TestAgentReplay cells, the 7 lent ones staging in parallel, and TestCLILendKeyLive. The full `make check` gate passes too."
   },
-  "resolution": null,
+  "resolution": "Each create now writes the lender binary to a temporary file of its own in the group's `.lender` directory, then renames it onto `cs-sandbox`. A rename can no longer take another create's file, and the last rename leaves the same complete binary.",
   "details": "The second attempt of base-images run 34996055477 failed on amd64 in `make test-smoke`. One replay cell failed in under a second while the other thirteen passed:\n\n```\n--- FAIL: TestAgentReplay/claude-anthropic-lent (0.97s)\ncreate csvcr-claude-anthropic-l: rename .../instances/vcr8b6078dc/.lender/cs-sandbox.new .../instances/vcr8b6078dc/.lender/cs-sandbox: no such file or directory\n```\n\n`lenderBox.stage` in internal/cli/lend_box.go writes the lender binary to `<group>/.lender/cs-sandbox.new`, then renames it onto `cs-sandbox`. Every create in a group stages while the group's lender is not running yet. The replay tier's lent cells create in one group at the same moment, so they all write that one temporary name. One create's rename takes the file another create was about to rename, and the second create fails with ENOENT.\n\nThe same race has a quieter outcome. A rename that lands while another create is still writing moves a partial binary into place, and the lender container then runs a truncated executable. The retry for two creates racing on `podman run` does not cover either case, because staging happens before it.\n\nIt is rare. Of the 30 most recent failed runs in this repository, only this one shows the error.",
   "notes": [],
   "links": []
