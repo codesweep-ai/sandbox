@@ -3,17 +3,19 @@
   "title": "The CI status reports workflows as running long after they finish",
   "type": "defect",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "repository owner, reading the CI dashboard: \"The ledger, ui, lint, and sandbox projects all show their CI status as running, even though they completed.\"",
   "opened": "2026-09-15",
-  "resolved": null,
+  "resolved": "2026-09-15",
   "stint": "2026-09-15 CI status reported as running",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "f4dfb53"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "After f4dfb53 reached main, ci finished at 22:01:04, and pages and publish images started at 22:01:06. The publish images run ended at 22:03:46, and the pages workflow ran again at 22:03:48. The status file published at 22:04:09 reports ci, publish images and pages as success on f4dfb53, with no run in flight.\n\nThe base-images and prune-images triggers have not fired yet. No push has changed the images since, and prune-images next runs on its schedule at 04:17 UTC. actionlint accepted the workflow."
   },
-  "resolution": null,
+  "resolution": "`pages.yml` now also runs after publish images, base-images and prune-images finish. The last deploy therefore follows the last of them, so the status file reports finished runs as finished.",
   "details": "`pages.yml` writes `ci-status.json` when ci finishes, and publish images starts at that same moment. The file is written within half a minute, so it records that run as in progress. Nothing rewrites it until the next push, so the dashboard at codesweep.ai/dashboards/ci shows this repository as running from then on.\n\nOn 135d9d4, ci finished at 20:28:27, and pages and publish images both started two seconds later. The file was generated at 20:28:54, and publish images finished at 20:31:23. The status action leaves out only the run writing the file, so publish images is reported as unfinished.\n\nbase-images can do the same. A push that changes the images starts it beside ci, and it can outlast ci. On bea6812, pushed on 2026-09-07, ci finished at 22:09:05 and base-images at 22:10:56. A status written on ci's completion would have recorded base-images as unfinished.\n\nIt began when publish images moved out of ci into a workflow of its own, in 601626e. The comment in `pages.yml` expected such a run to be a few minutes behind. It is reported as running instead, until the next push repeats the same race.",
   "notes": [],
   "links": []
