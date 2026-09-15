@@ -215,6 +215,28 @@ func runningMachine() *run.Fake {
 	return run.NewFake().OnStdout("machine inspect", "podman-machine-default running\n")
 }
 
+// Present is not the same as usable. Podman keeps an image for another platform
+// with only a warning, so doctor compares the stored image's platform with the
+// engine's, and says how to replace it rather than reporting it present.
+func TestDiagnoseImageForAnotherPlatform(t *testing.T) {
+	stubLookPath(t, "podman", "ssh", "ssh-keygen", "git")
+	f := run.NewFake().
+		OnStdout("{{.Os}}/{{.Architecture}}", "linux/amd64").
+		OnStdout("{{.Server.OsArch}}", "linux/arm64")
+	rep := Diagnose(context.Background(), "podman", Deps{
+		Runner: f, User: "ada", Image: "ghcr.io/codesweep-ai/sandbox:v1", ImageIsDefault: true, DefaultEngine: "podman",
+	})
+	all := reportText(rep)
+	for _, want := range []string{"is linux/amd64", "engine runs linux/arm64", "cs-sandbox build"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("report should contain %q:\n%s", want, all)
+		}
+	}
+	if strings.Contains(all, "image present") {
+		t.Errorf("an image for another platform was reported present:\n%s", all)
+	}
+}
+
 // A stopped machine is a real, actionable problem — and the podman probes that
 // depend on it must not be reported as "not built yet".
 func TestDiagnoseMacOSMachineStopped(t *testing.T) {

@@ -377,21 +377,36 @@ func newEngine(d engine.Deps, name string) engine.Engine {
 // Nothing runs here on a host that has the image: the check is local and costs
 // milliseconds, which is what keeps create the fast command it has been.
 //
+// An image of another architecture is not the image either (R165), so it is
+// fetched again like a missing one: a registry that publishes both hands this
+// host its own. What arrives is checked once more, because podman keeps a
+// single-architecture image for any platform, and one that still does not
+// match can only be made here, by `build`.
+//
 // A dry run fetches nothing, because fetching is a mutation. What is missing is
 // then reported by the group setup below, exactly as create reported it before.
 func (a *App) ensureImage(ctx context.Context) error {
 	if a.dryRun() {
 		return nil
 	}
-	if err := engine.VerifyImage(ctx, a.Runner, a.Image); err == nil {
+	have := engine.VerifyImage(ctx, a.Runner, a.Image)
+	if have == nil {
 		return nil
 	}
 	if reg := engine.CheckRegistry(ctx, a.Runner, a.Image); !reg.Fetchable {
+		// Not "not on this host": an image is, only for another platform, and
+		// VerifyImage's own sentence says so and names the remedy.
+		if _, ok := errors.AsType[*engine.ArchMismatch](have); ok {
+			return have
+		}
 		return fmt.Errorf("sandbox image %q is not on this host and could not be fetched%s — make it here with:  cs-sandbox build",
 			a.Image, inParens(reg.Detail))
 	}
 	if !a.pullImage(ctx) {
 		return fmt.Errorf("sandbox image %q could not be fetched — make it here with:  cs-sandbox build", a.Image)
+	}
+	if mm := engine.CheckImageArch(ctx, a.Runner, a.Image); mm != nil {
+		return fmt.Errorf("%w; the registry has no %s image of it — make it here with:  cs-sandbox build", mm, mm.Want)
 	}
 	a.phase("pulled " + a.Image)
 	return nil

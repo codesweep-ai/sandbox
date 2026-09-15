@@ -168,7 +168,16 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 	if !machineUp {
 		cg.add(HM, "image state unknown — podman machine not running (see above)")
 	} else if _, err := d.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "image", "exists", d.Image); err == nil {
-		cg.add(OK, "image present ("+d.Image+")")
+		// Present is not enough: podman keeps an image of another platform with
+		// only a warning, and a sandbox from it runs emulated (R165). create
+		// fetches this host's own when the registry has one, so it is a hint to
+		// act on rather than a failure.
+		if mm := eng.CheckImageArch(ctx, d.Runner, d.Image); mm != nil {
+			cg.add(HM, "image "+d.Image+" is "+mm.Have+", and the engine runs "+mm.Want+
+				" — sandboxes from it run emulated. Replace it with:  "+d.buildHint(engine))
+		} else {
+			cg.add(OK, "image present ("+d.Image+")")
+		}
 	} else {
 		// A missing image stopped being something to fix when create started
 		// fetching one the registry has (R162). Which of the two this host is

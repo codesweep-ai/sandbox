@@ -113,6 +113,21 @@ The two CI images (§16) are separate packages, `-slim` and `-slim-agents`. Neit
 a container that boots with no toolchains would be a confusing thing to find under the sandbox
 package.
 
+**R165.** `build`, `create` and `doctor` **MUST** compare the platform of the image in the local
+store with the platform the engine runs. `build` **MUST** build an image it pulled for another
+platform rather than keep it. `create` **MUST** fetch again an image it holds for another platform,
+and **MUST** fail with an error naming `build` where what arrives is still for another platform.
+`doctor` **MUST** report such an image, with the same remedy. An image named under `localhost/`
+**MUST NOT** be checked.
+
+Podman does not make this comparison. It keeps a single-architecture image for another platform with
+only a warning, and a container started from it runs under emulation, slowly enough that an agent
+inside misses its deadlines. The engine's platform is asked of podman's server, which on macOS is
+the podman machine that runs the container. A `localhost/` image was built or loaded on this host by
+somebody who chose it, so running one under emulation on purpose stays possible. A platform podman
+cannot report is not treated as a mismatch, because refusing an image that works costs more than
+running one slowly.
+
 Toolchains under `/opt` are read-only for the dev user, so a new language version or a global
 package needs `sudo`. Per-project virtualenvs and `node_modules` are unaffected. Two cases would
 otherwise chafe, and both have an escape hatch. Go keeps upstream's `GOTOOLCHAIN=auto`, so a

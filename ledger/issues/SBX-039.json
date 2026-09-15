@@ -1,0 +1,20 @@
+{
+  "id": "SBX-039",
+  "title": "An Apple silicon host runs the published sandbox image under emulation, because only amd64 is published and nothing checks",
+  "type": "defect",
+  "severity": "high",
+  "status": "in-progress",
+  "foundBy": "session agent, answering the maintainer's question \"in codesweep-ai are we able to publish arm64 images?\", 2026-09-14",
+  "opened": "2026-09-14",
+  "resolved": null,
+  "stint": "2026-09-14 arm64 image",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "The images a sandbox runs are published for linux/amd64 alone. `skopeo inspect --raw` on `ghcr.io/codesweep-ai/sandbox:v0.0.0-20260911220608-fe9796dafc77` and on its `sandbox-slim` twin returns a single OCI manifest whose config says linux/amd64. The tiers under them are lists of amd64 and arm64. The `publish-images` job in ci.yml builds on ubuntu-26.04 only.\n\nPodman does not refuse such an image on another architecture. On podman 5.8.2, `podman pull --arch arm64 docker.io/amd64/busybox:1.28` prints `WARNING: image platform (linux/amd64) does not match the expected platform (linux/arm64)`, exits 0, and stores linux/amd64. That was measured on an x86_64 host asking for arm64, not on a Mac.\n\ncs-sandbox never asks. `build` reads a successful pull as the image, and `create` reads `podman image exists` the same way. So on Apple silicon both settle for the amd64 image rather than building a native one from the arm64 tiers. The base-images workflow records what that costs. Under emulation, all four claude replay members timed out at 10.5s against 5.5s native.",
+  "notes": [],
+  "links": []
+}

@@ -115,10 +115,25 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim, localSandbox
 	//
 	// --rebuild-base skips the pull outright: it was asked for precisely because
 	// a lower tier changed, and the published image was built from the old one.
-	if !localSandbox && !rebuildBase && app.pullImage(cmd.Context()) {
-		app.phase("pulled " + app.Image)
-	} else if err := buildImage(cmd, app, slim, localSandbox, rebuildBase); err != nil {
-		return err
+	//
+	// A pull can succeed and still not be the image (R165). Podman keeps a
+	// single-architecture image for another platform with only a warning, so the
+	// store is asked what arrived. One that does not match is built here
+	// instead: the tiers are published for both architectures, so this host's
+	// build is native even where the registry's image is not.
+	pulled := !localSandbox && !rebuildBase && app.pullImage(cmd.Context())
+	if pulled {
+		if mm := engine.CheckImageArch(cmd.Context(), app.Runner, app.Image); mm != nil {
+			app.phase(mm.Error() + ", so building " + mm.Want + " here instead…")
+			pulled = false
+		} else {
+			app.phase("pulled " + app.Image)
+		}
+	}
+	if !pulled {
+		if err := buildImage(cmd, app, slim, localSandbox, rebuildBase); err != nil {
+			return err
+		}
 	}
 
 	// Firecracker artifacts (download + guest kernel + base rootfs), built from

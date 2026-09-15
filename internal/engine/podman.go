@@ -331,8 +331,9 @@ func (p *Podman) Verify(ctx context.Context) error {
 	return VerifyImage(ctx, p.d.Runner, p.d.Image)
 }
 
-// VerifyImage reports whether the sandbox image is on this host, in the one
-// sentence that says what to run about it.
+// VerifyImage reports whether the sandbox image is on this host, and of the
+// architecture its engine runs, in the one sentence that says what to run about
+// it.
 //
 // A package function rather than a method, because it is needed before Deps
 // exists. Everything a group is made of is a container from this image — the
@@ -340,12 +341,63 @@ func (p *Podman) Verify(ctx context.Context) error {
 // of them is started. Without it a missing image surfaces as podman trying to
 // PULL it: a registry error, three retries deep, naming a host nobody meant to
 // contact.
+//
+// An image of another architecture answers the way a missing one does, because
+// it is not the image this host can run (R165). The error wraps an ArchMismatch,
+// so a caller that fetches what is missing can tell the two apart.
 func VerifyImage(ctx context.Context, r run.Runner, image string) error {
 	if _, err := r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "image", "exists", image); err != nil {
 		return fmt.Errorf("sandbox image %q is not on this host — run: cs-sandbox build "+
 			"(it pulls that image when one is published, and builds it when none is)", image)
 	}
+	if mm := CheckImageArch(ctx, r, image); mm != nil {
+		return fmt.Errorf("%w — run: cs-sandbox build "+
+			"(it pulls the %s image when one is published, and builds it when none is)", mm, mm.Want)
+	}
 	return nil
+}
+
+// ArchMismatch is an image on this host whose platform is not the one its
+// engine runs (R165).
+type ArchMismatch struct {
+	Image string
+	Have  string // the image's os/arch, as the store records it
+	Want  string // the engine's os/arch
+}
+
+func (m *ArchMismatch) Error() string {
+	return fmt.Sprintf("sandbox image %q is %s, and this host's engine runs %s", m.Image, m.Have, m.Want)
+}
+
+// CheckImageArch compares the platform of an image in the local store with the
+// one its engine runs, and returns the pair when they differ.
+//
+// Podman does not make this comparison. Asked for a single-architecture image
+// on another platform, it keeps it with a warning, and a sandbox started from
+// it is emulated. That is slow enough that an agent inside misses its
+// deadlines. So the store is asked rather than the registry: the store is what
+// a sandbox is started from, whatever put the image there.
+//
+// The engine's platform is podman's SERVER, and not this binary's GOARCH. On
+// macOS the server is the podman machine, which is what runs the container, and
+// a cs-sandbox built for the other architecture would compare against the wrong
+// one. `podman version` answers in milliseconds where `podman info` takes a
+// third of a second.
+//
+// A localhost/ image is not checked. It exists only because somebody built or
+// loaded it on this host, and running one under emulation on purpose is theirs
+// to do. An answer podman cannot give is not a mismatch either: a false yes
+// costs a slow sandbox, and a false no refuses one that would have worked.
+func CheckImageArch(ctx context.Context, r run.Runner, image string) *ArchMismatch {
+	if image == "" || strings.HasPrefix(image, "localhost/") {
+		return nil
+	}
+	have := run.Output(ctx, r, "podman", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", image)
+	want := run.Output(ctx, r, "podman", "version", "--format", "{{.Server.OsArch}}")
+	if have == "" || want == "" || strings.HasPrefix(have, "/") || have == want {
+		return nil
+	}
+	return &ArchMismatch{Image: image, Have: have, Want: want}
 }
 
 // RegistryCheck is what this host could learn about fetching an image it does

@@ -327,8 +327,15 @@ different images. GHCR tags are mutable, so the second would silently overwrite 
 tags are stamped with the build time instead, and the pair in use is named in `image/tiers.env`.
 
 `build` looks for that image on the registry and builds it only when there is none. A released
-binary usually reaches a working image in the time a download takes. `create` does neither: when the
-image is absent it says so and names `build`.
+binary usually reaches a working image in the time a download takes. `create` fetches a published
+image it does not have, and when none is published it says so and names `build`.
+
+Every image `build` and `create` use is checked against the platform its engine runs, which on
+macOS is the podman machine's. An image for another platform runs under emulation, too slowly for
+an agent to keep its deadlines. `build` builds this platform's image instead of keeping one.
+`create` fetches this platform's image again, and names `build` when the registry has no other.
+`doctor` reports such an image. An image under `localhost/` is not checked, so one you built or
+loaded yourself runs whatever its platform.
 
 A binary built from a modified tree names a `-dirty` tag. No `-dirty` image is ever published, so
 that binary always builds its own. That is what keeps a Containerfile you are editing from being
@@ -761,6 +768,13 @@ value it refused, so look in the sandbox rather than in the lender's log.
 
 `--lend-api-key` needs the key in `~/.cs-keys/<provider>`. The message prints the command that saves
 one.
+
+**`sandbox image "…" is linux/amd64, and this host's engine runs linux/arm64`**
+
+The image in your local store was made for another platform, and a sandbox from it would run under
+emulation. Run `cs-sandbox build`. It pulls the image for your platform when one is published, and
+builds it when none is. The two platforms can appear the other way round, on an amd64 host holding
+an arm64 image.
 
 **`no systemd user session; running without a memory cgroup`**
 

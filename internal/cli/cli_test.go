@@ -364,6 +364,40 @@ func TestPullShowsProgressUnlessQuiet(t *testing.T) {
 	}
 }
 
+// TestBuildBuildsWhenThePullBroughtAnotherPlatform: podman keeps a
+// single-architecture image for another platform with only a warning, so a pull
+// that succeeded can leave an amd64 image on an arm64 engine. build asks the
+// store what arrived, and makes this platform's image itself from the tiers,
+// which are published for both. A pull of the right platform is still the end
+// of it.
+func TestBuildBuildsWhenThePullBroughtAnotherPlatform(t *testing.T) {
+	for _, c := range []struct {
+		name, pulled string
+		wantBuild    bool
+	}{
+		{"another platform", "linux/amd64", true},
+		{"this platform", "linux/arm64", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			saved := Version
+			t.Cleanup(func() { Version = saved })
+			Version = testVersion
+			f := run.NewFake().
+				OnStdout("{{.Os}}/{{.Architecture}}", c.pulled).
+				OnStdout("{{.Server.OsArch}}", "linux/arm64")
+			if _, err := runRootWith(t, &App{}, f, "build", "--engine", "podman"); err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			built := slices.ContainsFunc(f.Calls, func(call []string) bool {
+				return len(call) >= 2 && call[0] == "podman" && call[1] == "build"
+			})
+			if built != c.wantBuild {
+				t.Errorf("podman build ran = %v, want %v; calls=%s", built, c.wantBuild, f)
+			}
+		})
+	}
+}
+
 // TestBuildSkipsThePullForALocalImage: a localhost/ reference names an image
 // that only ever exists in the local store, so there is no registry to ask.
 // podman does not know that: it resolves the name to a registry called
