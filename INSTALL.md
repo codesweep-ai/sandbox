@@ -134,7 +134,7 @@ engine here, and Firecracker is untested on WSL2.
 ### Firecracker packages (Linux + KVM, x86_64)
 
 `cs-sandbox build` (step 3) downloads the Firecracker binary and builds the guest kernel and base
-rootfs. The binary is pinned to a release, `v1.16.0` by default and overridable with
+rootfs. The binary is pinned to a release, `v1.17.0` by default and overridable with
 `CS_SANDBOX_FC_VERSION`, and is verified against a SHA256 committed in the source. You provide a few
 host packages and `/dev/kvm` access first.
 

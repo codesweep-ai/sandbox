@@ -1,7 +1,7 @@
 // Package fcconfig builds a Firecracker microVM configuration file (run.json)
 // from a typed spec.
 //
-// The emitted document matches Firecracker's API v1.16 config-file schema:
+// The emitted document matches Firecracker's API v1.17 config-file schema:
 //
 //	{
 //	  "boot-source":        { "kernel_image_path", "initrd_path", "boot_args" },

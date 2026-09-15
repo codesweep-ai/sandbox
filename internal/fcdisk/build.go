@@ -70,7 +70,7 @@ const unwrapVmlinuxScript = `unwrap_vmlinux() {
 // to when CS_SANDBOX_FC_VERSION is unset. The cached binary carries an
 // `fc-version` stamp, so bumping this pin re-downloads it on the next build —
 // bump fcDigests in the same commit.
-const DefaultFCVersion = "v1.16.0"
+const DefaultFCVersion = "v1.17.0"
 
 // fcDigests pins the SHA256 of the DefaultFCVersion release tarballs, keyed by
 // the firecracker arch name. Verifying against a digest committed *here* — not
@@ -80,8 +80,8 @@ const DefaultFCVersion = "v1.16.0"
 // overridden CS_SANDBOX_FC_VERSION has no digest here and falls back to the
 // published checksum, which catches corruption but is not a trust anchor.
 var fcDigests = map[string]string{
-	"x86_64":  "bd04e26952d4e158085778c6230a0b383d2619c319182e27eaa9d61a212e92d6",
-	"aarch64": "531c713cdbc37d4b8bc2533d851aabc0267096afa1768086a37672abb668efd7",
+	"x86_64":  "06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558",
+	"aarch64": "e351ebe4f7a16b5873bbd51005d2e6767103cff4d5ebc829df2d3f95a93e2256",
 }
 
 // fcArch maps GOARCH to the arch name firecracker uses in its release assets.
@@ -108,7 +108,7 @@ type BuildConfig struct {
 	Kernel       string // "fedora" (default) or "host"
 	KVerPin      string // pinned fedora kernel-core NVR (CS_SANDBOX_FC_KVER); "" = latest
 	RootfsGB     int    // base rootfs size in GiB (default 32)
-	FCVersion    string // firecracker release tag (default v1.16.0)
+	FCVersion    string // firecracker release tag (default v1.17.0)
 }
 
 // Defaulted returns a copy with empty fields filled from the defaults.

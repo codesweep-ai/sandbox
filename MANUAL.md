@@ -714,7 +714,7 @@ you to one.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `CS_SANDBOX_FC_VERSION` | `v1.16.0` | The Firecracker release `build` downloads. An override has no committed digest and falls back to the published checksum. |
+| `CS_SANDBOX_FC_VERSION` | `v1.17.0` | The Firecracker release `build` downloads. An override has no committed digest and falls back to the published checksum. |
 | `CS_SANDBOX_FC_KVER` | a pinned Fedora NVR | The guest kernel version `build` compiles. |
 | `CS_SANDBOX_FC_KERNEL` | the built kernel | A guest kernel image to boot instead. |
 | `CS_SANDBOX_FC_ROOTFS_GB` | `32` | The base rootfs size. Applies to a rootfs built after it is set. |
