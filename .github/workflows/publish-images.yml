@@ -1,0 +1,213 @@
+name: publish images
+
+# Publish the images, from main and from a release tag only.
+#
+# CI is the only publisher. A tag names the image CI built from that commit,
+# which is a promise a workstation cannot keep: the image is not reproducible
+# (SPEC §14) and a working tree can differ from what was pushed. Publishing
+# from a clean checkout of a pushed commit is what makes the name true.
+#
+# It starts when ci finishes, and publishes only from a push whose ci run passed,
+# every job of it. Every sandbox anybody creates runs what this pushes, so a
+# commit that fails anything in ci, on any host, publishes nothing. That includes
+# the self-hosted Mac mini: while it is offline its jobs queue, ci does not
+# finish, and nothing publishes until it does. A workflow of its own rather than
+# jobs in ci.yml, so its builds show on the CI dashboard as a row of their own.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  # One leg per architecture, each on a runner of that architecture, and both
+  # behind a ci run that passed the smoke profile on each (SPEC R164). A leg
+  # pushes ARCH-SUFFIXED tags, which no binary names. The version tag every
+  # binary does name is written by publish-image-lists below, once both legs are
+  # in, so a failure on either side publishes nothing under it.
+  publish-images:
+    name: publish ${{ matrix.arch }} images (${{ matrix.on }})
+    # A push to main or to a release tag, the only pushes ci runs on. A run
+    # started by ci finishing holds a token that can write packages even when ci
+    # ran for a fork's pull request, so asking for a push is also what keeps
+    # unreviewed code away from that token.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      (github.event.workflow_run.head_branch == github.event.repository.default_branch ||
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    strategy:
+      # The other leg is let finish: nothing reaches the version tag either way,
+      # and its result says whether it would have failed too.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            on: ubuntu-26.04
+          - arch: arm64
+            on: ubuntu-26.04-arm
+    runs-on: ${{ matrix.on }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    # The references, for the job that joins the legs. Both legs derive the same
+    # two from the same checkout, so it does not matter whose are kept.
+    outputs:
+      image: ${{ steps.refs.outputs.image }}
+      image_slim: ${{ steps.refs.outputs.image_slim }}
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The commit ci passed. A run started by ci finishing is otherwise on
+          # main's latest commit, which is neither a tag's commit nor, once a
+          # later push lands, the commit ci tested.
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0 # the module version is derived from the VCS stamp
+
+      # The run names a tag only by its bare name, which is also what a branch
+      # would be called. ci's push trigger takes main and v* tags, but a branch
+      # can opt itself in from its own copy of ci.yml, so a name other than
+      # main has to be a tag on this very commit before anything is published
+      # under it.
+      - name: confirm a release tag names this commit
+        if: github.event.workflow_run.head_branch != github.event.repository.default_branch
+        env:
+          PUSHED: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          tagged=$(git rev-parse -q --verify "refs/tags/$PUSHED^{commit}" || true)
+          [ "$tagged" = "$(git rev-parse HEAD)" ] || {
+            echo "ci ran for a push to $PUSHED, which is not a tag on $(git rev-parse HEAD); publishing nothing" >&2
+            exit 1
+          }
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # No build cache here, and no longer any need for one. This job builds only
+      # the LEAF of each family — `COPY . /sandbox`, the env file and a ~25 MB Go
+      # install — on top of the tier images image/tiers.env pins. The 2.14 GB
+      # underneath is pulled, not rebuilt, so there is nothing worth caching.
+      #
+      # Caching the layer store could not have worked anyway: rootless podman's
+      # overlay layers hold files owned by mapped subuids with mode 000
+      # (/etc/shadow and friends, inside every layer's diff/), the runner user
+      # cannot read them, and tar exits 2. actions/cache reports that as a
+      # warning, so the job would stay green while caching nothing.
+      #
+      # The weekly rebuild of those tiers is .github/workflows/base-images.yml.
+
+      - name: build the binary that names the images
+        run: make build-go
+
+      # Asked of the binary rather than assembled here: the name carries the
+      # version, and the naming rule lives in one place.
+      - name: the references this revision publishes
+        id: refs
+        run: |
+          set -euo pipefail
+          ./bin/cs-sandbox version
+          # Underscores, not the hyphens the labels use: a GitHub expression
+          # reads outputs.image-slim as a subtraction.
+          ./bin/cs-sandbox version --images | while read -r label ref; do
+            echo "${label//-/_}=$ref" >> "$GITHUB_OUTPUT"
+          done
+
+      # The platform this leg builds for, checked rather than assumed: a leg that
+      # built for the other one would push it under this one's tag.
+      - name: confirm the runner's platform
+        run: |
+          set -euo pipefail
+          got=$(podman version --format '{{.Server.OsArch}}')
+          [ "$got" = "linux/$ARCH" ] || { echo "this runner's podman runs $got, but it is the $ARCH leg" >&2; exit 1; }
+
+      - name: log in to ghcr.io
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | podman login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      # Each build tags the version name, and the push takes it under this leg's
+      # architecture. `build` pulls before it builds, so a re-run of this workflow
+      # finds the published list, takes this platform's entry from it, and pushes
+      # back the digest it just fetched.
+      # The runner's root volume holds the whole layer store. The shipped image is
+      # ~6 GB — pulled as two tiers rather than built, but it lands on the same
+      # disk — so print the headroom either side: a job that dies at 90% for want
+      # of disk should say so here rather than in a podman error about a partial
+      # write.
+      - name: build and push the sandbox image
+        env:
+          IMAGE: ${{ steps.refs.outputs.image }}
+        run: |
+          set -euo pipefail
+          df -h / | tail -1
+          ./bin/cs-sandbox build --engine podman
+          df -h / | tail -1
+          podman tag "$IMAGE" "$IMAGE-$ARCH"
+          podman push "$IMAGE-$ARCH"
+
+      - name: build and push the CI image
+        env:
+          IMAGE: ${{ steps.refs.outputs.image_slim }}
+        run: |
+          set -euo pipefail
+          ./bin/cs-sandbox build --engine podman --slim
+          podman tag "$IMAGE" "$IMAGE-$ARCH"
+          podman push "$IMAGE-$ARCH"
+
+  # The version tags, each a manifest list of the two legs' manifests (SPEC R164).
+  #
+  # `needs` is the gate. A matrix job succeeds only when every leg does, so an
+  # architecture that failed to build or push leaves this job skipped and the
+  # version tag unwritten, with the other leg's arch tag naming nothing a binary
+  # asks for.
+  publish-image-lists:
+    name: publish image lists (ubuntu-26.04)
+    needs: publish-images
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGES: >-
+        ${{ needs.publish-images.outputs.image }}
+        ${{ needs.publish-images.outputs.image_slim }}
+    steps:
+      - name: log in to ghcr.io
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | podman login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      # manifest add reads each leg's manifest straight from the registry, so
+      # nothing here pulls a layer.
+      - name: join the architectures
+        run: |
+          set -euo pipefail
+          for ref in $IMAGES; do
+            echo "== $ref"
+            podman manifest create "$ref"
+            for arch in amd64 arm64; do
+              podman manifest add "$ref" "docker://$ref-$arch"
+            done
+            podman manifest push --all "$ref" "docker://$ref"
+            podman manifest inspect "$ref" \
+              | jq -r '.manifests[] | "   \(.platform.os)/\(.platform.architecture)  \(.digest)"'
+          done
+
+      - name: what was published
+        run: |
+          {
+            echo '### Images published'
+            echo
+            for ref in $IMAGES; do
+              echo "    $ref  (linux/amd64, linux/arm64)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -107,7 +107,7 @@ CI_IMAGE ?= localhost/sandbox-slim:ci
 CI_SLIM_FLAGS := --slim
 
 # Through the SHIPPED command, which is the whole point of these two targets
-# having no build of their own any more. `publish-images` runs the same
+# having no build of their own any more. `publish-images.yml` runs the same
 # `cs-sandbox build --slim` to make what consumers pull, so what CI tests and
 # what ghcr.io serves now differ in name and in nothing else. They did differ:
 # this used to reach podman directly, with no --build-arg, and left an image

@@ -27,14 +27,14 @@ name: pages
 # `completed` rather than a success filter: a failed build is exactly the news
 # the CI dashboard exists to show, so it has to publish too.
 #
-# Only ci, and not every workflow whose runs the status reports. A push to main
-# starts ci and npm together, so naming both would publish the site twice for one
+# Only ci, and not every workflow whose runs the status reports. publish images
+# starts when ci finishes, so naming both would publish the site twice for one
 # push, the second run superseding the first for nothing. ci is the workflow that
 # runs on every push, which makes it the one signal worth waking on.
 #
-# The cost is that a run finishing after ci does — npm usually, a tagged release
-# always — is not in the status until the next push. Its earlier runs are, and
-# the row is a few minutes behind rather than wrong.
+# The cost is that a run finishing after ci does — publish images and a tagged
+# release always do — is not in the status until the next push. Its earlier runs
+# are, and the row is a few minutes behind rather than wrong.
 #
 # There is no schedule on purpose. The status file's age is meaningful — the
 # dashboard flags a project that has not built in 72 hours — and a cron would

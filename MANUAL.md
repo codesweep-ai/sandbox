@@ -343,9 +343,10 @@ that binary always builds its own. That is what keeps a Containerfile you are ed
 answered by a published image. A binary that reports no version at all names no image, and says so
 rather than guessing; `make build` from a git clone gives it one.
 
-Images are published by CI alone, on every push to `main` and on every release tag. Both platforms
-are published together once each has booted sandboxes on a host of its own, or neither is. A commit
-that has not reached `main` therefore has no image to pull, and `build` builds one. Images for release
+Images are published by CI alone, for every push to `main` and every release tag whose CI run passes.
+Both platforms are published together once each has booted sandboxes on a host of its own, or
+neither is. A commit that has not reached `main`, or whose CI run failed, therefore has no image to
+pull, and `build` builds one. Images for release
 tags are kept; the rest expire ten days after they are published.
 
 `completion` writes a script to stdout. It completes sandbox names, store names and flag values
