@@ -23,6 +23,12 @@
 #                    firecracker job went red the same day. 26.04 carries podman
 #                    5.7.0. The label is in preview, which is the cost of this.
 #                    The version is printed by the jobs rather than trusted.
+#   ubuntu-26.04-arm the same runner image on arm64, with the same podman 5.7.0.
+#                    Live tests run. It is the host the arm64 half of the
+#                    published image is proved and built on (SPEC R164). A
+#                    GitHub-hosted runner rather than the self-hosted macOS
+#                    runner below, so a fork has it too. In preview, like its
+#                    x86_64 twin.
 #   windows/WSL2     podman inside the distro. Live tests run.
 #   macos-15-intel   THE UNIT TIER ONLY. It ran the smoke profile until the
 #                    runner's cost stopped being worth what it added: a bare
@@ -547,6 +553,56 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 7
+
+  # The same profile on arm64 Linux, and the gate on the arm64 half of the
+  # published image (SPEC R164).
+  #
+  # It builds its CI image here rather than loading the one build-artifacts
+  # shares. That archive is x86_64, and loading it would boot emulated guests,
+  # which is the one thing an arm64 leg exists to rule out. setup-smoke builds it
+  # from the slim tiers image/tiers.env pins, which are published for both
+  # architectures, so the build is native. It waits for nothing but the unit
+  # tier for the same reason.
+  smoke-linux-arm64:
+    name: smoke (ubuntu-26.04-arm)
+    needs: [build-test]
+    runs-on: ubuntu-26.04-arm
+    # smoke-linux's budget, plus the image build it is handed ready-made.
+    timeout-minutes: 40
+    env:
+      CS_SANDBOX_IMAGE: localhost/sandbox-slim:ci
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # Printed rather than trusted, as on the x86_64 jobs, and the platform
+      # checked: a runner whose engine answered for another architecture would
+      # prove nothing about this one. /dev/kvm is listed because setup-smoke
+      # builds Firecracker artifacts wherever it is writable, and Firecracker is
+      # x86_64 only.
+      - name: the engine this runner has
+        run: |
+          set -euo pipefail
+          podman --version
+          ls -l /dev/kvm 2>/dev/null || echo "no /dev/kvm"
+          got=$(podman version --format '{{.Server.OsArch}}')
+          [ "$got" = linux/arm64 ] || { echo "this runner's podman runs $got, not linux/arm64" >&2; exit 1; }
+
+      - name: smoke
+        run: make test-smoke SMOKE_AGENTS=0
+
+      - name: keep this job's coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-smoke-linux-arm64
+          path: .coverage/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
   # Firecracker boots a real microVM — its own kernel, its own rootfs, sshd
   # reached over a vsock bridge — so none of the podman jobs says anything about
   # it. Linux only: macOS has no KVM at all, and WSL2's /dev/kvm is nested virt
@@ -1382,9 +1438,9 @@ jobs:
   #
   # Every tier above uploads its coverage rather than judging it, because no job
   # sees more than the slice it ran: build-test never boots an engine, and a
-  # smoke leg never runs the unit tier. The smoke tier alone arrives from four
-  # jobs and three operating systems — merged here they are one picture, which
-  # is the only one worth reporting or gating on.
+  # smoke leg never runs the unit tier. The smoke tier alone arrives from a job
+  # per host, across three operating systems and two architectures — merged here
+  # they are one picture, which is the only one worth reporting or gating on.
   #
   # Outside codesweep-ai the self-hosted macOS runner's smoke is skipped (see the
   # header), and a skipped need skips everything after it unless the job says
@@ -1399,6 +1455,7 @@ jobs:
     needs:
       - build-test
       - smoke-linux
+      - smoke-linux-arm64
       - smoke-firecracker
       - smoke-wsl
       - smoke-macos-arm64
@@ -1445,7 +1502,7 @@ jobs:
       - name: report and gate
         run: make coverage-check
 
-  # Publish the three images, from main and from a release tag only.
+  # Publish the images, from main and from a release tag only.
   #
   # CI is the only publisher. A tag names the image CI built from that commit,
   # which is a promise a workstation cannot keep: the image is not reproducible
@@ -1454,17 +1511,40 @@ jobs:
   #
   # It runs after the tests, because every sandbox anybody creates runs what this
   # pushes. It does not gate them: nothing waits on this job.
+  #
+  # One leg per architecture, each on a runner of that architecture, and both
+  # waiting for the smoke profile to pass on each (SPEC R164). A leg pushes
+  # ARCH-SUFFIXED tags, which no binary names. The version tag every binary does
+  # name is written by publish-image-lists below, once both legs are in, so a
+  # failure on either side publishes nothing under it.
   publish-images:
-    name: publish images (ubuntu-26.04)
+    name: publish ${{ matrix.arch }} images (${{ matrix.on }})
     if: >-
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    needs: [build-test, smoke-linux]
-    runs-on: ubuntu-26.04
+    needs: [build-test, smoke-linux, smoke-linux-arm64]
+    strategy:
+      # The other leg is let finish: nothing reaches the version tag either way,
+      # and its result says whether it would have failed too.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            on: ubuntu-26.04
+          - arch: arm64
+            on: ubuntu-26.04-arm
+    runs-on: ${{ matrix.on }}
     timeout-minutes: 90
     permissions:
       contents: read
       packages: write
+    # The references, for the job that joins the legs. Both legs derive the same
+    # two from the same checkout, so it does not matter whose are kept.
+    outputs:
+      image: ${{ steps.refs.outputs.image }}
+      image_slim: ${{ steps.refs.outputs.image_slim }}
+    env:
+      ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -1503,37 +1583,94 @@ jobs:
             echo "${label//-/_}=$ref" >> "$GITHUB_OUTPUT"
           done
 
+      # The platform this leg builds for, checked rather than assumed: a leg that
+      # built for the other one would push it under this one's tag.
+      - name: confirm the runner's platform
+        run: |
+          set -euo pipefail
+          got=$(podman version --format '{{.Server.OsArch}}')
+          [ "$got" = "linux/$ARCH" ] || { echo "this runner's podman runs $got, but it is the $ARCH leg" >&2; exit 1; }
+
       - name: log in to ghcr.io
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "$GHCR_TOKEN" | podman login ghcr.io -u '${{ github.actor }}' --password-stdin
 
-      # Each build tags the fully-qualified name, so the push takes it unaltered.
-      # `build` pulls before it builds, so a re-run of this workflow finds the
-      # image already published and pushes back the digest it just fetched.
+      # Each build tags the version name, and the push takes it under this leg's
+      # architecture. `build` pulls before it builds, so a re-run of this workflow
+      # finds the published list, takes this platform's entry from it, and pushes
+      # back the digest it just fetched.
       # The runner's root volume holds the whole layer store. The shipped image is
       # ~6 GB — pulled as two tiers rather than built, but it lands on the same
       # disk — so print the headroom either side: a job that dies at 90% for want
       # of disk should say so here rather than in a podman error about a partial
       # write.
       - name: build and push the sandbox image
+        env:
+          IMAGE: ${{ steps.refs.outputs.image }}
         run: |
           set -euo pipefail
           df -h / | tail -1
           ./bin/cs-sandbox build --engine podman
           df -h / | tail -1
-          podman push '${{ steps.refs.outputs.image }}'
+          podman tag "$IMAGE" "$IMAGE-$ARCH"
+          podman push "$IMAGE-$ARCH"
 
       - name: build and push the CI image
+        env:
+          IMAGE: ${{ steps.refs.outputs.image_slim }}
         run: |
           set -euo pipefail
           ./bin/cs-sandbox build --engine podman --slim
-          podman push '${{ steps.refs.outputs.image_slim }}'
+          podman tag "$IMAGE" "$IMAGE-$ARCH"
+          podman push "$IMAGE-$ARCH"
+
+  # The version tags, each a manifest list of the two legs' manifests (SPEC R164).
+  #
+  # `needs` is the gate. A matrix job succeeds only when every leg does, so an
+  # architecture that failed to build or push leaves this job skipped and the
+  # version tag unwritten, with the other leg's arch tag naming nothing a binary
+  # asks for.
+  publish-image-lists:
+    name: publish image lists (ubuntu-26.04)
+    needs: publish-images
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGES: >-
+        ${{ needs.publish-images.outputs.image }}
+        ${{ needs.publish-images.outputs.image_slim }}
+    steps:
+      - name: log in to ghcr.io
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | podman login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      # manifest add reads each leg's manifest straight from the registry, so
+      # nothing here pulls a layer.
+      - name: join the architectures
+        run: |
+          set -euo pipefail
+          for ref in $IMAGES; do
+            echo "== $ref"
+            podman manifest create "$ref"
+            for arch in amd64 arm64; do
+              podman manifest add "$ref" "docker://$ref-$arch"
+            done
+            podman manifest push --all "$ref" "docker://$ref"
+            podman manifest inspect "$ref" \
+              | jq -r '.manifests[] | "   \(.platform.os)/\(.platform.architecture)  \(.digest)"'
+          done
 
       - name: what was published
         run: |
           {
             echo '### Images published'
             echo
-            ./bin/cs-sandbox version --images | sed 's/^/    /'
+            for ref in $IMAGES; do
+              echo "    $ref  (linux/amd64, linux/arm64)"
+            done
           } >> "$GITHUB_STEP_SUMMARY"

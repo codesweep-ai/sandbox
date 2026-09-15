@@ -17,7 +17,11 @@
 # microVM reaches the host at. GitHub's ubuntu-latest went the other way, back
 # to 24.04's podman 4.9.3, so the firecracker engine cannot run there at all.
 # The label is a preview one, which is why no actionlint release knows it yet.
+#
+# ubuntu-26.04-arm is its arm64 twin, also in preview, with the same podman. It
+# is where the arm64 half of the published image is smoke-tested and built.
 self-hosted-runner:
   labels:
     - macos-15-intel
     - ubuntu-26.04
+    - ubuntu-26.04-arm

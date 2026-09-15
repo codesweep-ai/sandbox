@@ -430,9 +430,10 @@ type RegistryCheck struct {
 //	Error: parsing manifest blob "{\"schemaVersion\":2,\"mediaType\":…}" as a …
 //
 // so the bare key is what to look for. Matching `"schemaVersion"` with its quotes
-// finds the success case and misses every failure-that-is-really-a-success, which
-// is every single-architecture image — and this repository publishes nothing else.
-// That shipped, and refused a create for an image the registry had.
+// finds the success case and misses every failure-that-is-really-a-success. That
+// is every single-architecture image, which is all this repository published
+// until its images carried both architectures (R164). It shipped, and refused a
+// create for an image the registry had.
 //
 // Where the two readings disagree the answer leans to yes, and deliberately. A
 // false yes costs one pull that fails with podman's own words; a false no refuses

@@ -330,20 +330,22 @@ tags are stamped with the build time instead, and the pair in use is named in `i
 binary usually reaches a working image in the time a download takes. `create` fetches a published
 image it does not have, and when none is published it says so and names `build`.
 
-Every image `build` and `create` use is checked against the platform its engine runs, which on
-macOS is the podman machine's. An image for another platform runs under emulation, too slowly for
-an agent to keep its deadlines. `build` builds this platform's image instead of keeping one.
-`create` fetches this platform's image again, and names `build` when the registry has no other.
-`doctor` reports such an image. An image under `localhost/` is not checked, so one you built or
-loaded yourself runs whatever its platform.
+The published image carries both `linux/amd64` and `linux/arm64`, and podman fetches the one its
+engine runs. On macOS that is the podman machine's platform. Every image `build` and `create` use is
+checked against it. An image for another platform runs under emulation, too slowly for an agent to
+keep its deadlines. `build` builds this platform's image instead of keeping one. `create` fetches
+this platform's image again, and names `build` when the registry has no other. `doctor` reports
+such an image. An image under `localhost/` is not checked, so one you built or loaded yourself runs
+whatever its platform.
 
 A binary built from a modified tree names a `-dirty` tag. No `-dirty` image is ever published, so
 that binary always builds its own. That is what keeps a Containerfile you are editing from being
 answered by a published image. A binary that reports no version at all names no image, and says so
 rather than guessing; `make build` from a git clone gives it one.
 
-Images are published by CI alone, on every push to `main` and on every release tag. A commit that
-has not reached `main` therefore has no image to pull, and `build` builds one. Images for release
+Images are published by CI alone, on every push to `main` and on every release tag. Both platforms
+are published together once each has booted sandboxes on a host of its own, or neither is. A commit
+that has not reached `main` therefore has no image to pull, and `build` builds one. Images for release
 tags are kept; the rest expire ten days after they are published.
 
 `completion` writes a script to stdout. It completes sandbox names, store names and flag values

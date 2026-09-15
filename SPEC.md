@@ -113,6 +113,16 @@ The two CI images (§16) are separate packages, `-slim` and `-slim-agents`. Neit
 a container that boots with no toolchains would be a confusing thing to find under the sandbox
 package.
 
+**R164.** The image and its slim twin **MUST** be published under each version tag as a manifest
+list carrying `linux/amd64` and `linux/arm64`. Each architecture **MUST** be built on a host of that
+architecture. The smoke profile **MUST** pass on a host of each architecture before anything is
+published under the version tag, and where either fails, nothing **MUST** be.
+
+A list lets one name serve every host, because podman fetches the entry for the platform its engine
+runs. A native build is what gives the arm64 image arm64 binaries. The smoke gate on both sides is
+what makes the name a promise on both. Publishing both or neither keeps a version tag meaning the
+same thing wherever it is fetched.
+
 **R165.** `build`, `create` and `doctor` **MUST** compare the platform of the image in the local
 store with the platform the engine runs. `build` **MUST** build an image it pulled for another
 platform rather than keep it. `create` **MUST** fetch again an image it holds for another platform,

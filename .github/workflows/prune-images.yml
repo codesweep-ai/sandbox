@@ -1,11 +1,18 @@
 # Expire the dev images. One is published per commit to main, so without this the
 # package list grows without bound and the useful entries sink out of sight.
 #
-# What survives: anything tagged as a release (v1.2.3), and the five most recent
-# versions of each package whatever their age, so a package can never be emptied
-# by a bad cutoff. Everything else goes ten days after it was last touched. A
-# deleted version is a deleted image: a host still naming one gets a pull failure
-# and falls back to building, which is why only dev tags are eligible.
+# What survives: anything tagged as a release (v1.2.3, and the v1.2.3-amd64 and
+# v1.2.3-arm64 manifests its list points at), and the most recent publishes of
+# each package whatever their age, so a package can never be emptied by a bad
+# cutoff. Everything else goes ten days after it was last touched. A deleted
+# version is a deleted image: a host still naming one gets a pull failure and
+# falls back to building, which is why only dev tags are eligible.
+#
+# Every publish writes THREE versions to the sandbox and sandbox-slim packages:
+# one manifest per architecture, and the list under the version tag that joins
+# them. A list is only usable while both are there, so whatever keeps a list
+# has to keep its two manifests with it — the release rule by name, and the
+# keep-recent count by being counted in threes.
 #
 # THE TIER PACKAGES ARE NOT AGE-PRUNED, and that is not a preference. Every test
 # above points the wrong way for a base image:
@@ -54,7 +61,11 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # A scheduled run prunes; a hand-started one asks first.
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
-      KEEP_RECENT: "5"
+      # Five publishes, at three versions each (see the header). A list is pushed
+      # just after its two manifests, so counting in threes keeps publishes
+      # whole, give or take two publishes that ran at the same time. It only
+      # decides anything once every version is past MAX_AGE_DAYS.
+      KEEP_RECENT: "15"
       MAX_AGE_DAYS: "10"
       # Weekly builds, and each run writes THREE versions per tier package: one
       # manifest per architecture plus the list that joins them. So 78 is about
@@ -123,7 +134,10 @@ jobs:
               if [ "$by_age" = 0 ]; then
                 echo "  delete-eligible ${tags:-<untagged>} (tier, past the $keep newest)"
               fi
-              if grep -qE '(^|,)v[0-9]+\.[0-9]+\.[0-9]+(,|$)' <<<"$tags"; then
+              # The per-architecture manifests too: the release list is kept
+              # forever, and it resolves to nothing on a platform whose manifest
+              # went.
+              if grep -qE '(^|,)v[0-9]+\.[0-9]+\.[0-9]+(-amd64|-arm64)?(,|$)' <<<"$tags"; then
                 echo "  keep  $tags (release)"
                 continue
               fi
