@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -473,6 +474,36 @@ func TestVersionImages(t *testing.T) {
 			t.Fatal("version --images succeeded with no version to name images after")
 		}
 	})
+}
+
+// TestImageOwnerLinksIn: a fork publishes to its own packages only because
+// the Makefile and .goreleaser.yaml set imageOwner with -X. The linker ignores
+// -X on a symbol that is missing or not a string variable, so a rename would
+// silently put every fork back on these names. This links an owner in and reads
+// all six names back.
+func TestImageOwnerLinksIn(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "cs-sandbox")
+	build := exec.Command("go", "build", "-o", bin, "-ldflags",
+		"-X github.com/codesweep-ai/sandbox/internal/cli.imageOwner=fork-owner"+
+			" -X github.com/codesweep-ai/sandbox/internal/cli.Version="+testVersion,
+		"./cmd/cs-sandbox")
+	build.Dir = "../.."
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	out, err := exec.Command(bin, "version", "--images").Output()
+	if err != nil {
+		t.Fatalf("version --images: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 6 {
+		t.Fatalf("want six image names, got:\n%s", out)
+	}
+	for _, line := range lines {
+		if !strings.Contains(line, " ghcr.io/fork-owner/sandbox") {
+			t.Errorf("not in the linked-in namespace: %q", line)
+		}
+	}
 }
 
 // TestDoctorSlim: --slim points the report at the slim image, the way the same

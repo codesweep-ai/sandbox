@@ -25,6 +25,10 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
+      # The ghcr.io namespace the images are named in, as the Makefile sets it:
+      # the owner of the GitHub repository being built, from Actions or else the
+      # remote the checkout tracks, so a fork's binary names its own images.
+      - -X github.com/codesweep-ai/sandbox/internal/cli.imageOwner={{ if isEnvSet "GITHUB_REPOSITORY_OWNER" }}{{ .Env.GITHUB_REPOSITORY_OWNER | tolower }}{{ else if contains .GitURL "github.com" }}{{ replace (trimsuffix .GitURL "/") ":" "/" | dir | base | tolower }}{{ else }}codesweep-ai{{ end }}
     # Firecracker is linux/amd64-only at runtime; the binary still builds for the
     # podman-only targets (it errors clearly if an unsupported engine is asked for).
     goos:

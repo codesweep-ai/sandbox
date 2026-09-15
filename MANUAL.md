@@ -299,7 +299,8 @@ The image is named after the version of `cs-sandbox` that built it:
 `ghcr.io/codesweep-ai/sandbox:v0.1.0` for a release, and a pseudo-version such as
 `ghcr.io/codesweep-ai/sandbox:v0.0.0-20260826171442-c36e1fe91606` between releases. Every sandbox a
 binary creates runs that image and no other, so the `cs-sandbox` inside a sandbox is the one that
-built it. `cs-sandbox version` prints the name in full:
+built it. A binary that `make` or goreleaser builds from a fork names `ghcr.io/<owner>/sandbox`
+instead, after the fork's owner. `cs-sandbox version` prints the name in full:
 
 ```
 $ cs-sandbox version

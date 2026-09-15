@@ -16,7 +16,12 @@ DOC        := image/rootfs/home/.local/bin/CS_SANDBOX.md
 PKG        := ./cmd/cs-sandbox
 PREFIX     ?= $(HOME)/.local
 VERSION    := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS    := -s -w
+# The ghcr.io namespace the binary names its images in: the owner of the GitHub
+# repository being built, so a fork publishes to packages of its own. GitHub
+# Actions says which, and elsewhere the GitHub remote the checkout tracks does.
+# That is the remote goreleaser reads as .GitURL, so the two builds agree.
+IMAGE_OWNER ?= $(shell o="$${GITHUB_REPOSITORY_OWNER:-$$(git ls-remote --get-url 2>/dev/null | sed -nE 's|^.*[@/]github\.com[:/]([^/]+)/.*$$|\1|p')}"; printf '%s' "$${o:-codesweep-ai}" | tr '[:upper:]' '[:lower:]')
+LDFLAGS    := -s -w -X github.com/codesweep-ai/sandbox/internal/cli.imageOwner=$(IMAGE_OWNER)
 GO_FILES   := $(shell git ls-files '*.go')
 
 # What $(BIN) is made of. It is a real target rather than a phony one, so make

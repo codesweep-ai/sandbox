@@ -50,8 +50,14 @@ import (
 // different images — and GHCR tags are mutable, so the second would silently
 // overwrite the first. Their tags are stamped with the BUILD time by whatever
 // publishes them; see .github/workflows/base-images.yml.
-const (
-	imageRepo           = "ghcr.io/codesweep-ai/sandbox"
+//
+// imageOwner is the ghcr.io namespace, linked in with -X by the Makefile and
+// .goreleaser.yaml as the owner of the GitHub repository being built, so a fork
+// names and publishes packages of its own.
+var imageOwner = "codesweep-ai"
+
+var (
+	imageRepo           = "ghcr.io/" + imageOwner + "/sandbox"
 	baseImageRepo       = imageRepo + "-base"
 	agentsImageRepo     = imageRepo + "-agents"
 	slimImageRepo       = imageRepo + "-slim"

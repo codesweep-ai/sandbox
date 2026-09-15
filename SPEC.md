@@ -77,7 +77,9 @@ revision has to be published for the install to resolve. Serving it from the che
 what `cs-sandbox build --local-sandbox` is for, and it is the deliberate exception.
 
 **R160.** The image **MUST** be named after the version of `cs-sandbox` that built it, in the
-package `ghcr.io/codesweep-ai/sandbox`, and a sandbox **MUST** run the image its own binary names.
+package `ghcr.io/codesweep-ai/sandbox`, and a sandbox **MUST** run the image its own binary names. A
+binary that `make` or goreleaser builds from a fork **MUST** use the fork owner's namespace instead,
+so its images never land in this project's packages.
 
 **R161.** A binary that reports no version **MUST** refuse to name or build an image, rather than
 installing an unnamed `cs-sandbox` into one.
