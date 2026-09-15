@@ -26,6 +26,9 @@
 # four claude replay members timed out at 10.5s against 5.5s native. So each
 # architecture is built on its own native runner and only combined into a
 # manifest list once BOTH have booted real sandboxes.
+#
+# Both runners are GitHub-hosted, ubuntu-26.04 and its arm64 twin
+# ubuntu-26.04-arm, so a fork builds and proves both architectures as well.
 name: base-images
 
 on:
@@ -65,8 +68,7 @@ permissions:
 
 concurrency:
   # One publisher at a time: two runs would mint two stamps and race on which
-  # candidate the summary tells a human to adopt. It also keeps two runs off the
-  # one self-hosted arm64 machine, which can only build for one of them.
+  # candidate the summary tells a human to adopt.
   group: base-images
   cancel-in-progress: false
 
@@ -129,8 +131,6 @@ jobs:
   # joins them, so an architecture that cannot boot a sandbox never reaches the
   # list image/tiers.env would name.
   tiers:
-    # `on` is the display half of `runner`: ci.yml names every job for the
-    # machine it lands on, and a matrix cannot render a label array as one.
     name: build the ${{ matrix.arch }} tiers (${{ matrix.on }})
     needs: plan
     strategy:
@@ -139,13 +139,11 @@ jobs:
         include:
           - arch: amd64
             on: ubuntu-26.04
-            runner: '["ubuntu-26.04"]'
           - arch: arm64
-            on: macos-arm64 / self-hosted
-            runner: '["self-hosted", "macOS", "ARM64"]'
-    runs-on: ${{ fromJSON(matrix.runner) }}
-    # The shipped base is the long pole and the arm64 machine has never built it
-    # before — the smoke image it used to make drops every toolchain.
+            on: ubuntu-26.04-arm
+    runs-on: ${{ matrix.on }}
+    # The shipped base is the long pole on either runner: it compiles CPython
+    # from source and pre-installs the language servers.
     timeout-minutes: 180
     env:
       TAG: ${{ needs.plan.outputs.tag }}-${{ matrix.arch }}
@@ -158,37 +156,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      # cache: false on the self-hosted machine for the same reason the other
-      # jobs on it do it — its module cache persists between jobs and Go leaves
-      # it read-only, so the restore fails trying to unpack over it.
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           check-latest: true
-          cache: ${{ matrix.arch != 'arm64' }}
-
-      # launchd does not order jobs relative to each other and `podman machine
-      # start` takes 20-30s, so after a reboot the runner can pick up a job
-      # before the VM is ready. Guard on state rather than calling start
-      # blindly: start exits 125 when the machine is already running.
-      - name: ensure the podman machine is up
-        if: matrix.arch == 'arm64'
-        run: |
-          set -euo pipefail
-          if [ "$(podman machine inspect --format '{{.State}}' podman-machine-default)" != "running" ]; then
-            echo "machine was down; starting it"
-            podman machine start
-          fi
-          podman info --format '{{.Version.Version}} | {{.Host.Arch}} | rootless={{.Host.Security.Rootless}}'
 
       # The architecture this runner actually builds for, checked rather than
-      # assumed. On the Mac it is the podman MACHINE's architecture that decides,
-      # not the host's, and a machine restored from the wrong image would publish
-      # amd64 under an arm64 tag — which is exactly the failure this whole job
+      # assumed. A label that landed on the other architecture would publish its
+      # images under this leg's tag, which is exactly the failure this whole job
       # layout exists to prevent, only harder to see.
       - name: confirm the runner's architecture
         run: |
           set -euo pipefail
+          podman --version
           got=$(podman info --format '{{.Host.Arch}}')
           [ "$got" = "${{ matrix.arch }}" ] || {
             echo "this runner builds $got images, but it is the ${{ matrix.arch }} leg" >&2
@@ -264,17 +244,6 @@ jobs:
             n=$(ls /sandbox/home/.local/share/nvim/lazy | wc -l)
             [ "$n" -ge 20 ] || { echo "the Neovim pre-build produced only $n plugins" >&2; exit 1; }
             echo "readback ok: $n nvim plugins, every toolchain and agent on PATH"'
-
-      # The credential above is a GITHUB_TOKEN scoped to this run, and the arm64
-      # runner is PERSISTENT — so leaving it in auth.json means the next job on
-      # that machine sends an expired token to ghcr and gets 403 where an
-      # anonymous pull would have worked. That is exactly how the first
-      # multi-arch run broke the macOS smoke leg an hour after it finished.
-      #
-      # always(), because a failed run leaves the same landmine as a green one.
-      - name: log out of ghcr.io
-        if: always()
-        run: podman logout ghcr.io || true
 
   # Join the per-architecture tags into one manifest list per package, under the
   # bare tag image/tiers.env names. `needs: tiers` is what makes the list mean

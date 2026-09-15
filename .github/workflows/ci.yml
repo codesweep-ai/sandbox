@@ -25,10 +25,11 @@
 #                    The version is printed by the jobs rather than trusted.
 #   ubuntu-26.04-arm the same runner image on arm64, with the same podman 5.7.0.
 #                    Live tests run. It is the host the arm64 half of the
-#                    published image is proved and built on (SPEC R164). A
+#                    published image is proved and built on (SPEC R164), and
+#                    base-images.yml builds the arm64 tiers there too. A
 #                    GitHub-hosted runner rather than the self-hosted macOS
-#                    runner below, so a fork has it too. In preview, like its
-#                    x86_64 twin.
+#                    runner below, so a fork has it as well. In preview, like
+#                    its x86_64 twin.
 #   windows/WSL2     podman inside the distro. Live tests run.
 #   macos-15-intel   THE UNIT TIER ONLY. It ran the smoke profile until the
 #                    runner's cost stopped being worth what it added: a bare
