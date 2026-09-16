@@ -219,6 +219,15 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		if err := use.AcquireShared(); err != nil {
 			return err
 		}
+		// The same declaration for the renewer, which is host-global where the
+		// lender is per group. Taken here rather than where the renewer starts,
+		// because the window that matters opens before that: this create is
+		// already committed to lending, and a destroy elsewhere must not read the
+		// host as idle while it works.
+		kuse := app.renewerUse()
+		if err := kuse.AcquireShared(); err != nil {
+			return err
+		}
 		// Released before the stop, never after: the stop takes this same lock
 		// exclusively, and a process waiting on a lock it is itself holding
 		// waits forever.
@@ -229,6 +238,10 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		// along to stop it. Idle either way, but a container that outlives the
 		// command that started it is one nobody goes looking for.
 		defer func() {
+			// Both released before the stop, never after: the stop takes these
+			// same locks exclusively, and a process waiting on a lock it is itself
+			// holding waits forever.
+			kuse.Release()
 			use.Release()
 			if err != nil {
 				app.stopLenderIfIdle(ctx, f.group)
@@ -300,6 +313,10 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		if err := lend.WriteLoans(state.Dir(app.InstDir, f.group, name), plan.loans); err != nil {
 			return fmt.Errorf("record this sandbox's loans: %w", err)
 		}
+		// After the loan is on disk, not before: the renewer derives what to keep
+		// alive from the loan records, so starting it any earlier gives its first
+		// tick nothing to find.
+		app.ensureRenewer(plan.loans)
 	}
 	// A recreated name gets fresh per-instance host keys. known_hosts is keyed by
 	// the HostKeyAlias the connection used, which is <name>.<group> everywhere

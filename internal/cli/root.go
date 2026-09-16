@@ -361,6 +361,7 @@ func newRootCmd(app *App) *cobra.Command {
 	root.AddCommand(newAgentToolsCmd(app))
 	root.AddCommand(newHostRouteCmd(app))
 	root.AddCommand(newLenderCmd(app))
+	root.AddCommand(newRenewerCmd(app))
 	for _, c := range newInstanceCmds(app) {
 		root.AddCommand(c)
 	}

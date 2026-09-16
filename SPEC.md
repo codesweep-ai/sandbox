@@ -765,6 +765,10 @@ sandbox holds is worth nothing anywhere else, and the credential never crosses t
 Two things can be lent. A **token loan** lends an agent's host login, such as the one Claude Code
 signs in with. A **key loan** lends an LLM API key the host keeps in `~/.cs-keys/`.
 
+A login expires on its provider's schedule, and the sandbox borrowing one cannot renew it: what it
+holds is fabricated. The **renewer** keeps the host's own login current instead, for as long as
+something is borrowing it, by running the client that owns that login.
+
 **R144.** A lent login **MUST** be seeded as the agent's own credential file, holding fabricated
 values. A lent API key **MUST** be seeded in the variable its client reads. Both **MUST** also seed the
 lender's address in the variable the agent reads for a base URL.
@@ -809,6 +813,25 @@ and nothing else, so a path this host resolves can be absent there. Left to the 
 disagreement is reported per call into a container log nobody opens. The sandbox above it then waits
 for a turn that never comes, which reads as a hang rather than an error.*
 
+**R150b.** A lent login **MUST** be renewed by running the client that owns it. This tool **MUST NOT**
+perform a provider's sign-in, and **MUST NOT** hold a refresh token of its own. *A refresh rotates the
+token it spends, so two implementations renewing one login leave whichever wrote second holding a dead
+one. The owning client is also the party whose vendor supports it doing this.*
+
+**R150c.** A renewal **MUST** read the host's credential, and **MUST** write back only the values a
+refresh changes. *What renews a login and what signed it in are different builds of the same client.
+Replacing the document would let the older of the two drop a field the newer one relies on. A renewal
+that worked would then leave the login worse than it found it.*
+
+**R150d.** A renewal **MUST** be confirmed by reading the expiry again, and a run that leaves it
+unchanged **MUST** be reported as a failure. *A client decides for itself whether a token is near enough
+to expiry to refresh, so a command that exits cleanly says nothing about whether the credential was
+extended. Unconfirmed, a renewer spends a turn on every attempt and reports success for all of them.*
+
+**R150e.** At most one renewal of a credential **MUST** run on a host at a time, however many groups or
+instance roots are lending it. *There is one login per host to renew, and concurrent renewals race the
+rotation R150b is about.*
+
 **R151.** A loan **MUST** be recorded in the instance directory at mode 600. It **MUST** stop being honoured
 when that directory is removed, and there **MUST** be no other revocation.
 
@@ -825,6 +848,13 @@ host cannot supply. The failure **MUST** name the file it looked for, and the co
 
 **R155.** `create` **MUST** report what a sandbox borrows. `ls` and `inspect` **MUST** show it, without
 printing a loan token.
+
+**R155a.** `create` and `doctor` **MUST** report how long a lent login has left, and **MUST** report
+separately when renewing it stops being possible. A renewer that is running and no longer reporting
+**MUST** be read as not covering anything. *Renewing extends a login for hours without extending the
+window in which renewing works, so the two clocks fail on different days and have different remedies:
+one is waited out, the other needs a person to sign in. A renewer that has stopped reporting is the
+worst of the three states, because every other signal about it still reads as healthy.*
 
 R144 is the decision the rest of this section rests on, and it is about durability rather than
 about what works. A gateway variable would work today for both agents. The file is chosen because a

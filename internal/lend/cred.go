@@ -27,57 +27,107 @@ import (
 // a loan token and does not know what it stands for — so the shape has to be
 // restored on this side.
 func readClaudeLogin(home, _ string) (string, map[string]string, error) {
-	p := filepath.Join(home, ".cs-claude", ".credentials.json")
-	data, err := os.ReadFile(p)
+	o, p, err := readClaudeOAuth(home)
 	if err != nil {
+		return "", nil, err
+	}
+	if o.AccessToken == "" {
 		return "", nil, missing("Claude", p, "cs-claude")
 	}
-	var doc struct {
-		OAuth struct {
-			AccessToken string `json:"accessToken"`
-			ExpiresAt   int64  `json:"expiresAt"` // epoch milliseconds
-		} `json:"claudeAiOauth"`
-	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return "", nil, fmt.Errorf("%s is not readable as a Claude login: %w", p, err)
-	}
-	if doc.OAuth.AccessToken == "" {
-		return "", nil, missing("Claude", p, "cs-claude")
-	}
-	if doc.OAuth.ExpiresAt > 0 {
-		if exp := time.UnixMilli(doc.OAuth.ExpiresAt); time.Now().After(exp) {
+	if o.ExpiresAt > 0 {
+		if exp := time.UnixMilli(o.ExpiresAt); time.Now().After(exp) {
 			return "", nil, fmt.Errorf("the host's Claude login expired at %s — run 'cs-claude' on the host to refresh it",
 				exp.Local().Format(time.RFC3339))
 		}
 	}
-	return doc.OAuth.AccessToken, map[string]string{"anthropic-beta": "oauth-2025-04-20"}, nil
+	return o.AccessToken, map[string]string{"anthropic-beta": "oauth-2025-04-20"}, nil
+}
+
+// claudeOAuth is the part of Claude Code's credential file this tool reads.
+//
+// The refresh token is deliberately not a field. Nothing on this side has any
+// use for it — see the header comment — and a field that does not exist cannot
+// be logged, copied or serialized by a later mistake.
+type claudeOAuth struct {
+	AccessToken string `json:"accessToken"`
+	ExpiresAt   int64  `json:"expiresAt"` // epoch milliseconds
+	// RefreshTokenExpiresAt is the end of the refresh chain: the point past
+	// which refreshing cannot help and only an interactive sign-in can. See
+	// Slot.RefreshDeadline.
+	RefreshTokenExpiresAt int64 `json:"refreshTokenExpiresAt"` // epoch milliseconds
+}
+
+// readClaudeOAuth reads the credential file, returning the path beside the
+// document so every caller's error can name the file rather than the field.
+func readClaudeOAuth(home string) (claudeOAuth, string, error) {
+	p := filepath.Join(home, ".cs-claude", ".credentials.json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return claudeOAuth{}, p, missing("Claude", p, "cs-claude")
+	}
+	var doc struct {
+		OAuth claudeOAuth `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return claudeOAuth{}, p, fmt.Errorf("%s is not readable as a Claude login: %w", p, err)
+	}
+	return doc.OAuth, p, nil
 }
 
 // readCodexLogin returns the ChatGPT access token Codex keeps in the cs-codex
 // profile, with the account id that has to travel beside it.
 func readCodexLogin(home, _ string) (string, map[string]string, error) {
+	t, p, err := readCodexTokens(home)
+	if err != nil {
+		return "", nil, err
+	}
+	if t.AccessToken == "" {
+		return "", nil, missing("Codex", p, "cs-codex login")
+	}
+	// Staleness reported as itself, the way the Claude slot reports it, which is
+	// what the header comment above claims this package does. It did not hold
+	// for Codex until this check existed: the token carries its expiry inside
+	// itself rather than in a field beside it, so an expired one was forwarded
+	// and came back as an upstream 401 — the one shape of failure a reader
+	// cannot act on, because it is also what a revoked token, a wrong account
+	// and a provider outage look like.
+	//
+	// Only a decoded expiry in the past refuses. A token this build cannot
+	// decode is forwarded rather than withheld: not understanding a credential's
+	// shape is not evidence that it is dead, and refusing on that would break
+	// lending the first time the provider changes the token format.
+	if exp, err := jwtExpiry(t.AccessToken); err == nil && time.Now().After(exp) {
+		return "", nil, fmt.Errorf("the host's Codex login expired at %s — run 'cs-codex' on the host to refresh it",
+			exp.Local().Format(time.RFC3339))
+	}
+	extra := map[string]string{}
+	if t.AccountID != "" {
+		extra["chatgpt-account-id"] = t.AccountID
+	}
+	return t.AccessToken, extra, nil
+}
+
+// codexTokens is the part of Codex's auth.json this tool reads. As with
+// claudeOAuth, the refresh token is deliberately absent.
+type codexTokens struct {
+	AccessToken string `json:"access_token"`
+	AccountID   string `json:"account_id"`
+}
+
+// readCodexTokens reads auth.json, returning the path beside the document.
+func readCodexTokens(home string) (codexTokens, string, error) {
 	p := filepath.Join(home, ".cs-codex", "auth.json")
 	data, err := os.ReadFile(p)
 	if err != nil {
-		return "", nil, missing("Codex", p, "cs-codex login")
+		return codexTokens{}, p, missing("Codex", p, "cs-codex login")
 	}
 	var doc struct {
-		Tokens struct {
-			AccessToken string `json:"access_token"`
-			AccountID   string `json:"account_id"`
-		} `json:"tokens"`
+		Tokens codexTokens `json:"tokens"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return "", nil, fmt.Errorf("%s is not readable as a Codex login: %w", p, err)
+		return codexTokens{}, p, fmt.Errorf("%s is not readable as a Codex login: %w", p, err)
 	}
-	if doc.Tokens.AccessToken == "" {
-		return "", nil, missing("Codex", p, "cs-codex login")
-	}
-	extra := map[string]string{}
-	if doc.Tokens.AccountID != "" {
-		extra["chatgpt-account-id"] = doc.Tokens.AccountID
-	}
-	return doc.Tokens.AccessToken, extra, nil
+	return doc.Tokens, p, nil
 }
 
 // keyReader reads one provider key file. The whole file is the key, trimmed,

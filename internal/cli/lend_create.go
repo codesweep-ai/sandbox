@@ -10,12 +10,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/doctor"
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/lend"
 	"github.com/codesweep-ai/sandbox/internal/lock"
 	"github.com/codesweep-ai/sandbox/internal/paths"
+	"github.com/codesweep-ai/sandbox/internal/renew"
 	"github.com/codesweep-ai/sandbox/internal/seed"
 	"github.com/codesweep-ai/sandbox/internal/state"
 )
@@ -124,6 +126,16 @@ func (app *App) resolveLoans(ctx context.Context, f *createFlags, name, injected
 		}
 	}
 
+	// Renewed before it is lent, when it needs renewing. Done ahead of the
+	// availability check below, because an expired login is the case that check
+	// refuses and the case this fixes — and the renewer cannot help here: it only
+	// starts once the loan exists.
+	notes, err := app.freshenLentLogins(ctx, lent, home, keysDir)
+	if err != nil {
+		return nil, err
+	}
+	plan.notes = append(plan.notes, notes...)
+
 	// What is lent has to exist before the sandbox is built around it.
 	for _, s := range lent {
 		if err := s.Available(home, keysDir); err != nil {
@@ -227,6 +239,7 @@ func (app *App) resolveLoans(ctx context.Context, f *createFlags, name, injected
 		}
 		plan.notes = append(plan.notes, fmt.Sprintf("lent: %s %s (the credential stays on the host, in %s)",
 			s.ID, what, s.Source(home, keysDir)))
+		plan.notes = append(plan.notes, credentialClockNotes(s, home, keysDir)...)
 	}
 
 	// The half of an agent's traffic a base URL does not govern. Without this a
@@ -248,6 +261,38 @@ func (app *App) resolveLoans(ctx context.Context, f *createFlags, name, injected
 			" (--block-side-calls=false to allow them)")
 	}
 	return plan, nil
+}
+
+// credentialClockNotes says what is known about a lent login's two clocks, at
+// the moment somebody is still standing here to read it.
+//
+// This is the cheapest place in the whole design to turn a mid-run failure into a
+// decision. A credential with nine minutes left will be renewed by the renewer and
+// is genuinely fine; the same credential two days from the end of its refresh
+// chain is not, and nothing later in the run will be a better time to find out.
+func credentialClockNotes(s lend.Slot, home, keysDir string) []string {
+	var out []string
+	if exp, ok, err := s.ExpiresAt(home, keysDir); err == nil && ok {
+		left := time.Until(exp)
+		switch {
+		case !s.Renewable():
+			out = append(out, fmt.Sprintf("%s: expires in %s and nothing renews it", s.ID, doctor.ShortDur(left)))
+		case left < time.Hour:
+			// Named specifically because it is the one case where a person
+			// might reasonably wait a minute and start again on a fresh token
+			// rather than trust the handover.
+			out = append(out, fmt.Sprintf("%s: expires in %s; the renewer renews it in place, "+
+				"so a run crossing that point keeps working", s.ID, doctor.ShortDur(left)))
+		}
+	}
+	if dl, ok, err := s.RefreshDeadline(home, keysDir); err == nil && ok {
+		if left := time.Until(dl); left < 7*24*time.Hour {
+			out = append(out, fmt.Sprintf("%s: renewing stops working in %s (%s) — refreshing does not extend it, "+
+				"so sign in on the host again before then",
+				s.ID, doctor.ShortDur(left), dl.Local().Format("Mon 2 Jan 15:04")))
+		}
+	}
+	return out
 }
 
 // envValue reads one variable out of an injected env block, or "" when it is
@@ -470,6 +515,11 @@ func (app *App) stopLenderIfIdle(ctx context.Context, group string) {
 	if app.dryRun() {
 		return
 	}
+	// Deferred, and on every path out of here including the early ones: the
+	// renewer's question is not this function's question. A lender is per group,
+	// so a loan in another group says nothing about this one — but the renewer is
+	// per host, and a loan anywhere is a reason for it to stay up.
+	defer app.stopRenewerIfIdle()
 	use := app.lenderUse(group)
 	if held, err := use.TryAcquire(); err != nil || !held {
 		return
@@ -492,6 +542,187 @@ func (app *App) stopLenderIfIdle(ctx context.Context, group string) {
 		}
 	}
 	_ = app.lenderBox(group).stop(ctx)
+}
+
+// freshenLentLogins renews any lent login that has expired or is close enough to
+// expiring that its own client will refresh it, before the sandbox is built
+// around it.
+//
+// Two cases, one reason. An already-expired login would otherwise fail the create
+// outright and send somebody off to type a command the tool could have run
+// itself. A login inside its refresh window would survive the create and then die
+// minutes later, leaving the sandbox to start with ninety seconds of credential
+// instead of eight hours.
+//
+// Anything with more life than that is left alone, which is the important half:
+// its client would decline to refresh, so a attempt there spends a real turn on the
+// subscription and changes nothing.
+func (app *App) freshenLentLogins(ctx context.Context, lent []lend.Slot, home, keysDir string) ([]string, error) {
+	// Asked once for every slot, because it is a question about the image and
+	// there is one image. Said even when the credentials are healthy: that is
+	// exactly when it is easy to miss, since the sandbox works now and stops at
+	// expiry for a reason that has nothing to do with the login. A warning and not
+	// a refusal — what is lent is good until then.
+	if !app.dryRun() {
+		blocked := renew.Possible(ctx, app.renewerConfig(), lent)
+		for _, id := range sortedSlotIDs(blocked) {
+			fmt.Fprintf(app.stderr(), "cs-sandbox: warning: %v\n", blocked[id])
+		}
+	}
+
+	var notes []string
+	for _, s := range lent {
+		if !s.Renewable() {
+			continue
+		}
+		if app.dryRun() {
+			// A dry run must not spend a turn, and must not refuse either: what
+			// it reports is what a real run would do, and a real run would renew
+			// this rather than stop at it.
+			if exp, ok, err := s.ExpiresAt(home, keysDir); err == nil && ok && time.Until(exp) <= s.RenewWithin() {
+				notes = append(notes, fmt.Sprintf("%s: login expires in %s, so a real run would renew it first by running its own client",
+					s.ID, doctor.ShortDur(time.Until(exp))))
+			}
+			continue
+		}
+		got, err := renew.Now(ctx, app.renewerConfig(), s)
+		if err != nil {
+			return nil, err
+		}
+		switch got.Outcome {
+		case renew.Renewed:
+			what := "was close to expiring"
+			if got.WasExpired {
+				what = "had already expired"
+			}
+			notes = append(notes, fmt.Sprintf("%s: the host login %s, so it was renewed before being lent (now expires in %s)",
+				s.ID, what, doctor.ShortDur(time.Until(got.Expires))))
+		case renew.AlreadyRenewed:
+			notes = append(notes, fmt.Sprintf("%s: the host login was renewed by something else just now (expires in %s)",
+				s.ID, doctor.ShortDur(time.Until(got.Expires))))
+		}
+	}
+	return notes, nil
+}
+
+// renewerConfig is the renewer's own configuration, as this host resolves it. Built
+// in one place because create's one-shot renewal and the renewer process itself
+// have to agree about every path — above all the host-global lock directory, which
+// is what stops the two of them running a client at the same moment.
+func (app *App) renewerConfig() renew.Config {
+	home := paths.AgentLoginHome(app.Host.Home)
+	return renew.Config{
+		Home:     home,
+		KeysDir:  lend.KeysDir(home),
+		InstDir:  app.InstDir,
+		Dir:      paths.Renewer(app.InstDir),
+		StateDir: paths.RenewerState(),
+		// A renewal runs the client out of this image rather than one on the
+		// host's PATH — see internal/renew/container.go. ImageErr travels with it
+		// so a host without an image says why rather than saying nothing.
+		Image:    app.Image,
+		ImageErr: imageErrText(app.ImageErr),
+	}
+}
+
+// imageErrText is why this host has no sandbox image, or "" when it has one.
+func imageErrText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// renewerUse is the declaration that the credential renewer is being relied on by
+// something no loan record names yet.
+//
+// The same shape as lenderUse and for the same reason, one scope wider. A create
+// that lends starts the renewer seconds before its loan reaches disk, and a destroy
+// running beside it reads the host as idle in that window and stops the renewer a
+// command in flight is about to depend on. Shared, because creates do not race each
+// other here — they are all saying the same true thing — and exclusive only on the
+// side that would take the renewer away.
+//
+// Host-global, where lenderUse is per group, because the renewer is: one credential,
+// one renewer, one lock.
+func (app *App) renewerUse() *lock.Lock {
+	return lock.NewAt(filepath.Join(paths.RenewerState(), "in-use.lock"))
+}
+
+// ensureRenewer starts the host-side credential renewer, if any of the loans just
+// recorded names a login something can renew.
+//
+// Best effort, and reported when it fails. A sandbox whose renewer did not start
+// is still a working sandbox — it will simply lose its borrowed credential when
+// that credential expires, hours later and far from here. So this must not fail
+// the create, and it must not be quiet either: a renewer that is not running is
+// indistinguishable from one that is, right up to the moment a long run dies.
+func (app *App) ensureRenewer(loans []lend.Loan) {
+	if app.dryRun() {
+		return
+	}
+	want := false
+	for _, ln := range loans {
+		if s, ok := lend.SlotByID(ln.Slot); ok && s.Renewable() {
+			want = true
+			break
+		}
+	}
+	if !want {
+		return
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(app.stderr(), "cs-sandbox: warning: cannot find this binary to start the credential renewer: %v\n"+
+			"  the lent login will not be renewed; run 'cs-sandbox renewer' yourself to keep it alive\n", err)
+		return
+	}
+	if err := renew.Start(paths.Renewer(app.InstDir), bin); err != nil {
+		fmt.Fprintf(app.stderr(), "cs-sandbox: warning: could not start the credential renewer: %v\n"+
+			"  the sandbox works, but a lent login will go stale when it expires; 'cs-sandbox doctor' reports this\n", err)
+	}
+}
+
+// stopRenewerIfIdle ends the renewer once nothing under this instances root
+// borrows a renewable login.
+//
+// Host-wide by group, unlike the lender: the renewer exists for the credential,
+// and one credential serves every group. Cheap enough to run on every destroy,
+// because it reads the same loan records the lender's own idle check reads.
+func (app *App) stopRenewerIfIdle() {
+	if app.dryRun() {
+		return
+	}
+	dir := paths.Renewer(app.InstDir)
+	if !renew.Running(dir) {
+		return
+	}
+	// "Idle" is read under renewerUse, exclusively, so that a create between
+	// starting the renewer and recording its loan counts as a user of it rather
+	// than as nothing. Try rather than wait: a destroy that queued behind a create
+	// would hold up a command somebody is watching, and a skipped stop is not a
+	// leak — the next destroy takes it.
+	use := app.renewerUse()
+	if held, err := use.TryAcquire(); err != nil || !held {
+		return
+	}
+	defer use.Release()
+	insts, err := state.List(app.InstDir)
+	if err != nil {
+		return // cannot prove it is idle, so leave it running
+	}
+	for _, in := range insts {
+		loans, err := lend.ReadLoans(state.Dir(app.InstDir, in.Group, in.Name))
+		if err != nil {
+			continue
+		}
+		for _, ln := range loans {
+			if s, ok := lend.SlotByID(ln.Slot); ok && s.Renewable() {
+				return
+			}
+		}
+	}
+	renew.Stop(dir, paths.RenewerState())
 }
 
 // loanSummary is the loans a sandbox holds, for `inspect` and `ls`.
@@ -556,6 +787,40 @@ func (app *App) lendState(ctx context.Context) doctor.LendState {
 
 	home := paths.AgentLoginHome(app.Host.Home)
 	keysDir := lend.KeysDir(home)
+
+	// What the renewer last managed to do, read from the file it publishes rather
+	// than asked of the process. A renewer that is running but no longer reporting
+	// is wedged, and that is the one state it cannot describe for itself — so it
+	// is measured from out here, by how old its last report is.
+	// One probe for every lent slot, for the same reason create does it once:
+	// the question is about the image, and there is one image.
+	var lentSlots []lend.Slot
+	for _, id := range sortedKeys(slots) {
+		if sl, ok := lend.SlotByID(id); ok {
+			lentSlots = append(lentSlots, sl)
+		}
+	}
+	renewable := renew.Possible(ctx, app.renewerConfig(), lentSlots)
+
+	kdir := paths.Renewer(app.InstDir)
+	renewerSlots := map[string]renew.SlotStatus{}
+	kc := doctor.RenewerCheck{Running: renew.Running(kdir)}
+	for _, id := range slotIDsSorted(slots) {
+		if sl, ok := lend.SlotByID(id); ok && sl.Renewable() {
+			kc.Wanted = true
+		}
+	}
+	if kst, ok, err := renew.ReadStatus(kdir); err != nil {
+		kc.Err = err.Error()
+	} else if ok {
+		kc.Reported = true
+		kc.LastReport = time.Since(kst.Updated)
+		for _, ss := range kst.Slots {
+			renewerSlots[ss.Slot] = ss
+		}
+	}
+	st.Renewer = kc
+
 	for _, id := range append(lend.SlotIDs(lend.Login), lend.SlotIDs(lend.Key)...) {
 		if !slots[id] {
 			continue
@@ -565,9 +830,45 @@ func (app *App) lendState(ctx context.Context) doctor.LendState {
 		if err := s.Available(home, keysDir); err != nil {
 			c.Err = err.Error()
 		}
+		// Both clocks, when the slot has them. "Lendable" and "lendable for
+		// another nine minutes" are different answers to the question somebody
+		// about to start a long unattended run is actually asking, and the
+		// second one turns a failure four hours from now into a decision made
+		// here.
+		if exp, ok, err := s.ExpiresAt(home, keysDir); err == nil && ok {
+			c.Expires = exp
+		}
+		if dl, ok, err := s.RefreshDeadline(home, keysDir); err == nil && ok {
+			c.RefreshDeadline = dl
+		}
+		if ks, ok := renewerSlots[id]; ok {
+			c.RenewErr = ks.Err
+		}
+		// Reported through the same field, because it is the same fact from the
+		// reader's side: this login is not going to be renewed. The message says
+		// which of the two reasons it is.
+		if c.RenewErr == "" {
+			if err, ok := renewable[id]; ok {
+				c.RenewErr = err.Error()
+			}
+		}
 		st.Credentials = append(st.Credentials, c)
 	}
 	return st
+}
+
+// slotIDsSorted is the lent slot ids in a stable order.
+func slotIDsSorted(slots map[string]bool) []string { return sortedKeys(slots) }
+
+// sortedSlotIDs keeps a per-slot error map's reporting order stable, so two runs
+// of the same command print the same lines in the same order.
+func sortedSlotIDs(m map[string]error) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // sortedKeys keeps doctor's output stable across runs, which is what makes two

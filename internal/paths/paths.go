@@ -83,6 +83,59 @@ func FCCache() string {
 	return filepath.Join(cacheHome(), app)
 }
 
+// Renewer is the credential renewer's working directory: its pidfile, the status
+// it publishes for doctor, its log, and the empty directory renew commands run
+// in (regenerable).
+//
+// Keyed on the instances root. A renewer watches the loans under one root, and a
+// second root's sandboxes are not its business — one host-global renewer would
+// find its own pidfile, start nothing, and leave the other root's loans unkept,
+// which is exactly the silent gap this mechanism exists to close. The default
+// root gets a predictable name.
+//
+// What it renews is host-global even so, which is what RenewerState is for.
+func Renewer(instDir string) string {
+	if d := os.Getenv("CS_SANDBOX_RENEWER"); d != "" {
+		return d
+	}
+	if h := os.Getenv("CS_SANDBOX_HOME"); h != "" {
+		return filepath.Join(h, "renewer", rootKey(instDir))
+	}
+	return filepath.Join(cacheHome(), app, "renewer", rootKey(instDir))
+}
+
+// RenewerState is where the renewer's host-global state lives: the per-slot
+// single-flight locks, the in-use declaration, and the retry state that decides how
+// long a failing login is left alone.
+//
+// Unlike Renewer this is deliberately HOST-GLOBAL, and for the same reason FCNet
+// is: there is one ~/.cs-claude per host, so two roots' renewers renew the same
+// credential. If each took its lock under its own root, both could run a client
+// in the same few minutes and race the token rotation — and the writer that lost
+// would leave a dead refresh token behind, logging the human out of their own
+// agent. The lock has to be on the credential's scope, not the caller's.
+// CS_SANDBOX_RENEWER_STATE overrides it for isolated runs.
+func RenewerState() string {
+	if d := os.Getenv("CS_SANDBOX_RENEWER_STATE"); d != "" {
+		return d
+	}
+	return filepath.Join(cacheHome(), app, "renewer-state")
+}
+
+// rootKey names an instances root in one path segment: a predictable name for
+// the usual root, else a short hash of its path.
+func rootKey(instDir string) string {
+	inst := instDir
+	if abs, err := filepath.Abs(inst); err == nil {
+		inst = abs
+	}
+	if inst == defaultInstances() {
+		return "default"
+	}
+	sum := sha256.Sum256([]byte(inst))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
 // AgentLoginHome is the directory holding the .cs-<agent> profiles that
 // --inherit-agent-login copies a login out of. The developer's own home, unless
 // CS_SANDBOX_AGENT_HOME names another.

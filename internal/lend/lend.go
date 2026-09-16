@@ -96,6 +96,23 @@ type Slot struct {
 	// that tells the reader where to look.
 	where func(home, keysDir string) string
 
+	// expires, deadline, renew and renewWithin are the renewer's half of a slot:
+	// when the credential goes stale, when refreshing it stops being possible,
+	// and the command that asks its owning client to renew it. All four are nil
+	// or zero for a slot nothing renews, which is every key.
+	//
+	// They live in the table because the table is the one place a provider is
+	// described, and they are reads and data only — see expiry.go for why
+	// nothing here may exec.
+	expires  func(home, keysDir string) (time.Time, error)
+	expiryOf func(doc []byte) (time.Time, error)
+	deadline func(home, keysDir string) (time.Time, error)
+	renew    *RenewSpec
+
+	// renewWithin is the client's own refresh threshold, not our buffer. An attempt
+	// sent earlier than this does nothing at all. See Slot.RenewWithin.
+	renewWithin time.Duration
+
 	// guestFile is the credential file this slot's agent reads inside a
 	// sandbox, relative to its profile directory, or "" for a slot whose
 	// client reads an environment variable. guestDoc fabricates its content.
@@ -124,6 +141,14 @@ var slots = []Slot{
 		guestFile:    ".credentials.json",
 		guestDoc:     claudeCredentials,
 		guestProfile: claudeProfile,
+		expires:      claudeExpiry,
+		expiryOf:     claudeExpiryOf,
+		deadline:     claudeRefreshDeadline,
+		renew:        claudeRenewSpec,
+		// Four minutes against an 8-hour token. The client's own window was
+		// measured at 4m56s and a cold `claude -p` at 2.8s, so this fires inside
+		// the window with most of it left; anything wider refreshes nothing.
+		renewWithin: 4 * time.Minute,
 	},
 	{
 		ID: "codex", Kind: Login,
@@ -138,6 +163,17 @@ var slots = []Slot{
 		where:     func(home, _ string) string { return filepath.Join(home, ".cs-codex", "auth.json") },
 		guestFile: "auth.json",
 		guestDoc:  codexAuth,
+		expires:   codexExpiry,
+		expiryOf:  codexExpiryOf,
+		// No deadline: auth.json states no refresh-token expiry, so there is no
+		// outer clock to read. That is not the same as there being none.
+		renew: codexRenewSpec,
+		// Half an hour against a 240-hour token, where Claude gets four minutes
+		// against eight hours. Codex's threshold is unmeasured — a token four
+		// days stale refreshed on the next launch, a fresh one did not — so this
+		// is chosen to sit inside anything plausible rather than to be tight.
+		// A `codex exec` costs 6.6s and this spends one per ten days.
+		renewWithin: 30 * time.Minute,
 	},
 	{
 		ID: "anthropic", Kind: Key,

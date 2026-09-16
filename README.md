@@ -124,7 +124,9 @@ cs-sandbox create feature --repo ~/projects/api --lend-agent-login claude
 What lands in the sandbox is a **loan token**, never your credential. The real one stays on your
 host, held by the **lender**, a small proxy this tool runs for you. Every model call the agent makes
 arrives at the lender carrying its token, and gets the real credential attached there before going
-on to the provider. The agent runs exactly as it would signed in.
+on to the provider. The agent runs exactly as it would signed in. Your login expires on its
+provider's schedule, so this tool keeps it current while a sandbox is borrowing it, and a run that
+outlasts a login carries on working.
 
 You can lend an agent login, or an LLM API key:
 

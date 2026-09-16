@@ -30,7 +30,7 @@ cs-sandbox stores                      cs-sandbox rm-store [-f] <name>
 cs-sandbox build [--engine ENGINE]...  cs-sandbox doctor [--engine ENGINE] [--slim]
 cs-sandbox agent-login <agent> <name>  cs-sandbox install-agent-tools [dir]
 cs-sandbox agent-tools [--json]
-cs-sandbox lender [--addr ADDR]
+cs-sandbox lender [--addr ADDR]         cs-sandbox renewer
 cs-sandbox completion bash|zsh|fish|powershell
 cs-sandbox version [--images]
 
@@ -232,6 +232,7 @@ cs-sandbox install-agent-tools [dir]      # the agent tools onto your PATH
 cs-sandbox agent-tools [--json]           # what those tools are, with their sha256
 cs-sandbox agent-login <agent> <name>     # log an agent in inside a sandbox
 cs-sandbox lender [--addr ADDR]           # run the credential lender in the foreground
+cs-sandbox renewer                        # renew lent logins before they expire
 cs-sandbox sync-ssh-config                # regenerate the SSH config fragment
 cs-sandbox completion <shell>             # a completion script for bash, zsh, fish or powershell
 ```
@@ -620,6 +621,34 @@ is not this host. The lender `create` starts needs none of that. It sits inside 
 where its callers are the sandboxes on that bridge. Nothing else can route to it. `cs-sandbox doctor`
 reports each group's lender and says which one is dark.
 
+### The renewer
+
+```
+cs-sandbox renewer
+```
+
+Runs the renewer in the foreground. A borrowed login expires on the provider's
+schedule, and a sandbox holding a loan cannot renew it: what it holds is fabricated.
+The **renewer** keeps the host's own login current while something is borrowing it.
+Most people never
+type it, because `create` starts one when a sandbox borrows a login and the last
+`destroy` stops it. Use it on a host that keeps sandboxes up on purpose, under a
+service manager.
+
+It renews a login by running that agent's own client, in a container built from this
+tool's image, against a copy of the credential. The client refreshes its own token,
+and only the values a refresh changes are written back to your profile. The renewer
+signs nothing in itself and holds no refresh token.
+
+A renewal is attempted only when the login is close enough to expiring that its
+client will refresh it, so most of the time the renewer does nothing at all. Each
+attempt costs one short model turn on the subscription that login belongs to.
+
+`cs-sandbox doctor` reports how long each lent login has left, whether a renewer is
+running, and when renewing stops being possible. That last one is a separate clock:
+a refresh extends the login for hours, but not the window in which refreshing works
+at all. When that window closes, sign in again on the host.
+
 ### Connectors an account carries
 
 An inherited Claude subscription carries more than the credential. The account's claude.ai
@@ -692,6 +721,8 @@ without disturbing your real one, which is what the test suite does.
 | `CS_SANDBOX_FC_NET` | The fabric working directory, which `CS_SANDBOX_HOME` deliberately leaves alone. |
 | `XDG_DATA_HOME`, `XDG_CACHE_HOME` | The defaults the paths above derive from. |
 | `CS_SANDBOX_AGENT_HOME` | Where a login or a key is read from, by `--inherit-agent-login` and by the lender alike. Your home, unless this names another profile tree. |
+| `CS_SANDBOX_RENEWER` | The renewer's working directory: its pidfile, its log, and what it reports to `doctor`. One per instance root. |
+| `CS_SANDBOX_RENEWER_STATE` | Where the renewer keeps the state it shares with `create`, host-wide: which login is being renewed right now, and how long a failing one is left alone. |
 | `CS_SANDBOX_LEND_ADDR` | The address `cs-sandbox lender` listens on when you run one yourself. Default `0.0.0.0:2500`. The group's own lender container is not configured by it. |
 | `CS_SANDBOX_LENDER_BIN` | A Linux `cs-sandbox` for the image's architecture, run by the group's lender container instead of the image's own. Unset or empty, the image's own runs. Set it where the image carries no `cs-sandbox` (a slimmed one) or where you want the lender to be your own build. |
 
