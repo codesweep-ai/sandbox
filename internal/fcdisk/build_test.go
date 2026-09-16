@@ -50,14 +50,31 @@ func TestDefaultedHostKernelNoPin(t *testing.T) {
 	}
 }
 
-// TestDefaultKVerPinIsGA guards against regressing to a churning updates-repo NVR:
-// the default must be a concrete fc44 GA kernel-core release string.
-func TestDefaultKVerPinFormat(t *testing.T) {
+// TestDefaultKVerPin: the default must be a concrete NVR this repository can
+// fetch by the provenance it names. A koji default additionally has to carry
+// committed digests — without them every user's first build silently takes the
+// unverified fallback, which is exactly the kind of thing that ships unnoticed.
+func TestDefaultKVerPin(t *testing.T) {
 	if DefaultKVerPin == "" {
 		t.Fatal("DefaultKVerPin is empty")
 	}
-	if filepath.Ext(DefaultKVerPin) != ".fc44" {
+	pin := parseKernelPin(DefaultKVerPin)
+	if filepath.Ext(pin.NVR) != ".fc44" {
 		t.Errorf("DefaultKVerPin = %q, want a *.fc44 NVR", DefaultKVerPin)
+	}
+	if !pin.Koji {
+		return
+	}
+	if _, _, ok := pin.versionRelease(); !ok {
+		t.Fatalf("DefaultKVerPin = %q, want koji:<version>-<release>", DefaultKVerPin)
+	}
+	arch, err := fcArch()
+	if err != nil {
+		t.Skipf("unsupported arch: %v", err)
+	}
+	if kojiSums(pin, arch) == "" {
+		t.Errorf("DefaultKVerPin = %q has no kojiDigests entry for %s: every build "+
+			"would fall back to the unverified path", DefaultKVerPin, arch)
 	}
 }
 

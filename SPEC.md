@@ -1219,8 +1219,11 @@ R120b exists because the repos are a moving target and koji is not. `updates` ca
 drops it when the next lands. Nothing resolved through it stays resolvable. Every build koji has ever
 produced stays at a fixed URL, so a `koji:` pin still resolves on a rebuild months later.
 
-The default still names the release's frozen GA kernel, which stays resolvable for the release's
-lifetime. Nothing changes provenance until a pin asks for it.
+The default takes that path, and its two halves are chosen separately. The version is the NVR bodhi
+has pushed to **stable**, so it carries Fedora's gating rather than whichever build koji finished
+last. The provenance is koji, so the pin cannot dissolve. The default used to name the release's
+frozen GA kernel instead. That stayed resolvable but could never move, and had come to rest on an
+upstream branch that was already EOL.
 
 R120c is R117 again, and it binds harder here. The firecracker tarball at least ships a checksum of
 its own next to it. Koji serves build artifacts **unsigned**, because signing happens when a build is

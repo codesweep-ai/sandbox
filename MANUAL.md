@@ -746,7 +746,7 @@ you to one.
 | Variable | Default | Effect |
 |---|---|---|
 | `CS_SANDBOX_FC_VERSION` | `v1.17.0` | The Firecracker release `build` downloads. An override has no committed digest and falls back to the published checksum. |
-| `CS_SANDBOX_FC_KVER` | a pinned Fedora NVR | The guest kernel `build` installs. A bare NVR (`7.2.6-200.fc44`) is resolved by dnf from the Fedora repos the image carries. `koji:<nvr>` downloads that exact build from Fedora's build system instead, which is the only way to pin an NVR the repos no longer serve; such a download is checked against a digest committed in the source, and a pin with no committed digest says so and prints the digests that would pin it. |
+| `CS_SANDBOX_FC_KVER` | a pinned `koji:` NVR | The guest kernel `build` installs. A bare NVR (`7.2.5-200.fc44`) is resolved by dnf from the Fedora repos the image carries. `koji:<nvr>` downloads that exact build from Fedora's build system instead, which is the only way to pin an NVR the repos no longer serve; such a download is checked against a digest committed in the source, and a pin with no committed digest says so and prints the digests that would pin it. |
 | `CS_SANDBOX_FC_KERNEL` | the built kernel | A guest kernel image to boot instead. |
 | `CS_SANDBOX_FC_ROOTFS_GB` | `32` | The base rootfs size. Applies to a rootfs built after it is set. |
 | `CS_SANDBOX_FC_REPO_CACHE_TTL_DAYS` | `14` | How long an unused repo or image-store disk stays cached. `0` disables the sweep. |

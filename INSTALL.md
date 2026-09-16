@@ -152,8 +152,9 @@ grep "^$USER:" /etc/subuid /etc/subgid  # must return a line in each file (rootl
 sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 ```
 
-A Firecracker sandbox boots its own guest kernel, built from the sandbox image, so it is pinned
-and reproducible with no dependency on the host's `/boot`. The reasoning is in
+A Firecracker sandbox boots its own guest kernel. It is installed from a pinned Fedora build and
+verified against a digest committed in this repository, so it is reproducible with no dependency on
+the host's `/boot`. The reasoning is in
 [SPEC.md](SPEC.md#122-the-guest-kernel). On macOS, and on any host without x86_64 KVM, this step is
 skipped and sandboxes use Podman.
 

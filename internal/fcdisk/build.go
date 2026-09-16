@@ -18,14 +18,25 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
 
-// DefaultKVerPin is the Fedora kernel-core NVR the guest kernel is pinned to when
-// CS_SANDBOX_FC_KVER is unset. It is deliberately the F44 **GA** kernel from the
-// frozen `fedora` repo, not a newer `updates` NVR: the `fedora` repo is immutable
-// for the release's lifetime, so this pin stays resolvable, whereas `updates`
-// churns the kernel release number every few weeks (200 → 202 → …) and drops the
-// old one, which would break the build on a schedule. Bump this only on a Fedora
-// base-image major bump (e.g. 44 → 45), to that release's GA kernel-core NVR.
-const DefaultKVerPin = "6.19.10-300.fc44"
+// DefaultKVerPin is the guest kernel every build installs when
+// CS_SANDBOX_FC_KVER is unset. It names a version and a provenance both (see
+// kojiPinPrefix), and the two are chosen for different reasons.
+//
+// The version is the NVR bodhi has pushed to **stable** for this Fedora release,
+// so it carries Fedora's gating rather than being whatever koji built most
+// recently. The provenance is koji because `updates` serves exactly one kernel
+// and drops it the moment the next one lands: a default that dissolves out from
+// under a rebuild is not a pin. Taking the stable build through the immutable
+// path gets both properties at once.
+//
+// This replaced a pin on the release's frozen GA kernel, which stayed resolvable
+// but could never move — it had reached an upstream branch that was EOL, with no
+// way to advance without inheriting the churn the GA pin existed to avoid.
+//
+// Bump it to whatever `updates` currently serves (`dnf repoquery kernel-core`),
+// and commit that build's digests to kojiDigests in the same commit —
+// TestDefaultKVerPin fails without them.
+const DefaultKVerPin = kojiPinPrefix + "7.2.5-200.fc44"
 
 // kojiPinPrefix marks a CS_SANDBOX_FC_KVER value as an NVR to be fetched straight
 // from Fedora's build system rather than resolved by dnf from the container's repos.
@@ -33,10 +44,10 @@ const DefaultKVerPin = "6.19.10-300.fc44"
 // The two provenances answer different needs. A bare NVR goes through dnf, which
 // resolves dependencies and checks repo signatures, but can only see what `fedora`
 // and `updates` currently carry — and `updates` drops an NVR as soon as the next
-// one lands, which is exactly why DefaultKVerPin has to sit on the frozen GA
-// kernel. A koji path is immutable: every RPM the build system has ever produced
-// stays at a fixed URL, so any NVR can be pinned and still resolve on a rebuild
-// months later.
+// one lands, so nothing resolved that way stays resolvable. A koji path is
+// immutable: every RPM the build system has ever produced stays at a fixed URL,
+// so any NVR can be pinned and still resolve on a rebuild months later. That is
+// why DefaultKVerPin takes this path.
 //
 // What koji does not do is resolve dependencies, and the guest kernel has one that
 // matters: kernel-core carries vmlinuz but NOT the modules, while the initramfs
@@ -68,6 +79,11 @@ var kernelRPMs = []string{"kernel-core", "kernel-modules-core"}
 // An entry is only needed for an NVR this repository ships. An ad-hoc pin has
 // none, falls back to that self-check, and is told what it does not prove.
 var kojiDigests = map[string]string{
+	// 7.2.5-200.fc44 — DefaultKVerPin; the build bodhi pushed to stable on 2026-09-13.
+	"kernel-core-7.2.5-200.fc44.x86_64.rpm":         "0fc5078508fb5056ee3d6c175da386e8af07e1b92bf31d665bff5623440a70c7",
+	"kernel-modules-core-7.2.5-200.fc44.x86_64.rpm": "1068e9eea0b7e7e030c6ac59653bd4130ae5a003a39b6f8a787e7a0857143755",
+	// 7.2.6-200.fc44 — its successor, still in updates-testing. Verified to boot;
+	// kept so it can be pinned without a fresh digest run when it goes stable.
 	"kernel-core-7.2.6-200.fc44.x86_64.rpm":         "a503faa130df94e6dee0147210c7e74370e2aacbc52714243d504a28e673852e",
 	"kernel-modules-core-7.2.6-200.fc44.x86_64.rpm": "e31d0a56fe3096827421c8a2be60d7b89dfb887c1016b9987d39ba155a11710a",
 }
