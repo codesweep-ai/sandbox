@@ -78,10 +78,19 @@ var kernelRPMs = []string{"kernel-core", "kernel-modules-core"}
 //
 // An entry is only needed for an NVR this repository ships. An ad-hoc pin has
 // none, falls back to that self-check, and is told what it does not prove.
+//
+// A shipped NVR carries every arch, not just the one that can use it today. The
+// firecracker engine is x86_64 Linux only (R112), so the aarch64 half is never
+// fetched, and it is committed anyway for two reasons. TestDefaultKVerPin asks
+// the running host for its arch, so a table covering only x86_64 fails the suite
+// on an arm64 machine. And a pin that is complete cannot be half-bumped later:
+// whoever lands SBX-013 inherits digests rather than an unverified download.
 var kojiDigests = map[string]string{
 	// 7.2.5-200.fc44 — DefaultKVerPin; the build bodhi pushed to stable on 2026-09-13.
-	"kernel-core-7.2.5-200.fc44.x86_64.rpm":         "0fc5078508fb5056ee3d6c175da386e8af07e1b92bf31d665bff5623440a70c7",
-	"kernel-modules-core-7.2.5-200.fc44.x86_64.rpm": "1068e9eea0b7e7e030c6ac59653bd4130ae5a003a39b6f8a787e7a0857143755",
+	"kernel-core-7.2.5-200.fc44.x86_64.rpm":          "0fc5078508fb5056ee3d6c175da386e8af07e1b92bf31d665bff5623440a70c7",
+	"kernel-modules-core-7.2.5-200.fc44.x86_64.rpm":  "1068e9eea0b7e7e030c6ac59653bd4130ae5a003a39b6f8a787e7a0857143755",
+	"kernel-core-7.2.5-200.fc44.aarch64.rpm":         "6f3c5997881c0ce7477efa479c091c9526d44da904f3177e38d069042bf4f849",
+	"kernel-modules-core-7.2.5-200.fc44.aarch64.rpm": "25d911c536689e1b29f241b1fd712f692b10e22bb5349545e176dd2bf4f32a37",
 	// 7.2.6-200.fc44 — its successor, still in updates-testing. Verified to boot;
 	// kept so it can be pinned without a fresh digest run when it goes stable.
 	"kernel-core-7.2.6-200.fc44.x86_64.rpm":         "a503faa130df94e6dee0147210c7e74370e2aacbc52714243d504a28e673852e",
