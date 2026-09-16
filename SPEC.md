@@ -1201,10 +1201,41 @@ version. The same kernel then boots on any host, with no dependency on the host'
 repository rather than fetched at build time. It **MUST** accept only an output the toolchain
 recognises as an ELF.
 
+**R120b.** The pinned version **MAY** name its provenance. A bare NVR **MUST** be resolved by the
+image's package manager; a `koji:` prefix **MUST** fetch that exact build from Fedora's build system
+and **MUST** rebuild the module indexes itself.
+
+**R120c.** A `koji:` download **MUST** be verified against a digest committed in this repository
+where one exists. A pin with no committed digest **MUST** fall back to the artifact's own internal
+digest. It **MUST** say what that fallback does not prove, and **MUST** report the digests that
+would pin it.
+
 **R121.** The initrd **MUST** be purpose-built rather than generated with `dracut`.
 
 **R122.** The cached initrd **MUST** be keyed by a hash of its source, so editing the source rebuilds the
 boot artifacts.
+
+R120b exists because the repos are a moving target and koji is not. `updates` carries one kernel and
+drops it when the next lands. Nothing resolved through it stays resolvable. Every build koji has ever
+produced stays at a fixed URL, so a `koji:` pin still resolves on a rebuild months later.
+
+The default still names the release's frozen GA kernel, which stays resolvable for the release's
+lifetime. Nothing changes provenance until a pin asks for it.
+
+R120c is R117 again, and it binds harder here. The firecracker tarball at least ships a checksum of
+its own next to it. Koji serves build artifacts **unsigned**, because signing happens when a build is
+pushed to the repos, and the repos are precisely what a `koji:` pin exists to bypass. `rpm -K` on one
+of these reports "digests OK", never "signatures OK". That is the RPM's checksum of itself, which a
+rewritten file carries a rewritten copy of. So a digest committed to this repository is not the
+better anchor, it is the only one. The fallback has to say that it detects damage rather than
+substitution.
+
+What that costs is the package manager's bookkeeping, and one piece of it is load-bearing. Installing
+the kernel runs `depmod` from a scriptlet; unpacking the RPM directly runs no scriptlets, so the tree
+has every module and none of the indexes `modprobe` resolves through. A guest booted on that tree
+reaches its ready marker, then panics on its first `modprobe`. The socat serving the vsock bridge is
+PID 1, and it exits when `/dev/vsock` never appears. Hence "**MUST** rebuild the module
+indexes": the step runs `depmod` and fails if it produced no `modules.dep.bin`.
 
 R120a is about what a kernel build is allowed to depend on. This step's output IS the artifact. A
 decompressor that succeeds at the wrong offset, or one that writes a diagnostic to stdout, would put

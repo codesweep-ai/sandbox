@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1019,5 +1020,163 @@ func TestEnsureBaseRootfsDoesNotFallBackOnBuildFailure(t *testing.T) {
 	}
 	if got := c.readStamp(baseRootfsStampName(bc.Image)); got != "" {
 		t.Errorf("stamp = %q after a failed build, want none so the next run rebuilds", got)
+	}
+}
+
+// TestParseKernelPin: the koji: prefix is what selects the provenance, and it is
+// never inferred — a bare NVR must stay on the dnf path it has always taken.
+func TestParseKernelPin(t *testing.T) {
+	for _, tc := range []struct {
+		pin  string
+		want kernelPin
+	}{
+		{"", kernelPin{}},
+		{"6.19.10-300.fc44", kernelPin{NVR: "6.19.10-300.fc44"}},
+		{"koji:7.2.6-200.fc44", kernelPin{NVR: "7.2.6-200.fc44", Koji: true}},
+		{"koji: 7.2.6-200.fc44 ", kernelPin{NVR: "7.2.6-200.fc44", Koji: true}},
+	} {
+		if got := parseKernelPin(tc.pin); got != tc.want {
+			t.Errorf("parseKernelPin(%q) = %+v, want %+v", tc.pin, got, tc.want)
+		}
+	}
+}
+
+// TestKernelFetchStep: each provenance emits the step that matches it, and a koji
+// pin that cannot name a URL is refused here rather than inside the container.
+func TestKernelFetchStep(t *testing.T) {
+	// Bare NVR: dnf, with the NVR in the package spec.
+	step, env, err := kernelFetchStep(parseKernelPin("6.19.10-300.fc44"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(step, "dnf install") || strings.Contains(step, "kojipkgs") {
+		t.Errorf("bare NVR step took the wrong path:\n%s", step)
+	}
+	if !slices.Contains(env, "FC_KPKG=kernel-core-6.19.10-300.fc44") {
+		t.Errorf("bare NVR env = %v, want the pinned package spec", env)
+	}
+
+	// Empty pin: still dnf, asking for the unversioned package.
+	if _, env, err := kernelFetchStep(parseKernelPin("")); err != nil {
+		t.Fatal(err)
+	} else if !slices.Contains(env, "FC_KPKG=kernel-core") {
+		t.Errorf("empty pin env = %v, want the unversioned package", env)
+	}
+
+	// koji: downloads by URL, and fetches the module package too — kernel-core
+	// alone carries no virtio_mmio.ko, which dnf would have resolved for us.
+	step, env, err = kernelFetchStep(parseKernelPin("koji:7.2.6-200.fc44"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(step, "dnf install") {
+		t.Errorf("koji step still installs the kernel with dnf:\n%s", step)
+	}
+	for _, pkg := range kernelRPMs {
+		if !strings.Contains(step, pkg) {
+			t.Errorf("koji step does not fetch %s:\n%s", pkg, step)
+		}
+	}
+	// rpm2cpio runs no %post, so the step must rebuild the modprobe indexes itself
+	// — without them the guest boots and then panics on its first modprobe.
+	if !strings.Contains(step, "depmod") || !strings.Contains(step, "modules.dep.bin") {
+		t.Errorf("koji step does not run and verify depmod:\n%s", step)
+	}
+	for _, want := range []string{"FC_NVR=7.2.6-200.fc44", "FC_KVER_V=7.2.6", "FC_KVER_R=200.fc44"} {
+		if !slices.Contains(env, want) {
+			t.Errorf("koji env = %v, want %s", env, want)
+		}
+	}
+
+	// A koji pin missing the release cannot name a path; say so before the build.
+	if _, _, err := kernelFetchStep(parseKernelPin("koji:7.2.6")); err == nil {
+		t.Error("koji:7.2.6 was accepted, want a refusal naming the NVR form")
+	}
+}
+
+// TestKojiDigestsWellFormed: a typo in a committed digest fails the build inside
+// a container minutes later, with output that points at the download rather than
+// at this table. Cheaper to catch the shape here.
+func TestKojiDigestsWellFormed(t *testing.T) {
+	for name, sum := range kojiDigests {
+		if len(sum) != 64 {
+			t.Errorf("%s: digest is %d chars, want 64", name, len(sum))
+		}
+		if strings.ToLower(sum) != sum {
+			t.Errorf("%s: digest is not lowercase hex (sha256sum -c compares literally)", name)
+		}
+		if _, err := hex.DecodeString(sum); err != nil {
+			t.Errorf("%s: digest is not hex: %v", name, err)
+		}
+		if !strings.HasSuffix(name, ".rpm") {
+			t.Errorf("%s: key should be the RPM file name sha256sum -c will see", name)
+		}
+	}
+}
+
+// TestKojiSums: the sums block is all-or-nothing. A partial one would verify the
+// RPMs that happen to be pinned and quietly wave the rest through.
+func TestKojiSums(t *testing.T) {
+	pinned := kernelPin{NVR: "7.2.6-200.fc44", Koji: true}
+	got := kojiSums(pinned, "x86_64")
+	for _, p := range kernelRPMs {
+		if !strings.Contains(got, p+"-7.2.6-200.fc44.x86_64.rpm") {
+			t.Errorf("kojiSums omitted %s:\n%s", p, got)
+		}
+	}
+	if lines := strings.Count(strings.TrimSpace(got), "\n") + 1; lines != len(kernelRPMs) {
+		t.Errorf("kojiSums returned %d lines, want %d:\n%s", lines, len(kernelRPMs), got)
+	}
+
+	// An NVR nobody committed a digest for, and an arch nobody did either: both
+	// must decline rather than hand back a half-filled block.
+	if got := kojiSums(kernelPin{NVR: "9.9.9-1.fc44", Koji: true}, "x86_64"); got != "" {
+		t.Errorf("kojiSums for an uncommitted NVR = %q, want none", got)
+	}
+	if got := kojiSums(pinned, "aarch64"); got != "" {
+		t.Errorf("kojiSums for an uncommitted arch = %q, want none", got)
+	}
+}
+
+// TestKernelFetchStepVerifies: the koji step verifies what it downloaded, and
+// says what the fallback does not prove when there is no committed digest.
+func TestKernelFetchStepVerifies(t *testing.T) {
+	step, env, err := kernelFetchStep(kernelPin{NVR: "7.2.6-200.fc44", Koji: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(step, "sha256sum -c --strict") {
+		t.Errorf("koji step does not verify a committed digest:\n%s", step)
+	}
+	// The committed pair is x86_64-only, so only that host asserts a filled block.
+	arch, err := fcArch()
+	if err != nil {
+		t.Skipf("unsupported arch: %v", err)
+	}
+	sums := ""
+	for _, e := range env {
+		if rest, ok := strings.CutPrefix(e, "FC_SHA256SUMS="); ok {
+			sums = rest
+		}
+	}
+	if arch == "x86_64" && !strings.Contains(sums, kojiDigests["kernel-core-7.2.6-200.fc44.x86_64.rpm"]) {
+		t.Errorf("FC_SHA256SUMS does not carry the committed digest: %q", sums)
+	}
+
+	// No committed digest: the fallback must run and must not claim more than it does.
+	step, env, err = kernelFetchStep(kernelPin{NVR: "9.9.9-1.fc44", Koji: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(env, "FC_SHA256SUMS=") {
+		t.Errorf("uncommitted NVR should carry an empty sums block, got %v", env)
+	}
+	if !strings.Contains(step, "rpm -K") {
+		t.Errorf("fallback does not check the RPMs at all:\n%s", step)
+	}
+	// It must also leave the computed digests where the host side can report them;
+	// a warning on the container's stderr never reaches anyone on a passing build.
+	if !strings.Contains(step, kojiSumsFile) {
+		t.Errorf("fallback does not record the digests for reporting:\n%s", step)
 	}
 }

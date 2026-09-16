@@ -27,6 +27,96 @@ import (
 // base-image major bump (e.g. 44 → 45), to that release's GA kernel-core NVR.
 const DefaultKVerPin = "6.19.10-300.fc44"
 
+// kojiPinPrefix marks a CS_SANDBOX_FC_KVER value as an NVR to be fetched straight
+// from Fedora's build system rather than resolved by dnf from the container's repos.
+//
+// The two provenances answer different needs. A bare NVR goes through dnf, which
+// resolves dependencies and checks repo signatures, but can only see what `fedora`
+// and `updates` currently carry — and `updates` drops an NVR as soon as the next
+// one lands, which is exactly why DefaultKVerPin has to sit on the frozen GA
+// kernel. A koji path is immutable: every RPM the build system has ever produced
+// stays at a fixed URL, so any NVR can be pinned and still resolve on a rebuild
+// months later.
+//
+// What koji does not do is resolve dependencies, and the guest kernel has one that
+// matters: kernel-core carries vmlinuz but NOT the modules, while the initramfs
+// needs virtio_mmio.ko out of kernel-modules-core — a hard Requires that dnf
+// satisfies invisibly. Both packages are therefore named in kernelRPMs and fetched
+// together.
+const kojiPinPrefix = "koji:"
+
+// kojiPkgBase is the kojipkgs layout, which is
+// .../packages/<source package>/<version>/<release>/<arch>/. The kernel's source
+// package is "kernel"; the binary packages taken out of it are kernelRPMs.
+const kojiPkgBase = "https://kojipkgs.fedoraproject.org/packages/kernel"
+
+// kernelRPMs are the binary packages the boot artifacts are built from: vmlinuz
+// comes from the first, virtio_mmio.ko from the second.
+var kernelRPMs = []string{"kernel-core", "kernel-modules-core"}
+
+// kojiDigests pins the SHA256 of the koji RPMs, keyed by file name. It is the
+// only trust anchor the koji path has, and committing it *here* is the whole
+// point — the same reasoning as fcDigests (SPEC R117).
+//
+// It carries more weight for koji than it does for the firecracker tarball,
+// because koji serves build artifacts unsigned. `rpm -K` on one of these reports
+// "digests OK" rather than "signatures OK": that is the RPM's own checksum of
+// itself, which a rewritten file would simply carry a rewritten copy of. The
+// repos are where Fedora's signature gets applied, and the repos are exactly what
+// a koji pin exists to bypass.
+//
+// An entry is only needed for an NVR this repository ships. An ad-hoc pin has
+// none, falls back to that self-check, and is told what it does not prove.
+var kojiDigests = map[string]string{
+	"kernel-core-7.2.6-200.fc44.x86_64.rpm":         "a503faa130df94e6dee0147210c7e74370e2aacbc52714243d504a28e673852e",
+	"kernel-modules-core-7.2.6-200.fc44.x86_64.rpm": "e31d0a56fe3096827421c8a2be60d7b89dfb887c1016b9987d39ba155a11710a",
+}
+
+// kojiSumsFile is where the container leaves the digests of an unpinned koji
+// download. It is read and reported by the host side, then removed: a warning
+// written to the build container's stderr is invisible on the path that matters,
+// because that stream is only surfaced when the build fails.
+const kojiSumsFile = "koji-sha256sums"
+
+// kojiSums returns the `sha256sum -c` input for the RPMs pin names on arch, or ""
+// when any of them has no committed digest. All or nothing: a half-verified set
+// would report success while leaving the unpinned half unchecked.
+func kojiSums(pin kernelPin, arch string) string {
+	var b strings.Builder
+	for _, p := range kernelRPMs {
+		name := fmt.Sprintf("%s-%s.%s.rpm", p, pin.NVR, arch)
+		sum, ok := kojiDigests[name]
+		if !ok {
+			return ""
+		}
+		fmt.Fprintf(&b, "%s  %s\n", sum, name)
+	}
+	return b.String()
+}
+
+// kernelPin is a parsed CS_SANDBOX_FC_KVER: which kernel, and where it comes from.
+type kernelPin struct {
+	NVR  string // "7.2.6-200.fc44"; "" means whatever dnf considers latest
+	Koji bool   // fetch the RPMs from kojipkgs rather than asking dnf
+}
+
+// parseKernelPin splits a pin into its NVR and its provenance. The prefix is
+// required rather than inferred: silently falling back to koji when dnf came up
+// empty would make a build's provenance depend on the day it ran.
+func parseKernelPin(pin string) kernelPin {
+	if rest, ok := strings.CutPrefix(pin, kojiPinPrefix); ok {
+		return kernelPin{NVR: strings.TrimSpace(rest), Koji: true}
+	}
+	return kernelPin{NVR: pin}
+}
+
+// versionRelease splits an NVR the way the koji path wants it ("7.2.6-200.fc44"
+// becomes "7.2.6" and "200.fc44"). A koji pin missing either half cannot name a URL.
+func (k kernelPin) versionRelease() (version, release string, ok bool) {
+	version, release, ok = strings.Cut(k.NVR, "-")
+	return version, release, ok && version != "" && release != ""
+}
+
 // unwrapVmlinuxScript turns the packaged bzImage into the uncompressed ELF
 // firecracker boots (R119), which is a scan for the compressed payload inside it
 // followed by the matching decompressor.
@@ -697,24 +787,23 @@ done
 // (initrd.img), and the guest's module tree (modules.tar + kver). All in a
 // throwaway container from the image.
 func (c Cache) buildFedoraBootArtifacts(ctx context.Context, r run.Runner, bc BuildConfig) error {
-	kpkg := "kernel-core"
-	if bc.KVerPin != "" {
-		kpkg = "kernel-core-" + bc.KVerPin
+	fetch, fetchEnv, err := kernelFetchStep(parseKernelPin(bc.KVerPin))
+	if err != nil {
+		return err
 	}
 	_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fckbuild")
-	// --user 0:0 --entrypoint /bin/bash bypasses the image entrypoint so dnf runs as root.
-	// The package spec is arch-qualified ("$FC_KPKG.$(uname -m)"): dnf5 resolves a
-	// bare name-version-release inconsistently (an updates-repo NVR fails to match
-	// without the arch), so the .arch NEVRA form is the reliable spec.
 	initramfsC, err := os.ReadFile(bc.InitramfsSrc)
 	if err != nil {
 		return fmt.Errorf("fc: reading initramfs source %s: %w", bc.InitramfsSrc, err)
 	}
+	// The toolchain install is separate from the kernel because it is needed
+	// whichever provenance the kernel has: the unwrap needs a decompressor and
+	// readelf, and the initramfs init needs a static-linking gcc.
 	script := `set -e
 ` + unwrapVmlinuxScript + `
-FC_SPEC="$FC_KPKG.$(uname -m)"
-dnf install -y --setopt=install_weak_deps=False "$FC_SPEC" gcc glibc-static cpio zstd xz gzip binutils file >/dev/null \
-  || { echo "fc: dnf could not install $FC_SPEC (pinned kernel no longer in the Fedora repos? bump CS_SANDBOX_FC_KVER)" >&2; exit 1; }
+dnf install -y --setopt=install_weak_deps=False gcc glibc-static cpio zstd xz gzip binutils file kmod >/dev/null \
+  || { echo "fc: dnf could not install the kernel build toolchain" >&2; exit 1; }
+` + fetch + `
 KVER=$(ls -1 /lib/modules | head -1)
 VMZ=/lib/modules/$KVER/vmlinuz; [ -f "$VMZ" ] || VMZ=/boot/vmlinuz-$KVER
 mkdir -p /artifacts
@@ -723,10 +812,13 @@ unwrap_vmlinux "$VMZ" /artifacts/vmlinux.elf
 tar -C /lib/modules -cf /artifacts/modules.tar "$KVER"
 echo "$KVER" > /artifacts/kver`
 
-	if _, err := r.Run(ctx, run.Opts{Env: []string{"FC_KPKG=" + kpkg}}, "podman", "run",
-		"--name", "fckbuild", "--user", "0:0", "-e", "FC_KPKG="+kpkg,
-		"-e", "FC_INITRAMFS_C="+string(initramfsC),
-		"--entrypoint", "/bin/bash", bc.Image, "-c", script); err != nil {
+	// --user 0:0 --entrypoint /bin/bash bypasses the image entrypoint so dnf runs as root.
+	args := []string{"podman", "run", "--name", "fckbuild", "--user", "0:0"}
+	for _, e := range append(fetchEnv, "FC_INITRAMFS_C="+string(initramfsC)) {
+		args = append(args, "-e", e)
+	}
+	args = append(args, "--entrypoint", "/bin/bash", bc.Image, "-c", script)
+	if _, err := r.Run(ctx, run.Opts{Env: fetchEnv}, args...); err != nil {
 		_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fckbuild")
 		return fmt.Errorf("fc: Fedora kernel build failed: %w", err)
 	}
@@ -740,7 +832,106 @@ echo "$KVER" > /artifacts/kver`
 			return fmt.Errorf("fc: Fedora kernel build produced no %s", f)
 		}
 	}
+	c.reportUnpinnedKoji()
 	return nil
+}
+
+// reportUnpinnedKoji surfaces the digests of a koji download that had none
+// committed, so the pin can be turned into a verified one by pasting them into
+// kojiDigests. The file is only written on that path; its absence means the
+// download was checked against a committed digest and there is nothing to say.
+func (c Cache) reportUnpinnedKoji() {
+	path := c.stampPath(kojiSumsFile)
+	sums, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	defer func() { _ = os.Remove(path) }()
+	c.say("no committed sha256 for this koji pin — verified only each RPM's digest of itself,")
+	c.say("which koji serves unsigned, so it catches a damaged download and nothing more.")
+	c.say("to pin it, add to kojiDigests in internal/fcdisk/build.go:")
+	for line := range strings.SplitSeq(strings.TrimSpace(string(sums)), "\n") {
+		if f := strings.Fields(line); len(f) == 2 {
+			c.say("    %q: %q,", f[1], f[0])
+		}
+	}
+}
+
+// kernelFetchStep returns the shell that puts the pinned kernel's vmlinuz and
+// module tree in the build container, plus the environment it reads. Everything
+// after it — KVER discovery, the unwrap, the initramfs, modules.tar — is the same
+// for both provenances, so only this step branches.
+func kernelFetchStep(pin kernelPin) (string, []string, error) {
+	if !pin.Koji {
+		// The package spec is arch-qualified ("$FC_KPKG.$(uname -m)"): dnf5 resolves
+		// a bare name-version-release inconsistently (an updates-repo NVR fails to
+		// match without the arch), so the .arch NEVRA form is the reliable spec.
+		kpkg := "kernel-core"
+		if pin.NVR != "" {
+			kpkg = "kernel-core-" + pin.NVR
+		}
+		return `FC_SPEC="$FC_KPKG.$(uname -m)"
+dnf install -y --setopt=install_weak_deps=False "$FC_SPEC" >/dev/null \
+  || { echo "fc: dnf could not install $FC_SPEC (pinned kernel no longer in the Fedora repos? pin it as CS_SANDBOX_FC_KVER=koji:<nvr>, or bump the NVR)" >&2; exit 1; }`,
+			[]string{"FC_KPKG=" + kpkg}, nil
+	}
+	version, release, ok := pin.versionRelease()
+	if !ok {
+		return "", nil, fmt.Errorf("fc: %s%s is not a name-version-release (want e.g. %s7.2.6-200.fc44)", kojiPinPrefix, pin.NVR, kojiPinPrefix)
+	}
+	// Unpacking replaces dnf's dependency resolution, so the outcome is checked
+	// rather than the exit status: an RPM that unpacked nothing under /lib/modules
+	// would otherwise reach the initramfs step and fail pointing somewhere else.
+	//
+	// depmod is the other half of what dnf was doing, and it is not optional.
+	// Installing kernel-core runs it from a %post scriptlet; rpm2cpio runs no
+	// scriptlets, so the unpacked tree carries every .ko and none of the
+	// modules.dep/.alias indexes modprobe resolves through. A guest booted on that
+	// tree looks healthy right up to the first modprobe, which silently matches
+	// nothing: vsock never loads, /dev/vsock never appears, and the socat that is
+	// PID 1 exits into "Attempted to kill init!". Checking for modules.dep.bin
+	// keeps that failure here rather than in a guest panic three steps later.
+	arch, err := fcArch()
+	if err != nil {
+		return "", nil, err
+	}
+	// The arch comes from Go rather than `uname -m` so the URL and the digest key
+	// cannot disagree: a lookup that missed would silently downgrade to the
+	// unverified path instead of failing.
+	return `mkdir -p /tmp/koji && cd /tmp/koji
+for p in ` + strings.Join(kernelRPMs, " ") + `; do
+  f="$p-$FC_NVR.$FC_ARCH.rpm"
+  url="$FC_KOJI_BASE/$FC_KVER_V/$FC_KVER_R/$FC_ARCH/$f"
+  curl -fsSL --retry 3 --retry-delay 2 -o "$f" "$url" \
+    || { echo "fc: could not download $url (no such build in koji? check the NVR)" >&2; exit 1; }
+done
+if [ -n "$FC_SHA256SUMS" ]; then
+  printf '%s' "$FC_SHA256SUMS" > SHA256SUMS
+  sha256sum -c --strict SHA256SUMS >/dev/null \
+    || { echo "fc: a koji RPM for $FC_NVR does not match its committed sha256 (kojiDigests, internal/fcdisk/build.go)" >&2; exit 1; }
+else
+  rpm -K *.rpm >/dev/null \
+    || { echo "fc: a koji RPM for $FC_NVR failed its own internal digest (truncated download?)" >&2; exit 1; }
+  mkdir -p /artifacts && sha256sum *.rpm > /artifacts/` + kojiSumsFile + `
+fi
+for p in ` + strings.Join(kernelRPMs, " ") + `; do
+  rpm2cpio "/tmp/koji/$p-$FC_NVR.$FC_ARCH.rpm" | ( cd / && cpio -idmu --quiet ) \
+    || { echo "fc: could not unpack $p-$FC_NVR" >&2; exit 1; }
+done
+[ -n "$(ls -1 /lib/modules 2>/dev/null)" ] \
+  || { echo "fc: the koji RPMs for $FC_NVR unpacked no /lib/modules tree" >&2; exit 1; }
+depmod -a "$FC_NVR.$FC_ARCH" \
+  || { echo "fc: depmod failed for $FC_NVR.$FC_ARCH" >&2; exit 1; }
+[ -f "/lib/modules/$FC_NVR.$FC_ARCH/modules.dep.bin" ] \
+  || { echo "fc: depmod left no modules.dep.bin for $FC_NVR.$FC_ARCH — modprobe would resolve nothing in the guest" >&2; exit 1; }`,
+		[]string{
+			"FC_KOJI_BASE=" + kojiPkgBase,
+			"FC_NVR=" + pin.NVR,
+			"FC_KVER_V=" + version,
+			"FC_KVER_R=" + release,
+			"FC_ARCH=" + arch,
+			"FC_SHA256SUMS=" + kojiSums(pin, arch),
+		}, nil
 }
 
 // baseRootfsStamp is what the cached base rootfs is judged fresh against: the
