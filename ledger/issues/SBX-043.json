@@ -1,0 +1,20 @@
+{
+  "id": "SBX-043",
+  "title": "A sandbox carries the operator's git name and address, and nothing turns that off",
+  "type": "improvement",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent working in the tour repository, which records and replays a three member campaign through cs-vcr, after a recording was found to hold the operator's name and address",
+  "opened": "2026-09-19",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "Every sandbox is given the host's git identity. SPEC.md requires it: the seed carries `the host's git identity`, and the guest's global `~/.gitconfig` is seeded from the host's. `image/guest/init` and `image/rootfs/entrypoint` both do it. No flag and no variable turns it off.\n\nThat is right for a developer's own sandbox, where commits should be theirs. It has two costs when the agent's session is kept or published.\n\nThe first is a recording. An agent that runs `git config --list`, or reads `~/.gitconfig`, puts the operator's real name and address into a tool result. The tool result becomes part of every later request in that conversation. In one recorded campaign an agent's look at its git configuration put the operator's name into 54 cassette files and the address into 49. It was met by chance, because a brief line about git identity made the developer agent look. The recording before it was clean only because no agent happened to look.\n\nThe second is the README's promise. It says `Nothing on the host is shared unless you ask: not your files, not your SSH keys, and not the LLM provider keys you pay with.` A name and an address are shared without asking, and the sentence does not say so.\n\nThe tour works around it from outside. It sets `GIT_AUTHOR_*` and `GIT_COMMITTER_*` in the campaign profile, so commits carry a neutral identity, and it blanks the operator's name and address in the proxy that records. Neither removes the values from the guest's `~/.gitconfig`, where any agent can still read them.\n\nAn option to seed no identity, or a named one, would close this at the source. The README could say that the git identity is shared.\n\nTo reproduce, run `cs-sandbox create probe`, then `cs-sandbox exec probe -- git config --global --list`.",
+  "notes": [],
+  "links": []
+}
