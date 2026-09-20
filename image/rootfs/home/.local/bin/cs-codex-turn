@@ -21,7 +21,12 @@
 #
 # Usage: echo "prompt" | cs-codex-turn --tmux <token> [--uuid <uuid>] [--workdir <dir>] \
 #            [--format text|json] [--timeout <secs>] [--name <label>]
-# Exit codes: 0 ok, 2 turn timed out/stalled, 3 launch/setup failure (e.g. needs sign-in), 1 usage.
+# Exit codes: 0 ok, 2 turn timed out/stalled, 3 launch/setup failure (e.g. needs sign-in), 5 turn
+# failed (the provider ended it with an error), 1 usage. 5 matches cs-opencode-turn, and stays
+# clear of cs-codex-remote's 4 (session busy).
+#
+# A failed turn prints the provider's message on stderr, then one line a caller can parse:
+#   cs-codex-turn: failure class=<throttled|capacity|unauthorized|context|other> retry_after=<secs|->
 
 set -uo pipefail
 
@@ -40,7 +45,7 @@ while [[ $# -gt 0 ]]; do
         --format)  FORMAT="$2"; shift 2 ;;
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --name)    LABEL="$2"; shift 2 ;;
-        -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
         *) err "unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -260,6 +265,64 @@ $completed || { err "turn did not complete within ${TIMEOUT}s"; exit 2; }
 # Determine the codex session id (for the local name->id map): from the rollout file we used.
 OUT_UUID="$UUID"
 [[ -z "$OUT_UUID" ]] && OUT_UUID="$(python3 -c 'import json,sys;print(json.loads(open(sys.argv[1]).readline())["payload"]["id"])' "$JSONL" 2>/dev/null)"
+
+# task_complete is written for a turn the provider refused as well as for one the model
+# finished, so its arrival is not success. A refused turn carries `error` on that event: the
+# provider's message, and codex's own classification of it in codex_error_info. Counting the
+# event without reading it reported a rate-limited turn as a completed one with an empty reply.
+FAILURE="$(python3 - "$JSONL" "$PRE_LINES" <<'PY'
+import json, re, sys
+last = None
+with open(sys.argv[1], encoding="utf-8", errors="replace") as fh:
+    for line in fh.readlines()[int(sys.argv[2]):]:
+        try: p = json.loads(line).get("payload")
+        except Exception: continue
+        if isinstance(p, dict) and p.get("type") == "task_complete":
+            last = p
+err = (last or {}).get("error")
+if not err:
+    sys.exit(0)
+if not isinstance(err, dict):
+    err = {"message": str(err)}
+msg = " ".join(str(err.get("message") or "provider error").split())
+# codex_error_info is a bare name, or {name: {detail}} when the kind carries an HTTP status.
+info = err.get("codex_error_info"); kind = ""; status = None
+if isinstance(info, dict) and info:
+    kind, detail = next(iter(info.items()))
+    if isinstance(detail, dict): status = detail.get("http_status_code")
+elif isinstance(info, str):
+    kind = info
+low = msg.lower()
+# An HTTP failure codex has no kind for arrives as "unexpected status 503 Service Unavailable: …".
+if status is None:
+    m = re.search(r"unexpected status (\d{3})", low)
+    if m: status = int(m.group(1))
+if kind in ("rate_limit_exceeded", "usage_limit_exceeded") or status == 429 or "rate limit" in low:
+    cls = "throttled"
+elif kind == "server_overloaded" or status in (502, 503, 529) or "at capacity" in low or "overloaded" in low:
+    cls = "capacity"
+elif kind == "unauthorized" or status in (401, 403):
+    cls = "unauthorized"
+elif kind == "context_window_exceeded" or "context window" in low or "context length" in low:
+    cls = "context"
+else:
+    cls = "other"
+# The provider's own wait, when its message names one ("Please try again in 12.52s").
+wait = "-"
+m = re.search(r"try again in\s+([0-9.]+)\s*(ms|s)\b", low)
+if m:
+    secs = float(m.group(1)) / (1000.0 if m.group(2) == "ms" else 1.0)
+    wait = ("%.3f" % secs).rstrip("0").rstrip(".")
+print(msg[:500]); print("class=%s retry_after=%s" % (cls, wait))
+PY
+)"
+if [[ -n "$FAILURE" ]]; then
+    err "turn failed: $(sed -n 1p <<<"$FAILURE")"
+    err "failure $(sed -n 2p <<<"$FAILURE")"
+    # The session id still goes out: the TUI is alive, and the next turn resumes this session.
+    [[ -n "$OUT_UUID" ]] && printf '\n__CS_CODEX_SESSION_ID__ %s\n' "$OUT_UUID"
+    exit 5
+fi
 
 # Emit this turn's new content from the JSONL (lines appended after PRE_LINES).
 python3 - "$JSONL" "$PRE_LINES" "$FORMAT" <<'PY'

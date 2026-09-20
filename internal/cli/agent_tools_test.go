@@ -1018,6 +1018,80 @@ exit 0
 	}
 }
 
+// TestCodexTurnReportsAProviderFailure: codex writes task_complete for a turn the provider
+// refused as well as for one the model finished, with the refusal under `error`. A driver that
+// only counts the event exits 0 with an empty reply, and a fleet harness then reads a throttled
+// member as one that stopped. The first three events are what codex 0.152.1 wrote against a stub
+// provider; the last carries the message a provider sent a live campaign.
+func TestCodexTurnReportsAProviderFailure(t *testing.T) {
+	skipUnlessLinux(t)
+	for _, tc := range []struct{ name, errJSON, wantLine string }{
+		{"rate limit inside the stream",
+			`{"message":"rate limit exceeded: Rate limit reached for gpt-5 on tokens per min (TPM): Limit 500000, Used 498000. Please try again in 12.52s.","codex_error_info":"rate_limit_exceeded"}`,
+			"failure class=throttled retry_after=12.52"},
+		{"HTTP 429",
+			`{"message":"exceeded retry limit, last status: 429 Too Many Requests","codex_error_info":{"response_too_many_failed_attempts":{"http_status_code":429}}}`,
+			"failure class=throttled retry_after=-"},
+		{"HTTP 503",
+			`{"message":"unexpected status 503 Service Unavailable: upstream down, url: http://x/v1/responses","codex_error_info":"other"}`,
+			"failure class=capacity retry_after=-"},
+		{"model at capacity",
+			`{"message":"Selected model is at capacity. Please try a different model.","codex_error_info":"other"}`,
+			"failure class=capacity retry_after=-"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-codex-remote")
+			sess := filepath.Join(home, ".cs-codex", "sessions")
+			if err := os.MkdirAll(sess, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fresh := filepath.Join(sess, "rollout-2026-01-02-"+codexFailedTurnID+".jsonl")
+			stubDir := t.TempDir()
+			writeStub(t, bin, "codex", "#!/bin/sh\nexit 0\n")
+			writeStub(t, bin, "cs-codex", "#!/bin/sh\nexit 0\n")
+			writeStub(t, bin, "tmux", `#!/bin/sh
+case "$1" in
+  has-session) [ -f "$STUB_DIR/.launched" ] && exit 0 || exit 1 ;;
+  new-session)
+    touch "$STUB_DIR/.launched"
+    printf '%s\n' "$SESSION_META" > "$FRESH_ROLLOUT"
+    exit 0 ;;
+  capture-pane) printf '  gpt-5 default · /work\n\n'; exit 0 ;;
+  send-keys)
+    if [ -f "$STUB_DIR/.launched" ] && [ ! -f "$STUB_DIR/.submitted" ]; then
+      touch "$STUB_DIR/.submitted"
+      printf '%s\n' "$TASK_COMPLETE" >> "$FRESH_ROLLOUT"
+    fi
+    exit 0 ;;
+esac
+exit 0
+`)
+			out, exit := runScriptStdin(t, home, bin,
+				[]string{
+					"STUB_DIR=" + stubDir,
+					"FRESH_ROLLOUT=" + fresh,
+					`SESSION_META={"type":"session_meta","payload":{"id":"` + codexFailedTurnID + `"}}`,
+					`TASK_COMPLETE={"type":"event_msg","payload":{"type":"task_complete","last_agent_message":null,"error":` + tc.errJSON + `}}`,
+					"CS_CODEX_STALL_SECS=0",
+				},
+				"do the thing\n", "cs-codex-turn", "--tmux", "codextoken", "--timeout", "30")
+			if exit != 5 {
+				t.Fatalf("exit = %d; want 5 (turn failed): %s", exit, out)
+			}
+			if !strings.Contains(out, tc.wantLine) {
+				t.Fatalf("output missing %q: %s", tc.wantLine, out)
+			}
+			// The TUI outlives a failed turn, so the caller still needs the id to resume it.
+			if !strings.Contains(out, "__CS_CODEX_SESSION_ID__ "+codexFailedTurnID) {
+				t.Fatalf("a failed turn dropped the session id: %s", out)
+			}
+			covemit.Prove(t, "turn-driver-semantics", "codex", "", "scripts")
+		})
+	}
+}
+
+const codexFailedTurnID = "33333333-3333-4333-8333-333333333333"
+
 // TestCodexTurnBindsToItsOwnRollout: current Codex creates its rollout at TUI startup, and
 // the ready screen can appear a moment before the file exists. Picking the globally newest
 // *.jsonl after startup can therefore bind the turn to a PREVIOUS session — the turn then

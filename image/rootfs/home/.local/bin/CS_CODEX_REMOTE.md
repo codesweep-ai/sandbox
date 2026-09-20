@@ -145,7 +145,20 @@ Each has its own reference next to the scripts in `~/.local/bin` — read it for
 
 - `0` turn completed · `2` timed out or stalled · `3` launch/setup failure (e.g. the remote
   codex needs interactive sign-in — run `cs-codex login` there) · `4` session busy (another turn
-  holds the lock) · `1` usage/other.
+  holds the lock) · `5` turn failed (the provider ended it with an error) · `1` usage/other.
+
+A failed turn is not a finished one with an empty reply. The provider refused it, for a rate limit,
+a model at capacity, an expired credential or a context that is too long. The driver prints the
+provider's message on stderr, then one line to parse:
+
+```
+cs-codex-turn: failure class=throttled retry_after=12.52
+```
+
+`class` is `throttled`, `capacity`, `unauthorized`, `context` or `other`. `retry_after` is the wait
+in seconds when the provider's message names one, and `-` when it does not. After `throttled` or
+`capacity`, wait and send the prompt again to the same session. The session is still alive, so do
+not restart it: a restart sends the whole context again into the same limit.
 
 ## Interpreting user intent
 
