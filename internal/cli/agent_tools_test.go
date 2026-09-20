@@ -887,7 +887,11 @@ case "$1" in
     # The Enter that submits the prompt: Claude "answers" and ends the turn.
     if [ ! -f "$STUB_DIR/.submitted" ]; then
       touch "$STUB_DIR/.submitted"
-      printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"STUB ANSWER"}]}}' >> "$STUB_DIR/session.jsonl"
+      if [ -n "$STUB_ASSISTANT" ]; then
+        printf '%s\n' "$STUB_ASSISTANT" >> "$STUB_DIR/session.jsonl"
+      else
+        printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"STUB ANSWER"}]}}' >> "$STUB_DIR/session.jsonl"
+      fi
       printf '%s\n' '{"type":"system","subtype":"turn_duration"}' >> "$STUB_DIR/session.jsonl"
     fi
     exit 0 ;;
@@ -945,6 +949,67 @@ func TestClaudeTurnDetectsExpiredLogin(t *testing.T) {
 			if !strings.Contains(out, tc.wantIn) {
 				t.Fatalf("output missing %q: %s", tc.wantIn, out)
 			}
+		})
+	}
+}
+
+// TestClaudeTurnReportsAProviderFailure: Claude Code ends a turn the provider refused the way
+// it ends any other. It writes the refusal as an assistant message, then the completion
+// marker, so a driver that prints the turn's text exits 0 with "API Error: …" as the model's
+// reply. The message is flagged, and the flag is what the driver has to read. The entries
+// are what Claude Code 2.1.258 wrote against a provider answering 429, 529, 401 and 400.
+func TestClaudeTurnReportsAProviderFailure(t *testing.T) {
+	skipUnlessLinux(t)
+	entry := func(kind string, status int, text string) string {
+		return fmt.Sprintf(`{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"error":%q,"apiErrorStatus":%d,`+
+			`"message":{"content":[{"type":"text","text":%q}]}}`, kind, status, text)
+	}
+	for _, tc := range []struct {
+		name, assistant string
+		wantExit        int
+		wantIn          string
+	}{
+		{"rate limit", entry("rate_limit", 429, "API Error: Request rejected (429) · This request would exceed your rate limit."),
+			5, "failure class=throttled retry_after=-"},
+		{"overloaded", entry("server_error", 529, "API Error: Repeated 529 Overloaded errors. The API is at capacity."),
+			5, "failure class=capacity retry_after=-"},
+		{"bad credential", entry("authentication_failed", 401, "Invalid API key · Fix external API key"),
+			5, "failure class=unauthorized retry_after=-"},
+		{"context too long", entry("invalid_request", 400, "Prompt is too long · the request is ~250000 tokens (limit 200000)"),
+			5, "failure class=context retry_after=-"},
+		// Claude Code retries by itself. An error it got past is not the turn's outcome.
+		{"an error the turn recovered from", entry("server_error", 529, "API Error: 529 Overloaded.") + "\n" +
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"RECOVERED ANSWER"}]}}`,
+			0, "RECOVERED ANSWER"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-claude-remote")
+			installClaudeTurnStubs(t, bin)
+			stubDir := t.TempDir()
+			projects := filepath.Join(home, "projects")
+			if err := os.MkdirAll(projects, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			jsonl := filepath.Join(projects, claudeTestUUID+".jsonl")
+			if err := os.WriteFile(jsonl, []byte(""), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(jsonl, filepath.Join(stubDir, "session.jsonl")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(stubDir, "pane.txt"), []byte("  auto mode on\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out, exit := runScriptStdin(t, home, bin,
+				[]string{"STUB_DIR=" + stubDir, "STUB_ASSISTANT=" + tc.assistant, "CS_CLAUDE_STALL_SECS=0"}, "do the thing\n",
+				"cs-claude-turn", "--uuid", claudeTestUUID, "--projects", projects, "--timeout", "30")
+			if exit != tc.wantExit {
+				t.Fatalf("exit = %d; want %d: %s", exit, tc.wantExit, out)
+			}
+			if !strings.Contains(out, tc.wantIn) {
+				t.Fatalf("output missing %q: %s", tc.wantIn, out)
+			}
+			covemit.Prove(t, "turn-driver-semantics", "claude", "", "scripts")
 		})
 	}
 }

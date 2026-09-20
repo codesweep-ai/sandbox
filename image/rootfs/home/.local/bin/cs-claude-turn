@@ -23,7 +23,12 @@
 #       [--format text|json] [--timeout <secs>] [--wrapper <cmd>] \
 #       [--projects <dir>] [--name <label>]
 #
-# Exit codes: 0 ok, 2 turn timed out, 3 launch/setup failure, 1 usage/other.
+# Exit codes: 0 ok, 2 turn timed out, 3 launch/setup failure, 5 turn failed (the provider ended
+# it with an error), 1 usage/other. 5 matches cs-codex-turn and cs-opencode-turn, and stays clear
+# of cs-claude-remote's 4 (session busy).
+#
+# A failed turn prints the provider's message on stderr, then one line a caller can parse:
+#   cs-claude-turn: failure class=<throttled|capacity|unauthorized|context|other> retry_after=<secs|->
 
 set -uo pipefail
 
@@ -52,7 +57,7 @@ while [[ $# -gt 0 ]]; do
         --projects) PROJECTS="$2"; shift 2 ;;
         --name)     LABEL="$2"; shift 2 ;;
         -h|--help)
-            sed -n '2,30p' "$0"; exit 0 ;;
+            sed -n '2,31p' "$0"; exit 0 ;;
         *) err "unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -304,6 +309,52 @@ fi
 if [[ "$(detect_state)" == "oauth" ]]; then
     err "remote Claude login expired during the turn — sign in again before retrying"
     exit 3
+fi
+
+# Claude Code finishes a turn the provider refused the way it finishes any other: it writes
+# the refusal as an assistant message ("API Error: Request rejected (429) …") and then the
+# completion marker. That message is flagged isApiErrorMessage, with the kind under `error`
+# and the HTTP status under apiErrorStatus. Without reading the flag, a throttled turn is
+# reported as a finished one whose reply is the error text.
+FAILURE="$(python3 - "$JSONL" "$PRE_LINES" <<'PY'
+import json, re, sys
+last = None
+with open(sys.argv[1], encoding="utf-8", errors="replace") as fh:
+    for line in fh.readlines()[int(sys.argv[2]):]:
+        try: o = json.loads(line)
+        except Exception: continue
+        if isinstance(o, dict) and o.get("type") == "assistant" and not o.get("isSidechain"):
+            last = o
+# Only the turn's LAST assistant message decides it: Claude Code retries by itself, and a
+# turn that hit an error and then answered has succeeded.
+if not last or not last.get("isApiErrorMessage"):
+    sys.exit(0)
+parts = [b.get("text", "") for b in (last.get("message") or {}).get("content") or []
+         if isinstance(b, dict) and b.get("type") == "text"]
+msg = " ".join(" ".join(parts).split()) or "provider error"
+kind, status, low = last.get("error") or "", last.get("apiErrorStatus"), msg.lower()
+if kind == "rate_limit" or status == 429:
+    cls = "throttled"
+elif kind == "authentication_failed" or status in (401, 403):
+    cls = "unauthorized"
+elif "prompt is too long" in low or ("context" in low and "limit" in low):
+    cls = "context"
+elif kind == "server_error" or (isinstance(status, int) and status >= 500):
+    cls = "capacity"
+else:
+    cls = "other"
+wait = "-"
+m = re.search(r"try again in\s+([0-9.]+)\s*(ms|s)\b", low)
+if m:
+    secs = float(m.group(1)) / (1000.0 if m.group(2) == "ms" else 1.0)
+    wait = ("%.3f" % secs).rstrip("0").rstrip(".")
+print(msg[:500]); print("class=%s retry_after=%s" % (cls, wait))
+PY
+)"
+if [[ -n "$FAILURE" ]]; then
+    err "turn failed: $(sed -n 1p <<<"$FAILURE")"
+    err "failure $(sed -n 2p <<<"$FAILURE")"
+    exit 5
 fi
 
 # Emit this turn's new content from the JSONL (lines appended after PRE_LINES).

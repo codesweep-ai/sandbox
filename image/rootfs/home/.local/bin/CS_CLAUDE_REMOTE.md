@@ -134,7 +134,19 @@ A turn surfaces the remote driver's exit status:
 - `2` — turn timed out (`--timeout`) **or** the stall watchdog tripped (`CS_CLAUDE_STALL_SECS`).
 - `3` — launch/setup failure, including screens that need a human: the remote Claude is at an **OAuth sign-in** or **first-run onboarding** wizard (attach with `--attach <name>` to complete it), or is wedged on a **tool-approval prompt** (the warm session is meant to run with permissions skipped — attach to inspect).
 - `4` — the session is **busy**: a live turn holds the lock and it could not be acquired within `CS_CLAUDE_LOCK_WAIT`. The error prints the lock directory, which is what to remove if you are certain the process holding it is not a turn.
+- `5` — the turn **failed**: the provider ended it with an error, such as a rate limit, an overloaded API, a rejected credential or a prompt that is too long. It is not a finished turn, and the text Claude shows for it ("API Error: …") is not a reply.
 - `1` — usage or other error.
+
+A failed turn prints the provider's message on stderr, then one line to parse:
+
+```
+cs-claude-turn: failure class=throttled retry_after=-
+```
+
+`class` is `throttled`, `capacity`, `unauthorized`, `context` or `other`. `retry_after` is the wait
+in seconds when the message names one, and `-` when it does not. After `throttled` or `capacity`,
+wait and send the prompt again to the same session. The session is still alive, so do not restart
+it: a restart sends the whole context again into the same limit.
 
 ## Interpreting user intent
 
