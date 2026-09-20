@@ -53,6 +53,7 @@ func newLenderCmd(app *App) *cobra.Command {
 			"or network (the subnets this lender is attached to, for one on a group's own network)")
 	cmd.Flags().StringArrayVar(&origins, "origin", nil,
 		"send one slot's traffic somewhere else: SLOT=URL, for a gateway or a recorder in front of the provider (repeatable)")
+	cmd.AddCommand(newLenderFaultCmd(app))
 	return cmd
 }
 
@@ -90,6 +91,7 @@ func runLender(cmd *cobra.Command, app *App, addr string, callers lend.Callers, 
 		Home:    paths.AgentLoginHome(app.Host.Home),
 		KeysDir: lend.KeysDir(paths.AgentLoginHome(app.Host.Home)),
 		Loans:   lend.NewFileLoans(app.InstDir),
+		Faults:  lend.NewFileFaults(app.InstDir),
 		Log:     log,
 		Callers: callers,
 		Origins: origins,

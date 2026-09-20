@@ -35,6 +35,10 @@ type Config struct {
 	// part of a request can reach it.
 	Origins map[string]string
 
+	// Faults fails a lent call on purpose, for a test. Nil injects nothing. It
+	// is the operator's, like Origins: no part of a request can reach it.
+	Faults Faults
+
 	// Now is the clock, for a test that has to cross an interval. Nil is the
 	// real one.
 	Now func() time.Time
@@ -50,6 +54,7 @@ type Stats struct {
 	Blocked   int `json:"blocked"`
 	NotLocal  int `json:"not_local"`
 	Upstream5 int `json:"upstream_errors"`
+	Injected  int `json:"injected,omitempty"`
 
 	// Slots is what each slot's upstream answered, by slot id. Lent says a
 	// request went out, and this says what came back: a throttled key, a
@@ -192,6 +197,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "unknown_slot",
 			fmt.Sprintf("this loan names a slot this build does not have (%q)", loan.Slot))
 		return
+	}
+
+	// Before the credential is read or anything is dialled: an injected fault
+	// is the whole answer, and the provider is not called.
+	if s.cfg.Faults != nil {
+		if f, ok := s.cfg.Faults.Next(loan); ok {
+			s.inject(w, r, loan, f)
+			return
+		}
 	}
 
 	// Most specific first: what this sandbox was created with, then what this
@@ -590,14 +604,18 @@ func writeError(w http.ResponseWriter, status int, kind, msg string) {
 // Summary is the line a stopping lender prints, which is what a reader sees
 // after a run that did not work.
 func (st Stats) Summary() string {
-	out := fmt.Sprintf("requests %d · lent %d · refused %d · tunnels %d · blocked %d",
+	var out strings.Builder
+	fmt.Fprintf(&out, "requests %d · lent %d · refused %d · tunnels %d · blocked %d",
 		st.Requests, st.Lent, st.Refused, st.Tunnels, st.Blocked)
+	if st.Injected > 0 {
+		fmt.Fprintf(&out, " · injected %d", st.Injected)
+	}
 	for _, id := range slices.Sorted(maps.Keys(st.Slots)) {
 		o := st.Slots[id]
-		out += fmt.Sprintf("\n%s: ok %d · throttled %d · refused %d · 5xx %d · no answer %d",
+		fmt.Fprintf(&out, "\n%s: ok %d · throttled %d · refused %d · 5xx %d · no answer %d",
 			id, o.OK, o.Throttled, o.Refused, o.Errors, o.Failed)
 	}
-	return out
+	return out.String()
 }
 
 // Origins are the upstream hosts this build fronts, sorted, for reporting and

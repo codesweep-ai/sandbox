@@ -800,6 +800,11 @@ address there, and an upstream that is not an http or https address **MUST** fai
 provisioned. An upstream naming a loopback address **MUST** be read as this host and reported as
 having been read that way, because the lender's own loopback is not it.
 
+**R147b.** A fault the lender injects **MUST** be a file the host writes in the instance directory, and
+**MUST** go when that directory is removed. No part of a request **MUST** arm, change or clear one. An
+injected answer **MUST NOT** reach an upstream or read a credential, and **MUST** be marked as injected.
+*A fault is for testing what drives a sandbox, so it is the operator's in the way an upstream is.*
+
 **R148.** A credential the lender did not mint **MUST** be refused, and **MUST NOT** be forwarded anywhere.
 
 **R149.** A lent credential **MUST NOT** be written into the sandbox, its seed, its environment, or the

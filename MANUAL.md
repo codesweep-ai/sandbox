@@ -31,6 +31,7 @@ cs-sandbox build [--engine ENGINE]...  cs-sandbox doctor [--engine ENGINE] [--sl
 cs-sandbox agent-login <agent> <name>  cs-sandbox install-agent-tools [dir]
 cs-sandbox agent-tools [--json]
 cs-sandbox lender [--addr ADDR]         cs-sandbox renewer
+cs-sandbox lender fault <name> [--status N] [--count N] [--hang D] [--clear]
 cs-sandbox completion bash|zsh|fish|powershell
 cs-sandbox version [--images]
 
@@ -232,6 +233,7 @@ cs-sandbox install-agent-tools [dir]      # the agent tools onto your PATH
 cs-sandbox agent-tools [--json]           # what those tools are, with their sha256
 cs-sandbox agent-login <agent> <name>     # log an agent in inside a sandbox
 cs-sandbox lender [--addr ADDR]           # run the credential lender in the foreground
+cs-sandbox lender fault <name> --status 429  # fail a sandbox's next lent model call on purpose
 cs-sandbox renewer                        # renew lent logins before they expire
 cs-sandbox sync-ssh-config                # regenerate the SSH config fragment
 cs-sandbox completion <shell>             # a completion script for bash, zsh, fish or powershell
@@ -634,6 +636,46 @@ Run this way the port is open to the network the host is on, and the lender refu
 is not this host. The lender `create` starts needs none of that. It sits inside the group's network,
 where its callers are the sandboxes on that bridge. Nothing else can route to it. `cs-sandbox doctor`
 reports each group's lender and says which one is dark.
+
+### Failing a model call on purpose
+
+```
+cs-sandbox lender fault <name> [--status N] [--count N] [--slot SLOT] [--retry-after SECS]
+                               [--hang DURATION] [--body-file FILE] [--content-type TYPE] [--clear]
+```
+
+Answers a sandbox's next lent model calls with a provider failure. The provider is not called. Use
+it to see what a turn driver, an agent wrapper or a fleet harness does under a throttle, an outage,
+an expired credential or a hang. The sandbox can be one you throw away.
+
+```bash
+cs-sandbox lender fault worker-01 --status 429 --retry-after 12 --count 3
+cs-sandbox lender fault worker-01 --hang 10m            # accept the call, then drop it unanswered
+cs-sandbox lender fault worker-01                       # list what is armed
+cs-sandbox lender fault worker-01 --clear
+```
+
+The sandbox has to borrow a credential, with `--lend-api-key` or `--lend-agent-login`, because the
+lender is what answers. The command writes `faults.json` beside the sandbox's loans, and the group's
+lender reads it on the sandbox's next call. No lender is contacted or restarted.
+
+| Flag | Meaning |
+|---|---|
+| `--status N` | The status to answer with, such as `429`, `503` or `401`. |
+| `--count N` | How many calls to fail. Default 1. Traffic flows again once they are spent. |
+| `--slot SLOT` | Fail one borrowed credential's calls only. The default is every one the sandbox borrows. |
+| `--retry-after SECS` | Send a `Retry-After` header. |
+| `--hang DURATION` | Hold each call this long first, such as `90s`. With no `--status`, the call is then dropped with nothing sent. |
+| `--body-file FILE` | Answer with this file as the body, at most 64 KiB. `--content-type` sets its type. |
+| `--clear` | Remove every fault armed on the sandbox. |
+
+Some providers report a rate limit inside a `200` stream and not as a `429` status, and an agent can
+treat the two differently. Codex retries the first and gives up at once on the second. Reproduce the
+first with `--status 200 --content-type text/event-stream --body-file` and the provider's own event.
+
+An injected answer carries an `X-Cs-Sandbox-Fault` header, and the lender logs each one. The lender
+counts served calls in memory, so restarting a lender serves an armed fault again from the start.
+Destroying the sandbox removes its faults.
 
 ### The renewer
 
