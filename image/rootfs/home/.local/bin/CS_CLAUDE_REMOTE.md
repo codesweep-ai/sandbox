@@ -126,6 +126,28 @@ These tune the remote-delegation path; all are optional with sensible defaults:
 - `CS_CLAUDE_TURN_SRC` — override the local path of the `cs-claude-turn` driver that is deployed to the remote (see the driver note above).
 - `CS_CLAUDE_REMOTE_HOST` — default SSH target host when neither `--host` nor a per-session stored host applies (see "Target SSH host"). Falls back to `hostname -s`.
 
+## Is the agent in a turn
+
+Run this on the machine the agent runs on:
+
+```bash
+cs-claude-turn --state
+```
+
+It prints one line and always exits 0. The first word is `busy`, `idle`, `blocked`, `unknown` or
+`absent`, and `absent` means no Claude Code session exists there. `busy` can be followed by a second
+word, `busy retrying`, while the agent waits out a provider error. `blocked` is a screen that needs a person, such as sign-in, onboarding or a tool approval.
+`unknown` is a screen the driver does not recognise.
+
+It answers for a turn whoever started it. An agent can start one of its own, when a background
+command it left running finishes, and no turn driver wraps that turn. A count of live
+`cs-claude-turn` processes misses it, and this does not. Nudge a member only when the word is `idle`.
+
+With no handle it answers for every Claude Code session on that machine: `busy` if any is, and `idle`
+only if all are. `--uuid <uuid>` narrows it to one. It starts nothing, wakes nothing and types nothing,
+so it is safe to run every few seconds. It is the same judgement the driver waits on while it runs
+a turn, so the two cannot disagree.
+
 ## Exit codes
 
 A turn surfaces the remote driver's exit status:

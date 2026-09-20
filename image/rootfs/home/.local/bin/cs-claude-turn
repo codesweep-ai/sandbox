@@ -23,6 +23,15 @@
 #       [--format text|json] [--timeout <secs>] [--wrapper <cmd>] \
 #       [--projects <dir>] [--name <label>]
 #
+#        cs-claude-turn --state [--uuid <uuid>]
+#
+# --state says whether Claude Code is in a turn right now, whoever started the turn, and
+# starts or wakes nothing. It prints one line and exits 0: busy, idle, blocked (a screen that
+# needs a person), unknown (a screen this driver does not recognise) or absent (no session).
+# busy may be followed by a second word, "busy retrying", while Claude waits out a provider
+# error. With no --uuid it answers for every Claude session here: busy if any is, idle only
+# if all are. It is the judgement the driver itself waits on, so the two cannot disagree.
+#
 # Exit codes: 0 ok, 2 turn timed out, 3 launch/setup failure, 5 turn failed (the provider ended
 # it with an error), 1 usage/other. 5 matches cs-codex-turn and cs-opencode-turn, and stays clear
 # of cs-claude-remote's 4 (session busy).
@@ -44,6 +53,7 @@ STALL_SECS="${CS_CLAUDE_STALL_SECS:-180}"
 WRAPPER="cs-claude"
 PROJECTS="$HOME/.cs-claude/projects"
 LABEL=""             # human label, used only in diagnostics
+STATE_ONLY=false
 
 err() { echo "cs-claude-turn: $*" >&2; }
 
@@ -56,16 +66,17 @@ while [[ $# -gt 0 ]]; do
         --wrapper)  WRAPPER="$2"; shift 2 ;;
         --projects) PROJECTS="$2"; shift 2 ;;
         --name)     LABEL="$2"; shift 2 ;;
+        --state)    STATE_ONLY=true; shift ;;
         -h|--help)
-            sed -n '2,31p' "$0"; exit 0 ;;
+            sed -n '2,40p' "$0"; exit 0 ;;
         *) err "unknown argument: $1"; exit 1 ;;
     esac
 done
 
-if [[ -z "$UUID" ]]; then
+if [[ -z "$UUID" ]] && ! $STATE_ONLY; then
     err "--uuid is required"; exit 1
 fi
-if ! [[ "$UUID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+if [[ -n "$UUID" ]] && ! [[ "$UUID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
     err "--uuid '$UUID' is not a valid UUID"; exit 1
 fi
 # TIMEOUT reaches here from --timeout or the env default, and 0 legitimately means
@@ -78,11 +89,13 @@ TMUX_SESSION="cs-claude-$UUID"
 
 # Read the prompt from stdin into a temp file (avoids all shell-escaping issues
 # when handing it to tmux load-buffer).
-PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-claude-turn.XXXXXX")"
-trap 'rm -f "$PROMPT_FILE"' EXIT
-cat > "$PROMPT_FILE"
-if [[ ! -s "$PROMPT_FILE" ]]; then
-    err "empty prompt on stdin"; exit 1
+if ! $STATE_ONLY; then
+    PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-claude-turn.XXXXXX")"
+    trap 'rm -f "$PROMPT_FILE"' EXIT
+    cat > "$PROMPT_FILE"
+    if [[ ! -s "$PROMPT_FILE" ]]; then
+        err "empty prompt on stdin"; exit 1
+    fi
 fi
 
 # --- helpers --------------------------------------------------------------
@@ -181,6 +194,34 @@ detect_state() {
     fi
     echo "unknown"
 }
+
+# The state of one session in a caller's words. It is detect_state and nothing else, so a
+# screen the driver learns to read is one this answers for too.
+state_word() {
+    case "$(detect_state)" in
+        working)
+            if pane | grep -Eq "Retrying in [0-9]+ ?s.*attempt [0-9]+/[0-9]+"; then echo "busy retrying"; else echo busy; fi ;;
+        oauth|onboarding|trust_folder|picker|tool_approval) echo blocked ;;
+        ready) echo idle ;;
+        *)     echo unknown ;;
+    esac
+}
+
+# Several sessions of one family can be up in one sandbox. The answer is the one a caller
+# must respect most: a turn anywhere is busy, and idle only when every session is.
+state_rank() { case "${1%% *}" in busy) echo 4 ;; blocked) echo 3 ;; unknown) echo 2 ;; idle) echo 1 ;; *) echo 0 ;; esac; }
+
+if $STATE_ONLY; then
+    names="cs-claude-$UUID"
+    [[ -n "$UUID" ]] || names="$(tmux ls -F '#{session_name}' 2>/dev/null | grep '^cs-claude-' || true)"
+    best=absent
+    for TMUX_SESSION in $names; do
+        session_alive || continue
+        word="$(state_word)"
+        (( $(state_rank "$word") > $(state_rank "$best") )) && best="$word"
+    done
+    echo "$best"; exit 0
+fi
 
 # Wait until the TUI is ready to accept input. Auto-clears the first-run trust
 # prompt; fails fast with an actionable message on screens that need a human

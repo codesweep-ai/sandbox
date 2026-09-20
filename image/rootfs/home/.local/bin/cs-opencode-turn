@@ -28,12 +28,22 @@
 #
 # Usage: echo "prompt" | cs-opencode-turn --tmux <token> [--uuid <ses_id>] [--workdir <dir>] \
 #            [--format text|json] [--timeout <secs>] [--name <label>]
+#        cs-opencode-turn --state [--tmux <token> [--uuid <ses_id>]]
+#
+# --state says whether opencode is in a turn right now, whoever started the turn, and starts or
+# wakes nothing. It prints one line and exits 0: busy, idle, unknown (a TUI is up and its server
+# does not answer) or absent (no session). It asks the server, as the driver does, so there is
+# no screen to be blocked on and that word is never printed. With no --tmux it answers for every
+# opencode session here: busy if any is, idle only if all are. With no --uuid a TUI is busy
+# when any of its sessions is.
+#
 # Exit codes: 0 ok, 2 turn timed out/stalled, 3 launch/setup failure, 5 turn failed (client error
 # or a provider error recorded on the session), 1 usage. 5 rather than 4 because cs-opencode-remote
 # already spends 4 on "session busy" (its per-session turn lock), as the claude/codex tools do.
 
 set -uo pipefail
 
+STATE_ONLY=false
 TOKEN=""; SES_ID=""; WORKDIR=""; FORMAT="text"; TIMEOUT="${CS_OPENCODE_TIMEOUT:-1800}"; LABEL=""
 # Stall watchdog: bail early if the server reports the session idle for this long while the
 # attached run client still has not returned. 0 disables. Env-overridable.
@@ -48,13 +58,14 @@ while [[ $# -gt 0 ]]; do
         --format)  FORMAT="$2"; shift 2 ;;
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --name)    LABEL="$2"; shift 2 ;;
-        -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
+        --state)   STATE_ONLY=true; shift ;;
+        -h|--help) sed -n '2,43p' "$0"; exit 0 ;;
         *) err "unknown argument: $1"; exit 1 ;;
     esac
 done
 
-[[ -n "$TOKEN" ]] || { err "--tmux <token> is required"; exit 1; }
-[[ "$TOKEN" =~ ^[A-Za-z0-9_-]+$ ]] || { err "--tmux token '$TOKEN' has invalid characters"; exit 1; }
+$STATE_ONLY || [[ -n "$TOKEN" ]] || { err "--tmux <token> is required"; exit 1; }
+[[ -z "$TOKEN" || "$TOKEN" =~ ^[A-Za-z0-9_-]+$ ]] || { err "--tmux token '$TOKEN' has invalid characters"; exit 1; }
 if [[ -n "$SES_ID" ]] && ! [[ "$SES_ID" =~ ^ses_[A-Za-z0-9]{20,40}$ ]]; then
     err "--uuid '$SES_ID' is not a valid opencode session id"; exit 1
 fi
@@ -65,9 +76,11 @@ fi
 [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || { err "--timeout '$TIMEOUT' must be a non-negative integer (0 = no limit)"; exit 1; }
 # cs-opencode (not bare opencode) is what this driver runs: it is the wrapper that binds the
 # isolated ~/.cs-opencode profile, so a turn driven without it would use the wrong config/db.
-for bin in opencode cs-opencode tmux curl python3; do
-    command -v "$bin" >/dev/null 2>&1 || { err "$bin not found on remote PATH"; exit 3; }
-done
+if ! $STATE_ONLY; then
+    for bin in opencode cs-opencode tmux curl python3; do
+        command -v "$bin" >/dev/null 2>&1 || { err "$bin not found on remote PATH"; exit 3; }
+    done
+fi
 
 # A working directory that does not exist is not one to run in. opencode binds a session to the
 # directory it is given and then fails on every prompt with a path error, so the fallback is chosen
@@ -77,18 +90,21 @@ if [[ -n "$WORKDIR" && ! -d "$WORKDIR" ]]; then
     WORKDIR=""
 fi
 
-TMUX_SESSION="cs-opencode-$TOKEN"
 # Deterministic per-token port in 21000-25095: both the TUI and later resumes of the same token
 # derive the same value, so nothing needs to be persisted.
-PORT=$(( 21000 + 16#$(printf '%s' "$TOKEN" | md5sum | cut -c1-3) ))
+port_of() { echo $(( 21000 + 16#$(printf '%s' "$1" | md5sum | cut -c1-3) )); }
+TMUX_SESSION="cs-opencode-$TOKEN"
+PORT="$(port_of "$TOKEN")"
 BASE="http://127.0.0.1:$PORT"
 
-PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-turn.XXXXXX")"
-OUT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-out.XXXXXX")"
-ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-err.XXXXXX")"
-trap 'rm -f "$PROMPT_FILE" "$OUT_FILE" "$ERR_FILE"' EXIT
-cat > "$PROMPT_FILE"
-[[ -s "$PROMPT_FILE" ]] || { err "empty prompt on stdin"; exit 1; }
+if ! $STATE_ONLY; then
+    PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-turn.XXXXXX")"
+    OUT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-out.XXXXXX")"
+    ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-err.XXXXXX")"
+    trap 'rm -f "$PROMPT_FILE" "$OUT_FILE" "$ERR_FILE"' EXIT
+    cat > "$PROMPT_FILE"
+    [[ -s "$PROMPT_FILE" ]] || { err "empty prompt on stdin"; exit 1; }
+fi
 
 # --- helpers --------------------------------------------------------------
 
@@ -102,10 +118,29 @@ wait_healthy() {
 }
 
 # The server deletes a session's /session/status entry when it goes idle: present key = busy.
+# With no session id, any entry: a caller asking about the TUI rather than one session in it.
 session_busy() {
     curl -fsS -m 5 "$BASE/session/status" 2>/dev/null \
-        | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if sys.argv[1] in d else 1)' "$SES_ID" 2>/dev/null
+        | python3 -c 'import json,sys; d=json.load(sys.stdin); k=sys.argv[1]; sys.exit(0 if (k in d if k else len(d) > 0) else 1)' "$SES_ID" 2>/dev/null
 }
+
+# Several sessions of one family can be up in one sandbox. The answer is the one a caller
+# must respect most: a turn anywhere is busy, and idle only when every session is.
+state_rank() { case "${1%% *}" in busy) echo 4 ;; blocked) echo 3 ;; unknown) echo 2 ;; idle) echo 1 ;; *) echo 0 ;; esac; }
+
+if $STATE_ONLY; then
+    tokens="$TOKEN"
+    [[ -n "$TOKEN" ]] || tokens="$(tmux ls -F '#{session_name}' 2>/dev/null | sed -n 's/^cs-opencode-//p')"
+    best=absent
+    for t in $tokens; do
+        TMUX_SESSION="cs-opencode-$t"; BASE="http://127.0.0.1:$(port_of "$t")"
+        session_alive || continue
+        # The same two questions the driver asks: is the server there, and does it list a turn.
+        if ! healthy; then word=unknown; elif session_busy; then word=busy; else word=idle; fi
+        (( $(state_rank "$word") > $(state_rank "$best") )) && best="$word"
+    done
+    echo "$best"; exit 0
+fi
 
 # Guard against a foreign server squatting the derived port (hash collision with another token's
 # TUI): our session id must be resolvable on this server.

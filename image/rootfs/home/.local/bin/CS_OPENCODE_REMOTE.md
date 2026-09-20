@@ -134,6 +134,28 @@ Each has its own reference next to the scripts in `~/.local/bin` — read it for
 - `CS_OPENCODE_MAX_LOG_BYTES` (default 1 MiB, 0 disables) — background log rollover to `<log>.1`.
 - `CS_OPENCODE_TURN_SRC` — local path of the `cs-opencode-turn` driver deployed to the remote.
 
+## Is the agent in a turn
+
+Run this on the machine the agent runs on:
+
+```bash
+cs-opencode-turn --state
+```
+
+It prints one line and always exits 0. The first word is `busy`, `idle`, `blocked`, `unknown` or
+`absent`, and `absent` means no OpenCode session exists there. `busy` can be followed by a second
+word, `busy retrying`, while the agent waits out a provider error. OpenCode is asked through its own server and not read off a screen, so it is never `blocked`.
+`unknown` is a TUI whose server does not answer.
+
+It answers for a turn whoever started it. An agent can start one of its own, when a background
+command it left running finishes, and no turn driver wraps that turn. A count of live
+`cs-opencode-turn` processes misses it, and this does not. Nudge a member only when the word is `idle`.
+
+With no handle it answers for every OpenCode session on that machine: `busy` if any is, and `idle`
+only if all are. `--tmux <token>` narrows it to one. It starts nothing, wakes nothing and types nothing,
+so it is safe to run every few seconds. It is the same judgement the driver waits on while it runs
+a turn, so the two cannot disagree.
+
 ## Exit codes
 
 - `0` turn completed · `2` timed out or stalled · `3` launch/setup failure · `4` session busy

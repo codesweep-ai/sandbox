@@ -21,6 +21,14 @@
 #
 # Usage: echo "prompt" | cs-codex-turn --tmux <token> [--uuid <uuid>] [--workdir <dir>] \
 #            [--format text|json] [--timeout <secs>] [--name <label>]
+#        cs-codex-turn --state [--tmux <token>]
+#
+# --state says whether codex is in a turn right now, whoever started the turn, and starts or
+# wakes nothing. It prints one line and exits 0: busy, idle, blocked (a screen that needs a
+# person), unknown (a screen this driver does not recognise) or absent (no session). busy may
+# be followed by a second word, "busy retrying", while codex waits out a provider error. With
+# no --tmux it answers for every codex session here: busy if any is, idle only if all are.
+# It is the judgement the driver itself waits on, so the two cannot disagree.
 # Exit codes: 0 ok, 2 turn timed out/stalled, 3 launch/setup failure (e.g. needs sign-in), 5 turn
 # failed (the provider ended it with an error), 1 usage. 5 matches cs-opencode-turn, and stays
 # clear of cs-codex-remote's 4 (session busy).
@@ -30,6 +38,7 @@
 
 set -uo pipefail
 
+STATE_ONLY=false
 TOKEN=""; UUID=""; WORKDIR=""; FORMAT="text"; TIMEOUT="${CS_CODEX_TIMEOUT:-1800}"; LABEL=""
 # Stall watchdog: bail early if the JSONL stops growing AND the TUI is no longer working before
 # a task_complete appears. 0 disables. Env-overridable.
@@ -45,13 +54,14 @@ while [[ $# -gt 0 ]]; do
         --format)  FORMAT="$2"; shift 2 ;;
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --name)    LABEL="$2"; shift 2 ;;
-        -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+        --state)   STATE_ONLY=true; shift ;;
+        -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
         *) err "unknown argument: $1"; exit 1 ;;
     esac
 done
 
-[[ -n "$TOKEN" ]] || { err "--tmux <token> is required"; exit 1; }
-[[ "$TOKEN" =~ ^[A-Za-z0-9_-]+$ ]] || { err "--tmux token '$TOKEN' has invalid characters"; exit 1; }
+$STATE_ONLY || [[ -n "$TOKEN" ]] || { err "--tmux <token> is required"; exit 1; }
+[[ -z "$TOKEN" || "$TOKEN" =~ ^[A-Za-z0-9_-]+$ ]] || { err "--tmux token '$TOKEN' has invalid characters"; exit 1; }
 if [[ -n "$UUID" ]] && ! [[ "$UUID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
     err "--uuid '$UUID' is not a valid uuid"; exit 1
 fi
@@ -60,17 +70,21 @@ fi
 # this check a typo would not fail — it would silently remove the budget and wait
 # forever, which is the failure this driver's watchdogs exist to make impossible.
 [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || { err "--timeout '$TIMEOUT' must be a non-negative integer (0 = no limit)"; exit 1; }
-command -v codex >/dev/null 2>&1 || { err "codex not found on remote PATH"; exit 3; }
-command -v tmux  >/dev/null 2>&1 || { err "tmux not found on remote PATH"; exit 3; }
+if ! $STATE_ONLY; then
+    command -v codex >/dev/null 2>&1 || { err "codex not found on remote PATH"; exit 3; }
+    command -v tmux  >/dev/null 2>&1 || { err "tmux not found on remote PATH"; exit 3; }
+fi
 
 export CODEX_HOME="$CODEX_DIR"
 SESS="$CODEX_HOME/sessions"
 TMUX_SESSION="cs-codex-$TOKEN"
 
-PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-codex-turn.XXXXXX")"
-trap 'rm -f "$PROMPT_FILE"' EXIT
-cat > "$PROMPT_FILE"
-[[ -s "$PROMPT_FILE" ]] || { err "empty prompt on stdin"; exit 1; }
+if ! $STATE_ONLY; then
+    PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-codex-turn.XXXXXX")"
+    trap 'rm -f "$PROMPT_FILE"' EXIT
+    cat > "$PROMPT_FILE"
+    [[ -s "$PROMPT_FILE" ]] || { err "empty prompt on stdin"; exit 1; }
+fi
 
 # --- helpers --------------------------------------------------------------
 
@@ -187,6 +201,34 @@ ensure_session() {
     tmux "${newargs[@]}" || { err "failed to start tmux session ($launch)"; return 3; }
     wait_ready
 }
+
+# The state of one session in a caller's words. It is detect_state and nothing else, so a
+# screen the driver learns to read is one this answers for too.
+state_word() {
+    case "$(detect_state)" in
+        working)
+            if pane | grep -q "Reconnecting\.\.\."; then echo "busy retrying"; else echo busy; fi ;;
+        trust_folder|login) echo blocked ;;
+        ready)              echo idle ;;
+        *)                  echo unknown ;;
+    esac
+}
+
+# Several sessions of one family can be up in one sandbox. The answer is the one a caller
+# must respect most: a turn anywhere is busy, and idle only when every session is.
+state_rank() { case "${1%% *}" in busy) echo 4 ;; blocked) echo 3 ;; unknown) echo 2 ;; idle) echo 1 ;; *) echo 0 ;; esac; }
+
+if $STATE_ONLY; then
+    names="cs-codex-$TOKEN"
+    [[ -n "$TOKEN" ]] || names="$(tmux ls -F '#{session_name}' 2>/dev/null | grep '^cs-codex-' || true)"
+    best=absent
+    for TMUX_SESSION in $names; do
+        session_alive || continue
+        word="$(state_word)"
+        (( $(state_rank "$word") > $(state_rank "$best") )) && best="$word"
+    done
+    echo "$best"; exit 0
+fi
 
 # --- run one turn ---------------------------------------------------------
 
