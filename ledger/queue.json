@@ -1,7 +1,11 @@
 {
-  "recommendedBy": "session agent, re-triaging after the CI failure of 2026-09-02",
-  "updated": "2026-09-02",
+  "recommendedBy": "session agent, re-triaging after the campaign and tour findings of 2026-09-20",
+  "updated": "2026-09-20",
   "items": [
+    {
+      "id": "SBX-046",
+      "why": "A throttled key, a provider outage and a quiet fleet produce the same lender log."
+    },
     {
       "id": "SBX-031",
       "why": "An intermittent stall reds main CI, and nothing yet says whether the guest or its ssh died."

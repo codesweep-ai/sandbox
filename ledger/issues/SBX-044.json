@@ -3,11 +3,11 @@
   "title": "cs-codex-turn reports a turn the provider ended with an error as a completed turn",
   "type": "defect",
   "severity": "high",
-  "status": "open",
+  "status": "in-progress",
   "foundBy": "session agent operating two eight-member campaigns side by side on one host, reading every member's own CLI session records and the lender containers' logs after both campaigns had ended",
   "opened": "2026-09-20",
   "resolved": null,
-  "stint": null,
+  "stint": "v2-fixes",
   "evidence": {
     "commits": [],
     "integrated": [],
