@@ -3,19 +3,30 @@
   "title": "destroy on the last sandbox of a named group leaves the group's network, keepalive and gateway running, and says nothing",
   "type": "improvement",
   "severity": "low",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent replaying a multi-member campaign through cs-vcr, several replays at a time on one shared host",
   "opened": "2026-09-20",
-  "resolved": null,
+  "resolved": "2026-09-20",
   "stint": "v2-fixes",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "6d2ae2e"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "go test ./internal/cli/ -run TestDestroySaysWhenItEmptiesAGroup -count=1: PASS, 4 cases. The line appears for the last member of a named group, with and without `-f`. It does not appear for the default group or for a group with a member left."
   },
-  "resolution": null,
+  "resolution": "When `destroy` empties a group other than `default`, it prints one line that names `cs-sandbox group rm <group>`. Without `-f` it says the sandbox is the group's last.",
   "details": "**What happened.** A person typed four commands by hand: `create <name> --group <group>`, `exec`, `fetch` and `destroy <name>.<group> --force`. The destroy printed `destroyed <name>.<group>` and nothing more. The host still held the group's keepalive container and its network. They were gone once the person ran `cs-sandbox group rm <group>`.\n\n**Why it matters.** `create --group` makes the group when it is needed, so the person never typed a command that made one. Nothing tells them that `destroy` does not undo it. A named group that holds no sandbox is rarely wanted, and each one keeps a container, a network and a tap prefix.\n\n**What is asked for.** When `destroy` empties a group other than `default`, print one line that names `cs-sandbox group rm <group>`. `destroy --dry-run` could list the same. Removing the emptied group automatically is the other choice, and it is a larger change in behaviour.\n\n**How to reproduce.** Run `cs-sandbox create a --group g`, then `cs-sandbox destroy a.g --force`, then `podman ps` and `podman network ls`.",
-  "notes": [],
+  "notes": [
+    {
+      "date": "2026-09-20",
+      "text": "The fix takes the smaller of the two choices the record offers. The group is not removed automatically. `group.json` does not record whether `create --group` or `group create` made a group, so removal could take a group somebody made on purpose."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The record suggests `destroy --dry-run` could list the same. `destroy` has no such flag. Running it without `-f` is its report, and the line is printed there."
+    }
+  ],
   "links": [
     "SBX-048"
   ]

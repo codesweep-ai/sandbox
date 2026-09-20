@@ -3,19 +3,34 @@
   "title": "cs-claude-turn has no exit code for a turn the provider ended, and what claude records for one has not been observed",
   "type": "improvement",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, while fixing SBX-044, which names this driver as having the same shape",
   "opened": "2026-09-20",
-  "resolved": null,
+  "resolved": "2026-09-20",
   "stint": "v2-fixes",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "28dfd42"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "go test ./internal/cli/ -run TestClaudeTurnReportsAProviderFailure -count=1: PASS, 5 cases, and 4 of them fail with the driver reverted. Live, a sandbox with a lent anthropic key and `cs-sandbox lender fault` armed. The old driver exited 0 and printed `API Error: Request rejected (429)` as the reply. The new one exited 5 with `class=throttled` for a 429, `class=capacity` for a 529 and `class=unauthorized` for a 401."
   },
-  "resolution": null,
+  "resolution": "`cs-claude-turn` reads the last assistant message of the turn. When Claude Code flagged it `isApiErrorMessage`, the driver exits 5, prints the message on stderr, and prints `failure class=<class> retry_after=<secs>` as `cs-codex-turn` does.",
   "details": "`cs-claude-turn` documents *0 ok, 2 turn timed out, 3 launch/setup failure, 1 usage/other*. It has no code for a turn the provider refused. `cs-opencode-turn` exits 5 for that, and `cs-codex-turn` does too since SBX-044.\n\nNobody has yet observed what Claude Code writes to its session JSONL when a provider ends a turn with a rate limit or an outage. The codex fix began by producing that record against a stub provider, and this one should begin the same way. Point `ANTHROPIC_BASE_URL` at a stub that answers 429, run one prompt through `cs-claude-turn`, and read the last entries of the session file.\n\nIt matters for the same reason as SBX-044. A fleet harness that reads a refused turn as a finished one restarts a healthy member into the limit that refused it.",
-  "notes": [],
+  "notes": [
+    {
+      "date": "2026-09-20",
+      "text": "The shape was observed with Claude Code 2.1.258 against a stub provider. A refused turn is an assistant entry with `isApiErrorMessage` true, a kind under `error` and the HTTP status under `apiErrorStatus`. The kinds seen were `rate_limit`, `server_error`, `authentication_failed` and `invalid_request`. A `turn_duration` marker follows it, so the turn is detected as complete."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "Only the last assistant message of the turn decides the outcome. Claude Code retries by itself, and a turn that met an error and then answered has succeeded."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "`retry_after` is `-` for every failure seen. Claude Code's message names no wait, and it does not record the provider's header."
+    }
+  ],
   "links": [
     "SBX-044"
   ]
