@@ -160,6 +160,10 @@ in seconds when the provider's message names one, and `-` when it does not. Afte
 `capacity`, wait and send the prompt again to the same session. The session is still alive, so do
 not restart it: a restart sends the whole context again into the same limit.
 
+After `unauthorized`, do not send it again. The provider rejected the credential, and waiting does
+not fix that. Codex retries a rejected credential for minutes by itself, so the driver stops it and
+reports the turn within seconds. The session stays up for the next turn.
+
 ## Interpreting user intent
 
 | User says | What to do |

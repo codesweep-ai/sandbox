@@ -1070,6 +1070,61 @@ exit 0
 	covemit.Prove(t, "turn-driver-semantics", "claude", "", "scripts")
 }
 
+// TestClaudeTurnCutsShortARejectedCredential: Claude Code retries a 401 ten times, for about
+// three minutes, as it would a rate limit. Waiting cannot fix a credential, so the driver
+// reports it at once. It ends the TUI rather than sending Esc: in vim mode the first Esc only
+// leaves insert mode, and a Claude left retrying writes its completion marker into the next
+// turn. The next turn resumes the conversation from the session file. A rate limit shows
+// the same retry line and is waited out.
+func TestClaudeTurnCutsShortARejectedCredential(t *testing.T) {
+	skipUnlessLinux(t)
+	for _, tc := range []struct {
+		name, retryLine string
+		wantExit        int
+		wantIn          string
+	}{
+		{"401", "* 401 invalid x-api-key · Retrying in 17s · attempt 3/10", 5, "failure class=unauthorized retry_after=-"},
+		{"403", "* 403 Your key may not use this model · Retrying in 2s · attempt 1/10", 5, "failure class=unauthorized"},
+		{"a rate limit is waited out", "* 429 This request would exceed your rate limit. · Retrying in 14s · attempt 3/10", 2, "did not complete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-claude-remote")
+			writeStub(t, bin, "claude", "#!/bin/sh\nexit 0\n")
+			writeStub(t, bin, "cs-claude", "#!/bin/sh\nexit 0\n")
+			writeStub(t, bin, "tmux", `#!/bin/sh
+echo "$*" >> "$STUB_DIR/calls"
+case "$1" in
+  has-session) exit 0 ;;
+  capture-pane)
+    [ -f "$STUB_DIR/.submitted" ] && printf '> do the thing\n%s\n' "$RETRY_LINE"
+    printf '  bypass permissions on\n'
+    exit 0 ;;
+  send-keys) touch "$STUB_DIR/.submitted"; exit 0 ;;
+esac
+exit 0
+`)
+			stubDir := t.TempDir()
+			projects := filepath.Join(home, "projects")
+			if err := os.MkdirAll(projects, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(projects, claudeTestUUID+".jsonl"), []byte(""), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out, exit := runScriptStdin(t, home, bin,
+				[]string{"STUB_DIR=" + stubDir, "RETRY_LINE=" + tc.retryLine, "CS_CLAUDE_STALL_SECS=0"}, "do the thing\n",
+				"cs-claude-turn", "--uuid", claudeTestUUID, "--projects", projects, "--timeout", "4")
+			if exit != tc.wantExit || !strings.Contains(out, tc.wantIn) {
+				t.Fatalf("exit = %d; want %d with %q: %s", exit, tc.wantExit, tc.wantIn, out)
+			}
+			calls, _ := os.ReadFile(filepath.Join(stubDir, "calls"))
+			if ended := strings.Contains(string(calls), "kill-session"); ended != (tc.wantExit == 5) {
+				t.Errorf("the TUI ended = %v; tmux calls:\n%s", ended, calls)
+			}
+		})
+	}
+}
+
 // TestClaudeTurnReadyStates: the ready check has to recognise the status line current Claude
 // Code actually prints. A --yolo sandbox runs with permissions bypassed and shows "bypass
 // permissions on", not "auto mode on"; missing it strands every turn at the ready timeout.
@@ -1235,6 +1290,76 @@ exit 0
 }
 
 const codexFailedTurnID = "33333333-3333-4333-8333-333333333333"
+
+// TestCodexTurnCutsShortARejectedCredential: codex keeps one retry count for every failure, so
+// it retries a 401 as it would a dropped stream, doubling its wait each time. A key that can
+// never work then holds the turn for minutes, and nothing is written to the rollout while it
+// does. The pane is the only place that says why, so the driver reads it, stops codex, and
+// reports the refusal at once. A reconnect for any other reason is waited out: that is what
+// the retries are for.
+func TestCodexTurnCutsShortARejectedCredential(t *testing.T) {
+	skipUnlessLinux(t)
+	for _, tc := range []struct {
+		name, reason string
+		wantExit     int
+		wantIn       string
+	}{
+		{"401", "Unexpected status 401 Unauthorized: Incorrect API key provided, url: http://cs-lender:2500/responses",
+			5, "failure class=unauthorized retry_after=-"},
+		{"403", "Unexpected status 403 Forbidden: this key may not use the model, url: http://x", 5, "failure class=unauthorized"},
+		{"an outage is waited out", "Unexpected status 503 Service Unavailable: upstream down, url: http://x", 2, "did not complete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-codex-remote")
+			sess := filepath.Join(home, ".cs-codex", "sessions")
+			if err := os.MkdirAll(sess, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fresh := filepath.Join(sess, "rollout-2026-01-02-"+codexFailedTurnID+".jsonl")
+			stubDir := t.TempDir()
+			writeStub(t, bin, "codex", "#!/bin/sh\nexit 0\n")
+			writeStub(t, bin, "cs-codex", "#!/bin/sh\nexit 0\n")
+			writeStub(t, bin, "tmux", `#!/bin/sh
+case "$1" in
+  has-session) [ -f "$STUB_DIR/.launched" ] && exit 0 || exit 1 ;;
+  new-session)
+    touch "$STUB_DIR/.launched"
+    printf '%s\n' "$SESSION_META" > "$FRESH_ROLLOUT"
+    exit 0 ;;
+  capture-pane)
+    if [ -f "$STUB_DIR/.submitted" ]; then
+      printf '  > do the thing\n* Reconnecting... 3/10 (12s * esc to interrupt)\n  - %s\n' "$REASON"
+    fi
+    printf '  gpt-5 default · /work\n\n'
+    exit 0 ;;
+  send-keys)
+    echo "$*" >> "$STUB_DIR/keys"
+    [ -f "$STUB_DIR/.launched" ] && touch "$STUB_DIR/.submitted"
+    exit 0 ;;
+esac
+exit 0
+`)
+			out, exit := runScriptStdin(t, home, bin,
+				[]string{
+					"STUB_DIR=" + stubDir, "FRESH_ROLLOUT=" + fresh, "REASON=" + tc.reason,
+					`SESSION_META={"type":"session_meta","payload":{"id":"` + codexFailedTurnID + `"}}`,
+					"CS_CODEX_STALL_SECS=0",
+				},
+				"do the thing\n", "cs-codex-turn", "--tmux", "codextoken", "--timeout", "4")
+			if exit != tc.wantExit || !strings.Contains(out, tc.wantIn) {
+				t.Fatalf("exit = %d; want %d with %q: %s", exit, tc.wantExit, tc.wantIn, out)
+			}
+			keys, _ := os.ReadFile(filepath.Join(stubDir, "keys"))
+			if stopped := strings.Contains(string(keys), "Escape"); stopped != (tc.wantExit == 5) {
+				t.Errorf("codex stopped = %v; keys sent:\n%s", stopped, keys)
+			}
+			// codex is still running, so the caller needs the id to send the next turn to it.
+			if tc.wantExit == 5 && !strings.Contains(out, "__CS_CODEX_SESSION_ID__ "+codexFailedTurnID) {
+				t.Errorf("a refused turn dropped the session id: %s", out)
+			}
+		})
+	}
+}
 
 // TestCodexTurnBindsToItsOwnRollout: current Codex creates its rollout at TUI startup, and
 // the ready screen can appear a moment before the file exists. Picking the globally newest

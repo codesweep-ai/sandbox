@@ -138,6 +138,17 @@ line_count() {
 
 pane() { tmux capture-pane -p -t "$TMUX_SESSION" 2>/dev/null; }
 
+# The provider rejected the credential, and Claude Code is retrying it anyway: ten times, for
+# about three minutes, as it would a rate limit. The pane says so while it waits:
+#   ✻ 401 invalid x-api-key · Retrying in 17s · attempt 3/10
+# Only the bottom of the pane counts, so an earlier turn's refusal in the scrollback does not
+# end this one. Prints the reason, or nothing.
+auth_rejected() {
+    pane | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -n 8 \
+        | grep -E "(^|[^0-9])40[13] .* · Retrying in [0-9]+ ?s" | head -1 \
+        | sed -e 's/ · Retrying in.*//' -e 's/^[^0-9]*//' | cut -c1-160
+}
+
 session_alive() { tmux has-session -t "$TMUX_SESSION" 2>/dev/null; }
 
 # Classify the current TUI screen from the pane. Mirrors the state taxonomy in
@@ -278,6 +289,20 @@ last_change=$SECONDS
 while (( TIMEOUT == 0 || SECONDS < deadline )); do
     if ! session_alive; then
         err "tmux session died mid-turn"; exit 3
+    fi
+    # Waiting cannot fix a rejected credential, so the retries are cut short and the turn is
+    # reported for what it is rather than minutes later.
+    #
+    # The TUI is ended rather than sent Esc. In vim mode the first Esc only leaves insert
+    # mode, the one that does interrupt puts the prompt back in the input box, and a Claude
+    # left retrying writes its completion marker into the NEXT turn. The conversation is in
+    # the JSONL, and the next turn resumes it.
+    why="$(auth_rejected)"
+    if [[ -n "$why" ]]; then
+        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+        err "turn failed: the provider rejected the credential (${why})"
+        err "failure class=unauthorized retry_after=-"
+        exit 5
     fi
     now="$(turn_count "$JSONL")"
     if (( now > PRE_TURNS )); then

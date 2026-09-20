@@ -148,6 +148,10 @@ in seconds when the message names one, and `-` when it does not. After `throttle
 wait and send the prompt again to the same session. The session is still alive, so do not restart
 it: a restart sends the whole context again into the same limit.
 
+After `unauthorized`, do not send it again. The provider rejected the credential, and waiting does
+not fix that. Claude Code retries a rejected credential for about three minutes by itself, so the
+driver ends its TUI and reports the turn within seconds. The next turn resumes the same conversation.
+
 ## Interpreting user intent
 
 | User says | What to do |

@@ -105,6 +105,20 @@ newest_rollout() {
 }
 
 pane() { tmux capture-pane -p -t "$TMUX_SESSION" 2>/dev/null; }
+
+# The provider rejected the credential, and codex is retrying it anyway. codex keeps one retry
+# count for every failure and spends it on a 401 as it would on a dropped stream, doubling its
+# wait each time, so a key that can never work holds the turn for minutes. It writes nothing
+# to the rollout while it waits. The pane is the only place that says why:
+#   • Reconnecting... 3/10 (12s • esc to interrupt)
+#     └ Unexpected status 401 Unauthorized: Incorrect API key provided …
+# Only the bottom of the pane counts, so a refusal left in the scrollback by an earlier turn
+# does not end this one. Prints the reason, or nothing.
+auth_rejected() {
+    local tail_; tail_="$(pane | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -n 8)"
+    grep -q "Reconnecting\.\.\." <<<"$tail_" || return 1
+    grep -Eio "status 40[13][^,]*" <<<"$tail_" | head -1 | cut -c1-160
+}
 session_alive() { tmux has-session -t "$TMUX_SESSION" 2>/dev/null; }
 
 # Classify the current TUI screen from the pane. Order matters: blocking overlays (trust,
@@ -243,6 +257,16 @@ deadline=$(( SECONDS + TIMEOUT ))
 completed=false; last_lines="$PRE_LINES"; last_change=$SECONDS
 while (( TIMEOUT == 0 || SECONDS < deadline )); do
     session_alive || { err "tmux session died mid-turn"; exit 3; }
+    # Waiting cannot fix a rejected credential, so the retries are cut short: Esc stops codex,
+    # and the turn is reported for what it is rather than minutes later, or as a timeout.
+    if why="$(auth_rejected)" && [[ -n "$why" ]]; then
+        tmux send-keys -t "$TMUX_SESSION" Escape
+        err "turn failed: the provider rejected the credential (${why})"
+        err "failure class=unauthorized retry_after=-"
+        sid="${UUID:-$(python3 -c 'import json,sys;print(json.loads(open(sys.argv[1]).readline())["payload"]["id"])' "$JSONL" 2>/dev/null)}"
+        [[ -n "$sid" ]] && printf '\n__CS_CODEX_SESSION_ID__ %s\n' "$sid"
+        exit 5
+    fi
     if (( $(task_count "$JSONL") > PRE_TASKS )); then completed=true; break; fi
     if (( STALL_SECS > 0 )); then
         cur_lines="$(line_count "$JSONL")"
