@@ -1,0 +1,22 @@
+{
+  "id": "SBX-045",
+  "title": "The cs-codex wrapper gives codex no retry budget, so a rate limit that asks for seconds ends the turn in about a minute",
+  "type": "improvement",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent operating two eight-member campaigns side by side on one host, reading every member's own CLI session records and the lender containers' logs after both campaigns had ended",
+  "opened": "2026-09-20",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "**What happened.** Under a provider's tokens-per-minute limit, every failing codex turn shows the same shape in its rollout: about five attempts some 13 seconds apart, then the turn ends with `rate limit exceeded … Please try again in 12.52s`. The provider was asking for 6 to 18 seconds. A member that had waited two or three minutes would not have failed the turn at all, and a failed turn is expensive: it loses the turn's uncommitted work, and in a campaign it starts a recovery ladder that re-sends the whole context (the campaign ledger's SAC-034).\n\n**Why.** For a lent or proxied key the `cs-codex` wrapper passes codex one provider entry:\n\n    model_providers.cs-proxy={name=\"cs-proxy\", base_url=\"$OPENAI_BASE_URL\", <auth>, wire_api=\"responses\"}\n\nIt sets no retry count and no stream retry count, and the seeded `config.toml` sets the model, the effort and the approval policy and nothing about retries. So codex runs on its defaults, and the five attempts in the records are those defaults. Codex documents per-provider `request_max_retries`, `stream_max_retries` and `stream_idle_timeout_ms`.\n\n**What is asked for.** A retry budget on that entry sized for an agent that is unattended for hours, where waiting is nearly free and a failed turn is not. It should be overridable, because the right number depends on the key's tier. Whether codex also honours the provider's retry-after between attempts was not established and is worth checking while here.\n\n**Not verified.** That raising these values changes the outcome under a real limit. It follows from the records and from codex's documentation, and it has not been tried. SBX-044 is needed either way: a longer budget makes the failure rarer, not visible.",
+  "notes": [],
+  "links": [
+    "SBX-044"
+  ]
+}
