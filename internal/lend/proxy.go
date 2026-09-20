@@ -215,7 +215,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.count(func(st *Stats) { st.Lent++ })
 	s.cfg.Log.Info("lending",
 		slog.String("sandbox", loan.Name), slog.String("slot", slot.ID),
-		slog.String("loan", loan.Label),
+		slog.String("loan", loan.logName()),
 		slog.String("method", r.Method), slog.String("path", r.URL.Path))
 	s.forward(w, r, loan, slot, secret, extra)
 }

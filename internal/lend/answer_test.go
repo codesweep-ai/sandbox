@@ -46,7 +46,7 @@ func lentServer(t *testing.T, up string, now func() time.Time) (*Server, func() 
 	withSlots(t, Slot{ID: "openai", Kind: Key, Origin: up, Header: "authorization", Prefix: "Bearer ",
 		AuthEnvs: []string{"OPENAI_API_KEY"}, BaseEnv: "OPENAI_BASE_URL", read: keyReader("openai"), where: keyPath("openai")})
 	home := hostProfile(t)
-	tok := TokenPrefix + "box_openai_deadbeef"
+	tok := lentToken
 	var log lockedBuffer
 	s := New(Config{Home: home, KeysDir: KeysDir(home), Callers: CallersAny, Now: now,
 		Loans: fixedLoans{tok: {Token: tok, Slot: "openai", Kind: Key, Name: "box"}},
@@ -69,6 +69,10 @@ func lentServer(t *testing.T, up string, now func() time.Time) (*Server, func() 
 	}
 	return s, call, &log.Buffer
 }
+
+// lentToken is shaped as MintGuest shapes a key loan's: a prefix, the sandbox, the slot and a
+// 32 character nonce.
+const lentToken = TokenPrefix + "box_openai_deadbeefdeadbeefdeadbeefdeadbeef"
 
 // lockedBuffer is a log sink the handler goroutines and the test can share.
 type lockedBuffer struct {
@@ -122,7 +126,12 @@ func TestTheLenderRecordsWhatTheUpstreamAnswered(t *testing.T) {
 			t.Errorf("the log is missing %q:\n%s", want, text)
 		}
 	}
-	for _, never := range []string{"must not be logged", "not-for-a-log", "the-hosts-real-openai-key"} {
+	// The loan token is a working credential inside the group for as long as the
+	// sandbox lives, and a key loan's label is that same string.
+	if !strings.Contains(text, "loan=loan_box_openai_deadbeef…") {
+		t.Errorf("the lending line does not name the loan:\n%s", text)
+	}
+	for _, never := range []string{"must not be logged", "not-for-a-log", "the-hosts-real-openai-key", lentToken} {
 		if strings.Contains(text, never) {
 			t.Errorf("the log carries %q:\n%s", never, text)
 		}

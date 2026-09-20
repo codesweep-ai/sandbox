@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -335,6 +336,22 @@ func ReadLoans(instanceDir string) ([]Loan, error) {
 		return nil, fmt.Errorf("loans.json is not readable: %w", err)
 	}
 	return doc.Loans, nil
+}
+
+// logName is what a log line calls this loan, and it is never the token.
+//
+// A key loan has no file to fabricate, so its label and its token are the same
+// string, and logging the label wrote a working token on every line. The name
+// keeps the sandbox, the slot and enough of the nonce to tell two loans apart.
+func (l Loan) logName() string {
+	if l.Label != "" && l.Label != l.Token {
+		return l.Label
+	}
+	i := strings.LastIndex(l.Token, "_")
+	if i < 0 || len(l.Token)-i <= 9 {
+		return "loan"
+	}
+	return l.Token[:i+9] + "…"
 }
 
 // Loans resolves a loan token to the loan it stands for.
