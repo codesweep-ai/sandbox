@@ -1,0 +1,25 @@
+{
+  "id": "SBX-062",
+  "title": "A turn that ended because no provider answered is classed as other, which tells a caller to try again at once",
+  "type": "defect",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "session agent, maintainer of this repository, measuring a real codex turn while every model call was dropped for five minutes",
+  "opened": "2026-09-20",
+  "resolved": null,
+  "stint": "reliability-2026-09",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "**What was measured.** A sandbox borrowed a provider key, and `cs-sandbox lender fault <name> --hang 1s --count 600` dropped every model call unanswered. Codex retried by itself for five minutes and then ended the turn. The exit code of `cs-codex-turn` was 5, and its class line was `failure class=other retry_after=-`. The message was `stream disconnected before completion: error sending request for url`, and codex's own `codex_error_info` was `other`. A shorter outage of 100 seconds was never seen by the caller. Codex rode it out and the turn succeeded.\n\n**Why `other` is the wrong class.** The classes exist so that a caller can choose a move. The documented move for `other` is to try once or twice and then escalate. For a fleet harness that means its recovery ladder, which sends the agent's whole context again and then restarts the session. None of that helps when the network is down, and the agent did nothing wrong. The right move is the one for `throttled` and `capacity`: wait, then carry the same session on. A caller cannot tell the two apart without reading the message text, which is what the class line was added to avoid.\n\n**What is asked for.** A class of its own, `unreachable`, for a turn that ended with no answer from any provider. That covers a connection that was refused or dropped, a name that did not resolve, and a lender that was gone. All three drivers should print it, and the turn log (SBX-060) should carry it.\n\n**How to reproduce.** Arm `--hang 1s --count 600` on a sandbox that borrows a key, and run one turn with `cs-codex-remote`. Read the class line after about five minutes.",
+  "notes": [],
+  "links": [
+    "SBX-044",
+    "SBX-059",
+    "SBX-060",
+    "SBX-026"
+  ]
+}

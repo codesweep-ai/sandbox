@@ -34,7 +34,7 @@
 # clear of cs-codex-remote's 4 (session busy).
 #
 # A failed turn prints the provider's message on stderr, then one line a caller can parse:
-#   cs-codex-turn: failure class=<throttled|capacity|unauthorized|context|other> retry_after=<secs|->
+#   cs-codex-turn: failure class=<throttled|capacity|unauthorized|context|unreachable|other> retry_after=<secs|->
 
 set -uo pipefail
 
@@ -406,6 +406,12 @@ elif kind == "unauthorized" or status in (401, 403):
     cls = "unauthorized"
 elif kind == "context_window_exceeded" or "context window" in low or "context length" in low:
     cls = "context"
+elif status is None and ("error sending request" in low or "stream disconnected" in low
+                         or "connection" in low or "timed out" in low or "dns error" in low):
+    # No provider answered at all: a network that is down, a proxy that is gone, a name
+    # that does not resolve. A caller waits this out as it does a throttle, where "other"
+    # tells it to try again at once.
+    cls = "unreachable"
 else:
     cls = "other"
 # The provider's own wait, when its message names one ("Please try again in 12.52s").

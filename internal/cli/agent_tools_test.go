@@ -1251,6 +1251,10 @@ func TestCodexTurnReportsAProviderFailure(t *testing.T) {
 		{"model at capacity",
 			`{"message":"Selected model is at capacity. Please try a different model.","codex_error_info":"other"}`,
 			"failure class=capacity retry_after=-"},
+		// Measured live: every call dropped for five minutes, and this is what codex recorded.
+		{"no provider answered",
+			`{"message":"stream disconnected before completion: error sending request for url (http://cs-lender:2500/responses)","codex_error_info":"other"}`,
+			"failure class=unreachable retry_after=-"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, bin := agentHome(t, ".cs-codex-remote")

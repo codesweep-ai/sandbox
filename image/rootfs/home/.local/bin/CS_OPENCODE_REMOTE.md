@@ -188,7 +188,7 @@ failed.
 
 When a provider refused the turn, exit `5` comes with one line a caller can parse, the same one
 `cs-codex-turn` and `cs-claude-turn` print:
-`cs-opencode-turn: failure class=<throttled|capacity|unauthorized|context|other> retry_after=<secs|->`.
+`cs-opencode-turn: failure class=<throttled|capacity|unauthorized|context|unreachable|other> retry_after=<secs|->`.
 The class is read from the HTTP status OpenCode keeps on the error, and from the message when
 there is none. A turn that failed for another reason, such as an incomplete reply, prints no class.
 

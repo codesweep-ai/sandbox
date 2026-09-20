@@ -42,7 +42,7 @@
 # already spends 4 on "session busy" (its per-session turn lock), as the claude/codex tools do.
 #
 # A turn the provider refused prints the provider's message, then one line a caller can parse:
-#   cs-opencode-turn: failure class=<throttled|capacity|unauthorized|context|other> retry_after=<secs|->
+#   cs-opencode-turn: failure class=<throttled|capacity|unauthorized|context|unreachable|other> retry_after=<secs|->
 
 set -uo pipefail
 
@@ -420,6 +420,10 @@ if last.get("error"):
         cls = "unauthorized"
     elif "context" in low and ("length" in low or "window" in low or "too long" in low):
         cls = "context"
+    elif status is None and any(w in low for w in ("unable to connect", "connection", "fetch failed",
+                                                   "econnrefused", "enotfound", "etimedout", "timed out", "socket")):
+        # No provider answered at all, so a caller waits it out as it does a throttle.
+        cls = "unreachable"
     else:
         cls = "other"
     wait = "-"

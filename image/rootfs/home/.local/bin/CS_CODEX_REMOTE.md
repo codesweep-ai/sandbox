@@ -196,7 +196,9 @@ provider's message on stderr, then one line to parse:
 cs-codex-turn: failure class=throttled retry_after=12.52
 ```
 
-`class` is `throttled`, `capacity`, `unauthorized`, `context` or `other`. `retry_after` is the wait
+`class` is `throttled`, `capacity`, `unauthorized`, `context`, `unreachable` or `other`. `unreachable`
+means no provider answered at all, as when the network is down, and a caller waits it out as it
+does a throttle. `retry_after` is the wait
 in seconds when the provider's message names one, and `-` when it does not. After `throttled` or
 `capacity`, wait and send the prompt again to the same session. The session is still alive, so do
 not restart it: a restart sends the whole context again into the same limit.

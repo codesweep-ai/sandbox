@@ -37,7 +37,7 @@
 # of cs-claude-remote's 4 (session busy).
 #
 # A failed turn prints the provider's message on stderr, then one line a caller can parse:
-#   cs-claude-turn: failure class=<throttled|capacity|unauthorized|context|other> retry_after=<secs|->
+#   cs-claude-turn: failure class=<throttled|capacity|unauthorized|context|unreachable|other> retry_after=<secs|->
 
 set -uo pipefail
 
@@ -451,6 +451,11 @@ elif "prompt is too long" in low or ("context" in low and "limit" in low):
     cls = "context"
 elif kind == "server_error" or (isinstance(status, int) and status >= 500):
     cls = "capacity"
+elif status is None and any(w in low for w in ("connection error", "fetch failed", "econnrefused",
+                                               "enotfound", "etimedout", "timed out", "network")):
+    # No provider answered at all. The words are the ones Node's fetch and the SDK use for a
+    # failed connection. They were not captured from a live session of this CLI.
+    cls = "unreachable"
 else:
     cls = "other"
 wait = "-"
