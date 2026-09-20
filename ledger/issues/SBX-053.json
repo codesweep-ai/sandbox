@@ -1,0 +1,22 @@
+{
+  "id": "SBX-053",
+  "title": "Kept lender logs pile up for instance roots and groups that no longer exist",
+  "type": "defect",
+  "severity": "low",
+  "status": "in-progress",
+  "foundBy": "session agent, checking the host for leftovers after the fix for SBX-046 had been through `make ci` four times",
+  "opened": "2026-09-20",
+  "resolved": null,
+  "stint": "v2-fixes",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "SBX-046 made the host keep a lender's log under `~/.cache/cs-sandbox/lender-logs/<root>/<group>/`, and keep the newest 20 in each group's directory. Nothing removes a directory whose instance root or group is gone. Four runs of `make ci` left 6 directories there, one for each throwaway root the smoke tests made. A host that runs the tests, or makes groups with generated names, grows that tree without limit.\n\nTo reproduce, run `make test-smoke` twice and list `~/.cache/cs-sandbox/lender-logs`.\n\nThe renewer's per-root directory under `~/.cache/cs-sandbox/renewer` has the same shape and had 5 stale roots on this host. It holds a pid file and a log and grows more slowly. It is not part of this record.",
+  "notes": [],
+  "links": [
+    "SBX-046"
+  ]
+}
