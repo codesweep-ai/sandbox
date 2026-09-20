@@ -33,6 +33,10 @@
     {
       "date": "2026-09-20",
       "text": "A failed turn still prints the session id. The TUI outlives the failure, so the caller can send the prompt again to the same session and does not need a restart."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The driver has now been run against a real codex TUI in a sandbox, with a rate limit injected by `cs-sandbox lender fault`. It exited 5 after 32 seconds with `failure class=throttled retry_after=2`, and it printed the session id. A second turn sent to that session with `--uuid` met a throttle that cleared, exited 0 with the answer, and left one session file."
     }
   ],
   "links": [

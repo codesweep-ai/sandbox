@@ -45,6 +45,18 @@
     {
       "date": "2026-09-20",
       "text": "The budget applies only where the wrapper declares the provider, which is when `OPENAI_BASE_URL` is set. A sandbox on a direct key uses codex's built-in provider and keeps codex's defaults."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "A real codex TUI sends two requests for each attempt, where the earlier stub run with `codex exec` showed one."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The budget of 12 had a cost the first measurements missed, and the default is now 10. Codex spends the same counter on a `401 Unauthorized`, doubling its wait from 0.2 seconds. Measured with codex 0.152.1 against a stub that answers 401: the turn failed after 7 seconds at the default of 5 retries, and after 782 seconds at 12. In that run the eleventh request went out at 203 seconds, which is where a budget of 10 ends. SBX-057 holds the defect and the change."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "At 10 retries a throttle that asks for 12 seconds is waited out for about two minutes. That is the low end of the two or three minutes this record asked for. A key that is throttled often can raise `CS_CODEX_STREAM_MAX_RETRIES`, at the price of a slower failure on a bad credential."
     }
   ],
   "links": [

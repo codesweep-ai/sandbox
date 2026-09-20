@@ -39,6 +39,10 @@
     {
       "date": "2026-09-20",
       "text": "This record stays open for its first half, pacing a key's traffic and absorbing a throttle in the lender. That half needs a design for the budget, and nothing of it is built."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "Fault injection has now carried a whole rehearsal with no provider call. One sandbox with a lent key met an in-stream rate limit past the retry budget, then a throttle that cleared into a hand-written answer. `test/faults/` ships both bodies, and the manual has the recipe. Injected calls are logged with their method and path, which is how the two requests per attempt were seen."
     }
   ],
   "links": [

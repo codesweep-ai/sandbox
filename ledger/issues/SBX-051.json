@@ -29,6 +29,10 @@
     {
       "date": "2026-09-20",
       "text": "`retry_after` is `-` for every failure seen. Claude Code's message names no wait, and it does not record the provider's header."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The live check for this record set `CLAUDE_CODE_MAX_RETRIES=2` to keep the runs short. With Claude Code's own default of ten retries the driver's stall watchdog ends the turn first, with exit 2, and this fix is never reached. SBX-058 holds that."
     }
   ],
   "links": [
