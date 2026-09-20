@@ -3,17 +3,19 @@
   "title": "cs-claude-turn reports a turn that Claude Code is still retrying as stalled",
   "type": "defect",
   "severity": "high",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "user question (host): \"you have to test this across all three agent's right?\", answered by running all three turn drivers against an injected 429",
   "opened": "2026-09-20",
-  "resolved": null,
+  "resolved": "2026-09-20",
   "stint": "v4",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "5b7a7a5"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "go test ./internal/cli/ -run TestClaudeTurnWaitsOutClaudesOwnRetries -count=1: PASS, and it exits 2 with the change reverted. Live, under an injected 429 with Claude Code's default retries, the driver exited 5 with `class=throttled` after 228 seconds. Before the change it exited 2, stalled, at 181 seconds."
   },
-  "resolution": null,
+  "resolution": "`cs-claude-turn` reads a pane that shows `Retrying in <n>s · attempt <n>/<m>` as working, so the stall watchdog leaves a retrying turn alone.",
   "details": "Claude Code 2.1.258 has its own retry, and with its defaults it tries a `429` ten times. It waits the provider's `Retry-After` and then longer, about 3 minutes 40 seconds in all. While it waits, the pane reads `429 … · Retrying in 14s · attempt 10/10`, the session file does not grow, and the words `esc to interrupt` are absent. `cs-claude-turn` reads that pane as `ready`. Its stall watchdog then ends the turn after 180 seconds with exit 2 and `turn stalled`.\n\nMeasured on a sandbox with a lent key and `cs-sandbox lender fault --status 429 --retry-after 12`. The exit status of the driver was 2, at 181 seconds. Claude Code wrote its flagged error message and the `turn_duration` marker at 218 seconds, to a driver that had gone.\n\nA caller is told that a throttled member stalled, while the member is still working in its TUI. A fleet harness answers a stall with a restart, which re-sends the whole context into the limit. That is the outcome SBX-044 and SBX-051 were filed to prevent. The fix for SBX-051 was verified with `CLAUDE_CODE_MAX_RETRIES=2`, which ends before the watchdog, so it did not meet this.\n\n`cs-codex-turn` is not affected, because codex shows `esc to interrupt` while it reconnects. `cs-opencode-turn` waits on the client's exit and has no such watchdog. Under the same fault it exited 5 after 64 seconds and 9 requests.",
   "notes": [],
   "links": [

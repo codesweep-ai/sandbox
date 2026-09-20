@@ -3,22 +3,34 @@
   "title": "Codex and Claude Code retry a rejected credential for minutes, and the turn drivers wait with them",
   "type": "defect",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, running a real codex TUI against injected faults after the fix for SBX-045. User questions (host) drove the rest: \"7mins is a long time to wait\", and \"no point waiting for 12mins if we have invalid creds\"",
   "opened": "2026-09-20",
-  "resolved": null,
+  "resolved": "2026-09-20",
   "stint": "v4",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "6aa8f6b",
+      "82ec1e5"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "go test ./internal/cli/ -run 'TestCodexTurnCutsShort|TestClaudeTurnCutsShort' -count=1: PASS, 6 cases, and a 503 and a 429 retry are still waited out. Live, one sandbox lending all three providers with `cs-sandbox lender fault --status 401` armed. `cs-codex-turn` exited 5 with `class=unauthorized` after 7 seconds, and `cs-claude-turn` after 3 seconds. A second turn to the same codex session exited 0. A second Claude turn resumed the same conversation, with one session file that still held the first turn's prompt."
   },
-  "resolution": null,
+  "resolution": "Both turn drivers read the refusal off the agent's pane while it retries, and report exit 5 with `class=unauthorized` within seconds. `cs-codex-turn` sends Esc, and the session stays up. `cs-claude-turn` ends the TUI, and the next turn resumes the conversation. Codex's default budget also went from 12 to 10, which bounds every other failure that names no wait at 3.4 minutes.",
   "details": "A rejected credential does not get better with waiting, and two of the three agents wait anyway. Neither treats a `401` apart from a failure that waiting can fix, and neither has a setting for it.\n\nCodex keeps one retry count for every failure. A failure that names no wait doubles codex's own from 0.2 seconds. SBX-045 raised that count from 5 to 12 so that a rate limit is waited out, and a `401` spends the same count. Measured with codex 0.152.1 against a stub that answers 401: the turn failed after 7 seconds at 5 retries, and after 782 seconds at 12. Codex writes nothing to the rollout while it waits.\n\nClaude Code 2.1.258 has its own retry, and with its defaults it tries a `401` ten times. Under an injected 401 it sent ten requests over 2 minutes 27 seconds, and the pane then read `attempt 10/10` with a wait still to run.\n\nOpenCode 1.18.22 gave up on the same fault after 3 seconds and 2 requests, and `cs-opencode-turn` exited 5.\n\nThe failure is reported correctly in the end, as exit 5 with `class=unauthorized`. It is reported minutes late, and a caller whose timeout is shorter sees a timeout. The cases that reach a guest as a 401 are an expired host login, which SBX-030 holds, a revoked key, and a loan the lender no longer knows.\n\nTo reproduce, create a sandbox with a lend flag, arm `cs-sandbox lender fault <name> --status 401 --count 500`, and run one prompt through the agent's turn driver.",
-  "notes": [],
+  "notes": [
+    {
+      "date": "2026-09-20",
+      "text": "Esc was tried for Claude Code first and did not work. The sandbox's Claude runs in vim mode, where the first Esc only leaves insert mode. The second one interrupts, and it puts the prompt back in the input box. A Claude left retrying writes its completion marker into the next turn."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The drivers match text that codex 0.152.1 and Claude Code 2.1.258 print. When an agent changes that text the match stops, and the turn waits out the agent's own retries as before. It still ends as exit 5 with the same class."
+    }
+  ],
   "links": [
-    "SBX-045",
     "SBX-030",
+    "SBX-045",
     "SBX-058"
   ]
 }
