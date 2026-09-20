@@ -681,6 +681,25 @@ Some providers report a rate limit inside a `200` stream and not as a `429` stat
 treat the two differently. Codex retries the first and gives up at once on the second. Reproduce the
 first with `--status 200 --content-type text/event-stream --body-file` and the provider's own event.
 
+`test/faults/` holds bodies for a rehearsal. Two are for the OpenAI Responses stream.
+`openai-rate-limit.sse` is a `response.failed` event with a rate limit that asks for 12.5 seconds,
+and `openai-ok.sse` is a whole answer. `anthropic-ok.sse` is a whole answer for the Anthropic
+Messages stream. All are written by hand to the provider's shape, and none was captured from one.
+Faults are served in the order they were armed, so a throttle that clears is the first followed by
+the second, and the provider is never called:
+
+```bash
+cs-sandbox lender fault worker-01 --status 200 --content-type text/event-stream \
+    --body-file test/faults/openai-rate-limit.sse --count 6
+cs-sandbox lender fault worker-01 --status 200 --content-type text/event-stream \
+    --body-file test/faults/openai-ok.sse --count 50
+```
+
+Count calls, not attempts. Codex 0.152.1 sends two requests for each attempt, and it makes 11
+attempts before it fails a call under the budget `cs-codex` gives it. Six calls are therefore
+three throttled attempts, and 22 fail one call. Each injected call is logged with its method and path, so
+the lender's log says what an agent sent.
+
 An injected answer carries an `X-Cs-Sandbox-Fault` header, and the lender logs each one. The lender
 counts served calls in memory, so restarting a lender serves an armed fault again from the start.
 Destroying the sandbox removes its faults.

@@ -1,0 +1,3 @@
+event: response.failed
+data: {"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5 on tokens per min (TPM): Limit 500000, Used 498000, Requested 14000. Please try again in 12.5s."}}}
+
