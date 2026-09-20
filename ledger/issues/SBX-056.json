@@ -1,0 +1,23 @@
+{
+  "id": "SBX-056",
+  "title": "Nothing inside a sandbox says whether an agent is in the middle of a turn, so a caller can only ask whether a turn driver is alive",
+  "type": "improvement",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent maintaining a harness that computes each member's state from inside its sandbox",
+  "opened": "2026-09-20",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "**The gap.** A harness that drives agents through `cs-<cli>-remote` needs to know whether a member is working. The only signal it has from inside the sandbox is the process table: is a `cs-<cli>-turn` driver alive for that CLI family? A driver wraps a turn that the host started, and it exits when that turn ends.\n\n**Where that goes wrong.** An agent CLI can start a turn of its own. A Claude Code session left a background command running and ended its turn, so the driver exited. When the command finished, the CLI's runtime delivered the result to the session as a new turn, and the session worked for forty more minutes. No driver wrapped that turn. The harness reported the member as stopped for all of it, and offered to nudge a session that was busy.\n\n**The knowledge already exists here.** Each turn driver decides whether its agent is still working, and none of them rests on its own presence to do it. `cs-claude-turn` and `cs-codex-turn` classify the TUI screen, where `esc to interrupt` means working. `cs-opencode-turn` asks the server, where a present `/session/status` entry means busy. That logic sits inside the drivers, so it only runs while a driver runs.\n\n**What is asked for.** A small command in the image that answers whether the agent is in a turn right now, whoever started the turn. It could be one command for each family, or one that takes the family. It should take the session name, as `cs-<cli>-remote-status` does. It should print one word, such as `busy`, `idle` or `absent`, and exit 0 for all three. A caller can then run it inside one probe and parse the answer. It should be cheap enough to run every few seconds, and it must never start or wake a session. The drivers could then use the same code, so the two answers cannot disagree.\n\n**Why a file's age is not enough.** A caller can read the age of the session record, and one harness now prints it beside the state as evidence. It cannot decide the state. An agent that is blocked in one long tool call writes nothing to its record, and its turn is very much alive. The screen and the server know that, and a file does not.\n\n**How to see the gap.** In a sandbox, start a Claude Code session through `cs-claude-remote`. Have it run a long command in the background and end its turn. When the command finishes, the session goes on working, and `pgrep -f cs-claude-turn` finds nothing.",
+  "notes": [],
+  "links": [
+    "SBX-044",
+    "SBX-051"
+  ]
+}
