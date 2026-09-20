@@ -3,18 +3,37 @@
   "title": "A sandbox carries the operator's git name and address, and nothing turns that off",
   "type": "improvement",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent working in the tour repository, which records and replays a three member campaign through cs-vcr, after a recording was found to hold the operator's name and address",
   "opened": "2026-09-19",
-  "resolved": null,
+  "resolved": "2026-09-20",
   "stint": "v2-fixes",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "e681a05"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "go test ./internal/spec/ ./internal/engine/ -run 'TestParseIdentity|TestANamedOrAbsentIdentity|TestTheSeedCarries' -count=1: PASS. Live, on podman with a `--repo` clone. With `--git-identity none`, the global configuration and the clone held no name or address. With a named identity they held that one. With `host` they held the operator's, as before. A value that is none of the three was refused before anything was provisioned."
   },
-  "resolution": null,
+  "resolution": "`create --git-identity` takes `host`, `none` or `\"Name <address>\"`. It decides the global git identity in the seed and the one each `--repo` clone is set to, on both engines. With `none` or a named identity the host's git configuration is not read. The README names the exception to its promise, and SPEC R3, R12, R67 and R68a carry the rule.",
   "details": "Every sandbox is given the host's git identity. SPEC.md requires it: the seed carries `the host's git identity`, and the guest's global `~/.gitconfig` is seeded from the host's. `image/guest/init` and `image/rootfs/entrypoint` both do it. No flag and no variable turns it off.\n\nThat is right for a developer's own sandbox, where commits should be theirs. It has two costs when the agent's session is kept or published.\n\nThe first is a recording. An agent that runs `git config --list`, or reads `~/.gitconfig`, puts the operator's real name and address into a tool result. The tool result becomes part of every later request in that conversation. In one recorded campaign an agent's look at its git configuration put the operator's name into 54 cassette files and the address into 49. It was met by chance, because a brief line about git identity made the developer agent look. The recording before it was clean only because no agent happened to look.\n\nThe second is the README's promise. It says `Nothing on the host is shared unless you ask: not your files, not your SSH keys, and not the LLM provider keys you pay with.` A name and an address are shared without asking, and the sentence does not say so.\n\nThe tour works around it from outside. It sets `GIT_AUTHOR_*` and `GIT_COMMITTER_*` in the campaign profile, so commits carry a neutral identity, and it blanks the operator's name and address in the proxy that records. Neither removes the values from the guest's `~/.gitconfig`, where any agent can still read them.\n\nAn option to seed no identity, or a named one, would close this at the source. The README could say that the git identity is shared.\n\nTo reproduce, run `cs-sandbox create probe`, then `cs-sandbox exec probe -- git config --global --list`.",
-  "notes": [],
+  "notes": [
+    {
+      "date": "2026-09-20",
+      "text": "The default stays `host`, so an existing caller sees no change. The record leaves the default open. A developer's own sandbox should commit as them, and SPEC R68 requires it, so withholding the identity is the choice that takes a flag."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The flag covers more than the record reproduced. Each `--repo` clone is also set to the host's identity for that repo, by R67, and the flag decides that one too."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "With `none`, git refuses to commit until an identity is set inside the sandbox. A recorded run that commits wants a named identity. That also replaces the `GIT_AUTHOR_*` and `GIT_COMMITTER_*` variables the tour sets from outside."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "Two things still carry the operator into a sandbox, and no flag here removes them. The history of a repo shared with `--repo` holds its authors' names and addresses, and `git log` prints them. The sandbox's user is named after the host's user, so the home directory path carries that name. A recording proxy still has reason to blank them."
+    }
+  ],
   "links": []
 }

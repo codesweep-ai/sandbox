@@ -1,7 +1,11 @@
 {
-  "recommendedBy": "session agent, re-triaging after the campaign and tour findings of 2026-09-20",
+  "recommendedBy": "session agent, after landing the campaign and tour findings of 2026-09-20",
   "updated": "2026-09-20",
   "items": [
+    {
+      "id": "SBX-047",
+      "why": "Two fleets on one key still fight for it, and a bare 429 ends a codex turn at once. Only the lender can pace or absorb that."
+    },
     {
       "id": "SBX-031",
       "why": "An intermittent stall reds main CI, and nothing yet says whether the guest or its ssh died."
