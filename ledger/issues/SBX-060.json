@@ -3,19 +3,27 @@
   "title": "A turn's end is written only to the caller's output, so nothing on the agent's own machine says how its last turn ended",
   "type": "improvement",
   "severity": "high",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, maintainer of this repository and of a harness that drives these tools, while designing how that harness should read a failure class",
   "opened": "2026-09-20",
-  "resolved": null,
-  "stint": "reliability-2026-09",
+  "resolved": "2026-09-20",
+  "stint": null,
   "evidence": {
-    "commits": [],
+    "commits": [
+      "fc37321",
+      "b16ae35"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "`go test ./internal/cli/ -count=1` passes with the new `turn_log_test.go`. The provider failure tests for all three drivers fail against the old drivers with `ended a turn and left no line`. In real sandboxes, a codex turn refused with an injected rate limit left `5 throttled 12.5 turn failed: rate limit exceeded` in `~/.cs-turns/codex.log`. An opencode turn left `5 throttled 7`, and a successful turn left `0 - - -`. A fleet harness read those lines through its probe and waited the throttle out. Claude was checked by unit test only, because the host's login had expired."
   },
   "resolution": null,
   "details": "**What is missing.** The turn drivers now say why a turn ended. `cs-codex-turn` and `cs-claude-turn` exit 5 and print `failure class=<class> retry_after=<secs>` (SBX-044, SBX-051). That line goes to the driver's standard error. With `cs-<cli>-remote -b` it ends up in a log file on whichever machine started the turn. Nothing is left on the machine where the agent runs.\n\n**Why that is the wrong place for a harness.** A harness that supervises many agents asks each agent's machine about that agent, in one round trip. That is how it already learns whether an agent is in a turn (`--state`, SBX-056). The reason a turn ended is a fact of the same kind, and today it cannot be asked for there. The machine that started the turn may be a different one for every agent. It may be another sandbox, and it may be gone. A harness that wants the reason has to find the right log on the right machine and parse a line meant for a person. One such harness does not read the reason at all. It treats a throttled agent as one that stopped, and it restarts the agent into the same rate limit.\n\n**What is asked for.** Each driver appends one line to a turn log in the agent's home when a turn ends, for every exit code and not only 5. The line holds:\n\n- when the turn ended, in epoch seconds;\n- the driver's exit code;\n- the failure class, or `-` when there is none;\n- the provider's requested wait, or `-`;\n- the first line of the provider's message, or of the driver's own error.\n\nThe log is append-only and bounded, so an old line is dropped and never rewritten. One format serves all three agent families, so a caller needs no knowledge of which CLI wrote it. A successful turn is recorded too. A caller can then tell that the newest turn ended well and that an older failure no longer applies.\n\n**What it must not do.** It must not change any exit code or any line the drivers print today. `--state` must not write to it, because asking is not a turn. A driver that cannot write the log must still finish the turn and report it as before.\n\n**How to see the gap.** Run a turn that the provider refuses, using `cs-sandbox lender fault <name> --status 429`. The caller is given exit 5 and the class line. Then look in the sandbox for any trace of how that turn ended. There is none outside the agent's own session record, which has a different format for each CLI.",
-  "notes": [],
+  "notes": [
+    {
+      "date": "2026-09-20",
+      "text": "The log is written by an EXIT trap in each driver, so every exit path is covered by one piece of code. `--state`, `--help` and a usage error write nothing. A driver that is killed writes nothing, so a missing line means the ending is not known. The file keeps between 200 and 400 lines, and `CS_TURN_LOG` names another path."
+    }
+  ],
   "links": [
     "SBX-044",
     "SBX-051",

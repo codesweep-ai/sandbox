@@ -3,15 +3,18 @@
   "title": "A remote tool deploys the turn driver from the caller's home, so an older install there silently replaces a newer image's driver",
   "type": "defect",
   "severity": "high",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, maintainer of this repository, during a live check of a sandbox built from a newer checkout on a host that also had an older install of the tools",
   "opened": "2026-09-20",
-  "resolved": null,
-  "stint": "reliability-2026-09",
+  "resolved": "2026-09-20",
+  "stint": null,
   "evidence": {
-    "commits": [],
+    "commits": [
+      "e2233f0",
+      "6ebe054"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "`TestRemoteDeploysTheDriverItShipsWith` passes for all three families. Against the old tools it fails with `deployed \"# STALE\"`. In a real sandbox, with an older `cs-codex-turn` in the caller's `~/.local/bin`, a turn started with the newer tools from their own directory. The guest's driver answered `--state` afterwards and wrote its turn log. Before the change the same turn had replaced the guest's driver with the older one."
   },
   "resolution": null,
   "details": "**What happens.** `cs-codex-remote`, `cs-claude-remote` and `cs-opencode-remote` copy a turn driver into the machine they drive before every turn, whenever its checksum differs from theirs. The copy replaces whatever driver is there. The driver they send is `$HOME/.local/bin/cs-<cli>-turn` on the calling machine, wherever the remote tool itself was run from.\n\n**Why that is wrong.** A remote tool and its driver are one version of one thing. They ship together and are installed side by side. The caller's home is a different place with its own history. A host can hold an older install in `~/.local/bin` and also run newer tools from a pinned directory, which is what a project that pins its tools does. The newer remote tool then sends the older driver. The machine ends up with a driver that matches neither its image nor the tool that started the turn.\n\n**What it looked like.** A sandbox was built from a checkout whose drivers know `--state` and write a turn log. The image held those drivers, checked by reading the file in the guest. One turn was started from the host with the newer `cs-codex-remote`, run from its own directory. After that turn the guest's driver no longer knew `--state`, and no turn log was written. The file had been replaced with the host's older copy. The turn succeeded, and nothing anywhere said the driver had changed.\n\n**Why it matters more for a fleet.** A harness starts its supervisor's turns from the host, and the supervisor starts the workers' turns from inside its own sandbox. So the supervisor runs the host's driver and the workers run the image's. Two driver versions then sit in one fleet. Which failures each member can classify, and whether it can report that it is in a turn, depends on what somebody installed on the host months ago.\n\n**How to reproduce.** Put an older `cs-codex-turn` in `~/.local/bin`. Install newer tools in another directory and put it first on `PATH`. Create a sandbox from the newer image and run one turn with `cs-codex-remote -H <sandbox>`. Compare the checksum of `~/.local/bin/cs-codex-turn` in the guest before and after.\n\n**What would fix it.** Send the driver that sits beside the remote tool. Fall back to `~/.local/bin` only when there is none beside it, and keep `CS_<CLI>_TURN_SRC` as the explicit override.",
