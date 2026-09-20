@@ -2031,6 +2031,9 @@ case "$*" in *.lock) : >> `+contended+` ;; esac
 exit $rc
 `)
 			writeStub(t, bin, "uuidgen", "#!/bin/sh\necho 11111111-2222-3333-4444-555555555555\n")
+			// The remote tool now sends the driver that sits beside it, so there is one to
+			// send here, where there used to be none in the test's empty home.
+			writeStub(t, bin, "scp", "#!/bin/sh\nexit 0\n")
 
 			first := make(chan string, 1)
 			go func() {
