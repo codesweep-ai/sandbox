@@ -3,11 +3,11 @@
   "title": "cs-claude-turn has no exit code for a turn the provider ended, and what claude records for one has not been observed",
   "type": "improvement",
   "severity": "med",
-  "status": "open",
+  "status": "in-progress",
   "foundBy": "session agent, while fixing SBX-044, which names this driver as having the same shape",
   "opened": "2026-09-20",
   "resolved": null,
-  "stint": null,
+  "stint": "v2-fixes",
   "evidence": {
     "commits": [],
     "integrated": [],
