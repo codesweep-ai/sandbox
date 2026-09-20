@@ -30,7 +30,7 @@ func readTurnLog(t *testing.T, home, family string) []turnLine {
 		t.Fatal(err)
 	}
 	var lines []turnLine
-	for _, raw := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+	for raw := range strings.SplitSeq(strings.TrimRight(string(b), "\n"), "\n") {
 		f := strings.SplitN(raw, " ", 5)
 		if len(f) != 5 {
 			t.Fatalf("turn log line has %d fields, want 5: %q", len(f), raw)
