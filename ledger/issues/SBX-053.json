@@ -3,19 +3,26 @@
   "title": "Kept lender logs pile up for instance roots and groups that no longer exist",
   "type": "defect",
   "severity": "low",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, checking the host for leftovers after the fix for SBX-046 had been through `make ci` four times",
   "opened": "2026-09-20",
-  "resolved": null,
+  "resolved": "2026-09-20",
   "stint": "v2-fixes",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "421b162"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "go test ./internal/cli/ -run 'TestStaleLenderLogs|TestStoppingALender' -count=1: PASS. A 30 day old log under another root went with its emptied directories, a day old log of another group stayed, and the log just kept was there."
   },
-  "resolution": null,
+  "resolution": "When a lender's log is kept, every kept log older than 14 days is removed across all roots and groups, with the directories that empties. The 6 directories the gate runs had left on this host were removed by hand.",
   "details": "SBX-046 made the host keep a lender's log under `~/.cache/cs-sandbox/lender-logs/<root>/<group>/`, and keep the newest 20 in each group's directory. Nothing removes a directory whose instance root or group is gone. Four runs of `make ci` left 6 directories there, one for each throwaway root the smoke tests made. A host that runs the tests, or makes groups with generated names, grows that tree without limit.\n\nTo reproduce, run `make test-smoke` twice and list `~/.cache/cs-sandbox/lender-logs`.\n\nThe renewer's per-root directory under `~/.cache/cs-sandbox/renewer` has the same shape and had 5 stale roots on this host. It holds a pid file and a log and grows more slowly. It is not part of this record.",
-  "notes": [],
+  "notes": [
+    {
+      "date": "2026-09-20",
+      "text": "The smoke tests still write kept logs into the real cache, because they set the instances root and not `CS_SANDBOX_HOME`. The sweep bounds that at 14 days of runs. Pointing the tests at a cache of their own would stop it at the source."
+    }
+  ],
   "links": [
     "SBX-046"
   ]
