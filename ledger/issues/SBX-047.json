@@ -19,6 +19,10 @@
     {
       "date": "2026-09-20",
       "text": "The `details` text was copy-edited so the repository's prose gate passes: long sentences were split and em-dashes removed, and no claim was changed. The text as filed is in commit c059533."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "This was measured while fixing the retry budget in SBX-045. Codex 0.152.1 never retries an HTTP 429 status, whatever its retry counts say. It retries only a rate limit delivered inside the response stream. A provider or gateway that throttles with a bare 429 ends a codex turn at once, and the lender is the only place that can absorb it."
     }
   ],
   "links": [

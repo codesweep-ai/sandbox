@@ -3,22 +3,48 @@
   "title": "The cs-codex wrapper gives codex no retry budget, so a rate limit that asks for seconds ends the turn in about a minute",
   "type": "improvement",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent operating two eight-member campaigns side by side on one host, reading every member's own CLI session records and the lender containers' logs after both campaigns had ended",
   "opened": "2026-09-20",
-  "resolved": null,
+  "resolved": "2026-09-20",
   "stint": "v2-fixes",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "aa6893c"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "go test ./internal/cli/ -run TestCodexWrapperForwardsABaseURL -count=1: PASS, 6 cases. In the sandbox-slim image, the new wrapper and codex 0.152.1 made 13 requests against a stub that throttles inside the stream. That is 1 request and 12 retries, where codex's default made 6."
   },
-  "resolution": null,
+  "resolution": "`cs-codex` puts `stream_max_retries=12` on the provider it declares. `CS_CODEX_STREAM_MAX_RETRIES` and `CS_CODEX_REQUEST_MAX_RETRIES` override the two counts, and an empty value leaves a count to codex.",
   "details": "**What happened.** Under a provider's tokens-per-minute limit, every failing codex turn shows the same shape in its rollout: about five attempts some 13 seconds apart, then the turn ends with `rate limit exceeded … Please try again in 12.52s`. The provider was asking for 6 to 18 seconds. A member that had waited two or three minutes would not have failed the turn at all. A failed turn is expensive. It loses the turn's uncommitted work, and in a campaign it starts a recovery ladder that re-sends the whole context (the campaign ledger's SAC-034).\n\n**Why.** For a lent or proxied key the `cs-codex` wrapper passes codex one provider entry:\n\n    model_providers.cs-proxy={name=\"cs-proxy\", base_url=\"$OPENAI_BASE_URL\", <auth>, wire_api=\"responses\"}\n\nIt sets no retry count and no stream retry count, and the seeded `config.toml` sets the model, the effort and the approval policy and nothing about retries. So codex runs on its defaults, and the five attempts in the records are those defaults. Codex documents per-provider `request_max_retries`, `stream_max_retries` and `stream_idle_timeout_ms`.\n\n**What is asked for.** A retry budget on that entry sized for an agent that is unattended for hours, where waiting is nearly free and a failed turn is not. It should be overridable, because the right number depends on the key's tier. Whether codex also honours the provider's retry-after between attempts was not established and is worth checking while here.\n\n**Not verified.** That raising these values changes the outcome under a real limit. It follows from the records and from codex's documentation, and it has not been tried. SBX-044 is needed either way: a longer budget makes the failure rarer, not visible.",
   "notes": [
     {
       "date": "2026-09-20",
       "text": "The `details` text was copy-edited so the repository's prose gate passes: long sentences were split and em-dashes removed, and no claim was changed. The text as filed is in commit c059533."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "These figures were measured with codex 0.152.1 against a stub provider. A rate limit delivered inside the response stream is retried `stream_max_retries` times, 5 by default, and codex waits the delay the provider's message names. That matches the five attempts in the campaign's records. An HTTP 429 status is never retried: with `request_max_retries=10` codex still made one request. A 503 is retried by both counts multiplied, 30 requests at the defaults. Codex stops counting stream retries at 100."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The record's open question has an answer. Codex honours the wait in the provider's message, and it ignores the `Retry-After` header."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The fix differs from what was asked. The record asks for a request retry count and a stream retry count. Only the stream count gets a default, because it is the one a rate limit spends. The request count does nothing for a 429 and multiplies the load on a 503, so it is passed only when set."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The default is 12 and not higher for a measured reason. When a failure names no wait, codex doubles its own from 0.2 seconds with no cap. Twelve retries of a dead stream take about 14 minutes, and 14 retries take 55, which is past the turn driver's 30 minute timeout. With a named wait of 12 seconds, twelve retries last about two and a half minutes."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The TUI shows `Reconnecting... 8/12` with `esc to interrupt` while it waits. `cs-codex-turn` reads that as working, so its stall watchdog does not end a turn that is retrying."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The budget applies only where the wrapper declares the provider, which is when `OPENAI_BASE_URL` is set. A sandbox on a direct key uses codex's built-in provider and keeps codex's defaults."
     }
   ],
   "links": [

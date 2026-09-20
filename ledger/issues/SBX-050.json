@@ -1,0 +1,20 @@
+{
+  "id": "SBX-050",
+  "title": "build --local-sandbox fails from a git worktree, and so do two unit tests",
+  "type": "defect",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "session agent, running `make check` from a git worktree while fixing SBX-044",
+  "opened": "2026-09-20",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`make check` failed in a checkout made with `git worktree add`. Two tests were the failures, `TestLocalModuleProxyInstallsAnUnpushedRevision` and `TestLocalSandboxMountsTheProxyAndOverridesGOPROXY`. The error from both was `could not find a recognized version control system`. The same commit passed from an ordinary clone.\n\nThe local module proxy zips the repository with Go's module zip code, which looks for a `.git` directory. In a worktree `.git` is a file that points at the main checkout. `cs-sandbox build --local-sandbox` takes the same path, so it fails for anyone who works from a worktree.\n\nTo reproduce, run `git worktree add ../wt origin/main`, then `go test ./internal/cli/ -run TestLocalModuleProxy` in `../wt`.\n\nResolving the worktree's real git directory before zipping would fix it. `git rev-parse --git-common-dir` names it.",
+  "notes": [],
+  "links": []
+}

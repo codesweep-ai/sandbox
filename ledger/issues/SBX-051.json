@@ -1,0 +1,22 @@
+{
+  "id": "SBX-051",
+  "title": "cs-claude-turn has no exit code for a turn the provider ended, and what claude records for one has not been observed",
+  "type": "improvement",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent, while fixing SBX-044, which names this driver as having the same shape",
+  "opened": "2026-09-20",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`cs-claude-turn` documents *0 ok, 2 turn timed out, 3 launch/setup failure, 1 usage/other*. It has no code for a turn the provider refused. `cs-opencode-turn` exits 5 for that, and `cs-codex-turn` does too since SBX-044.\n\nNobody has yet observed what Claude Code writes to its session JSONL when a provider ends a turn with a rate limit or an outage. The codex fix began by producing that record against a stub provider, and this one should begin the same way. Point `ANTHROPIC_BASE_URL` at a stub that answers 429, run one prompt through `cs-claude-turn`, and read the last entries of the session file.\n\nIt matters for the same reason as SBX-044. A fleet harness that reads a refused turn as a finished one restarts a healthy member into the limit that refused it.",
+  "notes": [],
+  "links": [
+    "SBX-044"
+  ]
+}

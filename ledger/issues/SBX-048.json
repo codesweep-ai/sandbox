@@ -3,19 +3,38 @@
   "title": "doctor reports an upstream that answered as one that does not answer, and its probe reaches every group on the host",
   "type": "defect",
   "severity": "high",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent replaying a multi-member campaign through cs-vcr, several replays at a time on one shared host",
   "opened": "2026-09-20",
-  "resolved": null,
+  "resolved": "2026-09-20",
   "stint": "v2-fixes",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "d7fca43"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "go test ./internal/cli/ -run TestReach -count=1: PASS, 4 cases. In the sandbox-slim image the same command returned 0 for a listener that answers every request with 429, and the listener logged 0 requests. It reported `connection refused` for a closed port and `name or service not known` for an unknown host. It gave up after 5s on an address that never answers."
   },
-  "resolution": null,
+  "resolution": "doctor asks the lender's container to open a connection to each upstream, and it sends no request. A connection that opens counts as reachable. The lender's own health endpoint keeps `curl -f`, where anything but a 200 is a failure.",
   "details": "**What happened.** Several campaigns were replayed at once on one host. Each used a `cs-vcr` proxy as the upstream of its lent credential. One person ran `cs-sandbox doctor`. For the members of every one of those campaigns it printed a line of this form: `NO  <member> sends its <slot> traffic to <upstream>, which does not answer: curl: (22) The requested URL returned error: 400`. The upstream had answered, with a 400. The hint printed under it, to use `host.containers.internal` and not `127.0.0.1`, did not apply either.\n\n**Why.** `lenderBox.probe` in `internal/cli/lend_box.go` runs `curl -fsS -o /dev/null -m 5` on the upstream address from inside the lender. The `-f` flag turns any status of 400 or more into a failure. The question the probe asks is whether the lender can reach the upstream, and any HTTP answer at all proves that it can. A provider's base address often answers a bare GET with 401, 404 or 405, so a healthy real upstream can read as unreachable too.\n\n**Why it matters.** The probe is a real request, and `doctor` sends it for every group on the host, including groups that belong to other people. A recording proxy counts such a request as one the recording never held, and a replay that had served every recorded call then fails. VCR-027 asks for the proxy's side of this to change. A `NO` on somebody else's sandbox also makes your own `doctor` end with a failure.\n\n**What is asked for.** Drop `-f`, so that a connection that completes counts as reachable whatever the status, and report the status beside it. Consider a HEAD or an OPTIONS request, which a recorder is less likely to take for a client's call. Consider limiting the upstream probe to the caller's own groups, or marking a line about another person's group as information.\n\n**How to reproduce.** Create a sandbox with `--lend-api-key` and an upstream that answers 400 to a GET on its base address. Run `cs-sandbox doctor`. It prints `does not answer` beside the 400.",
-  "notes": [],
+  "notes": [
+    {
+      "date": "2026-09-20",
+      "text": "The fix differs from what was asked in three places. The record asks to drop `-f` and to print the status. The check now sends no request at all, so there is no status to print. A connection that opens already answers whether the lender can reach the upstream."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "HEAD and OPTIONS were not used, because a recorder may count those too. A connection that carries no request leaves a recorder nothing to count. As far as doctor is concerned, the recorder no longer needs the change VCR-027 asks for."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The check still covers every group on the host. Nothing in the state records who owns a group, so there is no caller's own set to limit it to. A check that sends nothing costs another group nothing. A `NO` beside another group's upstream now means its lender cannot connect, which is worth seeing on a shared host."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The hint about `host.containers.internal` now appears only when a connection fails, which is the one case it applies to."
+    }
+  ],
   "links": [
     "SBX-046"
   ]
