@@ -21,7 +21,15 @@
 set -euo pipefail
 
 REMOTE_DRIVER="cs-codex-turn"
-DRIVER_SRC="${CS_CODEX_TURN_SRC:-$HOME/.local/bin/cs-codex-turn}"
+# The driver that goes to the remote is the one this tool shipped with: the file beside it.
+# It is copied over whatever driver the remote holds, so a driver taken from anywhere else
+# can replace a newer image's own with an older one, and nothing says so. ~/.local/bin is
+# the fallback for a tool that was copied somewhere alone.
+DRIVER_SRC="${CS_CODEX_TURN_SRC:-}"
+if [[ -z "$DRIVER_SRC" ]]; then
+    DRIVER_SRC="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cs-codex-turn"
+    [[ -f "$DRIVER_SRC" ]] || DRIVER_SRC="$HOME/.local/bin/cs-codex-turn"
+fi
 SESSION_FILE="$HOME/.cs-codex-remote-session"
 SESSION_MAP_DIR="$HOME/.cs-codex-remote-sessions"
 LOG_DIR="$HOME/.cs-codex-remote-logs"

@@ -123,7 +123,9 @@ These tune the remote-delegation path; all are optional with sensible defaults:
 - `CS_CLAUDE_STALL_SECS` (default `180`, `0` disables) — the stall watchdog. A healthy in-progress turn keeps appending to the JSONL; if it stops growing **and** the remote TUI is no longer working before a `turn_duration` marker appears, the turn is declared stalled and returns early (exit 2) with a diagnostic instead of blocking for the full `--timeout`. Raise it for very tool-heavy turns that legitimately go quiet for long stretches.
 - `CS_CLAUDE_LOCK_WAIT` (default `900`s) — how long a turn waits to acquire the per-session lock before giving up. Turns are serialized per session so two callers cannot interleave keystrokes. The lock is a directory naming the process that holds it, so a lock left behind by a hard-killed turn is not waited on at all: the next call sees that the owner is gone and takes it. Reaching this limit therefore means a live turn is still holding the session.
 - `CS_CLAUDE_MAX_LOG_BYTES` (default `1048576` = 1 MiB, `0` disables) — background (`-b`) logs roll over to `<log>.1` once they exceed this size, so a long-lived session's log can't grow unbounded. See `CS_CLAUDE_REMOTE_OUTPUT.md`.
-- `CS_CLAUDE_TURN_SRC` — override the local path of the `cs-claude-turn` driver that is deployed to the remote (see the driver note above).
+- `CS_CLAUDE_TURN_SRC` — override the local path of the `cs-claude-turn` driver that is deployed to the remote (see the driver note above). The default is the
+  driver beside `cs-claude-remote` itself, so a tool and its driver are always one version, and
+  `~/.local/bin` only when there is none beside it.
 - `CS_CLAUDE_REMOTE_HOST` — default SSH target host when neither `--host` nor a per-session stored host applies (see "Target SSH host"). Falls back to `hostname -s`.
 
 ## Is the agent in a turn

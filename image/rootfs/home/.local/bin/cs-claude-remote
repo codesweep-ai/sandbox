@@ -55,7 +55,15 @@ resolve_remote_host() {
 REMOTE_DRIVER="cs-claude-turn"
 # Source of the driver, scp'd to the remote on demand. Override with
 # CS_CLAUDE_TURN_SRC if your checkout lives elsewhere.
-DRIVER_SRC="${CS_CLAUDE_TURN_SRC:-$HOME/.local/bin/cs-claude-turn}"
+# The driver that goes to the remote is the one this tool shipped with: the file beside it.
+# It is copied over whatever driver the remote holds, so a driver taken from anywhere else
+# can replace a newer image's own with an older one, and nothing says so. ~/.local/bin is
+# the fallback for a tool that was copied somewhere alone.
+DRIVER_SRC="${CS_CLAUDE_TURN_SRC:-}"
+if [[ -z "$DRIVER_SRC" ]]; then
+    DRIVER_SRC="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/cs-claude-turn"
+    [[ -f "$DRIVER_SRC" ]] || DRIVER_SRC="$HOME/.local/bin/cs-claude-turn"
+fi
 
 usage() {
     cat <<'EOF'

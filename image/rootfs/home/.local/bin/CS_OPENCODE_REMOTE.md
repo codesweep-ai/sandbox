@@ -132,7 +132,9 @@ Each has its own reference next to the scripts in `~/.local/bin` — read it for
   process holding it, so one left behind by a hard-killed turn is taken rather than waited on;
   reaching this limit means a live turn still holds the session.
 - `CS_OPENCODE_MAX_LOG_BYTES` (default 1 MiB, 0 disables) — background log rollover to `<log>.1`.
-- `CS_OPENCODE_TURN_SRC` — local path of the `cs-opencode-turn` driver deployed to the remote.
+- `CS_OPENCODE_TURN_SRC` — local path of the `cs-opencode-turn` driver deployed to the remote. The default is the
+  driver beside `cs-opencode-remote` itself, so a tool and its driver are always one version, and
+  `~/.local/bin` only when there is none beside it.
 
 ## Is the agent in a turn
 
