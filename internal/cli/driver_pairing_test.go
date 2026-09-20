@@ -69,3 +69,47 @@ func TestRemoteDeploysTheDriverItShipsWith(t *testing.T) {
 		})
 	}
 }
+
+// TestRemoteDeploysWithoutMd5sum: macOS has no md5sum, and its own tool is `md5`. The deploy
+// step compares checksums before it copies the driver, and it named md5sum alone. That went
+// unseen while the step was skipped wherever no driver source was found. Once the driver
+// beside the tool was always found, every turn started from a Mac died with "md5sum: command
+// not found". This runs the tools on a PATH that holds everything but md5sum, which is a Mac
+// as far as this step can tell, and it runs on Linux so the next such slip is caught here.
+func TestRemoteDeploysWithoutMd5sum(t *testing.T) {
+	skipUnlessLinux(t)
+	// Everything in /usr/bin and /bin except md5sum, by symlink.
+	tools := t.TempDir()
+	for _, dir := range []string{"/usr/bin", "/bin"} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.Name() == "md5sum" {
+				continue
+			}
+			_ = os.Symlink(filepath.Join(dir, e.Name()), filepath.Join(tools, e.Name()))
+		}
+	}
+	for _, family := range []string{"codex", "claude", "opencode"} {
+		t.Run(family, func(t *testing.T) {
+			remote := "cs-" + family + "-remote"
+			home, bin := agentHome(t, ".cs-"+family+"-remote")
+			sent := filepath.Join(t.TempDir(), "sent")
+			writeStub(t, bin, "scp", "#!/bin/sh\necho sent >> \"$SENT\"\nexit 0\n")
+			// What macOS ships in md5sum's place: `md5 -q FILE` prints the digest alone.
+			writeStub(t, bin, "md5", "#!/bin/sh\n[ \"$1\" = -q ] && shift\ncksum \"$1\" | cut -d' ' -f1\n")
+
+			cmd := exec.Command(agentTool(remote), "-H", "box", "--new", "--name", "nomd5sum", "say ok")
+			cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+bin+":"+tools, "SENT="+sent)
+			out, _ := cmd.CombinedOutput()
+			if strings.Contains(string(out), "md5sum") {
+				t.Fatalf("%s needs md5sum, which a Mac does not have:\n%s", remote, out)
+			}
+			if got, _ := os.ReadFile(sent); len(got) == 0 {
+				t.Fatalf("%s never got as far as sending its driver:\n%s", remote, out)
+			}
+		})
+	}
+}
