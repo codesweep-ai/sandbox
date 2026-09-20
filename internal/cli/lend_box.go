@@ -454,10 +454,38 @@ func (b lenderBox) keepLog(ctx context.Context) {
 		_ = os.Remove(kept[0])
 		kept = kept[1:]
 	}
+	// LogDir is <logs>/<root>/<group>, and the count above only ever visits the
+	// group being stopped. A root or a group that is gone is never stopped again,
+	// so its logs are aged out from here, by whichever lender stops next.
+	sweepLenderLogs(filepath.Dir(filepath.Dir(b.Spec.LogDir)), time.Now().Add(-lenderLogsMaxAge))
+}
+
+// sweepLenderLogs removes every kept log older than the cutoff, and then the
+// group and root directories that emptied.
+func sweepLenderLogs(root string, cutoff time.Time) {
+	logs, _ := filepath.Glob(filepath.Join(root, "*", "*", "*.log"))
+	for _, l := range logs {
+		if info, err := os.Stat(l); err == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(l)
+		}
+	}
+	// Groups before roots. os.Remove refuses a directory that still holds
+	// something, which is the whole check.
+	for _, pattern := range []string{filepath.Join(root, "*", "*"), filepath.Join(root, "*")} {
+		dirs, _ := filepath.Glob(pattern)
+		for _, d := range dirs {
+			_ = os.Remove(d)
+		}
+	}
 }
 
 // lenderLogsKept is how many of a group's lender logs stay on the host.
 const lenderLogsKept = 20
+
+// lenderLogsMaxAge is how long a kept log stays. Long enough to come back to a
+// run that went wrong last week, short enough that throwaway roots and groups
+// do not collect.
+const lenderLogsMaxAge = 14 * 24 * time.Hour
 
 // lenderBoxReady is a var only so a test can shorten it.
 var lenderBoxReady = 20 * time.Second

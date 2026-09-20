@@ -872,7 +872,7 @@ provider is throttling it or failing. A body is never logged, and neither is any
 When a lender stops, it prints what each slot's upstream answered, for example
 `openai: ok 1011 · throttled 214 · refused 0 · 5xx 0 · no answer 0`. The log is kept after the group is gone.
 When `cs-sandbox` removes a lender it first copies the log to
-`~/.cache/cs-sandbox/lender-logs/default/<group>/`, and it keeps the newest 20 for each group.
+`~/.cache/cs-sandbox/lender-logs/default/<group>/`, and it keeps the newest 20 for each group, for 14 days.
 
 **`no loan matches the credential this request carried`**
 

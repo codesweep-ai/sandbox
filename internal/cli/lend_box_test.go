@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/lend"
@@ -341,5 +342,48 @@ func TestStoppingALenderKeepsItsLog(t *testing.T) {
 	rm := slices.IndexFunc(calls, func(c string) bool { return strings.Contains(c, "podman rm -f") })
 	if logs < 0 || rm < 0 || logs > rm {
 		t.Errorf("the log has to be read before the container is removed:\n%s", strings.Join(calls, "\n"))
+	}
+}
+
+// TestStaleLenderLogsAreAgedOut: a kept log is counted per group, and a group or an instance
+// root that is gone is never stopped again, so nothing would ever visit its directory. A test
+// run makes a root per run. Old logs go whichever lender stops next, with the directories
+// they empty, and a recent log of another group is left alone.
+func TestStaleLenderLogsAreAgedOut(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "lender-logs")
+	write := func(rel string, age time.Duration) string {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		when := time.Now().Add(-age)
+		if err := os.Chtimes(p, when, when); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	stale := write("deadroot/gone/20260101T000000Z.log", 30*24*time.Hour)
+	recent := write("otherroot/team/20260919T000000Z.log", 24*time.Hour)
+
+	fake := run.NewFake()
+	fake.On("podman logs", run.Result{Stderr: "level=INFO msg=answered\n"}, nil)
+	b := lenderBox{Runner: fake, Spec: lenderBoxSpec{Network: "n", Image: "img", LogDir: filepath.Join(root, "default", "g")}}
+	if err := b.stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("a 30 day old log was kept: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "deadroot")); !os.IsNotExist(err) {
+		t.Errorf("the emptied root directory was left behind: %v", err)
+	}
+	if _, err := os.Stat(recent); err != nil {
+		t.Errorf("a day old log of another group was removed: %v", err)
+	}
+	if kept, _ := filepath.Glob(filepath.Join(root, "default", "g", "*.log")); len(kept) != 1 {
+		t.Errorf("the log just kept is missing: %v", kept)
 	}
 }
