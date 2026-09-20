@@ -1014,6 +1014,62 @@ func TestClaudeTurnReportsAProviderFailure(t *testing.T) {
 	}
 }
 
+// TestClaudeTurnWaitsOutClaudesOwnRetries: Claude Code retries a throttled call ten times by
+// itself, for minutes. While it waits the pane reads "Retrying in 14s · attempt 3/10", nothing
+// is appended to the session file, and "esc to interrupt" is absent. Read as idle, that let
+// the stall watchdog report a throttled member as a stalled one, and a fleet harness answers
+// a stall with a restart. The retry here outlasts the stall limit, and the turn has to end
+// as the provider failure it is.
+func TestClaudeTurnWaitsOutClaudesOwnRetries(t *testing.T) {
+	skipUnlessLinux(t)
+	home, bin := agentHome(t, ".cs-claude-remote")
+	writeStub(t, bin, "claude", "#!/bin/sh\nexit 0\n")
+	writeStub(t, bin, "cs-claude", "#!/bin/sh\nexit 0\n")
+	writeStub(t, bin, "tmux", `#!/bin/sh
+case "$1" in
+  has-session) exit 0 ;;
+  capture-pane)
+    if [ -f "$STUB_DIR/.submitted" ] && [ ! -f "$STUB_DIR/.gave-up" ]; then
+      printf '%s\n' "* 429 This request would exceed your rate limit. · Retrying in 14s · attempt 3/10"
+    fi
+    printf '  bypass permissions on\n'
+    exit 0 ;;
+  send-keys)
+    if [ ! -f "$STUB_DIR/.submitted" ]; then
+      touch "$STUB_DIR/.submitted"
+      ( sleep 4
+        printf '%s\n' "$STUB_ASSISTANT" >> "$STUB_DIR/session.jsonl"
+        printf '%s\n' '{"type":"system","subtype":"turn_duration"}' >> "$STUB_DIR/session.jsonl"
+        touch "$STUB_DIR/.gave-up" ) >/dev/null 2>&1 &
+    fi
+    exit 0 ;;
+esac
+exit 0
+`)
+	stubDir := t.TempDir()
+	projects := filepath.Join(home, "projects")
+	if err := os.MkdirAll(projects, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	jsonl := filepath.Join(projects, claudeTestUUID+".jsonl")
+	if err := os.WriteFile(jsonl, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(jsonl, filepath.Join(stubDir, "session.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	refused := `{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","apiErrorStatus":429,` +
+		`"message":{"content":[{"type":"text","text":"API Error: Request rejected (429)"}]}}`
+	out, exit := runScriptStdin(t, home, bin,
+		// A stall limit of 2s against a retry of 4s: the watchdog gets its chance and must pass it up.
+		[]string{"STUB_DIR=" + stubDir, "STUB_ASSISTANT=" + refused, "CS_CLAUDE_STALL_SECS=2"}, "do the thing\n",
+		"cs-claude-turn", "--uuid", claudeTestUUID, "--projects", projects, "--timeout", "30")
+	if exit != 5 || !strings.Contains(out, "failure class=throttled") {
+		t.Fatalf("exit = %d; want 5 and class=throttled, not a stall: %s", exit, out)
+	}
+	covemit.Prove(t, "turn-driver-semantics", "claude", "", "scripts")
+}
+
 // TestClaudeTurnReadyStates: the ready check has to recognise the status line current Claude
 // Code actually prints. A --yolo sandbox runs with permissions bypassed and shows "bypass
 // permissions on", not "auto mode on"; missing it strands every turn at the ready timeout.

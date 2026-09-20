@@ -156,6 +156,14 @@ detect_state() {
         *"esc to interrupt"*)                                        echo "working"; return ;;
         *"Do you want to"*)                                          echo "tool_approval"; return ;;
     esac
+    # Waiting out a provider error is working. Claude Code retries a 429 or an overloaded API
+    # ten times by itself, for minutes, and while it waits the pane reads
+    # "… · Retrying in 14s · attempt 3/10": no "esc to interrupt", and nothing is appended to
+    # the JSONL. Read as ready, that let the stall watchdog end a turn that was still running,
+    # and report a throttled member as a stalled one.
+    if grep -Eq "Retrying in [0-9]+ ?s.*attempt [0-9]+/[0-9]+" <<<"$p"; then
+        echo "working"; return
+    fi
     # No blocking overlay and not actively working: ready once the status line is up.
     if grep -Eqi "auto mode on|bypass permissions on" <<<"$p"; then
         echo "ready"; return
