@@ -7,6 +7,10 @@
       "why": "Two fleets on one key still fight for it, and a bare 429 ends a codex turn at once. Only the lender can pace or absorb that."
     },
     {
+      "id": "SBX-054",
+      "why": "A throttle delivered inside a 200 stream reads as a success in the lender's log, so a fleet at its limit still looks healthy."
+    },
+    {
       "id": "SBX-031",
       "why": "An intermittent stall reds main CI, and nothing yet says whether the guest or its ssh died."
     },
