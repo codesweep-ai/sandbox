@@ -29,6 +29,7 @@ type CreateSpec struct {
 	DiskGB            int  // firecracker: grow the instance disk to this size (0 = the base rootfs size)
 	Snapshots         []spec.Snapshot
 	RepoClones        []spec.RepoClone
+	GitIdentity       spec.Identity // whose name and address the sandbox commits as
 	ImageStores       []string
 	InjectedEnv       string   // resolved KEY=VALUE block
 	InheritAgentLogin []string // --inherit-agent-login: agents whose host login to carry in

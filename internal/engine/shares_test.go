@@ -59,3 +59,53 @@ func TestSnapshotSharesLandOwnedByTheUser(t *testing.T) {
 		}
 	})
 }
+
+// TestTheSeedCarriesTheIdentityTheCallerChose: the operator's git name and address are the
+// one thing of theirs a sandbox is given without a flag naming it, and an agent that prints
+// its git configuration puts them into whatever records the session. --git-identity has to
+// reach both places the seed carries an identity: the global one, and the one each --repo
+// clone is set to. With none, neither holds anything of the host's.
+func TestTheSeedCarriesTheIdentityTheCallerChose(t *testing.T) {
+	ctx := context.Background()
+	repo := t.TempDir()
+	for _, tc := range []struct {
+		name         string
+		id           spec.Identity
+		wantGlobal   string
+		wantManifest string
+	}{
+		{"host", spec.Identity{}, "name\tThe Operator\nemail\toperator@example.com\n", "The Operator" + spec.US + "operator@example.com"},
+		{"none", spec.Identity{Mode: spec.IdentityNone}, "", spec.US + "\n"},
+		{"named", spec.Identity{Mode: spec.IdentityNamed, Name: "Bot", Email: "bot@example.test"},
+			"name\tBot\nemail\tbot@example.test\n", "Bot" + spec.US + "bot@example.test"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := run.NewFake()
+			fake.OnStdout("user.name", "The Operator\n")
+			fake.OnStdout("user.email", "operator@example.com\n")
+			d := Deps{Runner: fake, Host: hostenv.Host{User: "dev"}, InstDir: t.TempDir()}
+			if got := d.globalGitIdentity(ctx, tc.id).File(); got != tc.wantGlobal {
+				t.Errorf("global identity = %q; want %q", got, tc.wantGlobal)
+			}
+			cs := CreateSpec{Name: "box", GitIdentity: tc.id, RepoClones: []spec.RepoClone{{HostPath: repo, Name: "src"}}}
+			idir := d.InstanceDir(cs.Name)
+			seedDir := filepath.Join(idir, "seed")
+			if err := os.MkdirAll(seedDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.materializeShares(ctx, idir, seedDir, cs); err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := os.ReadFile(filepath.Join(seedDir, "repos"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(manifest), tc.wantManifest) {
+				t.Errorf("repos manifest = %q; want it to carry %q", manifest, tc.wantManifest)
+			}
+			if tc.name != "host" && strings.Contains(string(manifest), "Operator") {
+				t.Errorf("the manifest carries the host's identity: %q", manifest)
+			}
+		})
+	}
+}

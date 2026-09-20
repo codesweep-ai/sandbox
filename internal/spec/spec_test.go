@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codesweep-ai/sandbox/internal/run"
@@ -203,5 +204,53 @@ func TestGitIdentitySanitizesManifestSeparators(t *testing.T) {
 	want := "Ada Lovelace" + US + "ada x@example.test"
 	if got != want {
 		t.Errorf("GitIdentity = %q, want %q", got, want)
+	}
+}
+
+// TestParseIdentity: the flag is read before anything is provisioned, so a value it cannot
+// read has to be refused there. A named identity ends up in a tab and unit-separator
+// delimited seed file, so the separators are cleaned out of it as they are for the host's.
+func TestParseIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want Identity
+	}{
+		{"", Identity{}},
+		{"host", Identity{}},
+		{"none", Identity{Mode: IdentityNone}},
+		{"Campaign Bot <bot@example.test>", Identity{Mode: IdentityNamed, Name: "Campaign Bot", Email: "bot@example.test"}},
+	} {
+		got, err := ParseIdentity(tc.in)
+		if err != nil || got != tc.want {
+			t.Errorf("ParseIdentity(%q) = %+v, %v; want %+v", tc.in, got, err, tc.want)
+		}
+	}
+	for _, bad := range []string{"nobody", "Bot", "<bot@example.test>", "Bot <not-an-address>", "Bot <a@b> extra"} {
+		if got, err := ParseIdentity(bad); err == nil {
+			t.Errorf("ParseIdentity(%q) = %+v; want a refusal", bad, got)
+		}
+	}
+}
+
+// TestANamedOrAbsentIdentityNeverAsksTheHost: the point of the flag is that the operator's
+// name and address do not reach the sandbox, so with it set the host's git configuration is
+// not even read. A clone is then set to the named identity, or to none.
+func TestANamedOrAbsentIdentityNeverAsksTheHost(t *testing.T) {
+	r := run.NewFake()
+	r.OnStdout("config user.name", "The Operator\n")
+	r.OnStdout("config user.email", "operator@example.com\n")
+	ctx := context.Background()
+	if got := (Identity{Mode: IdentityNone}).ForRepo(ctx, r, "/repo"); got != US {
+		t.Errorf("none: %q; want an empty name and address", got)
+	}
+	named := Identity{Mode: IdentityNamed, Name: "Bot", Email: "bot@example.test"}
+	if got := named.ForRepo(ctx, r, "/repo"); got != "Bot"+US+"bot@example.test" {
+		t.Errorf("named: %q", got)
+	}
+	if calls := r.Rendered(); len(calls) != 0 {
+		t.Errorf("the host's git configuration was read:\n%s", strings.Join(calls, "\n"))
+	}
+	if got := (Identity{}).ForRepo(ctx, r, "/repo"); got != "The Operator"+US+"operator@example.com" {
+		t.Errorf("host: %q", got)
 	}
 }

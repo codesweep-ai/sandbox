@@ -557,7 +557,7 @@ func (fe *Firecracker) buildRepoDisks(ctx context.Context, idir string, s Create
 	var man strings.Builder
 	for i, rc := range s.RepoClones {
 		branch := state.BranchName(s.Group, s.Name)
-		id := spec.GitIdentity(ctx, fe.d.Runner, rc.HostPath)
+		id := s.GitIdentity.ForRepo(ctx, fe.d.Runner, rc.HostPath)
 		// 5 US-separated fields: dir, branch, base, name, email (id is name<US>email).
 		fmt.Fprintf(&man, "%s%s%s%s%s%s%s\n", rc.Name, spec.US, branch, spec.US, rc.BaseRef, spec.US, id)
 

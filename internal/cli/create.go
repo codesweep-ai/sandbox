@@ -47,6 +47,7 @@ type createFlags struct {
 	inheritAPIKey     []string
 	lendAPIKey        []string
 	blockSideCalls    bool
+	gitIdentity       string
 	cpus, mem, disk   int
 	repos             []string
 	snapshots         []string
@@ -89,6 +90,8 @@ func newCreateCmd(app *App) *cobra.Command {
 			" — the sandbox gets a loan token, the key stays on the host (repeatable, comma-separated)")
 	fl.BoolVar(&f.blockSideCalls, "block-side-calls", true,
 		"refuse the sandbox a direct route to the hosts the lender fronts, so an agent cannot reach one around its loan")
+	fl.StringVar(&f.gitIdentity, "git-identity", "host",
+		"whose name and address the sandbox commits as: host (your own git identity) | none | \"Name <address>\"")
 	fl.IntVar(&f.cpus, "cpus", 4, "firecracker: vCPUs")
 	fl.IntVar(&f.mem, "mem", 4096, "firecracker: memory (MiB)")
 	fl.IntVar(&f.disk, "disk", 0, "firecracker: disk size (GiB); grow-only, default: the base rootfs size (32)")
@@ -275,6 +278,11 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	default:
 		return fmt.Errorf("--engine must be podman or firecracker, got %q", f.engine)
 	}
+	// Read before anything is provisioned, like every other flag that can be wrong.
+	gitID, err := spec.ParseIdentity(f.gitIdentity)
+	if err != nil {
+		return err
+	}
 	eng := newEngine(d, f.engine)
 
 	// Preparing gets its own engine, differing in one field: where create's own
@@ -297,7 +305,7 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 
 	cs := engine.CreateSpec{
 		Name: name, Group: f.group, Type: f.typ, Yolo: f.yolo, Solo: f.solo, Privileged: f.privileged,
-		CPUs: f.cpus, MemMiB: f.mem, DiskGB: f.disk, Snapshots: snaps, RepoClones: repos,
+		CPUs: f.cpus, MemMiB: f.mem, DiskGB: f.disk, Snapshots: snaps, RepoClones: repos, GitIdentity: gitID,
 		ImageStores: f.imageStores, InjectedEnv: injected, InheritAgentLogin: f.inheritAgentLogin,
 		InheritAPIKey: f.inheritAPIKey, EnvCredentials: envCreds,
 		LentCredentials: plan.seeded,

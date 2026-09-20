@@ -46,7 +46,8 @@ caller to know a port number.
 fabric, the same sharing flags and the same agent tools.
 
 **R3.** Host data and host credentials **MUST NOT** reach a sandbox unless a flag names them. There
-is no implicit `$PWD` mount and no implicit credential.
+is no implicit `$PWD` mount and no implicit credential. The host's git name and address are the one
+exception (R68), and `--git-identity` withholds them.
 
 **R4.** A sandbox **MUST** behave the same on Linux, macOS and Windows under WSL2.
 
@@ -166,7 +167,7 @@ in the guest at `/run/cs-sandbox-seed`.
 - the `ssh_config` and the stable `host_keys/`;
 - the `host_hosts` map, for reaching the host by name;
 - the resolved `inject-env` block;
-- the host's git identity;
+- the git identity `--git-identity` chose, which is the host's by default;
 - the host's Claude Code theme;
 - the credential of each agent named by `--inherit-agent-login`, and the fabricated one of each
   agent named by `--lend-agent-login` (§10.2).
@@ -532,10 +533,17 @@ worktree`, which records itself in the source's `.git`. Alternates are git's way
 read-only and keep every new object local. The clone copies no history, so it is kilobytes.
 
 **R67.** Each clone's local `user.name` and `user.email` **MUST** be set to whatever identity that repo uses
-on the host, resolving a local override, an `includeIf`, or the global.
+on the host, resolving a local override, an `includeIf`, or the global. Under `--git-identity` they
+**MUST** be set to the identity it names, or left unset for `none`.
 
 **R68.** The sandbox's global `~/.gitconfig` **MUST** be seeded from the host's global one, and **MUST** be set
 only if unset, so a later in-sandbox change is never clobbered.
+
+**R68a.** `create --git-identity` **MUST** accept `host`, `none` and `"Name <address>"`, and **MUST** refuse
+anything else before anything is provisioned. With `none` or a named identity, the host's git
+configuration **MUST NOT** be read, and nothing of it **MUST** reach the seed. *An agent that prints its
+git configuration puts the identity into whatever keeps the session, so a run that is recorded or
+published needs one that is not the operator's.*
 
 Delivering the objects is the one engine-specific part, because alternates stores an absolute path
 that must be identical on every boot of that sandbox. Podman bind-mounts the host repo read-only at

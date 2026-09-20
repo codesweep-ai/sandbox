@@ -695,7 +695,7 @@ func (d Deps) writeSeed(ctx context.Context, seedDir string, s CreateSpec, gw st
 		in.TierPrivPath = filepath.Join(d.TierDir, tierName)
 		in.TierPubPath = filepath.Join(d.TierDir, tierName+".pub")
 	}
-	in.GitIdent = d.globalGitIdentity(ctx)
+	in.GitIdent = d.globalGitIdentity(ctx, s.GitIdentity)
 	in.ClaudeTheme = seed.HostClaudeTheme(d.Host.Home)
 	if err := seed.Write(ctx, d.Runner, seedDir, in); err != nil {
 		return nil, err
@@ -712,7 +712,14 @@ func (d Deps) writeSeed(ctx context.Context, seedDir string, s CreateSpec, gw st
 	return carried, seed.WriteLentCredentials(seedDir, s.LentCredentials)
 }
 
-func (d Deps) globalGitIdentity(ctx context.Context) seed.GitIdentity {
+func (d Deps) globalGitIdentity(ctx context.Context, id spec.Identity) seed.GitIdentity {
+	switch id.Mode {
+	case spec.IdentityNone:
+		// An empty identity writes no seed file, and the guest sets nothing.
+		return seed.GitIdentity{}
+	case spec.IdentityNamed:
+		return seed.GitIdentity{Name: id.Name, Email: id.Email}
+	}
 	return seed.GitIdentity{
 		Name:  run.Output(ctx, d.Runner, "git", "config", "--global", "user.name"),
 		Email: run.Output(ctx, d.Runner, "git", "config", "--global", "user.email"),
@@ -748,7 +755,7 @@ func (d Deps) materializeShares(ctx context.Context, idir, seedDir string, s Cre
 		for _, rc := range s.RepoClones {
 			mountPath := "/run/cs-sandbox-repos/" + rc.Name
 			mounts = append(mounts, fmt.Sprintf("%s:%s:ro", rc.HostPath, mountPath))
-			id := spec.GitIdentity(ctx, d.Runner, rc.HostPath)
+			id := s.GitIdentity.ForRepo(ctx, d.Runner, rc.HostPath)
 			// 6 US-separated fields: dir, mountpath, branch, ref, name, email (id is name<US>email).
 			fmt.Fprintf(&b, "%s%s%s%s%s%s%s%s%s\n",
 				rc.Name, spec.US, mountPath, spec.US, state.BranchName(s.Group, s.Name),

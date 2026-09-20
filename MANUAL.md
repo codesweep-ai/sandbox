@@ -84,6 +84,7 @@ Firecracker where the host has KVM, and to Podman otherwise.
 | `--inherit-agent-login AGENT` | Copy a host agent login in: `claude`, `codex` or `opencode`. The sandbox then holds the real credential. Repeatable and comma-separated. |
 | `--inherit-api-key PROVIDER` | Copy an LLM API key in from `~/.cs-keys/<provider>`: `anthropic`, `openai` or `fireworks`. Repeatable and comma-separated. |
 | `--block-side-calls` | Refuse the sandbox a direct route to the hosts the lender fronts. Default true, and only meaningful with a loan. |
+| `--git-identity WHO` | Whose name and address the sandbox commits as. `host` (the default) is your own git identity. `"Name <address>"` names another. `none` sets none, and git then refuses to commit until one is set inside. Use one of the last two for a run whose sessions are recorded or published. |
 | `--yolo` | Drop the agents' approval prompts *and* the rules behind them. The sandbox is the boundary. |
 | `--solo` | Withhold the group's SSH key, so this agent sandbox can reach no peer while staying reachable itself. Agent type only. |
 | `-e`, `--env KEY=VALUE` | Inject an environment variable, or `KEY` alone to pass the host's value. Repeatable. |

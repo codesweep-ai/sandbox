@@ -13,6 +13,8 @@ rootless Linux environment built from a single image, with a modern toolchain an
 Code**, **Codex** & **OpenCode** agents preinstalled. Spin up many named sandboxes, reach each by
 name over SSH, and share **only** the repos or directories you choose. Nothing on the host is shared
 unless you ask: not your files, not your SSH keys, and not the LLM provider keys you pay with.
+The one exception is your git name and address, so that a sandbox commits as you, and
+`--git-identity` names another or none.
 
 Agents inside a sandbox are given loan tokens, which a proxy outside it exchanges for the real
 credentials. An autonomous agent can work all day without any credential of yours.

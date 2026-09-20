@@ -117,6 +117,55 @@ func ResolveRepoClones(specs []string, opt Options) ([]RepoClone, error) {
 	return out, nil
 }
 
+// Identity is the git identity a sandbox is given: the host's own, none at all,
+// or one the caller names.
+//
+// The host's is the default, because a developer's own sandbox should commit as
+// them. It is also the one thing of theirs a sandbox receives without a flag
+// naming it, and an agent that reads its git configuration puts it into
+// whatever keeps the session. A run that is recorded or published names another,
+// or none.
+type Identity struct {
+	Mode  string // IdentityHost, IdentityNone or IdentityNamed
+	Name  string
+	Email string
+}
+
+// The identity modes. The zero Identity is the host's.
+const (
+	IdentityHost  = ""
+	IdentityNone  = "none"
+	IdentityNamed = "named"
+)
+
+var identityRe = regexp.MustCompile(`^([^<>]+)<([^<>\s]+@[^<>\s]+)>$`)
+
+// ParseIdentity reads --git-identity: host, none, or "Name <address>".
+func ParseIdentity(v string) (Identity, error) {
+	switch strings.TrimSpace(v) {
+	case "", "host":
+		return Identity{}, nil
+	case "none":
+		return Identity{Mode: IdentityNone}, nil
+	}
+	m := identityRe.FindStringSubmatch(strings.TrimSpace(v))
+	if len(m) != 3 || cleanManifestField(m[1]) == "" {
+		return Identity{}, fmt.Errorf("--git-identity %q: use host, none, or \"Name <address>\"", v)
+	}
+	return Identity{Mode: IdentityNamed, Name: cleanManifestField(m[1]), Email: cleanManifestField(m[2])}, nil
+}
+
+// ForRepo is the "name<US>email" a clone of this host repo is set to commit as.
+func (i Identity) ForRepo(ctx context.Context, r run.Runner, repoPath string) string {
+	switch i.Mode {
+	case IdentityNone:
+		return US
+	case IdentityNamed:
+		return i.Name + US + i.Email
+	}
+	return GitIdentity(ctx, r, repoPath)
+}
+
 // GitIdentity returns the effective "name<US>email" a host repo commits as
 // (git -C <repo> config user.*, which resolves a local override, includeIf, or
 // the global).
