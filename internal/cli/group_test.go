@@ -503,3 +503,60 @@ func TestInspectTableShowsRepoBranch(t *testing.T) {
 		}
 	}
 }
+
+// TestDestroySaysWhenItEmptiesAGroup: `create --group` makes a group when it needs one, so a
+// person can end up with a network, a keepalive and a gateway they never asked for by name,
+// and `destroy` on the last member used to leave them running without a word. The line names
+// the command that removes them. The default group is never removed, so it gets no line, and
+// neither does a group that still has a member.
+func TestDestroySaysWhenItEmptiesAGroup(t *testing.T) {
+	for _, tc := range []struct {
+		name, group string
+		others      int
+		force       bool
+		want        string
+	}{
+		{"the last member", "team", 0, true, "group team holds no sandbox now"},
+		{"the last member, before confirming", "team", 0, false, "it is the last sandbox in group team"},
+		{"a group with members left", "team", 1, true, ""},
+		{"the default group", state.DefaultGroup, 0, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("CS_SANDBOX_INSTANCES_DIR", dir)
+			if err := state.SaveGroup(dir, &state.Group{Name: tc.group, Created: "2026-01-01T00:00:00Z"}); err != nil {
+				t.Fatal(err)
+			}
+			for i, n := range []string{"box", "other"}[:1+tc.others] {
+				if err := state.Save(dir, &state.Instance{
+					Name: n, Group: tc.group, Type: "agent", Engine: state.Podman, Port: 2200 + i,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			app := &App{InstDir: dir, TierDir: t.TempDir(), Runner: run.NewFake(), errW: io.Discard}
+			root := newRootCmd(app)
+			var out bytes.Buffer
+			root.SetOut(&out)
+			root.SetErr(io.Discard)
+			args := []string{"destroy", "box." + tc.group}
+			if tc.force {
+				args = append(args, "-f")
+			}
+			root.SetArgs(args)
+			saved := Version
+			Version = testVersion
+			defer func() { Version = saved }()
+			if err := root.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			hinted := strings.Contains(out.String(), "cs-sandbox group rm")
+			if tc.want == "" && hinted {
+				t.Fatalf("no group was emptied, and destroy said:\n%s", out.String())
+			}
+			if tc.want != "" && !(strings.Contains(out.String(), tc.want) && strings.Contains(out.String(), "cs-sandbox group rm "+tc.group)) {
+				t.Fatalf("want %q and the command that removes the group:\n%s", tc.want, out.String())
+			}
+		})
+	}
+}

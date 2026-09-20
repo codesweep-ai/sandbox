@@ -82,6 +82,10 @@ func newDestroyCmd(app *App) *cobra.Command {
 			}
 			if !force {
 				fmt.Fprintf(cmd.OutOrStdout(), "destroying %q and all its data. Re-run with -f to confirm.\n", args[0])
+				if app.groupMembers(in.Group, in.Name) == 0 && in.Group != state.DefaultGroup {
+					fmt.Fprintf(cmd.OutOrStdout(), "it is the last sandbox in group %s, whose network and gateway stay up "+
+						"until `cs-sandbox group rm %s`\n", in.Group, in.Group)
+				}
 				return nil
 			}
 			forward.KillAll(app.InstDir, in.Group, in.Name)
@@ -97,6 +101,14 @@ func newDestroyCmd(app *App) *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "destroyed %s\n", args[0])
+			// `create --group` makes a group when it needs one, so the person who
+			// typed it never made this group and nothing told them it outlives its
+			// sandboxes. Said rather than done: a group somebody made with
+			// `group create` is recorded the same way, and it is theirs to keep.
+			if app.groupMembers(in.Group, "") == 0 && in.Group != state.DefaultGroup {
+				fmt.Fprintf(cmd.OutOrStdout(), "group %s holds no sandbox now, and its network and gateway are still up: "+
+					"`cs-sandbox group rm %s` removes them\n", in.Group, in.Group)
+			}
 			return nil
 		},
 	}
@@ -106,6 +118,18 @@ func newDestroyCmd(app *App) *cobra.Command {
 	cmd.Flags().BoolVarP(&force, "force", "f", false,
 		"confirm the deletion; without it, destroy only reports what it would delete")
 	return cmd
+}
+
+// groupMembers counts the sandboxes in a group, leaving out the one named.
+func (a *App) groupMembers(group, except string) int {
+	insts, _ := state.List(a.InstDir)
+	n := 0
+	for _, in := range insts {
+		if in.Group == group && in.Name != except {
+			n++
+		}
+	}
+	return n
 }
 
 // destroyOrphan handles `destroy <name>` for a name with no sandbox: `rm` keeps

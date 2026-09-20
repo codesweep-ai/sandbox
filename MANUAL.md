@@ -161,6 +161,10 @@ cs-sandbox destroy <name> [-f]      # delete the sandbox AND its data
 `destroy` is irreversible, and `-f` (spelled `--force` in full) is the confirmation rather than a
 way past one. Without it, `destroy` names what it would delete, deletes nothing and exits 0.
 
+`destroy` removes a sandbox and never its group. `create --group` makes a group when it needs one,
+and the group's network and gateway stay up after its last sandbox is gone. When `destroy` empties a
+group other than `default`, it prints the `cs-sandbox group rm <group>` that removes them.
+
 `ls -q` prints refs one per line for scripting. `--json` output is stable and meant to be parsed.
 
 ### Reaching a port
