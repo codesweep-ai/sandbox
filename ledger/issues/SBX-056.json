@@ -3,11 +3,11 @@
   "title": "Nothing inside a sandbox says whether an agent is in the middle of a turn, so a caller can only ask whether a turn driver is alive",
   "type": "improvement",
   "severity": "med",
-  "status": "open",
+  "status": "in-progress",
   "foundBy": "session agent maintaining a harness that computes each member's state from inside its sandbox",
   "opened": "2026-09-20",
   "resolved": null,
-  "stint": null,
+  "stint": "v6",
   "evidence": {
     "commits": [],
     "integrated": [],
@@ -19,6 +19,10 @@
     {
       "date": "2026-09-20",
       "text": "The screen classification this record wants to share had a hole, found the same day. Claude Code retries a throttled or refused call for minutes with a pane that reads `Retrying in 14s · attempt 3/10`. It shows no `esc to interrupt`, so `cs-claude-turn` read it as `ready`. SBX-058 holds that and fixes it in the driver. A command built for this record should take that classification from the drivers and not copy it, so that such a fix reaches both. It may also want a fourth answer beside `busy`, `idle` and `absent`, because an agent waiting out a provider error is busy in a way a caller should not nudge."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "Taken up as a mode of the turn drivers, `cs-<cli>-turn --state`, so the answer and the driver's own judgement are one function. With no handle it answers for every session of that family in the sandbox, which is what a probe that knows only the family can call. A harness of the kind this record describes starts its turns from another machine, so the session names live there and not in the member it probes."
     }
   ],
   "links": [
