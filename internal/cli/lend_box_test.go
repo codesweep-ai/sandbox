@@ -387,3 +387,28 @@ func TestStaleLenderLogsAreAgedOut(t *testing.T) {
 		t.Errorf("the log just kept is missing: %v", kept)
 	}
 }
+
+// TestALenderThatWillNotStartKeepsItsLog: create replaces a lender container that exists and
+// cannot be started. That is the lender that died, and its log is the only account of why,
+// so it is copied to the host before the container is removed, as it is on every other path.
+func TestALenderThatWillNotStartKeepsItsLog(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "lender-logs", "default", "g")
+	fake := run.NewFake()
+	fake.OnStdout("container inspect", "false\n") // it exists, and it is not running
+	fake.On("podman start", run.Result{ExitCode: 125}, errors.New("cannot start"))
+	fake.On("podman logs", run.Result{Stderr: "level=ERROR msg=\"the last thing it said\"\n"}, nil)
+	b := lenderBox{Runner: fake, Spec: lenderBoxSpec{Network: "cs-sandbox-net", Image: "img", LogDir: dir}}
+	// What ensure does after the removal is not this test's business, and it may fail here.
+	_, _ = b.ensure(context.Background())
+
+	kept, _ := filepath.Glob(filepath.Join(dir, "*.log"))
+	if len(kept) != 1 {
+		t.Fatalf("want the dead lender's log under %s, got %v\n%s", dir, kept, strings.Join(fake.Rendered(), "\n"))
+	}
+	calls := fake.Rendered()
+	logs := slices.IndexFunc(calls, func(c string) bool { return strings.Contains(c, "podman logs") })
+	rm := slices.IndexFunc(calls, func(c string) bool { return strings.Contains(c, "podman rm -f") })
+	if logs < 0 || rm < 0 || logs > rm {
+		t.Errorf("the log has to be read before the container is removed:\n%s", strings.Join(calls, "\n"))
+	}
+}

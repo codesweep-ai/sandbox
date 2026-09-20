@@ -179,7 +179,9 @@ func (b lenderBox) ensure(ctx context.Context) (string, error) {
 			}
 		}
 		// A box that will not start again is worse than no box: it holds the
-		// name and the alias while answering nothing.
+		// name and the alias while answering nothing. Its log goes to the host
+		// first, because a lender that died is the one whose log gets read.
+		b.keepLog(ctx)
 		_, _ = b.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", b.name())
 	}
 	if err := b.stage(); err != nil {
