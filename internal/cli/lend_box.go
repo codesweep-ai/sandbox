@@ -409,6 +409,10 @@ func (b lenderBox) stop(ctx context.Context) error {
 	if !b.exists(ctx) {
 		return nil
 	}
+	// Stopped first, then read: the lender prints what each slot's upstream
+	// answered as it exits, and that summary is the first thing a reader of the
+	// kept log wants.
+	_, _ = b.Runner.Run(ctx, run.Opts{}, "podman", "stop", "-t", "5", b.name())
 	b.keepLog(ctx)
 	_, err := b.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", b.name())
 	return err
@@ -428,8 +432,10 @@ func (b lenderBox) keepLog(ctx context.Context) {
 		return
 	}
 	res, err := b.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "logs", "--timestamps", b.name())
-	// The lender logs to stderr, and podman keeps the two streams apart.
-	text := res.Stdout + res.Stderr
+	// The lender logs to stderr and prints its closing summary to stdout, and
+	// podman keeps the two streams apart. Stderr first puts the summary last,
+	// where it happened.
+	text := res.Stderr + res.Stdout
 	if err != nil || strings.TrimSpace(text) == "" {
 		return
 	}
