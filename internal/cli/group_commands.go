@@ -343,6 +343,9 @@ func (a *App) removeGroup(ctx context.Context, group string, force bool, out io.
 			return err
 		}
 	}
+	// Before the network is reclaimed, which force-removes whatever is still
+	// attached to it: stopping the lender here is what keeps its log.
+	_ = a.lenderBox(group).stop(ctx)
 	d := a.engineDepsFor(group)
 	d.RemoveGateway(ctx)
 	d.ReclaimNetwork(ctx)

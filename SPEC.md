@@ -843,6 +843,16 @@ networks it is attached to for one on a group's network (R52b).
 the hosts these agents contact on their own, and **MUST** tunnel every other host. `create` **MUST** report
 which hosts it refused.
 
+**R153a.** The lender **MUST** log what an upstream answered each call: the sandbox, the slot, the status
+and the time to the response headers. For a 429 or a 5xx it **MUST** add the provider's `Retry-After` and
+rate-limit headers. It **MUST NOT** log a body, or any other header. *A throttled key, a provider outage
+and a quiet fleet are told apart by the answer and by nothing else, and the lender is the one place
+that sees every answer.*
+
+**R153b.** Removing a lender **MUST** first copy its log to the host, outside the instances root. *The log
+is read after a run went wrong, which is usually after its group is gone. The host writes the copy,
+because the lender's own mounts are read-only.*
+
 **R154.** `create` **MUST** fail before anything is provisioned when a lend flag names a credential this
 host cannot supply. The failure **MUST** name the file it looked for, and the command that creates one.
 

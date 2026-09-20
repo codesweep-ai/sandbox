@@ -809,6 +809,24 @@ dials an upstream. A service of your own on this machine therefore has to be nam
 The check opens a connection to the upstream and sends nothing. A recorder or a gateway in front of
 a provider therefore never sees a request from `doctor`, whichever groups are on the host.
 
+**Turns fail or slow down across a whole group**
+
+Read the group's lender log. The lender fronts every model call of every member, and it writes one
+`answered` line for each. The line has the sandbox, the slot, the status and the time to the first byte:
+
+```bash
+podman logs cs-sandbox-<group>-lender 2>&1 | grep -v status=200
+```
+
+The default group's lender is `cs-sandbox-net-lender`. A `status=429` line carries the provider's
+`retry-after` and its rate-limit headers. The lender also warns once a minute, per slot, while a
+provider is throttling it or failing. A body is never logged, and neither is any other header.
+
+When a lender stops, it prints what each slot's upstream answered, for example
+`openai: ok 1011 · throttled 214 · refused 0 · 5xx 0 · no answer 0`. The log is kept after the group is gone.
+When `cs-sandbox` removes a lender it first copies the log to
+`~/.cache/cs-sandbox/lender-logs/default/<group>/`, and it keeps the newest 20 for each group.
+
 **`no loan matches the credential this request carried`**
 
 The lender does not recognize what the sandbox presented. Its sandbox was destroyed, or the loan

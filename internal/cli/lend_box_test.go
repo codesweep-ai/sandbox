@@ -313,3 +313,33 @@ func TestReachSaysWhyTheConnectionFailed(t *testing.T) {
 		})
 	}
 }
+
+// TestStoppingALenderKeepsItsLog: the lender's log is the one record of what a provider
+// answered a whole group, and podman deletes it with the container. A throttle nobody saw at
+// the time can only be found afterwards if the log outlived the group. The order is the
+// contract: the log is read before the container is removed.
+func TestStoppingALenderKeepsItsLog(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "lender-logs", "g")
+	fake := run.NewFake()
+	fake.On("podman logs", run.Result{Stderr: "level=INFO msg=answered slot=openai status=429\n"}, nil)
+	b := lenderBox{Runner: fake, Spec: lenderBoxSpec{Network: "cs-sandbox-net", Image: "img", LogDir: dir}}
+	if err := b.stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	kept, _ := filepath.Glob(filepath.Join(dir, "*.log"))
+	if len(kept) != 1 {
+		t.Fatalf("want one kept log under %s, got %v", dir, kept)
+	}
+	if got, _ := os.ReadFile(kept[0]); !strings.Contains(string(got), "status=429") {
+		t.Errorf("the kept log does not hold the lender's lines: %q", got)
+	}
+	if info, _ := os.Stat(kept[0]); info.Mode().Perm() != 0o600 {
+		t.Errorf("the kept log is %v; want owner-only, it names every sandbox and path", info.Mode().Perm())
+	}
+	calls := fake.Rendered()
+	logs := slices.IndexFunc(calls, func(c string) bool { return strings.Contains(c, "podman logs") })
+	rm := slices.IndexFunc(calls, func(c string) bool { return strings.Contains(c, "podman rm -f") })
+	if logs < 0 || rm < 0 || logs > rm {
+		t.Errorf("the log has to be read before the container is removed:\n%s", strings.Join(calls, "\n"))
+	}
+}

@@ -104,6 +104,19 @@ func Renewer(instDir string) string {
 	return filepath.Join(cacheHome(), app, "renewer", rootKey(instDir))
 }
 
+// LenderLogs is where a group's lender log is kept once its container is gone.
+//
+// Outside the instances root on purpose. The log is what says afterwards whether
+// a provider was refusing a fleet, and removing the group removes everything
+// under its directory. Keyed on the root like Renewer, so two roots' groups of
+// the same name do not share a directory.
+func LenderLogs(instDir, group string) string {
+	if h := os.Getenv("CS_SANDBOX_HOME"); h != "" {
+		return filepath.Join(h, "lender-logs", rootKey(instDir), group)
+	}
+	return filepath.Join(cacheHome(), app, "lender-logs", rootKey(instDir), group)
+}
+
 // RenewerState is where the renewer's host-global state lives: the per-slot
 // single-flight locks, the in-use declaration, and the retry state that decides how
 // long a failing login is left alone.

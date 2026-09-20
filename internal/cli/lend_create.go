@@ -373,6 +373,7 @@ func (app *App) lenderBox(group string) lenderBox {
 		InstDir: app.InstDir,
 		Bin:     lenderBinary(),
 		Stage:   filepath.Join(state.GroupDir(app.InstDir, group), ".lender", "cs-sandbox"),
+		LogDir:  paths.LenderLogs(app.InstDir, group),
 	}}
 }
 

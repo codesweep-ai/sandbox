@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -57,7 +58,10 @@ type lenderBoxSpec struct {
 	// Bin is a Linux cs-sandbox to run instead of the image's own. It is not
 	// optional in every case: the slim CI image drops the whole codesweep-tools
 	// stanza, so there is no cs-sandbox in it at all.
-	Bin string
+	// LogDir is where the container's log is kept when the container is removed.
+	// Empty keeps nothing.
+	LogDir string
+	Bin    string
 	// Stage is where Bin is copied before the container starts, and what the
 	// container then runs.
 	//
@@ -405,9 +409,49 @@ func (b lenderBox) stop(ctx context.Context) error {
 	if !b.exists(ctx) {
 		return nil
 	}
+	b.keepLog(ctx)
 	_, err := b.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", b.name())
 	return err
 }
+
+// keepLog copies the container's log to the host before the container goes.
+//
+// The lender's log is the one record of what every provider answered every
+// member of the group, and podman deletes it with the container. It is written
+// from out here because the lender's own mounts are read-only, and they stay
+// that way: a process that holds real credentials writes nothing (R150, R151).
+//
+// Best effort. A log that could not be kept is not a reason to leave a lender
+// running.
+func (b lenderBox) keepLog(ctx context.Context) {
+	if b.Spec.LogDir == "" {
+		return
+	}
+	res, err := b.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "logs", "--timestamps", b.name())
+	// The lender logs to stderr, and podman keeps the two streams apart.
+	text := res.Stdout + res.Stderr
+	if err != nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	if err := os.MkdirAll(b.Spec.LogDir, 0o700); err != nil {
+		return
+	}
+	name := time.Now().UTC().Format("20060102T150405Z") + ".log"
+	if err := os.WriteFile(filepath.Join(b.Spec.LogDir, name), []byte(text), 0o600); err != nil {
+		return
+	}
+	// The newest few, so a host that makes and removes groups all day does not
+	// fill a disk with them. The names sort by time.
+	kept, _ := filepath.Glob(filepath.Join(b.Spec.LogDir, "*.log"))
+	slices.Sort(kept)
+	for len(kept) > lenderLogsKept {
+		_ = os.Remove(kept[0])
+		kept = kept[1:]
+	}
+}
+
+// lenderLogsKept is how many of a group's lender logs stay on the host.
+const lenderLogsKept = 20
 
 // lenderBoxReady is a var only so a test can shorten it.
 var lenderBoxReady = 20 * time.Second

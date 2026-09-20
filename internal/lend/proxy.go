@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -32,6 +34,10 @@ type Config struct {
 	// recorder — and it is the operator's choice rather than the caller's: no
 	// part of a request can reach it.
 	Origins map[string]string
+
+	// Now is the clock, for a test that has to cross an interval. Nil is the
+	// real one.
+	Now func() time.Time
 }
 
 // Stats is the accounting a session prints on the way out: enough to tell "the
@@ -44,6 +50,20 @@ type Stats struct {
 	Blocked   int `json:"blocked"`
 	NotLocal  int `json:"not_local"`
 	Upstream5 int `json:"upstream_errors"`
+
+	// Slots is what each slot's upstream answered, by slot id. Lent says a
+	// request went out, and this says what came back: a throttled key, a
+	// provider outage and a quiet fleet differ only here.
+	Slots map[string]Outcomes `json:"slots,omitempty"`
+}
+
+// Outcomes counts one slot's upstream answers by status class.
+type Outcomes struct {
+	OK        int `json:"ok"`        // below 400
+	Throttled int `json:"throttled"` // 429
+	Refused   int `json:"refused"`   // any other 4xx
+	Errors    int `json:"errors"`    // 5xx
+	Failed    int `json:"failed"`    // no answer at all
 }
 
 // Server is the lender's HTTP handler: an origin-mode proxy for model calls,
@@ -57,6 +77,16 @@ type Server struct {
 	localMu   sync.Mutex
 	localNets []*net.IPNet
 	localAt   time.Time
+
+	// warned is when a slot's trouble was last said out loud, by slot and class,
+	// and how many answers of that class have gone unsaid since.
+	warned map[string]*trouble
+}
+
+// trouble is one slot's run of bad answers of one class.
+type trouble struct {
+	at     time.Time
+	unsaid int
 }
 
 // New returns a lender for this configuration.
@@ -67,6 +97,9 @@ func New(cfg Config) *Server {
 	if cfg.KeysDir == "" {
 		cfg.KeysDir = KeysDir(cfg.Home)
 	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
 	return &Server{cfg: cfg}
 }
 
@@ -74,7 +107,9 @@ func New(cfg Config) *Server {
 func (s *Server) Snapshot() Stats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.stats
+	st := s.stats
+	st.Slots = maps.Clone(s.stats.Slots)
+	return st
 }
 
 func (s *Server) count(f func(*Stats)) {
@@ -182,7 +217,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.String("sandbox", loan.Name), slog.String("slot", slot.ID),
 		slog.String("loan", loan.Label),
 		slog.String("method", r.Method), slog.String("path", r.URL.Path))
-	s.forward(w, r, slot, secret, extra)
+	s.forward(w, r, loan, slot, secret, extra)
 }
 
 // forward swaps the loan token for the real credential and proxies to the
@@ -191,12 +226,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // The body is never read, parsed or rewritten: the swap is one header, so a
 // stream passes through byte for byte and a request shape this build has never
 // seen still works.
-func (s *Server) forward(w http.ResponseWriter, r *http.Request, slot Slot, secret string, extra map[string]string) {
+func (s *Server) forward(w http.ResponseWriter, r *http.Request, loan Loan, slot Slot, secret string, extra map[string]string) {
 	base, err := url.Parse(slot.Origin)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "bad_origin", "this slot's upstream is not a URL")
 		return
 	}
+	start := time.Now()
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(base)
@@ -237,13 +273,109 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, slot Slot, secr
 		// that arrives in lumps.
 		FlushInterval: -1,
 		ErrorLog:      slog.NewLogLogger(s.cfg.Log.Handler(), slog.LevelError),
+		// The status and the headers, and never the body: the answer is looked at
+		// without being read, which is what keeps a stream byte for byte.
+		ModifyResponse: func(resp *http.Response) error {
+			s.answered(loan, slot, resp, time.Since(start))
+			return nil
+		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			s.count(func(st *Stats) { st.Upstream5++ })
-			s.cfg.Log.Error("upstream failed", slog.String("origin", slot.Origin), slog.Any("err", err))
+			s.outcome(slot.ID, func(o *Outcomes) { o.Failed++ })
+			s.trouble(slot.ID, "failing", slog.Any("err", err))
+			s.cfg.Log.Error("upstream failed", slog.String("sandbox", loan.Name), slog.String("slot", slot.ID),
+				slog.String("origin", slot.Origin), slog.Any("err", err))
 			writeError(w, http.StatusBadGateway, "upstream_error", "the upstream request failed: "+err.Error())
 		},
 	}
 	rp.ServeHTTP(w, r)
+}
+
+// answered records what a slot's upstream said: one log line a request, a count
+// by status class, and a warning when a slot starts being throttled or failing.
+//
+// The duration is the time to the response headers. A stream's body can run for
+// minutes after them, and what this line is for is already known when they
+// arrive: whether the provider took the call, and how long it made it wait.
+func (s *Server) answered(loan Loan, slot Slot, resp *http.Response, took time.Duration) {
+	attrs := []any{
+		slog.String("sandbox", loan.Name), slog.String("slot", slot.ID),
+		slog.Int("status", resp.StatusCode), slog.Int64("ms", took.Milliseconds()),
+	}
+	code := resp.StatusCode
+	if code == http.StatusTooManyRequests || code >= 500 {
+		attrs = append(attrs, limitHeaders(resp.Header)...)
+	}
+	s.cfg.Log.Info("answered", attrs...)
+	switch {
+	case code == http.StatusTooManyRequests:
+		s.outcome(slot.ID, func(o *Outcomes) { o.Throttled++ })
+		s.trouble(slot.ID, "throttling", limitHeaders(resp.Header)...)
+	case code >= 500:
+		s.outcome(slot.ID, func(o *Outcomes) { o.Errors++ })
+		s.trouble(slot.ID, "failing", slog.Int("status", code))
+	case code >= 400:
+		s.outcome(slot.ID, func(o *Outcomes) { o.Refused++ })
+	default:
+		s.outcome(slot.ID, func(o *Outcomes) { o.OK++ })
+	}
+}
+
+// limitHeaders are the headers a provider explains a throttle with: how long to
+// wait, and where the key stands against its limits. Names only a provider sets,
+// so nothing of the caller's is logged.
+func limitHeaders(h http.Header) []any {
+	var out []any
+	for k, v := range h {
+		l := strings.ToLower(k)
+		if l == "retry-after" || l == "retry-after-ms" || strings.Contains(l, "ratelimit") {
+			out = append(out, slog.String(l, strings.Join(v, ",")))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].(slog.Attr).Key < out[j].(slog.Attr).Key })
+	return out
+}
+
+func (s *Server) outcome(slot string, f func(*Outcomes)) {
+	s.count(func(st *Stats) {
+		if st.Slots == nil {
+			st.Slots = map[string]Outcomes{}
+		}
+		o := st.Slots[slot]
+		f(&o)
+		st.Slots[slot] = o
+	})
+}
+
+// troubleEvery is how often one slot's trouble of one class is said again. The
+// answers in between are counted into the next line rather than printed, so a
+// fleet at its limit writes one warning a minute and not one a request.
+const troubleEvery = time.Minute
+
+// trouble warns, at most once an interval, that a slot is being throttled or is
+// failing. Every answer already has its own line. This is
+// the one a person watching the log is meant to notice at the time.
+func (s *Server) trouble(slot, class string, detail ...any) {
+	s.mu.Lock()
+	if s.warned == nil {
+		s.warned = map[string]*trouble{}
+	}
+	t := s.warned[slot+" "+class]
+	if t == nil {
+		t = &trouble{}
+		s.warned[slot+" "+class] = t
+	}
+	t.unsaid++
+	now := s.cfg.Now()
+	if !t.at.IsZero() && now.Sub(t.at) < troubleEvery {
+		s.mu.Unlock()
+		return
+	}
+	n := t.unsaid
+	t.at, t.unsaid = now, 0
+	s.mu.Unlock()
+	s.cfg.Log.Warn("the upstream is "+class+" this slot", append([]any{
+		slog.String("slot", slot), slog.Int("answers", n)}, detail...)...)
 }
 
 // ensureVersion returns p with the provider's version segment present exactly
@@ -458,8 +590,14 @@ func writeError(w http.ResponseWriter, status int, kind, msg string) {
 // Summary is the line a stopping lender prints, which is what a reader sees
 // after a run that did not work.
 func (st Stats) Summary() string {
-	return fmt.Sprintf("requests %d · lent %d · refused %d · tunnels %d · blocked %d",
+	out := fmt.Sprintf("requests %d · lent %d · refused %d · tunnels %d · blocked %d",
 		st.Requests, st.Lent, st.Refused, st.Tunnels, st.Blocked)
+	for _, id := range slices.Sorted(maps.Keys(st.Slots)) {
+		o := st.Slots[id]
+		out += fmt.Sprintf("\n%s: ok %d · throttled %d · refused %d · 5xx %d · no answer %d",
+			id, o.OK, o.Throttled, o.Refused, o.Errors, o.Failed)
+	}
+	return out
 }
 
 // Origins are the upstream hosts this build fronts, sorted, for reporting and
