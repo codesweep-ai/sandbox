@@ -3,11 +3,11 @@
   "title": "create removes a lender that will not start again without keeping its log",
   "type": "defect",
   "severity": "low",
-  "status": "open",
+  "status": "in-progress",
   "foundBy": "session agent, reading the lender's start path while answering when a lender's log is kept",
   "opened": "2026-09-20",
   "resolved": null,
-  "stint": null,
+  "stint": "v3-ledger",
   "evidence": {
     "commits": [],
     "integrated": [],
