@@ -3,11 +3,11 @@
   "title": "destroy on the last sandbox of a named group leaves the group's network, keepalive and gateway running, and says nothing",
   "type": "improvement",
   "severity": "low",
-  "status": "open",
+  "status": "in-progress",
   "foundBy": "session agent replaying a multi-member campaign through cs-vcr, several replays at a time on one shared host",
   "opened": "2026-09-20",
   "resolved": null,
-  "stint": null,
+  "stint": "v2-fixes",
   "evidence": {
     "commits": [],
     "integrated": [],
