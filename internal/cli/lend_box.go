@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -338,12 +339,8 @@ func (b lenderBox) waitReady(ctx context.Context) error {
 }
 
 // probe asks the lender's container to fetch a URL, and reports why it could
-// not, or "" when it could.
-//
-// This is also how an UPSTREAM is checked, and that is the point: the lender is
-// what dials an upstream, so the only question worth asking is whether the
-// lender can reach it. A probe from the host answers a different question and
-// used to answer it wrongly in both directions.
+// not, or "" when it could. It is for the lender's own health endpoint, where
+// anything but a 200 is a failure. An upstream is asked with reach.
 func (b lenderBox) probe(ctx context.Context, url string) string {
 	res, err := b.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "exec", b.name(),
 		"curl", "-fsS", "-o", "/dev/null", "-m", "5", url)
@@ -352,6 +349,51 @@ func (b lenderBox) probe(ctx context.Context, url string) string {
 	}
 	if d := strings.TrimSpace(res.Stderr); d != "" {
 		return d
+	}
+	return err.Error()
+}
+
+// reach reports why the lender cannot connect to an upstream, or "" when it
+// can.
+//
+// Asked from the lender's container, because the lender is what dials an
+// upstream, so the only question worth asking is whether the lender can reach
+// it. A probe from the host answers a different question.
+//
+// It opens a connection and sends nothing. Whether the lender can reach the
+// address is settled once the connection opens, and whatever status a request
+// would draw says nothing more about that: a provider's base address answers a
+// bare GET with a 401 or a 404 when it is perfectly healthy. A request is also
+// not free. An upstream that records or replays traffic counts every one it
+// receives, and a probe it never recorded fails a replay that was passing.
+func (b lenderBox) reach(ctx context.Context, upstream string) string {
+	u, err := url.Parse(upstream)
+	if err != nil || u.Hostname() == "" {
+		return "it is not a URL with a host"
+	}
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+	}
+	// The host and port travel as arguments, never inside the script.
+	res, err := b.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "exec", b.name(),
+		"timeout", "5", "bash", "-c", `exec 3<>"/dev/tcp/$1/$2"`, "reach", u.Hostname(), port)
+	if err == nil {
+		return ""
+	}
+	if res.ExitCode == 124 {
+		return "no connection within 5s"
+	}
+	// The first line carries the reason, after bash's own prefix. A name that does
+	// not resolve is followed by a second line that says only "Invalid argument".
+	if why, _, _ := strings.Cut(strings.TrimSpace(res.Stderr), "\n"); why != "" {
+		if i := strings.LastIndex(why, ": "); i >= 0 {
+			why = why[i+2:]
+		}
+		return strings.ToLower(why)
 	}
 	return err.Error()
 }

@@ -177,7 +177,7 @@ func lendGroup(s LendState) (Group, bool) {
 			g.add(OK, fmt.Sprintf("%s sends its %s traffic through %s", c.Sandbox, c.Slot, c.URL))
 			continue
 		}
-		g.add(NO, fmt.Sprintf("%s sends its %s traffic to %s, which does not answer: %s\n"+
+		g.add(NO, fmt.Sprintf("%s sends its %s traffic to %s, which the lender cannot connect to: %s\n"+
 			"      the lender dials it from its container on the group's network, so a service on this "+
 			"host has to be named host.containers.internal rather than 127.0.0.1",
 			c.Sandbox, c.Slot, c.URL, c.Err))

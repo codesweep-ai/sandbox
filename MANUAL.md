@@ -801,10 +801,13 @@ Everything runs in one podman-machine VM there, so `--repo` and `--snapshot` sou
 **An agent in a lent sandbox says it is not signed in**
 
 Run `cs-sandbox doctor`. It walks the lending chain and names the hop that is dark, per group. The
-candidates are a group whose lender is not running, an expired host login, and an upstream that does
-not answer. The upstream is asked of the lender itself, which is the only party that dials it. A
-service of your own on this machine therefore has to be named `host.containers.internal`, because
-`127.0.0.1` inside that container is the container.
+candidates are a group whose lender is not running, an expired host login, and an upstream the
+lender cannot connect to. The check runs in the lender's container, which is the only party that
+dials an upstream. A service of your own on this machine therefore has to be named
+`host.containers.internal`, because `127.0.0.1` inside that container is the container.
+
+The check opens a connection to the upstream and sends nothing. A recorder or a gateway in front of
+a provider therefore never sees a request from `doctor`, whichever groups are on the host.
 
 **`no loan matches the credential this request carried`**
 

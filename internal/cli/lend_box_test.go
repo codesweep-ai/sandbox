@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -264,5 +265,51 @@ func TestEnsureStatesTheLendersMTU(t *testing.T) {
 	line := strings.Join(fake.Rendered(), "\n")
 	if !strings.Contains(line, "ip link set dev eth0 mtu "+engine.BridgeMTU) {
 		t.Errorf("the lender's MTU was left to inference:\n%s", line)
+	}
+}
+
+// TestReachOpensAConnectionAndSendsNoRequest: doctor asks whether the lender can reach an
+// upstream, and it asks that of every group on the host. A request would be counted by a
+// recorder in front of the provider, and one it never recorded fails a replay. A status of
+// 400 or more would also read as a dead upstream, which is what a healthy provider answers
+// a bare GET with. So nothing HTTP runs: the connection opening is the whole answer.
+func TestReachOpensAConnectionAndSendsNoRequest(t *testing.T) {
+	fake := run.NewFake()
+	b := lenderBox{Runner: fake, Spec: lenderBoxSpec{Network: "cs-sandbox-net", Image: "img"}}
+	if why := b.reach(context.Background(), "https://api.example.com/v1"); why != "" {
+		t.Fatalf("a connection that opened was reported as %q", why)
+	}
+	line := strings.Join(fake.Rendered(), "\n")
+	if strings.Contains(line, "curl") {
+		t.Errorf("the upstream was sent a request:\n%s", line)
+	}
+	// The scheme decides the port when the address names none.
+	if !strings.Contains(line, "reach api.example.com 443") {
+		t.Errorf("want a connection to api.example.com:443:\n%s", line)
+	}
+}
+
+// TestReachSaysWhyTheConnectionFailed: the reason is what sends a reader to the right hop,
+// so it has to be the kernel's, with bash's script name and path taken off the front.
+func TestReachSaysWhyTheConnectionFailed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		res  run.Result
+		want string
+	}{
+		{"refused", run.Result{ExitCode: 1, Stderr: "reach: connect: Connection refused\n" +
+			"reach: line 1: /dev/tcp/host.containers.internal/8080: Connection refused\n"}, "connection refused"},
+		{"unknown name", run.Result{ExitCode: 1, Stderr: "reach: line 1: host.containers.internal: Name or service not known\n" +
+			"reach: line 1: /dev/tcp/host.containers.internal/8080: Invalid argument\n"}, "name or service not known"},
+		{"timed out", run.Result{ExitCode: 124}, "no connection within 5s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := run.NewFake()
+			fake.On("/dev/tcp", tc.res, errors.New("exit"))
+			b := lenderBox{Runner: fake, Spec: lenderBoxSpec{Network: "cs-sandbox-net", Image: "img"}}
+			if why := b.reach(context.Background(), "http://host.containers.internal:8080/c/openai/x"); why != tc.want {
+				t.Errorf("reach = %q; want %q", why, tc.want)
+			}
+		})
 	}
 }

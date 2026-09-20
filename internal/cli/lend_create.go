@@ -770,7 +770,7 @@ func (app *App) lendState(ctx context.Context) doctor.LendState {
 			}
 			st.Upstreams = append(st.Upstreams, doctor.UpstreamCheck{
 				Sandbox: in.Name, URL: l.Origin, Slot: l.Slot,
-				Err: app.lenderBox(in.Group).probe(ctx, l.Origin),
+				Err: app.lenderBox(in.Group).reach(ctx, l.Origin),
 			})
 		}
 	}
