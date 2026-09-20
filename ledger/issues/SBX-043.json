@@ -3,11 +3,11 @@
   "title": "A sandbox carries the operator's git name and address, and nothing turns that off",
   "type": "improvement",
   "severity": "med",
-  "status": "open",
+  "status": "in-progress",
   "foundBy": "session agent working in the tour repository, which records and replays a three member campaign through cs-vcr, after a recording was found to hold the operator's name and address",
   "opened": "2026-09-19",
   "resolved": null,
-  "stint": null,
+  "stint": "v2-fixes",
   "evidence": {
     "commits": [],
     "integrated": [],
