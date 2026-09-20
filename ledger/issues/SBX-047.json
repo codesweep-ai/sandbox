@@ -23,6 +23,22 @@
     {
       "date": "2026-09-20",
       "text": "This was measured while fixing the retry budget in SBX-045. Codex 0.152.1 never retries an HTTP 429 status, whatever its retry counts say. It retries only a rate limit delivered inside the response stream. A provider or gateway that throttles with a bare 429 ends a codex turn at once, and the lender is the only place that can absorb it."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The second half is built, in commit df46cb7. `cs-sandbox lender fault <name>` fails a sandbox's next lent calls with a status, a hang, a dropped connection or a supplied body, and the provider is not called. A live run armed a 503 and a 401 on a sandbox, and the calls came back with those statuses and an `X-Cs-Sandbox-Fault` header."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The fault is armed on one sandbox, where the record describes it on a slot. A loan already resolves to its sandbox's directory, so the fault file sits beside the loans and goes when the sandbox does. It also lets one member be throttled while the rest run, which is the case a harness has to handle. A whole fleet is throttled by arming each of its members. `--slot` narrows a fault to one borrowed credential."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "`--body-file` exists because of what SBX-045 measured. A provider reports a rate limit inside a 200 stream, and codex retries that and not a 429 status. A status alone cannot reproduce the campaign's failure, so the operator supplies the provider's own event as the body."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "This record stays open for its first half, pacing a key's traffic and absorbing a throttle in the lender. That half needs a design for the budget, and nothing of it is built."
     }
   ],
   "links": [

@@ -3,17 +3,19 @@
   "title": "The lender logs a lent API key's loan token on every call",
   "type": "defect",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, reading a lender's log during a live check of SBX-046",
   "opened": "2026-09-20",
-  "resolved": null,
+  "resolved": "2026-09-20",
   "stint": "v2-fixes",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "7cf508f"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "go test ./internal/lend/ -run TestTheLenderRecordsWhatTheUpstreamAnswered -count=1: PASS, and it fails when the line logs the label. Live, the kept log of a sandbox with a lent key held 0 copies of its loan token, and its lines read `loan=loan_box_openai_98a9e5fb…`."
   },
-  "resolution": null,
+  "resolution": "The `lending` line names a loan by its sandbox, its slot and the first 8 characters of its nonce. It never prints a label that equals the token.",
   "details": "The lender's `lending` line prints `loan=<label>`. For a lent login the label is a short name, and the token is a forged credential file. A lent API key has no file, so `MintGuest` sets the label and the token to the same string. Every call by a sandbox with `--lend-api-key` therefore writes its working loan token to the lender's log.\n\n`Loan` documents the token as the secret. Inside the group's network it is enough to spend the host's key through the lender, for as long as the sandbox lives. Anyone who can run `podman logs` on the lender can read it, and SBX-046 now copies that log to the host's disk.\n\nTo reproduce, create a sandbox with `--lend-api-key openai`, make one model call, and compare the `loan=` value in `podman logs cs-sandbox-net-lender` with `OPENAI_API_KEY` inside the sandbox.",
   "notes": [],
   "links": [

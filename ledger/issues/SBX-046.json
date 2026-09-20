@@ -3,22 +3,41 @@
   "title": "The lender logs every request and no response, so a provider throttle or outage cannot be seen from the host",
   "type": "improvement",
   "severity": "high",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent operating two eight-member campaigns side by side on one host, reading every member's own CLI session records and the lender containers' logs after both campaigns had ended",
   "opened": "2026-09-20",
-  "resolved": null,
+  "resolved": "2026-09-20",
   "stint": "v2-fixes",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "1e9588a",
+      "713ae3b"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "go test ./internal/lend/ -run 'TestTheLenderRecords|TestAThrottledSlot' -count=1 -race: PASS. Live, one sandbox with a lent key in front of a stub that answers 429. The lender logged `msg=answered sandbox=box slot=openai status=429 ms=1 retry-after=2` for each of 4 calls, and one throttling warning for the run. After `group rm` the log was on the host at mode 600, and it ended with the per-slot summary."
   },
-  "resolution": null,
+  "resolution": "The lender logs an `answered` line for every call with the sandbox, the slot, the status and the time to the headers. A 429 or a 5xx adds the provider's retry-after and rate-limit headers. Outcomes are counted by slot and printed in the closing summary. A slot that is throttled or failing warns once a minute. The host copies a lender's log before it removes the lender.",
   "details": "**What happened.** Two campaigns ran for hours at a provider's per-minute token ceiling, and half of one CLI family's turns were ended by it. The lender fronted every one of those calls. Its container log held a `lending` line for each: sandbox, slot, loan, method and path, more than two thousand lines across the two groups. It held **not one line recording what the upstream answered**: no status, no 429, no 5xx, no latency. The throttle was found hours later, by pulling each member's CLI session store out of its sandbox before destroy.\n\n**Why.** `Server.ServeHTTP` in `internal/lend/proxy.go` logs at the moment it decides to lend, then hands the request to an `httputil.ReverseProxy` that has a `Rewrite` and an `ErrorHandler` and no `ModifyResponse`. The response passes through untouched, which is right for the body and means the status is never looked at. `Stats` counts requests, lent, refused, tunnels and blocked, and nothing about outcomes.\n\n**Why it matters.** The lender is the one place on the host that sees every model call of every member of every group, for every provider it fronts. It is where *\"is the provider refusing us?\"* can be answered in one line, for any CLI, without reading a session format. Today a throttled key, a provider outage and a healthy quiet fleet produce the same log. An expired login already has this problem from the other side (SBX-030: the guest gets a bare 401 and nothing on the host says why).\n\n**What is asked for.** Record the upstream's answer per request: status, duration, and for 429 and 503 the `Retry-After` and any rate-limit headers the provider sends. Record headers and status only, never a body. Count outcomes in `Stats` by slot and status class, so the summary line reads, for example, `openai: 1011 lent · 214 throttled · 0 5xx`. Warn, once per slot per interval, when a slot starts being throttled or starts failing, so that it is loud at the time and not discoverable afterwards. Keep the log somewhere that outlives the group: it lives in the lender container's own log now, and destroying the group takes it.\n\n**How to reproduce the gap.** Create a sandbox with a lent key, and point the slot's origin at a stub that answers 429. Make a model call from the guest, and read the lender's log. It holds one `lending` line, identical to a success.",
   "notes": [
     {
       "date": "2026-09-20",
       "text": "The `details` text was copy-edited so the repository's prose gate passes: long sentences were split and em-dashes removed, and no claim was changed. The text as filed is in commit c059533."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The fix differs from what was asked in where the lasting log is written. The record asks the lender to keep its log somewhere that outlives the group. The lender's mounts are read-only by design, because a process that holds real credentials writes nothing. The host copies the container's log when it removes a lender, and keeps the newest 20 for each group. A lender that is still running is read with `podman logs`, as before."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The duration on each line is the time to the response headers, not the whole response. A stream's body can run for minutes, and whether the provider took the call is known when the headers arrive."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The summary prints one line for each slot, for example `openai: ok 1011 · throttled 214 · refused 0 · 5xx 0 · no answer 0`. The record's example put `lent` on that line. That count is for the whole lender, so it stays on the first line."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The live check found that the `lending` line printed a lent key's loan token. SBX-052 holds that, and it is fixed."
     }
   ],
   "links": [
