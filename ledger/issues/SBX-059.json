@@ -1,0 +1,23 @@
+{
+  "id": "SBX-059",
+  "title": "cs-opencode-turn fails a turn with exit 5 and prints no failure class",
+  "type": "improvement",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "session agent, running all three turn drivers against an injected 429 and an injected 401",
+  "opened": "2026-09-20",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`cs-codex-turn` and `cs-claude-turn` end a turn the provider refused with exit 5 and a line a caller can parse, `failure class=<throttled|capacity|unauthorized|context|other> retry_after=<secs|->`. `cs-opencode-turn` exits 5 too, and prints only `session postcheck: error:<name>:<message>`. A caller that handles all three families has to read OpenCode's message text to tell a throttle from a rejected credential.\n\nBoth figures were measured under `cs-sandbox lender fault`. A 429 ended the turn after 64 seconds and 9 requests with `error:APIError:Rate limit reached`. A 401 was over in 3 seconds and 2 requests, and the message was `error:APIError:Incorrect API key provided`. This repository's fixture for a failed OpenCode turn carries the provider's status as `data.statusCode`. If the session record does hold it, the class can come from that and not from the text.",
+  "notes": [],
+  "links": [
+    "SBX-044",
+    "SBX-051"
+  ]
+}

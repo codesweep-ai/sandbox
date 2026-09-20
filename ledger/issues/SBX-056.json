@@ -3,17 +3,19 @@
   "title": "Nothing inside a sandbox says whether an agent is in the middle of a turn, so a caller can only ask whether a turn driver is alive",
   "type": "improvement",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent maintaining a harness that computes each member's state from inside its sandbox",
   "opened": "2026-09-20",
-  "resolved": null,
+  "resolved": "2026-09-20",
   "stint": "v6",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "1010535"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "go test ./internal/cli/ -run 'TestTurnDriversSay|TestStateAnswersForEverySession|TestOpenCodeStateAsks' -count=1: PASS, 23 cases across the three families, and tmux is never asked to create, type into or end a session. Live in one sandbox: all three answered `absent` before any session. During a throttled turn codex and Claude Code answered `busy retrying` and OpenCode `busy`, polled every 5 seconds from outside the drivers. With Claude's driver killed mid-turn, `pgrep` counted 0 drivers and `--state` still answered `busy retrying`. All three answered `idle` once the turns ended."
   },
-  "resolution": null,
+  "resolution": "`cs-codex-turn --state`, `cs-claude-turn --state` and `cs-opencode-turn --state` print one line and exit 0: `busy`, `idle`, `blocked`, `unknown` or `absent`. The answer is the driver's own judgement, `detect_state` for codex and Claude Code and the server's session status for OpenCode, so it covers a turn the agent started itself. The shipped briefs document it.",
   "details": "**The gap.** A harness that drives agents through `cs-<cli>-remote` needs to know whether a member is working. The only signal it has from inside the sandbox is the process table: is a `cs-<cli>-turn` driver alive for that CLI family? A driver wraps a turn that the host started, and it exits when that turn ends.\n\n**Where that goes wrong.** An agent CLI can start a turn of its own. A Claude Code session left a background command running and ended its turn, so the driver exited. When the command finished, the CLI's runtime delivered the result to the session as a new turn, and the session worked for forty more minutes. No driver wrapped that turn. The harness reported the member as stopped for all of it, and offered to nudge a session that was busy.\n\n**The knowledge already exists here.** Each turn driver decides whether its agent is still working, and none of them rests on its own presence to do it. `cs-claude-turn` and `cs-codex-turn` classify the TUI screen, where `esc to interrupt` means working. `cs-opencode-turn` asks the server, where a present `/session/status` entry means busy. That logic sits inside the drivers, so it only runs while a driver runs.\n\n**What is asked for.** A small command in the image that answers whether the agent is in a turn right now, whoever started the turn. It could be one command for each family, or one that takes the family. It should take the session name, as `cs-<cli>-remote-status` does. It should print one word, such as `busy`, `idle` or `absent`, and exit 0 for all three. A caller can then run it inside one probe and parse the answer. It should be cheap enough to run every few seconds, and it must never start or wake a session. The drivers could then use the same code, so the two answers cannot disagree.\n\n**Why a file's age is not enough.** A caller can read the age of the session record, and one harness now prints it beside the state as evidence. It cannot decide the state. An agent that is blocked in one long tool call writes nothing to its record, and its turn is very much alive. The screen and the server know that, and a file does not.\n\n**How to see the gap.** In a sandbox, start a Claude Code session through `cs-claude-remote`. Have it run a long command in the background and end its turn. When the command finishes, the session goes on working, and `pgrep -f cs-claude-turn` finds nothing.",
   "notes": [
     {
@@ -23,6 +25,22 @@
     {
       "date": "2026-09-20",
       "text": "Taken up as a mode of the turn drivers, `cs-<cli>-turn --state`, so the answer and the driver's own judgement are one function. With no handle it answers for every session of that family in the sandbox, which is what a probe that knows only the family can call. A harness of the kind this record describes starts its turns from another machine, so the session names live there and not in the member it probes."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The build differs from what was asked in three places. It is a mode of each turn driver and not a separate command. The driver is one file that `cs-<cli>-remote` copies to wherever the agent runs, so a flag on it shares the judgement with no second file to deploy or drift."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "It takes no session name. A probe of the kind this record describes runs inside the member and knows only the family, and the names live on the machine that started the turns. With no handle the command answers for every session of the family there: `busy` if any is, `idle` only if all are. `--tmux` or `--uuid` narrows it to one. A wrapper that takes a name was not built."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "It prints two words beyond the three asked for. `blocked` is a screen that needs a person. `unknown` is one the driver does not recognise, so that something new is never reported as `idle`. `busy` may carry a second word, `busy retrying`. A caller that nudges only on `idle` needs no change for any of them."
+    },
+    {
+      "date": "2026-09-20",
+      "text": "The screen answers rest on text that codex 0.152.1 and Claude Code 2.1.258 print. The table test holds one pane for every state, and it is where a version bump that changes a screen will show."
     }
   ],
   "links": [
