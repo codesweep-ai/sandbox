@@ -1,0 +1,22 @@
+{
+  "id": "SBX-048",
+  "title": "doctor reports an upstream that answered as one that does not answer, and its probe reaches every group on the host",
+  "type": "defect",
+  "severity": "high",
+  "status": "open",
+  "foundBy": "session agent replaying a multi-member campaign through cs-vcr, several replays at a time on one shared host",
+  "opened": "2026-09-20",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "**What happened.** Several campaigns were replayed at once on one host. Each used a `cs-vcr` proxy as the upstream of its lent credential. One person ran `cs-sandbox doctor`. For the members of every one of those campaigns it printed a line of this form: `NO  <member> sends its <slot> traffic to <upstream>, which does not answer: curl: (22) The requested URL returned error: 400`. The upstream had answered, with a 400. The hint printed under it, to use `host.containers.internal` and not `127.0.0.1`, did not apply either.\n\n**Why.** `lenderBox.probe` in `internal/cli/lend_box.go` runs `curl -fsS -o /dev/null -m 5` on the upstream address from inside the lender. The `-f` flag turns any status of 400 or more into a failure. The question the probe asks is whether the lender can reach the upstream, and any HTTP answer at all proves that it can. A provider's base address often answers a bare GET with 401, 404 or 405, so a healthy real upstream can read as unreachable too.\n\n**Why it matters.** The probe is a real request, and `doctor` sends it for every group on the host, including groups that belong to other people. A recording proxy counts such a request as one the recording never held, and a replay that had served every recorded call then fails. VCR-027 asks for the proxy's side of this to change. A `NO` on somebody else's sandbox also makes your own `doctor` end with a failure.\n\n**What is asked for.** Drop `-f`, so that a connection that completes counts as reachable whatever the status, and report the status beside it. Consider a HEAD or an OPTIONS request, which a recorder is less likely to take for a client's call. Consider limiting the upstream probe to the caller's own groups, or marking a line about another person's group as information.\n\n**How to reproduce.** Create a sandbox with `--lend-api-key` and an upstream that answers 400 to a GET on its base address. Run `cs-sandbox doctor`. It prints `does not answer` beside the 400.",
+  "notes": [],
+  "links": [
+    "SBX-046"
+  ]
+}
