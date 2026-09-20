@@ -434,7 +434,7 @@ func TestCodexWrapperForwardsABaseURL(t *testing.T) {
 			name: "an API key names the variable holding it",
 			env:  []string{"OPENAI_BASE_URL=http://vcr:8080/c/openai/demo/v1", "OPENAI_API_KEY=sk-not-a-real-key"},
 			wantArgv: `argv: -c model_provider="cs-proxy" -c model_providers.cs-proxy=` +
-				`{name="cs-proxy", base_url="http://vcr:8080/c/openai/demo/v1", env_key="OPENAI_API_KEY", wire_api="responses", stream_max_retries=12} exec do it`,
+				`{name="cs-proxy", base_url="http://vcr:8080/c/openai/demo/v1", env_key="OPENAI_API_KEY", wire_api="responses", stream_max_retries=10} exec do it`,
 		},
 		{
 			// The budget depends on the key's tier, so both counts can be set, and an
@@ -467,7 +467,7 @@ func TestCodexWrapperForwardsABaseURL(t *testing.T) {
 			name: "a subscription asks for codex's own auth",
 			env:  []string{"OPENAI_BASE_URL=http://vcr:8080/c/chatgpt/demo", "OPENAI_API_KEY="},
 			wantArgv: `argv: -c model_provider="cs-proxy" -c model_providers.cs-proxy=` +
-				`{name="cs-proxy", base_url="http://vcr:8080/c/chatgpt/demo", requires_openai_auth=true, wire_api="responses", stream_max_retries=12} exec do it`,
+				`{name="cs-proxy", base_url="http://vcr:8080/c/chatgpt/demo", requires_openai_auth=true, wire_api="responses", stream_max_retries=10} exec do it`,
 			notWantArgv: "env_key",
 		},
 	} {

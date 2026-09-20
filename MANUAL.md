@@ -429,12 +429,15 @@ Codex waits that long and tries again, up to `stream_max_retries` times, and the
 
 | Variable | Default | What it sets |
 |---|---|---|
-| `CS_CODEX_STREAM_MAX_RETRIES` | `12` | How many times codex retries a stream that failed. |
+| `CS_CODEX_STREAM_MAX_RETRIES` | `10` | How many times codex retries a stream that failed. |
 | `CS_CODEX_REQUEST_MAX_RETRIES` | codex's own, 4 | How many times codex retries a request that got a 5xx or no connection. |
 
-Twelve retries wait out a rate limit that clears within a few minutes. When the failure names no
-wait, codex doubles its own from 0.2 seconds, so twelve retries of a dead stream take about 14
-minutes and each further one doubles that. Codex stops counting at 100. Set a variable to empty to
+Ten retries wait out a rate limit for about two minutes, at the 12 seconds or so a provider asks
+for. The count is not higher because every other failure spends it too. A rejected credential, a 5xx
+and a dropped stream name no wait, so codex doubles its own from 0.2 seconds. A turn that meets a
+`401` fails after 7 seconds at 5 retries, 3.4 minutes at 10 and 13 minutes at 12. Raise the count
+for a key that is throttled often, and expect a bad credential to take that much longer to say so.
+Codex stops counting at 100. Set a variable to empty to
 leave that count to codex. Codex does not retry an HTTP 429 status, whatever either count says.
 
 OpenCode is the awkward one. Its base URL belongs to the *provider*, and only the openai and
