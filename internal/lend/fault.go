@@ -187,7 +187,8 @@ func (s *Server) inject(w http.ResponseWriter, r *http.Request, loan Loan, f Fau
 	s.count(func(st *Stats) { st.Injected++ })
 	s.cfg.Log.Warn("injected a fault",
 		slog.String("sandbox", loan.Name), slog.String("slot", loan.Slot), slog.String("fault", f.ID),
-		slog.Int("status", f.Status), slog.String("hang", f.Hang))
+		slog.Int("status", f.Status), slog.String("hang", f.Hang),
+		slog.String("method", r.Method), slog.String("path", r.URL.Path))
 	if d, err := time.ParseDuration(f.Hang); err == nil && d > 0 {
 		select {
 		case <-time.After(d):
