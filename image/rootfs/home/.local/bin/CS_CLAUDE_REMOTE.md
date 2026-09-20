@@ -148,6 +148,23 @@ only if all are. `--uuid <uuid>` narrows it to one. It starts nothing, wakes not
 so it is safe to run every few seconds. It is the same judgement the driver waits on while it runs
 a turn, so the two cannot disagree.
 
+## How the last turn ended
+
+Every turn end appends one line to `~/.cs-turns/claude.log`, on the machine the agent runs on:
+
+```
+<epoch seconds> <exit code> <class or -> <retry_after or -> <first line of the reason, or ->
+1789000000 5 throttled 12.5 turn failed: Rate limit reached. Please try again in 12.5s.
+1789000420 0 - - -
+```
+
+The class and the wait are the ones on the `failure class=` line. That line goes to whoever
+started the turn, which may be another machine. This file is for a caller that asks the agent's
+own machine, as `--state` is. Read the last line: a turn that ended well is recorded too, so an
+older failure is known to be over. `--state`, `--help` and a usage error are not turns and write
+nothing. A driver that was killed writes nothing, so a missing line means the ending is not known.
+The file keeps between 200 and 400 lines. `CS_TURN_LOG` names another path.
+
 ## Exit codes
 
 A turn surfaces the remote driver's exit status:

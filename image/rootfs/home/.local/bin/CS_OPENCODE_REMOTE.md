@@ -156,6 +156,23 @@ only if all are. `--tmux <token>` narrows it to one. It starts nothing, wakes no
 so it is safe to run every few seconds. It is the same judgement the driver waits on while it runs
 a turn, so the two cannot disagree.
 
+## How the last turn ended
+
+Every turn end appends one line to `~/.cs-turns/opencode.log`, on the machine the agent runs on:
+
+```
+<epoch seconds> <exit code> <class or -> <retry_after or -> <first line of the reason, or ->
+1789000000 5 throttled 12.5 turn failed: Rate limit reached. Please try again in 12.5s.
+1789000420 0 - - -
+```
+
+The class and the wait are the ones on the `failure class=` line. That line goes to whoever
+started the turn, which may be another machine. This file is for a caller that asks the agent's
+own machine, as `--state` is. Read the last line: a turn that ended well is recorded too, so an
+older failure is known to be over. `--state`, `--help` and a usage error are not turns and write
+nothing. A driver that was killed writes nothing, so a missing line means the ending is not known.
+The file keeps between 200 and 400 lines. `CS_TURN_LOG` names another path.
+
 ## Exit codes
 
 - `0` turn completed · `2` timed out or stalled · `3` launch/setup failure · `4` session busy
@@ -166,6 +183,12 @@ a turn, so the two cannot disagree.
 `0`–`4` mean the same thing here as in the `cs-claude-remote` / `cs-codex-remote` families; `5`
 is the one opencode adds, because only opencode can run a turn to completion and still have
 failed.
+
+When a provider refused the turn, exit `5` comes with one line a caller can parse, the same one
+`cs-codex-turn` and `cs-claude-turn` print:
+`cs-opencode-turn: failure class=<throttled|capacity|unauthorized|context|other> retry_after=<secs|->`.
+The class is read from the HTTP status OpenCode keeps on the error, and from the message when
+there is none. A turn that failed for another reason, such as an incomplete reply, prints no class.
 
 Do not confuse these with the `-s` status codes. These are the codes **this command** exits with
 after driving a turn; `cs-opencode-remote-output <name> -s` has its own, unrelated scale

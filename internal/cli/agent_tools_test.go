@@ -504,7 +504,7 @@ func TestOpenCodeTurnCompletionSemantics(t *testing.T) {
 		{"success", okMessage, "0", 0, "__CS_OPENCODE_SESSION_ID__ " + openCodeTestSessionID},
 		// run exit 0 + a provider error recorded on the session = failed turn. This is the
 		// trap the postcheck exists for: attached clients do not propagate provider errors.
-		{"provider-error-despite-exit-0", providerError, "0", 5, "postcheck"},
+		{"provider-error-despite-exit-0", providerError, "0", 5, "failure class=unauthorized retry_after=-"},
 		{"incomplete-despite-exit-0", incomplete, "0", 5, "postcheck"},
 		// A nonzero run exit is a failed turn regardless of session state.
 		{"run-exit-nonzero", okMessage, "1", 5, "turn failed"},
@@ -528,6 +528,17 @@ func TestOpenCodeTurnCompletionSemantics(t *testing.T) {
 			// client's stdout (which stays empty when a TUI hosts the server).
 			if tc.wantExit == 0 && !strings.Contains(out, "stub-response") {
 				t.Fatalf("success output missing the session's assistant text: %s", out)
+			}
+			// Every turn end leaves a line on this machine, a good one included, so a caller
+			// can tell that an older failure no longer applies.
+			line := lastTurnLine(t, home, "opencode")
+			if line.exit != tc.wantExit {
+				t.Fatalf("turn log says exit %d; the driver exited %d", line.exit, tc.wantExit)
+			}
+			if strings.Contains(tc.wantInOut, "failure class=") {
+				wantTurnLogAgrees(t, home, "opencode", 5, tc.wantInOut)
+			} else if line.class != "-" {
+				t.Fatalf("turn log names class %q for a turn no provider refused", line.class)
 			}
 			covemit.Prove(t, "turn-driver-semantics", "opencode", "", "scripts")
 		})
@@ -1009,6 +1020,9 @@ func TestClaudeTurnReportsAProviderFailure(t *testing.T) {
 			if !strings.Contains(out, tc.wantIn) {
 				t.Fatalf("output missing %q: %s", tc.wantIn, out)
 			}
+			if tc.wantExit == 5 {
+				wantTurnLogAgrees(t, home, "claude", 5, tc.wantIn)
+			}
 			covemit.Prove(t, "turn-driver-semantics", "claude", "", "scripts")
 		})
 	}
@@ -1284,6 +1298,9 @@ exit 0
 			if !strings.Contains(out, "__CS_CODEX_SESSION_ID__ "+codexFailedTurnID) {
 				t.Fatalf("a failed turn dropped the session id: %s", out)
 			}
+			// The same class and wait are left on this machine, for a caller that was not the one
+			// that started the turn.
+			wantTurnLogAgrees(t, home, "codex", 5, tc.wantLine)
 			covemit.Prove(t, "turn-driver-semantics", "codex", "", "scripts")
 		})
 	}

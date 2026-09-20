@@ -40,6 +40,9 @@
 # Exit codes: 0 ok, 2 turn timed out/stalled, 3 launch/setup failure, 5 turn failed (client error
 # or a provider error recorded on the session), 1 usage. 5 rather than 4 because cs-opencode-remote
 # already spends 4 on "session busy" (its per-session turn lock), as the claude/codex tools do.
+#
+# A turn the provider refused prints the provider's message, then one line a caller can parse:
+#   cs-opencode-turn: failure class=<throttled|capacity|unauthorized|context|other> retry_after=<secs|->
 
 set -uo pipefail
 
@@ -48,7 +51,42 @@ TOKEN=""; SES_ID=""; WORKDIR=""; FORMAT="text"; TIMEOUT="${CS_OPENCODE_TIMEOUT:-
 # Stall watchdog: bail early if the server reports the session idle for this long while the
 # attached run client still has not returned. 0 disables. Env-overridable.
 STALL_SECS="${CS_OPENCODE_STALL_SECS:-180}"
-err() { echo "cs-opencode-turn: $*" >&2; }
+# The turn log. Every turn end appends one line here, on the machine the agent runs on, so a
+# harness that asks this machine about this agent can learn how its last turn ended:
+#   <epoch> <exit code> <class|-> <retry_after|-> <first line of the reason, or ->
+# The class line below goes to whoever started the turn, and that may be another machine, or
+# gone. One format serves every agent family. --state and a usage error are not turns and
+# write nothing. A driver that is killed writes nothing either, so no line means not known.
+# Writing is best effort: a full disk must not change how a turn is reported.
+TURN_LOG="${CS_TURN_LOG:-$HOME/.cs-turns/opencode.log}"
+TURN_LOG_KEEP=200
+TURN_CLASS="-"; TURN_RETRY="-"; TURN_MSG=""
+err() {
+    echo "cs-opencode-turn: $*" >&2
+    case "$*" in
+        "failure class="*)
+            TURN_CLASS="${*#failure class=}"; TURN_CLASS="${TURN_CLASS%% *}"
+            TURN_RETRY="${*##*retry_after=}" ;;
+        "turn failed"*) TURN_MSG="$*" ;;
+        " "*) ;;
+        *) [[ "$TURN_MSG" == "turn failed"* ]] || TURN_MSG="$*" ;;
+    esac
+}
+record_turn_end() {
+    local rc="$1" msg
+    $STATE_ONLY && return 0
+    (( rc == 1 )) && return 0
+    msg="$(printf '%s' "${TURN_MSG:--}" | tr '\n\r\t' '   ' | cut -c1-300)"
+    {
+        mkdir -p "${TURN_LOG%/*}" &&
+        printf '%s %s %s %s %s\n' "$(date +%s)" "$rc" "$TURN_CLASS" "$TURN_RETRY" "$msg" >> "$TURN_LOG" &&
+        if (( $(wc -l < "$TURN_LOG") > TURN_LOG_KEEP * 2 )); then
+            tail -n "$TURN_LOG_KEEP" "$TURN_LOG" > "$TURN_LOG.tmp" && mv "$TURN_LOG.tmp" "$TURN_LOG"
+        fi
+    } 2>/dev/null || true
+    return 0
+}
+trap 'record_turn_end "$?"' EXIT
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -59,7 +97,7 @@ while [[ $# -gt 0 ]]; do
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --name)    LABEL="$2"; shift 2 ;;
         --state)   STATE_ONLY=true; shift ;;
-        -h|--help) sed -n '2,43p' "$0"; exit 0 ;;
+        -h|--help) trap - EXIT; sed -n '2,46p' "$0"; exit 0 ;;
         *) err "unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -101,7 +139,7 @@ if ! $STATE_ONLY; then
     PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-turn.XXXXXX")"
     OUT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-out.XXXXXX")"
     ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-err.XXXXXX")"
-    trap 'rm -f "$PROMPT_FILE" "$OUT_FILE" "$ERR_FILE"' EXIT
+    trap 'rc=$?; rm -f "$PROMPT_FILE" "$OUT_FILE" "$ERR_FILE"; record_turn_end "$rc"' EXIT
     cat > "$PROMPT_FILE"
     [[ -s "$PROMPT_FILE" ]] || { err "empty prompt on stdin"; exit 1; }
 fi
@@ -322,7 +360,7 @@ fi
 TURN_JSON="$(curl -fsS -m 10 "$BASE/session/$SES_ID/message" 2>/dev/null)"
 RESULT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-result.XXXXXX")"
 CHECK_ERR="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-check.XXXXXX")"
-trap 'rm -f "$PROMPT_FILE" "$OUT_FILE" "$ERR_FILE" "$RESULT_FILE" "$CHECK_ERR"' EXIT
+trap 'rc=$?; rm -f "$PROMPT_FILE" "$OUT_FILE" "$ERR_FILE" "$RESULT_FILE" "$CHECK_ERR"; record_turn_end "$rc"' EXIT
 printf '%s' "$TURN_JSON" | python3 -c '
 import json, sys
 
@@ -369,7 +407,30 @@ if last.get("error"):
     name = e.get("name", "error") if isinstance(e, dict) else "error"
     data = e.get("data", {}) if isinstance(e, dict) else {}
     msg = data.get("message", "") if isinstance(data, dict) else ""
-    fail(f"error:{name}:{msg[:200]}")
+    # The class a caller acts on, as cs-codex-turn and cs-claude-turn print it. OpenCode keeps
+    # the HTTP status the provider answered with, so the class comes from that first and from the
+    # message only when the status is missing.
+    status = data.get("statusCode") if isinstance(data, dict) else None
+    low = (str(name) + " " + str(msg)).lower()
+    if status == 429 or "rate limit" in low or "too many requests" in low:
+        cls = "throttled"
+    elif status in (500, 502, 503, 529) or "overloaded" in low or "at capacity" in low:
+        cls = "capacity"
+    elif status in (401, 403) or "providerautherror" in low or "incorrect api key" in low or "invalid api key" in low:
+        cls = "unauthorized"
+    elif "context" in low and ("length" in low or "window" in low or "too long" in low):
+        cls = "context"
+    else:
+        cls = "other"
+    wait = "-"
+    headers = data.get("responseHeaders") if isinstance(data, dict) else None
+    if isinstance(headers, dict):
+        for k, v in headers.items():
+            if str(k).lower() == "retry-after" and str(v).strip().replace(".", "", 1).isdigit():
+                wait = str(v).strip()
+    sys.stderr.write(f"error:{name}:{msg[:200]}\n")
+    sys.stderr.write(f"class={cls} retry_after={wait}\n")
+    sys.exit(1)
 if not (last.get("time") or {}).get("completed"):
     fail("incomplete")
 
@@ -390,7 +451,10 @@ print("\n\n".join(chunks))
 ' "$ANCHOR_ID" "$TURN_START_MS" "$FORMAT" > "$RESULT_FILE" 2> "$CHECK_ERR"
 CHECK_RC=$?
 if (( CHECK_RC != 0 )); then
-    err "turn failed despite run exit 0 — session postcheck: $(tr -d '\n' < "$CHECK_ERR" | head -c 300)"
+    err "turn failed despite run exit 0 — session postcheck: $(sed -n 1p "$CHECK_ERR" | head -c 300)"
+    # A provider's refusal carries a class line, as the other two drivers print it.
+    CLASS_LINE="$(sed -n '2{/^class=/p}' "$CHECK_ERR")"
+    [[ -n "$CLASS_LINE" ]] && err "failure $CLASS_LINE"
     exit 5
 fi
 

@@ -55,7 +55,42 @@ PROJECTS="$HOME/.cs-claude/projects"
 LABEL=""             # human label, used only in diagnostics
 STATE_ONLY=false
 
-err() { echo "cs-claude-turn: $*" >&2; }
+# The turn log. Every turn end appends one line here, on the machine the agent runs on, so a
+# harness that asks this machine about this agent can learn how its last turn ended:
+#   <epoch> <exit code> <class|-> <retry_after|-> <first line of the reason, or ->
+# The class line below goes to whoever started the turn, and that may be another machine, or
+# gone. One format serves every agent family. --state and a usage error are not turns and
+# write nothing. A driver that is killed writes nothing either, so no line means not known.
+# Writing is best effort: a full disk must not change how a turn is reported.
+TURN_LOG="${CS_TURN_LOG:-$HOME/.cs-turns/claude.log}"
+TURN_LOG_KEEP=200
+TURN_CLASS="-"; TURN_RETRY="-"; TURN_MSG=""
+err() {
+    echo "cs-claude-turn: $*" >&2
+    case "$*" in
+        "failure class="*)
+            TURN_CLASS="${*#failure class=}"; TURN_CLASS="${TURN_CLASS%% *}"
+            TURN_RETRY="${*##*retry_after=}" ;;
+        "turn failed"*) TURN_MSG="$*" ;;
+        " "*) ;;
+        *) [[ "$TURN_MSG" == "turn failed"* ]] || TURN_MSG="$*" ;;
+    esac
+}
+record_turn_end() {
+    local rc="$1" msg
+    $STATE_ONLY && return 0
+    (( rc == 1 )) && return 0
+    msg="$(printf '%s' "${TURN_MSG:--}" | tr '\n\r\t' '   ' | cut -c1-300)"
+    {
+        mkdir -p "${TURN_LOG%/*}" &&
+        printf '%s %s %s %s %s\n' "$(date +%s)" "$rc" "$TURN_CLASS" "$TURN_RETRY" "$msg" >> "$TURN_LOG" &&
+        if (( $(wc -l < "$TURN_LOG") > TURN_LOG_KEEP * 2 )); then
+            tail -n "$TURN_LOG_KEEP" "$TURN_LOG" > "$TURN_LOG.tmp" && mv "$TURN_LOG.tmp" "$TURN_LOG"
+        fi
+    } 2>/dev/null || true
+    return 0
+}
+trap 'record_turn_end "$?"' EXIT
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -68,6 +103,7 @@ while [[ $# -gt 0 ]]; do
         --name)     LABEL="$2"; shift 2 ;;
         --state)    STATE_ONLY=true; shift ;;
         -h|--help)
+            trap - EXIT
             sed -n '2,40p' "$0"; exit 0 ;;
         *) err "unknown argument: $1"; exit 1 ;;
     esac
@@ -91,7 +127,7 @@ TMUX_SESSION="cs-claude-$UUID"
 # when handing it to tmux load-buffer).
 if ! $STATE_ONLY; then
     PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-claude-turn.XXXXXX")"
-    trap 'rm -f "$PROMPT_FILE"' EXIT
+    trap 'rc=$?; rm -f "$PROMPT_FILE"; record_turn_end "$rc"' EXIT
     cat > "$PROMPT_FILE"
     if [[ ! -s "$PROMPT_FILE" ]]; then
         err "empty prompt on stdin"; exit 1
