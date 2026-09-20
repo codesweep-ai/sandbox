@@ -59,8 +59,29 @@ if [ -n "${OPENAI_BASE_URL:-}" ]; then
   else
     cs_auth='requires_openai_auth=true'
   fi
+  # The retry budget, sized for an agent nobody is watching. stream_max_retries is the one
+  # a rate limit spends: a provider throttles inside the response stream, codex waits the
+  # delay the provider's message asks for and tries again, and its own default of 5 gives
+  # up after five such waits, about a minute at the 6 to 18 seconds a provider asks. Twelve
+  # waits out a limit that clears within a few minutes. With no delay to follow codex doubles
+  # its wait from 0.2s each time, so twelve also bounds a dead stream at about 14 minutes,
+  # inside the turn driver's timeout, where each further retry doubles that. codex stops
+  # counting at 100.
+  #
+  # request_max_retries is passed only when set. It governs 5xx and transport failures, it
+  # multiplies with the stream budget, and codex does not retry an HTTP 429 at all whatever
+  # it says.
+  cs_retries=""
+  for cs_pair in "stream_max_retries:${CS_CODEX_STREAM_MAX_RETRIES-12}" \
+                 "request_max_retries:${CS_CODEX_REQUEST_MAX_RETRIES-}"; do
+    case "${cs_pair#*:}" in
+      "") ;;
+      *[!0-9]*) echo "cs-codex: ignoring ${cs_pair%%:*}='${cs_pair#*:}': not a whole number" >&2 ;;
+      *) cs_retries="$cs_retries, ${cs_pair%%:*}=${cs_pair#*:}" ;;
+    esac
+  done
   set -- -c 'model_provider="cs-proxy"' \
-         -c "model_providers.cs-proxy={name=\"cs-proxy\", base_url=\"$OPENAI_BASE_URL\", $cs_auth, wire_api=\"responses\"}" \
+         -c "model_providers.cs-proxy={name=\"cs-proxy\", base_url=\"$OPENAI_BASE_URL\", $cs_auth, wire_api=\"responses\"$cs_retries}" \
          "$@"
 fi
 

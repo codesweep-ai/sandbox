@@ -416,6 +416,20 @@ whole provider declaration instead, so `cs-codex` builds one from `OPENAI_BASE_U
 `-c` overrides. Nothing is written to any configuration file, so the endpoint applies to that
 invocation alone and an unset variable changes nothing.
 
+That declaration also carries a retry budget, because codex gives a provider it was handed only its
+defaults. A provider that rate-limits a call answers inside the response stream and names a wait.
+Codex waits that long and tries again, up to `stream_max_retries` times, and then fails the turn.
+
+| Variable | Default | What it sets |
+|---|---|---|
+| `CS_CODEX_STREAM_MAX_RETRIES` | `12` | How many times codex retries a stream that failed. |
+| `CS_CODEX_REQUEST_MAX_RETRIES` | codex's own, 4 | How many times codex retries a request that got a 5xx or no connection. |
+
+Twelve retries wait out a rate limit that clears within a few minutes. When the failure names no
+wait, codex doubles its own from 0.2 seconds, so twelve retries of a dead stream take about 14
+minutes and each further one doubles that. Codex stops counting at 100. Set a variable to empty to
+leave that count to codex. Codex does not retry an HTTP 429 status, whatever either count says.
+
 OpenCode is the awkward one. Its base URL belongs to the *provider*, and only the openai and
 anthropic providers have a variable. A model on any other one ignores `OPENAI_BASE_URL` completely:
 the agent reaches the real endpoint while whatever you pointed it at sits idle.

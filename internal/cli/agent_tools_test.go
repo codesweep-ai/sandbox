@@ -434,7 +434,30 @@ func TestCodexWrapperForwardsABaseURL(t *testing.T) {
 			name: "an API key names the variable holding it",
 			env:  []string{"OPENAI_BASE_URL=http://vcr:8080/c/openai/demo/v1", "OPENAI_API_KEY=sk-not-a-real-key"},
 			wantArgv: `argv: -c model_provider="cs-proxy" -c model_providers.cs-proxy=` +
-				`{name="cs-proxy", base_url="http://vcr:8080/c/openai/demo/v1", env_key="OPENAI_API_KEY", wire_api="responses"} exec do it`,
+				`{name="cs-proxy", base_url="http://vcr:8080/c/openai/demo/v1", env_key="OPENAI_API_KEY", wire_api="responses", stream_max_retries=12} exec do it`,
+		},
+		{
+			// The budget depends on the key's tier, so both counts can be set, and an
+			// empty value hands the count back to codex. A value that is not a number
+			// is dropped: inside the provider block it would stop codex from starting.
+			name: "the retry budget can be set",
+			env: []string{"OPENAI_BASE_URL=http://vcr:8080/v1", "OPENAI_API_KEY=sk-not-a-real-key",
+				"CS_CODEX_STREAM_MAX_RETRIES=40", "CS_CODEX_REQUEST_MAX_RETRIES=8"},
+			wantArgv: `wire_api="responses", stream_max_retries=40, request_max_retries=8} exec do it`,
+		},
+		{
+			name: "an empty budget leaves codex its default",
+			env: []string{"OPENAI_BASE_URL=http://vcr:8080/v1", "OPENAI_API_KEY=sk-not-a-real-key",
+				"CS_CODEX_STREAM_MAX_RETRIES="},
+			wantArgv:    `wire_api="responses"} exec do it`,
+			notWantArgv: "max_retries",
+		},
+		{
+			name: "a budget that is not a number is dropped",
+			env: []string{"OPENAI_BASE_URL=http://vcr:8080/v1", "OPENAI_API_KEY=sk-not-a-real-key",
+				"CS_CODEX_STREAM_MAX_RETRIES=lots"},
+			wantArgv:    `wire_api="responses"} exec do it`,
+			notWantArgv: ", stream_max_retries",
 		},
 		{
 			// No key means the subscription path, which authenticates as codex
@@ -444,7 +467,7 @@ func TestCodexWrapperForwardsABaseURL(t *testing.T) {
 			name: "a subscription asks for codex's own auth",
 			env:  []string{"OPENAI_BASE_URL=http://vcr:8080/c/chatgpt/demo", "OPENAI_API_KEY="},
 			wantArgv: `argv: -c model_provider="cs-proxy" -c model_providers.cs-proxy=` +
-				`{name="cs-proxy", base_url="http://vcr:8080/c/chatgpt/demo", requires_openai_auth=true, wire_api="responses"} exec do it`,
+				`{name="cs-proxy", base_url="http://vcr:8080/c/chatgpt/demo", requires_openai_auth=true, wire_api="responses", stream_max_retries=12} exec do it`,
 			notWantArgv: "env_key",
 		},
 	} {
