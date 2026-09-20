@@ -1,0 +1,22 @@
+{
+  "id": "SBX-055",
+  "title": "create removes a lender that will not start again without keeping its log",
+  "type": "defect",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "session agent, reading the lender's start path while answering when a lender's log is kept",
+  "opened": "2026-09-20",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`lenderBox.ensure` finds a lender container that exists and is not running, tries to start it, and removes it with `podman rm -f` when it will not start. It does not call `keepLog` first. SBX-046 keeps a lender's log when `destroy`, `rm` or `group rm` removes the lender. This path handles a lender that died, which is when its log is most wanted.\n\nTo reproduce, stop a group's lender so that it cannot start again, for example by removing the staged binary it runs. Then run `create` with a lend flag in that group. The old container's log is gone and nothing is written under the lender logs directory.\n\nCalling `keepLog` before that removal would close it.",
+  "notes": [],
+  "links": [
+    "SBX-046"
+  ]
+}

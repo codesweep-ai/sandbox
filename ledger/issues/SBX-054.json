@@ -1,0 +1,24 @@
+{
+  "id": "SBX-054",
+  "title": "The lender logs a throttle delivered inside a 200 stream as a success",
+  "type": "improvement",
+  "severity": "high",
+  "status": "open",
+  "foundBy": "session agent, answering a consumer's question about which kind of throttle its failed turns had met",
+  "opened": "2026-09-20",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "The lender records what an upstream answered from the status line and the headers, and it never reads a body. A provider can report a rate limit inside a `200` response stream, as a `response.failed` event whose error code is `rate_limit_exceeded`. The lender logs that call as `status=200`. It counts it as `ok`, and it prints no throttling warning.\n\nThis is the form codex retries, as measured for SBX-045, so it is the form a fleet at its limit is most likely to meet. For that fleet the lender's log and its per-slot summary still read as healthy, which is the gap SBX-046 set out to close.\n\nTo reproduce, arm `cs-sandbox lender fault <name> --status 200 --content-type text/event-stream --body-file <event>` with such an event, make a call, and read the lender's log. An injected answer is not logged as `answered` at all, so the same event has to come from a stub upstream to see the `status=200` line.\n\nThe lender's rule is that a stream passes through byte for byte and is never parsed. Watching the first bytes of an event stream for a failure event, without holding or changing them, may keep that rule. It needs a design before it is built.",
+  "notes": [],
+  "links": [
+    "SBX-046",
+    "SBX-045",
+    "SBX-047"
+  ]
+}
