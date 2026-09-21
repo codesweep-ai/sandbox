@@ -1,0 +1,27 @@
+{
+  "id": "SBX-067",
+  "title": "The macOS jobs trust a podman machine that calls itself running while its socket is dead",
+  "type": "defect",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "session agent, maintainer of this repository, reading the first failing line of two red macOS jobs",
+  "opened": "2026-09-21",
+  "resolved": null,
+  "stint": "reliability session, 2026-09-21",
+  "evidence": {
+    "commits": [
+      "8d5e892"
+    ],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "**What happened.** The self-hosted macOS runners came back after an outage. On the next push, the macOS image build and the macOS smoke job both failed with `unable to connect to Podman socket`. A re-run of the failed jobs failed the same way.\n\n**Why.** Each macOS job begins with a guard that starts the podman machine when its state is not `running`. The machine reported `running`, so the guard started nothing and printed nothing. The forwarded socket was still refusing every connection. A plain start does not help a machine in that condition. It needs a stop first.\n\n**Why it matters.** Images are published only after the whole run succeeds. One wedged machine therefore blocks every consumer from pinning a new commit, and only a person with access to that machine can clear it. The guard exists to remove exactly that dependency.\n\n**How to reproduce.** Leave the machine in a state where `podman machine inspect` says `running` and `podman info` fails, then run any macOS job.\n\n**What would help.** The guard should ask the socket with `podman info`. When there is no answer it should stop the machine, start it, and wait for the socket. Three runners share the machine, so the final `podman info` should decide the step, not the exit status of the start.",
+  "notes": [
+    {
+      "date": "2026-09-21",
+      "text": "Commit 8d5e892 changes all three guards that way, and `actionlint` passes. It stays open until a run on the self-hosted runner shows the guard restart a machine and the job go on to pass."
+    }
+  ],
+  "links": []
+}
