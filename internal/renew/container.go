@@ -82,7 +82,7 @@ func runInContainer(ctx context.Context, cfg Config, spec lend.RenewSpec, stage 
 // And --rm, deliberately: it exists for one turn, and what it holds while it runs
 // is a real credential.
 func containerArgv(image string, spec lend.RenewSpec, stage string) []string {
-	return []string{
+	argv := []string{
 		"podman", "run", "--rm",
 		// Never pull. The image is a precondition, checked by Possible, and
 		// a renewal has minutes to work in — fetching gigabytes inside that window
@@ -102,6 +102,10 @@ func containerArgv(image string, spec lend.RenewSpec, stage string) []string {
 		"--entrypoint", spec.Bin,
 		image,
 	}
+	// The turn itself. Whatever follows the image is handed to the entrypoint, and
+	// without it the client starts with no prompt and exits before it
+	// authenticates, which refreshes nothing.
+	return append(argv, spec.Args...)
 }
 
 // stageProfile is the staged profile directory: the stage is the client's HOME,

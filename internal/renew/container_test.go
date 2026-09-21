@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,15 +32,39 @@ func TestContainerArgvIsolatesTheRenewal(t *testing.T) {
 		}
 	}
 	// A renewal talks to the provider and nothing talks to it, so it must not join
-	// a sandbox network or publish anything.
+	// a sandbox network or publish anything. Read from podman's own options only:
+	// what follows the image belongs to the client, whose -p means a prompt.
+	podmanOpts := strings.Join(argv[:slices.Index(argv, "localhost/img:1")], " ")
 	for _, unwanted := range []string{"--network", "-p ", "--publish"} {
-		if strings.Contains(joined, unwanted) {
-			t.Errorf("argv should not contain %q:\n%s", unwanted, joined)
+		if strings.Contains(podmanOpts, unwanted) {
+			t.Errorf("podman's options should not contain %q:\n%s", unwanted, joined)
 		}
 	}
 	// Only the host's agent home may be mounted, and only via the stage.
 	if strings.Count(joined, "-v ") != 1 {
 		t.Errorf("more than one mount:\n%s", joined)
+	}
+}
+
+// The turn is the renewal. An entrypoint run with no arguments is a client with
+// no prompt: it exits before it authenticates, so nothing is refreshed, and the
+// log line that names the turn reads as though it ran.
+func TestContainerArgvHandsTheClientItsTurn(t *testing.T) {
+	for _, id := range []string{"claude", "codex"} {
+		s, _ := lend.SlotByID(id)
+		spec, ok := s.RenewSpec()
+		if !ok || len(spec.Args) == 0 {
+			t.Fatalf("%s: no renewing turn to check", id)
+		}
+		argv := containerArgv("localhost/img:1", spec, "/stage")
+		at := slices.Index(argv, "localhost/img:1")
+		if at < 0 {
+			t.Fatalf("%s: the image is not in argv:\n%s", id, strings.Join(argv, " "))
+		}
+		// Everything after the image is handed to the entrypoint, in order.
+		if got := argv[at+1:]; !slices.Equal(got, spec.Args) {
+			t.Errorf("%s: the client is handed %q, want its turn %q", id, got, spec.Args)
+		}
 	}
 }
 
