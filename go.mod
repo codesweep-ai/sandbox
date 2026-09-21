@@ -4,17 +4,17 @@ go 1.27.0
 
 require (
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/mod v0.40.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/mod v0.41.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
-	github.com/codesweep-ai/ledger v0.0.0-20260915220605-312c48564629 // indirect
-	github.com/codesweep-ai/lint v0.0.0-20260915220605-2381ff44d94a // indirect
-	github.com/codesweep-ai/tracer v0.0.0-20260910230853-d5ff8c2d052c // indirect
-	github.com/codesweep-ai/vcr v0.0.0-20260913030743-7da913347984 // indirect
+	github.com/codesweep-ai/ledger v0.0.0-20260921044937-63578cb472f8 // indirect
+	github.com/codesweep-ai/lint v0.0.0-20260921044852-bfacc99eb226 // indirect
+	github.com/codesweep-ai/tracer v0.0.0-20260921045317-699bfbdabc70 // indirect
+	github.com/codesweep-ai/vcr v0.0.0-20260921050009-be024ba6f866 // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
@@ -23,7 +23,7 @@ require (
 	github.com/mattn/go-shellwords v1.0.12 // indirect
 	github.com/rhysd/actionlint v1.7.12 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.3 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260811182544-a038080d80e5 // indirect
