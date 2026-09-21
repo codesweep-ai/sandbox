@@ -866,6 +866,12 @@ that sees every answer.*
 is read after a run went wrong, which is usually after its group is gone. The host writes the copy,
 because the lender's own mounts are read-only.*
 
+**R153c.** `start` **MUST** bring up the group's lender before a sandbox that holds a loan, and **MUST**
+fail when it cannot. `start` on a sandbox that is already running **MUST** change nothing else. `ls` and
+`doctor` **MUST** name a lent sandbox whose lender is not running, and the command that brings it back.
+*A loan routes all of a sandbox's HTTPS through the lender, so one without it has lost git and its
+package managers too, and from the inside that reads as a proxy name that does not resolve.*
+
 **R154.** `create` **MUST** fail before anything is provisioned when a lend flag names a credential this
 host cannot supply. The failure **MUST** name the file it looked for, and the command that creates one.
 

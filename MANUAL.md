@@ -151,9 +151,10 @@ sandbox shares several.
 ```
 cs-sandbox ls [--json] [-q]         # GROUP NAME STATUS AGE TYPE ENGINE YOLO SOLO CREDS
                                     # CREDS: held | env | lent | - (combining with +)
+                                    # `lent (lender down)`: the group's lender is not running
 cs-sandbox inspect <name> [--json]  # everything recorded about one
 cs-sandbox stop <name>              # shut it down, keep everything
-cs-sandbox start <name>             # bring it back
+cs-sandbox start <name>             # bring it back, and its group's lender if it borrows
 cs-sandbox rm <name>                # remove the sandbox, KEEP its data
 cs-sandbox destroy <name> [-f]      # delete the sandbox AND its data
 ```
@@ -874,6 +875,13 @@ candidates are a group whose lender is not running, an expired host login, and a
 lender cannot connect to. The check runs in the lender's container, which is the only party that
 dials an upstream. A service of your own on this machine therefore has to be named
 `host.containers.internal`, because `127.0.0.1` inside that container is the container.
+
+A lender that is down takes more than the agent with it. A sandbox with a loan sends all of its
+HTTPS through the lender, so `git`, `curl` and the package managers fail too, with a proxy name that
+does not resolve. `cs-sandbox ls` marks such a sandbox `lent (lender down)`. Run `cs-sandbox start
+<name>` on it: that starts the group's lender again, and leaves a sandbox that is already running
+as it is. A lender that crashes is restarted by the engine. The engine does not restart one that was stopped by
+hand, and whether it does after a host reboot depends on how podman is set up there.
 
 The check opens a connection to the upstream and sends nothing. A recorder or a gateway in front of
 a provider therefore never sees a request from `doctor`, whichever groups are on the host.

@@ -110,7 +110,7 @@ func lendGroup(s LendState) (Group, bool) {
 
 	if len(s.Lenders) == 0 {
 		g.add(NO, sandboxesAre(s.Sandboxes)+" borrowing a credential and no lender is running — "+
-			"the next create starts one on the group's network")
+			"'cs-sandbox start <name>' on one of them brings its group's lender back, and so does the next create")
 	}
 	for _, l := range s.Lenders {
 		if l.Err == "" {
@@ -122,7 +122,9 @@ func lendGroup(s LendState) (Group, bool) {
 		// sandbox as an expired login does, so the group is named: on a host
 		// running several, the one that is dark is the thing to say.
 		g.add(NO, fmt.Sprintf("group %s: nothing is answering at %s — %s\n"+
-			"      the next create in that group starts one", l.Group, l.Where, l.Err))
+			"      every https request from a sandbox in that group fails until it is back, not only its model calls\n"+
+			"      'cs-sandbox start <name>' on a sandbox in that group brings it back, and so does the next create there",
+			l.Group, l.Where, l.Err))
 	}
 
 	// The renewer, before the credentials it keeps: when it is missing, every

@@ -7,6 +7,7 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/forward"
 	"github.com/codesweep-ai/sandbox/internal/hostcfg"
+	"github.com/codesweep-ai/sandbox/internal/lend"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/state"
@@ -30,8 +31,7 @@ func (a *App) engineFor(name string) (engine.Engine, *state.Instance, error) {
 
 func newInstanceCmds(app *App) []*cobra.Command {
 	return []*cobra.Command{
-		simpleInstanceCmd(app, "start", "Start a stopped sandbox",
-			func(ctx context.Context, e engine.Engine, in *state.Instance) error { return e.Start(ctx, in.Name) }),
+		simpleInstanceCmd(app, "start", "Start a stopped sandbox", app.startInstance),
 		simpleInstanceCmd(app, "stop", "Stop a running sandbox (keep its state)",
 			func(ctx context.Context, e engine.Engine, in *state.Instance) error {
 				forward.KillAll(app.InstDir, in.Group, in.Name)
@@ -43,6 +43,28 @@ func newInstanceCmds(app *App) []*cobra.Command {
 		newSSHCmd(app),
 		newPortCmd(app),
 	}
+}
+
+// startInstance is `start`: the sandbox, and first whatever it borrows through.
+//
+// A sandbox that holds a loan sends every HTTPS request it makes through its
+// group's lender, not only its model calls, so one started without a lender has
+// no git, no curl and no package manager, and nothing inside it says why. Create
+// used to be the only thing that brought a lender up. That left no way back
+// after a host reboot or a stopped lender, short of creating another sandbox.
+//
+// The lender comes first and its failure is the command's failure, as it is in
+// create: a sandbox that came up without it would report success into exactly
+// the state this exists to prevent. It also makes `start` on a running sandbox
+// the repair for a lender that is down, which is what doctor now says.
+func (app *App) startInstance(ctx context.Context, e engine.Engine, in *state.Instance) error {
+	if loans, err := lend.ReadLoans(state.Dir(app.InstDir, in.Group, in.Name)); err == nil && len(loans) > 0 {
+		if _, err := app.ensureLender(ctx, in.Group); err != nil {
+			return err
+		}
+		app.ensureRenewer(loans)
+	}
+	return e.Start(ctx, in.Name)
 }
 
 func simpleInstanceCmd(app *App, use, short string, fn func(context.Context, engine.Engine, *state.Instance) error) *cobra.Command {

@@ -18,6 +18,7 @@ import (
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
+	"github.com/codesweep-ai/sandbox/internal/lend"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/progress"
 	"github.com/codesweep-ai/sandbox/internal/run"
@@ -471,6 +472,10 @@ type lsItem struct {
 	HeldKeys       []string `json:"heldkeys,omitempty"`
 	EnvCredentials []string `json:"envcredentials,omitempty"`
 	Loans          []string `json:"loans,omitempty"`
+	// LenderDown is true when this sandbox borrows a credential and its group's
+	// lender is not running. Every HTTPS request it makes goes through that
+	// lender, so it is cut off from more than its model until one is back.
+	LenderDown bool `json:"lenderdown,omitempty"`
 }
 
 func runLsJSON(ctx context.Context, app *App, out io.Writer) error {
@@ -479,15 +484,17 @@ func runLsJSON(ctx context.Context, app *App, out io.Writer) error {
 		return err
 	}
 	status := app.engineDeps().Statuses(ctx, insts)
+	down := app.lendersDown(ctx, insts)
 	items := make([]lsItem, 0, len(insts))
 	for _, in := range insts {
+		loans := loanSlots(app.InstDir, in.Group, in.Name)
 		items = append(items, lsItem{
 			Ref: engine.Qualify(in), Name: in.Name, Group: in.Group,
 			Status: status[engine.Qualify(in)], Created: in.Created, Type: in.Type,
 			Engine: in.Engine, Network: state.NetworkName(in.Group),
 			Yolo: in.Yolo, Solo: in.Solo,
 			AgentLogins: in.AgentLogins, HeldKeys: in.HeldKeys, EnvCredentials: in.EnvCredentials,
-			Loans: loanSlots(app.InstDir, in.Group, in.Name),
+			Loans: loans, LenderDown: len(loans) > 0 && down[in.Group],
 		})
 	}
 	for _, o := range app.engineDeps().Orphans(ctx) {
@@ -532,6 +539,8 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 	// STATUS sits next to NAME, as it does in `kubectl get` — it is the column you
 	// scan for. Costs one `podman ps` for the whole listing.
 	status := app.engineDeps().Statuses(ctx, insts)
+	down := app.lendersDown(ctx, insts)
+	cutOff := false
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	// No PORT column: you reach a sandbox by name (`ssh <name>`, from the managed
 	// ssh config), so a port here would suggest a way of working the tool doesn't
@@ -545,10 +554,15 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 	// says so rather than leaving the weakest posture looking like none.
 	fmt.Fprintln(tw, "GROUP\tNAME\tSTATUS\tAGE\tTYPE\tENGINE\tYOLO\tSOLO\tCREDS")
 	for _, in := range insts {
+		loans := loanSlots(app.InstDir, in.Group, in.Name)
+		c := creds(slices.Concat(in.AgentLogins, in.HeldKeys), in.EnvCredentials, loans)
+		if len(loans) > 0 && down[in.Group] {
+			c += " (" + lenderDown + ")"
+			cutOff = true
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			in.Group, in.Name, status[engine.Qualify(in)], age(in.Created, time.Now()), in.Type, in.Engine,
-			yn(in.Yolo), yn(in.Solo), creds(slices.Concat(in.AgentLogins, in.HeldKeys), in.EnvCredentials,
-				loanSlots(app.InstDir, in.Group, in.Name)))
+			yn(in.Yolo), yn(in.Solo), c)
 	}
 	// Leftovers last, under the sandboxes that still exist. Only the columns the
 	// data itself answers for are filled in; the rest went with the state record.
@@ -560,11 +574,56 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 	if err := tw.Flush(); err != nil {
 		return err
 	}
+	if cutOff {
+		fmt.Fprintf(out, "\n%s = the group's credential lender is not running, so every https request from that sandbox fails, "+
+			"not only its model calls: `cs-sandbox start <name>` brings the lender back.\n", lenderDown)
+	}
 	if len(orphans) > 0 {
 		fmt.Fprintf(out, "\n%s = removed by `rm`, data kept: `create` with the same name reuses it, `destroy -f` deletes it.\n",
 			engine.StatusRemoved)
 	}
 	return nil
+}
+
+// lenderDown is what the CREDS column adds for a borrowing sandbox with no lender.
+const lenderDown = "lender down"
+
+// lendersDown is the groups that lend something and whose lender is not running.
+//
+// A sandbox with a loan sends all of its HTTPS through the lender, and from the
+// inside a missing one reads as a proxy that does not resolve, which names
+// nothing. So the listing says it. One `podman ps` for the whole listing, and
+// none at all on a host where nothing is lent, which is most hosts.
+//
+// A listing that fails condemns no lender: not having seen one is not the same
+// as there not being one, and a false "down" here would send somebody to repair
+// what works.
+func (app *App) lendersDown(ctx context.Context, insts []*state.Instance) map[string]bool {
+	lending := map[string]bool{}
+	for _, in := range insts {
+		if len(loanSlots(app.InstDir, in.Group, in.Name)) > 0 {
+			lending[in.Group] = true
+		}
+	}
+	if len(lending) == 0 {
+		return nil
+	}
+	res, err := app.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "ps",
+		"--filter", "label=cs-sandbox.lender=1", "--format", "{{.Names}}")
+	if err != nil {
+		return nil
+	}
+	running := map[string]bool{}
+	for name := range strings.FieldsSeq(res.Stdout) {
+		running[name] = true
+	}
+	down := map[string]bool{}
+	for group := range lending {
+		if !running[lend.BoxName(state.NetworkName(group))] {
+			down[group] = true
+		}
+	}
+	return down
 }
 
 // creds is the CREDS column: whether this sandbox HOLDS credentials of yours,

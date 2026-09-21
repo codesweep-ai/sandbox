@@ -368,10 +368,18 @@ func (fe *Firecracker) waitReady(ctx context.Context, name string) error {
 }
 
 // Start re-launches a stopped microVM (launch re-asserts its dnsmasq name).
+//
+// A running one is left alone. A second VMM over the same disks and tap dies on
+// the busy tap, and the pid it records in passing is what `ls` reads afterwards,
+// so the sandbox that never stopped is then listed as stopped.
 func (fe *Firecracker) Start(ctx context.Context, name string) error {
 	in, err := state.Load(fe.d.InstDir, fe.d.group(), name)
 	if err != nil {
 		return err
+	}
+	if fcRunning(fe.d.InstanceDir(name)) {
+		fe.d.say("%s is already running", name)
+		return nil
 	}
 	if err := fe.launch(ctx, name, in); err != nil {
 		return err
