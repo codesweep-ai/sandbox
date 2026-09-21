@@ -21,6 +21,10 @@
     {
       "date": "2026-09-21",
       "text": "Commit 8d5e892 changes all three guards that way, and `actionlint` passes. It stays open until a run on the self-hosted runner shows the guard restart a machine and the job go on to pass."
+    },
+    {
+      "date": "2026-09-21",
+      "text": "The new guard ran on the self-hosted runner and fired in both macOS jobs, printing `podman does not answer; machine says: running`. So the diagnosis was right. The remedy did not work. The stop and the start each reported success, but podman's own start warned `API socket failed ping test`. After the two-minute wait the socket still refused with `ssh: rejected: connect failed (open failed)`. A stop and start is therefore not enough for this condition, and the machine needs attention from someone with access to it. The guard is still an improvement: the job now fails at the guard with the cause named, where it used to fail later inside an image build."
     }
   ],
   "links": []
