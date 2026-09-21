@@ -136,6 +136,20 @@ fi
 
 # --- helpers --------------------------------------------------------------
 
+# JSONL_WAIT is how long to wait, in seconds, for the transcript of a submitted
+# prompt to appear — once before re-sending Enter and once after.
+JSONL_WAIT="${CS_CLAUDE_JSONL_WAIT_SECS:-30}"
+
+await_jsonl() {
+    local deadline=$(( SECONDS + $1 )) found
+    while (( SECONDS < deadline )); do
+        found="$(jsonl_path)"
+        [[ -n "$found" ]] && { printf '%s' "$found"; return 0; }
+        sleep 0.5
+    done
+    return 1
+}
+
 jsonl_path() {
     # Locate the JSONL for this UUID (may not exist yet on a brand-new session).
     # Anchor the name to the FULL UUID ("<uuid>.jsonl") instead of a
@@ -341,20 +355,32 @@ tmux load-buffer "$PROMPT_FILE"
 tmux paste-buffer -p -d -t "$TMUX_SESSION"
 sleep 0.3
 tmux send-keys -t "$TMUX_SESSION" Enter
-# The TUI occasionally swallows the first Enter while it finishes rendering the
-# pasted block. A second Enter after a short delay reliably submits; if the
-# first already landed, this one falls on an empty prompt and is harmless.
-sleep 0.2
-tmux send-keys -t "$TMUX_SESSION" Enter
 
 # The JSONL appears once the first message is accepted; wait for it to exist.
+#
+# The budget is a span of time rather than a count of tries, because what it is
+# really waiting on is a loaded machine. Ten seconds was not enough for one: the
+# turn died here, the campaign read a member that had stopped, and the ladder it
+# then climbed diverged from the recording, so the failure arrived as a cassette
+# miss three rungs from its cause.
 if [[ -z "$JSONL" ]]; then
-    for _ in $(seq 1 20); do
-        JSONL="$(jsonl_path)"; [[ -n "$JSONL" ]] && break; sleep 0.5
-    done
+    JSONL="$(await_jsonl "$JSONL_WAIT")"
 fi
 if [[ -z "$JSONL" ]]; then
-    err "could not locate JSONL for $UUID under $PROJECTS after submitting"; exit 3
+    # The TUI occasionally swallows the first Enter while it finishes rendering
+    # the pasted block, so send one more and wait again.
+    #
+    # Only here, and never beside the first. A second Enter sent every time
+    # lands in the composer whenever the first already submitted, and what it
+    # leaves there is carried into the NEXT prompt: a turn was seen reaching
+    # the model as "\r\rRead ~/.local/share/..." — the same text the recording
+    # holds, with two carriage returns in front of it, which is a different
+    # request and so a cassette miss.
+    tmux send-keys -t "$TMUX_SESSION" Enter
+    JSONL="$(await_jsonl "$JSONL_WAIT")"
+fi
+if [[ -z "$JSONL" ]]; then
+    err "could not locate JSONL for $UUID under $PROJECTS after submitting and waiting $(( JSONL_WAIT * 2 ))s"; exit 3
 fi
 
 # Wait for a new turn_duration marker to appear (turn complete). TIMEOUT=0 waits

@@ -1,0 +1,22 @@
+{
+  "id": "SBX-063",
+  "title": "A prompt is entered twice, and its transcript is waited for only ten seconds",
+  "type": "defect",
+  "severity": "high",
+  "status": "open",
+  "foundBy": "session agent, maintainer of this repository, reading the evidence a failed continuous integration leg kept",
+  "opened": "2026-09-21",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": "Two tests drive the driver against a stubbed terminal. One accepted prompt is entered once, and was entered twice before. A transcript that never appears is waited for twice over a budget the failure names, and the wait was a fixed ten seconds that said nothing. Both are red on the driver as it was, the second after exactly ten seconds."
+  },
+  "resolution": null,
+  "details": "**What happened.** A replay leg failed where two other legs of the same commit passed. The cause was not where it was reported. The driver had submitted a prompt and then looked for the transcript the agent writes. It found none within ten seconds, so it ended the turn. What came after that was correct at every step, and misleading at every step. The harness read a member that had stopped and climbed its ladder. Each rung sent text the recording does not hold, so what reached a reader was a recording miss three rungs from its cause.\n\n**Two faults sit behind this one screen.** The wait is ten seconds, spelled as twenty tries of half a second. What it is really waiting on is a loaded machine, and a loaded machine is exactly when it is asked for. The failure names no duration, so nothing tells a reader whether it waited a moment or an hour.\n\n**The second fault does its damage quietly.** The prompt is submitted with one Enter and then a second is sent unconditionally, on the reasoning that a spare keystroke falls on an empty composer. It does, while the first is still rendering. Once the prompt has gone the composer is live again. The keystroke then stays in it until the NEXT prompt is pasted in front of it. One turn was seen reaching the model as two carriage returns followed by text the recording holds without them. That cannot match, and the agent family that does this is the one whose replay failed.\n\n**How to reproduce.** Submit a prompt on a machine slow enough that the transcript takes more than ten seconds to appear. For the second, submit two turns in a row and read the text of the second as it reaches the provider.\n\n**What would help.** Wait for a span of time rather than a count of tries, and name that span when it runs out. Send the second Enter only where it is the remedy, which is after nothing has appeared rather than beside the first.",
+  "notes": [],
+  "links": [
+    "SBX-060"
+  ]
+}
