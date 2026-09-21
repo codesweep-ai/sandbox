@@ -189,9 +189,11 @@ func TestBuildPassesToolPinsFromGoMod(t *testing.T) {
 		t.Fatalf("no podman build call; calls=%s", f)
 	}
 	for arg, module := range map[string]string{
-		"CS_LINT_VERSION":   "github.com/codesweep-ai/lint",
-		"CS_LEDGER_VERSION": "github.com/codesweep-ai/ledger",
-		"CS_TRACER_VERSION": "github.com/codesweep-ai/tracer",
+		"CS_LINT_VERSION":    "github.com/codesweep-ai/lint",
+		"CS_LEDGER_VERSION":  "github.com/codesweep-ai/ledger",
+		"CS_TRACER_VERSION":  "github.com/codesweep-ai/tracer",
+		"CS_VCR_VERSION":     "github.com/codesweep-ai/vcr",
+		"CS_NPMREVS_VERSION": "github.com/codesweep-ai/npmrevs",
 	} {
 		want := pins[module]
 		if want == "" {
@@ -215,6 +217,8 @@ func TestBuildPassesToolPinsFromGoMod(t *testing.T) {
 		"cs-lint":    "CS_LINT_VERSION",
 		"cs-ledger":  "CS_LEDGER_VERSION",
 		"cs-tracer":  "CS_TRACER_VERSION",
+		"cs-vcr":     "CS_VCR_VERSION",
+		"cs-npmrevs": "CS_NPMREVS_VERSION",
 	} {
 		want := "/cmd/" + bin + "@${" + arg + "}"
 		if !strings.Contains(string(cf), want) {

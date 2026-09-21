@@ -41,6 +41,7 @@ var siblingTools = []struct{ bin, module string }{
 	{"cs-lint", "github.com/codesweep-ai/lint"},
 	{"cs-ledger", "github.com/codesweep-ai/ledger"},
 	{"cs-tracer", "github.com/codesweep-ai/tracer"},
+	{"cs-npmrevs", "github.com/codesweep-ai/npmrevs"},
 }
 
 // bundledToolsGroup compares every agent tool this build ships against the copy

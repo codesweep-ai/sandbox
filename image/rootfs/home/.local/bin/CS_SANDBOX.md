@@ -12,8 +12,8 @@ running an agent session on another sandbox.
 
 > **Every sandbox carries this CLI too**, so a sandbox can drive another one: create a peer, `ls`
 > what is running, `fetch` a branch back. Between sandboxes, plain `ssh <name>` and plain `git` are
-> often shorter (see "From inside a sandbox" below). The sibling tools `cs-lint`, `cs-ledger` and
-> `cs-tracer` are here as well.
+> often shorter (see "From inside a sandbox" below). The sibling tools `cs-lint`, `cs-ledger`,
+> `cs-tracer`, `cs-vcr` and `cs-npmrevs` are here as well.
 
 ## How to use
 

@@ -411,6 +411,7 @@ func buildImage(cmd *cobra.Command, app *App, slim, localSandbox, rebuildBase bo
 		{"CS_LEDGER_VERSION", "github.com/codesweep-ai/ledger", "cs-ledger"},
 		{"CS_TRACER_VERSION", "github.com/codesweep-ai/tracer", "cs-tracer"},
 		{"CS_VCR_VERSION", "github.com/codesweep-ai/vcr", "cs-vcr"},
+		{"CS_NPMREVS_VERSION", "github.com/codesweep-ai/npmrevs", "cs-npmrevs"},
 	} {
 		v := pins[tool.module]
 		if v == "" {
