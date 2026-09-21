@@ -26,6 +26,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -595,9 +596,10 @@ func liveEnv(t *testing.T) map[string]string {
 // liveAgentHome builds the throwaway host profile the money-spending tiers lend
 // and share from, and points cs-sandbox at it.
 //
-// Keys are written from .env. Logins are symlinked from the developer's real
+// Keys are written from .env. Logins are taken from the developer's real
 // profiles, because a login is the one credential this suite cannot fabricate
-// against a real provider; the cases that need one skip when it is absent.
+// against a real provider; the cases that need one skip when it is absent. How
+// they are taken is linkLoginProfile's business.
 func liveAgentHome(t *testing.T, env map[string]string) string {
 	t.Helper()
 	home := agentHomeShell(t)
@@ -620,11 +622,64 @@ func liveAgentHome(t *testing.T, env map[string]string) string {
 		if !dirExists(src) {
 			continue
 		}
+		if s, ok := lend.SlotByID(agent); ok && s.Kind == lend.Login {
+			linkLoginProfile(t, s, real, home)
+			continue
+		}
 		if err := os.Symlink(src, filepath.Join(home, ".cs-"+agent)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return home
+}
+
+// linkLoginProfile mirrors a real login profile into home: every entry is a
+// symlink to the real one, except the credential the lender reads, which is
+// copied.
+//
+// The lender runs in a container that mounts home and nothing else, so a
+// symlink pointing out of it dangles in there, and create refuses a lent login
+// it can see the lender would never read. Everything else in the profile is read
+// on the host, where a symlink resolves, so the one file is all that has to be
+// real.
+//
+// A copy is a snapshot, and that has one way to hurt: a renewal would write the
+// rotated refresh token into the snapshot, and leave the real profile holding a
+// token the provider has retired. create renews a login only inside its client's
+// window, so a login inside that window now is refused rather than copied.
+func linkLoginProfile(t *testing.T, s lend.Slot, real, home string) {
+	t.Helper()
+	cred := s.Source(real, lend.KeysDir(real))
+	if exp, ok, err := s.ExpiresAt(real, lend.KeysDir(real)); err == nil && ok && time.Until(exp) <= s.RenewWithin() {
+		t.Fatalf("the host %s login expires in %s, inside the window create renews it in: "+
+			"renew it on the host first, so the rotated token lands in the real profile rather than in this tier's copy",
+			s.ID, time.Until(exp).Round(time.Second))
+	}
+	src := filepath.Dir(cred)
+	dst := filepath.Join(home, filepath.Base(src))
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dst, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() == filepath.Base(cred) {
+			continue
+		}
+		if err := os.Symlink(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(cred)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSecret(t, filepath.Join(dst, filepath.Base(cred)), data)
 }
 
 // replayKey is what a replayed sandbox authenticates with. It says of itself
