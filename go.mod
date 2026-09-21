@@ -14,7 +14,7 @@ require (
 	github.com/codesweep-ai/ledger v0.0.0-20260921044937-63578cb472f8 // indirect
 	github.com/codesweep-ai/lint v0.0.0-20260921044852-bfacc99eb226 // indirect
 	github.com/codesweep-ai/npmrevs v0.0.0-20260921040735-e92f1c0bd295 // indirect
-	github.com/codesweep-ai/tracer v0.0.0-20260921045317-699bfbdabc70 // indirect
+	github.com/codesweep-ai/tracer v0.0.0-20260921155745-8501cf6f0fd1 // indirect
 	github.com/codesweep-ai/vcr v0.0.0-20260921050009-be024ba6f866 // indirect
 	github.com/docker/cli v29.7.2+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.3 // indirect

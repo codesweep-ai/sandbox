@@ -8,8 +8,8 @@ github.com/codesweep-ai/lint v0.0.0-20260921044852-bfacc99eb226 h1:uRL0v31MImGtd
 github.com/codesweep-ai/lint v0.0.0-20260921044852-bfacc99eb226/go.mod h1:qa/1550uvwqZKZ3RR+6yYZFJ9BIK9S/GZQX56TxQvOY=
 github.com/codesweep-ai/npmrevs v0.0.0-20260921040735-e92f1c0bd295 h1:Vo4uySX2q2rabdugWnPrWT8DJ/WcNHWbB9PfvwAnqX8=
 github.com/codesweep-ai/npmrevs v0.0.0-20260921040735-e92f1c0bd295/go.mod h1:0BJWIfDIaJA77Rf5tH5ce9vmtntIPGS8JWROvTYZH6I=
-github.com/codesweep-ai/tracer v0.0.0-20260921045317-699bfbdabc70 h1:zlt1u7hfX3hmZkkFFCNRf4Pe5MLwaiEKABxCVPLQHFo=
-github.com/codesweep-ai/tracer v0.0.0-20260921045317-699bfbdabc70/go.mod h1:c8kJ/PW1UviYZMLgdxy2ucy6tN9DJflx1sHWdfoyyo0=
+github.com/codesweep-ai/tracer v0.0.0-20260921155745-8501cf6f0fd1 h1:MfGYI06VqMWmiu0V9paDe6kWcl3htYg/2yJpXXvzQwE=
+github.com/codesweep-ai/tracer v0.0.0-20260921155745-8501cf6f0fd1/go.mod h1:c8kJ/PW1UviYZMLgdxy2ucy6tN9DJflx1sHWdfoyyo0=
 github.com/codesweep-ai/vcr v0.0.0-20260921050009-be024ba6f866 h1:haTsDrZDjEaKj4SMuLFnuiRvQVyPVMCmGlco8pib49c=
 github.com/codesweep-ai/vcr v0.0.0-20260921050009-be024ba6f866/go.mod h1:qOaB4LwOZcD7t3llFFMdpiGlSi2cwRGzXNsHiAQKcYw=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
