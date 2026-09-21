@@ -1172,11 +1172,22 @@ jobs:
       # before the VM is ready. Guard on state rather than calling start
       # blindly: start exits 125 when the machine is already running.
       - name: ensure the podman machine is up
+        # Asked of the socket, not of the machine. After a reboot the machine has
+        # called itself running while its forwarded socket refused every
+        # connection, and a guard that read the state started nothing. A machine
+        # in that condition needs a stop before its start. The last line decides:
+        # three runners share this machine, so a start may lose a race and still
+        # leave it up.
         run: |
           set -euo pipefail
-          if [ "$(podman machine inspect --format '{{.State}}' podman-machine-default)" != "running" ]; then
-            echo "machine was down; starting it"
-            podman machine start
+          if ! podman info >/dev/null 2>&1; then
+            echo "podman does not answer; machine says: $(podman machine inspect --format '{{.State}}' podman-machine-default || true)"
+            podman machine stop || true
+            podman machine start || true
+            for _ in $(seq 1 24); do
+              if podman info >/dev/null 2>&1; then break; fi
+              sleep 5
+            done
           fi
           podman info --format '{{.Version.Version}} | {{.Host.Arch}} | rootless={{.Host.Security.Rootless}}'
 
@@ -1282,12 +1293,24 @@ jobs:
           cache: false
 
       - name: ensure the podman machine is up
+        # Asked of the socket, not of the machine. After a reboot the machine has
+        # called itself running while its forwarded socket refused every
+        # connection, and a guard that read the state started nothing. A machine
+        # in that condition needs a stop before its start. The last line decides:
+        # three runners share this machine, so a start may lose a race and still
+        # leave it up.
         run: |
           set -euo pipefail
-          if [ "$(podman machine inspect --format '{{.State}}' podman-machine-default)" != "running" ]; then
-            echo "machine was down; starting it"
-            podman machine start
+          if ! podman info >/dev/null 2>&1; then
+            echo "podman does not answer; machine says: $(podman machine inspect --format '{{.State}}' podman-machine-default || true)"
+            podman machine stop || true
+            podman machine start || true
+            for _ in $(seq 1 24); do
+              if podman info >/dev/null 2>&1; then break; fi
+              sleep 5
+            done
           fi
+          podman info --format '{{.Version.Version}} | {{.Host.Arch}} | rootless={{.Host.Security.Rootless}}'
 
       # CI_IMAGE on the command line, which beats the Makefile's default.
       - name: build it
@@ -1370,12 +1393,24 @@ jobs:
       # the VM is ready. Guard on state rather than calling start blindly: start
       # exits 125 when the machine is already running.
       - name: ensure the podman machine is up
+        # Asked of the socket, not of the machine. After a reboot the machine has
+        # called itself running while its forwarded socket refused every
+        # connection, and a guard that read the state started nothing. A machine
+        # in that condition needs a stop before its start. The last line decides:
+        # three runners share this machine, so a start may lose a race and still
+        # leave it up.
         run: |
           set -euo pipefail
-          if [ "$(podman machine inspect --format '{{.State}}' podman-machine-default)" != "running" ]; then
-            echo "machine was down; starting it"
-            podman machine start
+          if ! podman info >/dev/null 2>&1; then
+            echo "podman does not answer; machine says: $(podman machine inspect --format '{{.State}}' podman-machine-default || true)"
+            podman machine stop || true
+            podman machine start || true
+            for _ in $(seq 1 24); do
+              if podman info >/dev/null 2>&1; then break; fi
+              sleep 5
+            done
           fi
+          podman info --format '{{.Version.Version}} | {{.Host.Arch}} | rootless={{.Host.Security.Rootless}}'
 
       # Built by build-artifacts-macos, and native to this machine. Named rather
       # than assumed: without it the first thing to fail would be a cell, and it
