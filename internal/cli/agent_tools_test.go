@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -869,6 +870,63 @@ func TestRemoteBreaksALockItsOwnerNoLongerHolds(t *testing.T) {
 				t.Errorf("the turn finished but its lock is still there: %v", err)
 			}
 			covemit.Prove(t, "interrupt", fam.agent, "", "scripts")
+		})
+	}
+}
+
+// TestRemoteBackgroundTurnRuns: a -b turn has to START, wherever its caller runs. Apple's
+// nohup exits without exec'ing anything under a LaunchDaemon, which is how a self-hosted
+// Actions runner runs, and the launch used it there: every campaign turn dispatched from
+// one printed "PID unknown" and never ran. So the runner must record a real pid and write
+// its footer, and a caller that kills its own process group on return — as agent CLIs do
+// — must not take the turn with it.
+//
+// Not skipped off Linux, and CI's macOS runners are LaunchDaemons: this is the test that
+// fails there if the launch ever depends again on a program launchd can refuse.
+func TestRemoteBackgroundTurnRuns(t *testing.T) {
+	for _, fam := range remoteFamilies {
+		t.Run(fam.agent, func(t *testing.T) {
+			home, bin := agentHome(t, fam.prefix)
+			// Slow enough that the runner is still alive when the launcher looks for its
+			// pid, which the runner removes when the turn ends.
+			writeStub(t, bin, "ssh", "#!/bin/sh\nsleep 0.3\nexit 0\n")
+			writeStub(t, bin, "scp", "#!/bin/sh\nexit 0\n")
+			// nohup as Apple's behaves under a LaunchDaemon, so a launch that leans on it
+			// fails on every host that runs this, not only on a Mac.
+			writeStub(t, bin, "nohup", "#!/bin/sh\necho \"nohup: can't detach from console\" >&2\nexit 127\n")
+			name := "bg-contract"
+			if err := os.WriteFile(filepath.Join(home, fam.prefix+"-sessions", name+fam.mapSuffix),
+				[]byte(fam.mapValue+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			launch := exec.Command(agentTool("cs-"+fam.agent+"-remote"), "--resume", name, "-H", "host", "-b", "hello")
+			launch.Env = append(os.Environ(), "HOME="+home, "PATH="+bin+":/usr/bin:/bin")
+			launch.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			out, err := launch.CombinedOutput()
+			if err != nil {
+				t.Fatalf("-b launch: %v: %s", err, out)
+			}
+			_ = syscall.Kill(-launch.Process.Pid, syscall.SIGKILL)
+			if !regexp.MustCompile(`Running:\s+background \(PID [0-9]+\)`).Match(out) {
+				t.Fatalf("the runner recorded no pid, so it never started: %s", out)
+			}
+
+			logPath := filepath.Join(home, fam.prefix+"-logs", name+".log")
+			for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+				data, _ := os.ReadFile(logPath)
+				if strings.Contains(string(data), "finished (exit 0)") {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("the turn wrote no footer after its caller's group was killed:\n%s", data)
+				}
+			}
+			out2, exit := runScript(t, home, bin, "cs-"+fam.agent+"-remote-output", name, "-s")
+			if got := strings.TrimSpace(strings.SplitN(out2, "\n", 2)[0]); got != "finished" || exit != 0 {
+				t.Errorf("after the turn, -s = %q exit %d; want finished exit 0", got, exit)
+			}
+			covemit.Prove(t, "status-contract", fam.agent, "", "scripts")
 		})
 	}
 }

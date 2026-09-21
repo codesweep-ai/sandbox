@@ -369,8 +369,8 @@ if $BACKGROUND; then
     RUNNER_FILE="$PID_DIR/${SESSION_NAME}.runner"
     rotate_log "$LOG_FILE"
     # The turn runs from a per-session runner script rather than a subshell of this
-    # process, for two reasons. It is launched detached below, so it lands in a session
-    # or a process group of its own and survives callers that kill their tool call's
+    # process, for two reasons. It is launched detached below, so it lands in a process
+    # group of its own and survives callers that kill their tool call's
     # process group on return (agent CLIs do exactly that) — a plain `&` child would die
     # with them. And the runner file path appears in the runner's own command line,
     # which is what --kill checks before it signals anything, so a stale pid file can
@@ -401,17 +401,20 @@ if $BACKGROUND; then
     } > "$RUNNER_FILE"
     chmod 700 "$RUNNER_FILE"
     echo "--- $(date '+%Y-%m-%d %H:%M:%S') --- prompt: $PROMPT" >> "$LOG_FILE"
-    # A new SESSION where setsid exists, and a new process GROUP where it does
-    # not. Either is enough for what this is for: an agent CLI that kills its
-    # tool call's process group on return must not take the turn with it. macOS
-    # ships no setsid, and `set -m` gives a background job a group of its own on
-    # every bash — measured on both. The hangup a new session would also have
-    # covered is covered by nohup and by the runner's own `trap "" HUP`.
-    if command -v setsid >/dev/null 2>&1; then
-        setsid nohup "$RUNNER_FILE" </dev/null >/dev/null 2>&1 &
-    else
-        ( set -m; nohup "$RUNNER_FILE" </dev/null >/dev/null 2>&1 & )
-    fi
+    # One form on every host, and bash alone: `set -m` gives the background job a
+    # process group of its own, which is what this is for — an agent CLI that kills
+    # its tool call's process group on return must not take the turn with it. The
+    # hangup is ignored here, and an ignored signal stays ignored across exec, so the
+    # runner is immune before its own `trap "" HUP` has run.
+    #
+    # Not setsid, which is util-linux, and not nohup, which is not the same program
+    # everywhere. Apple's detaches from the console before it execs, and under a
+    # LaunchDaemon launchd refuses that ("Session adoption is only allowed in user
+    # domains"): nohup exits "can't detach from console" and the runner never starts.
+    # With stderr on /dev/null, every turn a CI runner dispatched read "PID unknown"
+    # and never ran — measured on 2026-09-21. This form was measured on Linux and
+    # macOS, with and without a terminal.
+    ( set -m; trap '' HUP; "$RUNNER_FILE" </dev/null >/dev/null 2>&1 & )
     # The runner records its own pid; wait for that rather than trusting $!, which is the
     # wrapper that detached it and not the process --kill must verify.
     for _ in $(seq 1 40); do [[ -s "$PID_FILE" ]] && break; sleep 0.05; done
