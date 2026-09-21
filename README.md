@@ -105,7 +105,8 @@ Every sandbox boots from the same image, so there is nothing to install inside o
   `cs-opencode`**, wrappers that launch each on a sandbox-local profile (never your personal
   `~/.claude` / `~/.codex` / `~/.config/opencode`), with sane permission defaults and the working
   directory pre-trusted. Run `cs-claude` rather than `claude` and it starts working instead of
-  asking setup questions.
+  asking setup questions. `cs-claude-resume` lists recent `cs-claude` sessions from every
+  directory and resumes the one you pick in the directory it ran in.
 - **Remote agent tools**: `cs-claude-remote`, `cs-codex-remote` and `cs-opencode-remote`, each
   with `-status`, `-output`, `-sessions` and `-forget` companions. They start or resume an agent
   session on *another* sandbox over SSH, keep it warm, and hand back its output. That is how one

@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# List recent cs-claude sessions from every directory, and resume the one you pick
+# in the directory it was started in.
+#
+# Claude Code's own picker (`cs-claude --resume`, then Ctrl+A) lists every directory
+# too, but for a session started elsewhere it prints a `cd <dir> && claude --resume`
+# line rather than resuming, and plain `claude` reads ~/.claude, not this profile.
+#
+# Usage:
+#   cs-claude-resume                     # pick from the 20 most recent sessions
+#   cs-claude-resume ci build            # only sessions matching every term
+#   cs-claude-resume -n 50               # show more (0 shows all)
+#   cs-claude-resume -l                  # print the list with session ids, no prompt
+#   cs-claude-resume -- --fork-session   # pass what follows -- to cs-claude
+
+set -euo pipefail
+
+CC_DIR="$HOME/.cs-claude"
+PROJECTS="$CC_DIR/projects"
+LIMIT=20
+LIST=false
+TERMS=()
+PASS=()
+
+usage() {
+    echo "Usage: cs-claude-resume [-n N] [-l] [term...] [-- cs-claude-args...]"
+    echo "  -n, --limit N  Show the N most recent sessions (default 20, 0 for all)"
+    echo "  -l, --list     Print the sessions with their ids and exit, without prompting"
+    echo "  -h, --help     Show this help"
+    echo "Terms keep the sessions whose title, directory or id contains every one of"
+    echo "them, ignoring case. Arguments after -- are passed to cs-claude."
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -n|--limit)
+            if [[ $# -lt 2 || ! "$2" =~ ^[0-9]+$ ]]; then
+                echo "cs-claude-resume: $1 needs a number" >&2; exit 2
+            fi
+            LIMIT=$((10#$2)); shift 2 ;;
+        -l|--list) LIST=true; shift ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; PASS=("$@"); break ;;
+        -*) echo "cs-claude-resume: unknown option: $1" >&2; usage >&2; exit 2 ;;
+        *) TERMS+=("$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"); shift ;;
+    esac
+done
+
+if ! command -v jq >/dev/null 2>&1; then
+    echo "cs-claude-resume: needs jq on PATH" >&2; exit 1
+fi
+
+shopt -s nullglob
+FILES=("$PROJECTS"/*/*.jsonl)
+if [[ ${#FILES[@]} -eq 0 ]]; then
+    echo "No cs-claude sessions under $PROJECTS" >&2; exit 1
+fi
+
+# Claude Code keeps one record per running process in sessions/<pid>.json. It stops a
+# second resume only when the holder is a background job, so an interactive session
+# open in another terminal is flagged here instead.
+LIVE=" "
+for f in "$CC_DIR"/sessions/*.json; do
+    pid="${f##*/}"; pid="${pid%.json}"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        LIVE+="$(jq -r '.sessionId // empty' "$f" 2>/dev/null || true):$pid "
+    fi
+done
+
+mtime() { stat -c %Y -- "$1" 2>/dev/null || stat -f %m -- "$1"; }
+
+age() {
+    local s=$(( NOW - $1 ))
+    if (( s < 60 )); then echo "now"
+    elif (( s < 3600 )); then echo "$(( s / 60 ))m ago"
+    elif (( s < 86400 )); then echo "$(( s / 3600 ))h ago"
+    else echo "$(( s / 86400 ))d ago"
+    fi
+}
+
+# The directory comes from the transcript, not the project folder's name, because
+# that name replaces every character but letters and digits with a dash. The title
+# is the one the picker shows: a rename first, then the generated title, then the
+# last prompt.
+session_info() {
+    { grep -a -m1 '"cwd":"' -- "$1" || true
+      grep -a -E '^\{"type":"(custom-title|agent-name|ai-title|last-prompt)"' -- "$1" || true
+    } | jq -rRs '
+        split("\n") | map(fromjson? // empty) as $r
+        | def last_of(t; k): [$r[] | select(.type == t) | .[k] | strings | select(. != "")] | last;
+        ([$r[] | .cwd | strings] | first // ""),
+        ((last_of("custom-title"; "customTitle") // last_of("agent-name"; "agentName")
+          // last_of("ai-title"; "aiTitle") // last_of("last-prompt"; "lastPrompt") // "(no title)")
+         | gsub("[[:space:]]+"; " "))'
+}
+
+NOW=$(date +%s)
+IDS=(); CWDS=(); DIRS=(); AGES=(); TITLES=(); PIDS=()
+while IFS= read -r f; do
+    id="${f##*/}"; id="${id%.jsonl}"
+    [[ "$id" =~ ^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$ ]] || continue
+    { IFS= read -r cwd; IFS= read -r title; } < <(session_info "$f") || true
+    [[ -n "${cwd:-}" ]] || continue
+
+    dir="$cwd"
+    if [[ "$cwd" == "$HOME" || "$cwd" == "$HOME"/* ]]; then dir="~${cwd#"$HOME"}"; fi
+    hay="$(printf '%s %s %s' "$title" "$dir" "$id" | tr '[:upper:]' '[:lower:]')"
+    keep=true
+    for term in ${TERMS[@]+"${TERMS[@]}"}; do
+        if [[ "$hay" != *"$term"* ]]; then keep=false; break; fi
+    done
+    $keep || continue
+
+    if (( ${#title} > 70 )); then title="${title:0:69}…"; fi
+    pid=""
+    if [[ "$LIVE" == *" $id:"* ]]; then pid="${LIVE#* "$id":}"; pid="${pid%% *}"; fi
+    IDS+=("$id"); CWDS+=("$cwd"); DIRS+=("$dir"); TITLES+=("$title"); PIDS+=("$pid")
+    AGES+=("$(age "$(mtime "$f")")")
+    if (( LIMIT > 0 && ${#IDS[@]} >= LIMIT )); then break; fi
+done < <(ls -t -- "${FILES[@]}")
+
+if [[ ${#IDS[@]} -eq 0 ]]; then
+    echo "No cs-claude sessions match: ${TERMS[*]}" >&2; exit 1
+fi
+
+W=0
+for d in "${DIRS[@]}"; do
+    if (( ${#d} > W )); then W=${#d}; fi
+done
+for i in "${!IDS[@]}"; do
+    running=""
+    if [[ -n "${PIDS[$i]}" ]]; then running="  [running]"; fi
+    if $LIST; then
+        printf '%3d  %-7s  %-*s  %s  %s%s\n' $((i + 1)) "${AGES[$i]}" "$W" "${DIRS[$i]}" \
+            "${IDS[$i]}" "${TITLES[$i]}" "$running"
+    else
+        printf '%3d  %-7s  %-*s  %s%s\n' $((i + 1)) "${AGES[$i]}" "$W" "${DIRS[$i]}" \
+            "${TITLES[$i]}" "$running"
+    fi
+done
+$LIST && exit 0
+
+printf '\nResume which session? [1-%d, Enter to cancel] ' "${#IDS[@]}"
+IFS= read -r choice || choice=""
+[[ -z "$choice" ]] && exit 0
+if [[ ! "$choice" =~ ^[0-9]+$ ]] || (( 10#$choice < 1 || 10#$choice > ${#IDS[@]} )); then
+    echo "cs-claude-resume: no session numbered '$choice'" >&2; exit 1
+fi
+i=$(( 10#$choice - 1 ))
+id="${IDS[$i]}"; cwd="${CWDS[$i]}"
+
+forking=false
+for a in ${PASS[@]+"${PASS[@]}"}; do
+    if [[ "$a" == "--fork-session" ]]; then forking=true; fi
+done
+if [[ -n "${PIDS[$i]}" ]] && ! $forking; then
+    echo "cs-claude-resume: session $id is still open in Claude Code (pid ${PIDS[$i]})." >&2
+    echo "Close it first, or add -- --fork-session to branch off a copy." >&2
+    exit 1
+fi
+if [[ ! -d "$cwd" ]]; then
+    echo "cs-claude-resume: $cwd no longer exists, so session $id cannot be resumed there." >&2
+    echo "Claude Code's own picker (cs-claude --resume, then Ctrl+A) resumes it in place." >&2
+    exit 1
+fi
+
+cd -- "$cwd"
+echo "cd ${DIRS[$i]} && cs-claude --resume $id${PASS[*]:+ ${PASS[*]}}"
+exec cs-claude --resume "$id" ${PASS[@]+"${PASS[@]}"}
