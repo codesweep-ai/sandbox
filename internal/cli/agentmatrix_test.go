@@ -28,8 +28,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -600,7 +598,7 @@ func liveEnv(t *testing.T) map[string]string {
 // profiles, because a login is the one credential this suite cannot fabricate
 // against a real provider; the cases that need one skip when it is absent. How
 // they are taken is linkLoginProfile's business.
-func liveAgentHome(t *testing.T, env map[string]string) string {
+func liveAgentHome(t *testing.T, env map[string]string) {
 	t.Helper()
 	home := agentHomeShell(t)
 	keys := lend.KeysDir(home)
@@ -630,7 +628,6 @@ func liveAgentHome(t *testing.T, env map[string]string) string {
 			t.Fatal(err)
 		}
 	}
-	return home
 }
 
 // linkLoginProfile mirrors a real login profile into home: every entry is a
@@ -707,7 +704,7 @@ const replayKey = "not-a-real-key-replay-only"
 // say no. Given an open network the same credential fails, and that is not a
 // contradiction: it is the whole reason the recording had to be made with a
 // real one.
-func fabricatedAgentHome(t *testing.T) string {
+func fabricatedAgentHome(t *testing.T) {
 	t.Helper()
 	home := agentHomeShell(t)
 	for _, provider := range []string{"anthropic", "openai", "fireworks"} {
@@ -727,7 +724,6 @@ func fabricatedAgentHome(t *testing.T) string {
 		}
 		writeSecret(t, filepath.Join(home, ".cs-"+g.Agent, g.File), g.Doc)
 	}
-	return home
 }
 
 // agentHomeShell is the empty profile tree both homes are built in, with
@@ -771,31 +767,6 @@ func hostLoginPresent(agent string) bool {
 	}
 	file := map[string]string{"claude": ".credentials.json", "codex": "auth.json"}[agent]
 	return fileExists(filepath.Join(real, ".cs-"+agent, file))
-}
-
-// startLiveLender runs a lender in this process, on an address a sandbox can
-// reach, with its slots reading from home.
-//
-// In process rather than detached, because create starts a lender by re-execing
-// the binary it is running, and under `go test` that binary is the test itself.
-// create finds this one by probing the address, which is also what a host
-// running a lender under a service manager gets.
-func startLiveLender(t *testing.T, home string) {
-	t.Helper()
-	l, err := net.Listen("tcp", "0.0.0.0:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := &http.Server{Handler: lend.New(lend.Config{
-		Home:    home,
-		KeysDir: lend.KeysDir(home),
-		Loans:   lend.NewFileLoans(paths.Instances()),
-		Callers: lend.CallersHost,
-	})}
-	go func() { _ = srv.Serve(l) }()
-	t.Cleanup(func() { _ = srv.Close() })
-	_, port, _ := net.SplitHostPort(l.Addr().String())
-	t.Setenv("CS_SANDBOX_LEND_ADDR", "0.0.0.0:"+port)
 }
 
 // runAgentCase drives one cell end to end and returns what the agent said.

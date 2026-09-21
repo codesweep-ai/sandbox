@@ -33,7 +33,7 @@ import (
 func TestLiveAgentCredentialMatrix(t *testing.T) {
 	env := liveEnv(t)
 	r, host := matrixSetup(t)
-	startLiveLender(t, liveAgentHome(t, env))
+	liveAgentHome(t, env)
 
 	for _, c := range liveCases() {
 		t.Run(c.name(), func(t *testing.T) {
@@ -64,7 +64,7 @@ func TestLiveAgentRecordsCassettes(t *testing.T) {
 	}
 	env := liveEnv(t)
 	r, host := matrixSetup(t)
-	startLiveLender(t, liveAgentHome(t, env))
+	liveAgentHome(t, env)
 	store := cassetteStore(t)
 	proxy := startVCR(t, "record", store)
 	// Asked once, of the image every case is about to boot, and written into

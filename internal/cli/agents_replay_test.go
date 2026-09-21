@@ -47,7 +47,7 @@ import (
 // list rather than hiding in a serial log.
 func TestAgentReplay(t *testing.T) {
 	r, host := matrixSetup(t)
-	startLiveLender(t, fabricatedAgentHome(t))
+	fabricatedAgentHome(t)
 	store := cassetteStore(t)
 	proxy := startVCR(t, "replay", store)
 	// Asked once, of the image every cell is about to boot, and compared with

@@ -349,7 +349,6 @@ func TestDoctorReportsALoanWithNoLender(t *testing.T) {
 func TestDryRunMintsNothingAndStartsNothing(t *testing.T) {
 	app := lendApp(t, lendHome(t))
 	app.Exec = &run.Exec{DryRun: true}
-	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1") // nothing is listening there
 
 	plan, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{"anthropic"}, blockSideCalls: true}, "box", "")
 	if err != nil {
@@ -379,7 +378,6 @@ func TestDryRunMintsNothingAndStartsNothing(t *testing.T) {
 func TestCreateReportsEveryHostItRefuses(t *testing.T) {
 	app := lendApp(t, lendHome(t))
 	app.Exec = &run.Exec{DryRun: true}
-	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
 
 	plan, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{"anthropic"}, blockSideCalls: true}, "box", "")
 	if err != nil {
@@ -410,7 +408,6 @@ func TestCreateReportsEveryHostItRefuses(t *testing.T) {
 func TestALentSlotTakesTheBaseURLTheCallerNamed(t *testing.T) {
 	app := lendApp(t, lendHome(t))
 	app.Exec = &run.Exec{DryRun: true}
-	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
 
 	const upstream = "http://recorder.example:8080/c/anthropic/testcassette"
 	plan, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{"anthropic"}}, "box",
@@ -523,7 +520,6 @@ func TestACredentialTheLenderCanReadIsNotRefused(t *testing.T) {
 func TestALentSlotsBaseURLMustBeAnAddress(t *testing.T) {
 	app := lendApp(t, lendHome(t))
 	app.Exec = &run.Exec{DryRun: true}
-	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
 
 	for _, bad := range []string{"api.anthropic.com", "://nonsense", "https://", "file:///etc/passwd"} {
 		_, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{"anthropic"}}, "box",
@@ -539,7 +535,6 @@ func TestALentSlotsBaseURLMustBeAnAddress(t *testing.T) {
 func TestAnUnlentBaseURLIsNotTakenOver(t *testing.T) {
 	app := lendApp(t, lendHome(t))
 	app.Exec = &run.Exec{DryRun: true}
-	t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
 
 	plan, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{"anthropic"}}, "box",
 		"OPENAI_BASE_URL=http://somewhere.test\n")
@@ -573,7 +568,6 @@ func TestAKeySeedsEveryVariableItsClientsRead(t *testing.T) {
 		t.Run(c.provider, func(t *testing.T) {
 			app := lendApp(t, home)
 			app.Exec = &run.Exec{DryRun: true} // resolve the plan, start nothing
-			t.Setenv("CS_SANDBOX_LEND_ADDR", "127.0.0.1:1")
 			plan, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{c.provider}}, "box", "")
 			if err != nil {
 				t.Fatal(err)
