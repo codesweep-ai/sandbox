@@ -1,0 +1,29 @@
+{
+  "id": "SBX-066",
+  "title": "Start on a running microVM launches a second one, fails after two minutes and leaves `ls` wrong",
+  "type": "defect",
+  "severity": "med",
+  "status": "closed",
+  "foundBy": "session agent, maintainer of this repository, running `start` twice while measuring SBX-026",
+  "opened": "2026-09-21",
+  "resolved": "2026-09-21",
+  "stint": null,
+  "evidence": {
+    "commits": [
+      "ab85404"
+    ],
+    "integrated": [],
+    "verified": "Before: `start` on a running microVM exited 1 after 2m0s with `failed to become ready`, and the serial log held a busy-tap error. Then `ls` read `stopped` while `exec` into the same sandbox still returned 0. After: the same command exited 0 in 0.33 s and `ls` read `running`. `go test ./internal/engine/ -run TestFirecrackerStartLeavesARunningVMAlone -count=1`: red before with 8 commands run, ok after with none."
+  },
+  "resolution": null,
+  "details": "**What happened.** `cs-sandbox start` was run on a microVM sandbox that was already running. It waited the whole readiness budget of two minutes, then failed with `failed to become ready`. Afterwards `ls` listed the sandbox as `stopped`, while `exec` into it still worked and its process was alive.\n\n**Why.** Start launched a new virtual machine monitor without asking whether one was running. The second one could not open the network tap the first still held, so it exited at once. Launching had already replaced the recorded process id with its own. That id was now dead, and the status check reads only that record.\n\n**Why it matters.** A harmless repeat of a command cost two minutes and an error. Worse, it left the tool's own record wrong about a sandbox that never stopped. A later `start` then repeats the failure, because the record says stopped. Only `stop` followed by `start` clears it, since `stop` also finds the process by its config file.\n\n**How to reproduce.** Create a microVM sandbox, run `start` on it, and then run `ls`.\n\n**What would help.** Start should return at once when the recorded process is alive, and leave the record alone.",
+  "notes": [
+    {
+      "date": "2026-09-21",
+      "text": "Commit ab85404 makes start on a running microVM change nothing. A sandbox already left in the wrong state by an older build is still cleared by `stop` and then `start`."
+    }
+  ],
+  "links": [
+    "SBX-026"
+  ]
+}

@@ -3,14 +3,32 @@
   "title": "A lent sandbox loses all HTTPS egress if the lender stops",
   "type": "improvement",
   "severity": "med",
-  "status": "open",
+  "status": "closed",
   "foundBy": "session agent, while building credential lending (SPEC 10.2)",
   "opened": "2026-08-24",
-  "resolved": null,
+  "resolved": "2026-09-21",
   "stint": null,
-  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "evidence": {
+    "commits": [
+      "ab85404"
+    ],
+    "integrated": [],
+    "verified": "Measured on a throwaway microVM with one lent key. Before: with its lender stopped, `curl` to a public site returned 000 and `git ls-remote` said `Could not resolve proxy`. `start` left the lender exited, and `ls` read plain `lent`. After: `start` on the stopped sandbox brought the lender to running and `curl` returned 200. With the lender stopped by hand, `ls` read `lent (lender down)`, `start` on the running sandbox took 0.33 s and restored it, and `curl` returned 200. A lender whose process was killed from the host was restarted by the engine within one second. `go test ./internal/cli/ ./internal/doctor/ ./internal/engine/ -count=1`: ok, with `TestStartBringsBackTheLenderALoanNeeds` and `TestLsSaysWhenALentSandboxHasNoLender` red before the change."
+  },
   "resolution": null,
   "details": "A sandbox created with a loan gets HTTPS_PROXY pointing at the lender, so the lender can refuse the hosts it fronts (R153). That variable governs every https client in the sandbox, not just the agent, so a lender that is not running takes git, curl and every package manager with it. The model calls fail either way; the rest of the sandbox need not.\n\nThe failure is quiet from inside: a tool reports a proxy it cannot reach, and nothing says which process was supposed to be listening.\n\nThere are two options. The first is to have the guest fall back to a direct route when the proxy refuses to connect, which weakens R153 exactly when it matters least. The second is to keep a lender running for the life of any sandbox that holds a loan, and have `doctor` and `ls` say plainly when one is missing. The second keeps the property and needs supervision the forward package already models.",
-  "notes": [],
-  "links": ["SBX-002"]
+  "notes": [
+    {
+      "date": "2026-09-21",
+      "text": "Much of this was already built when the lender moved into a container on the group's network. The engine restarts it under `--restart=always`, and `doctor` names a group whose lender is not answering. Three gaps were left, and all were measured. Only `create` ever brought a lender up, so `start` could bring a sandbox back without one. `ls` said nothing. The one remedy `doctor` offered was the next create, which a running fleet never has."
+    },
+    {
+      "date": "2026-09-21",
+      "text": "Commit ab85404 closes them. `start` brings up the group's lender before a sandbox that holds a loan, and fails if it cannot. `ls` marks such a sandbox `lent (lender down)` and `ls --json` sets `lenderdown`. `doctor` names `start` as the repair and says that all HTTPS fails, not only model calls. The direct-route fallback stays rejected. An engine that stops a lender by hand, or a reboot, is still not restarted automatically; `start` is the repair for both."
+    }
+  ],
+  "links": [
+    "SBX-002",
+    "SBX-066"
+  ]
 }

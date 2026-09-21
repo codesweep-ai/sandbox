@@ -3,19 +3,34 @@
   "title": "The login renewer's claude turn fails with a message about a missing prompt",
   "type": "defect",
   "severity": "med",
-  "status": "open",
+  "status": "in-progress",
   "foundBy": "session agent, maintainer of this repository, lending an expired host login to a sandbox during a live check",
   "opened": "2026-09-21",
   "resolved": null,
-  "stint": null,
+  "stint": "reliability session, 2026-09-21",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "af0437e"
+    ],
     "integrated": [],
     "verified": null
   },
   "resolution": null,
   "details": "**What happened.** A host's claude login had expired, and it was lent to a sandbox. The renewer ran its renewing turn to refresh the token. The turn failed, and the client's message was `Input must be provided either through stdin or as a prompt argument`. The login stayed expired, so the lent sandbox got a bare 401.\n\n**What is known.** The renewing turn is the claude wrapper run with `-p ping --model haiku`, inside a container. The wrapper adds `--strict-mcp-config` and a permission flag ahead of those arguments. The message is the client's own, and it means the client found no prompt.\n\n**What is not known.** The cause has not been traced. The prompt `ping` is plainly on the command line, so something between the renewer and the client loses it or reads it as a flag's value. It has not been checked whether the same turn fails when the login is still valid.\n\n**Why it matters.** Renewal is the only thing that keeps a lent login alive, and this failure means it may never have worked for this client. It compounds the expired-login defect in SBX-030, where the lender hands out an expired token and the guest sees a bare 401. A campaign whose orchestrator runs on a lent claude login stops when that login expires.\n\n**What would help.** Run the renewing turn by hand in the renewer's container and read what the client receives. A driver test should then pin the argument order the wrapper hands the client.",
-  "notes": [],
+  "notes": [
+    {
+      "date": "2026-09-21",
+      "text": "The cause is found. The function that builds the container command ended its list at the image name, so the turn's arguments were never passed. The client started with no prompt and exited before it authenticated. Codex fails the same way, with `stdin is not a terminal`. No login was ever renewed, for either client. The renewer's log line printed the arguments anyway, so its log read as though the turn had run."
+    },
+    {
+      "date": "2026-09-21",
+      "text": "It was reproduced with no credential and no provider call. The old command printed the client's message about a missing prompt and exited 1. With the turn appended, the same container prints `Not logged in`, so the client now reaches sign-in, which is where a refresh happens."
+    },
+    {
+      "date": "2026-09-21",
+      "text": "Commit af0437e appends the turn. `TestContainerArgvHandsTheClientItsTurn` failed for both clients before it and passes after it. An existing test forbade `-p` anywhere in the command, meaning a published port. It now reads podman's own options only, because the client's `-p` is a prompt. This record stays open until a real login is seen to rotate, which spends one small turn on the owner's subscription."
+    }
+  ],
   "links": [
     "SBX-030"
   ]
