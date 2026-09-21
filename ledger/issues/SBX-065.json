@@ -1,0 +1,20 @@
+{
+  "id": "SBX-065",
+  "title": "The three remote tools find their driver with `readlink -f`, which older macOS does not have",
+  "type": "improvement",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "session agent, maintainer of this repository, reviewing the remote tools for what macOS runs differently",
+  "opened": "2026-09-21",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "**What is there.** Each of the three remote tools copies a turn driver to the member. It finds the driver beside itself by resolving its own path with `readlink -f`. The `-f` flag is GNU. The BSD `readlink` on macOS gained it in version 12.3, and older systems reject it.\n\n**What happens there.** The substitution fails, and the tool falls back to the driver under the user's local bin directory. That fallback is safe when the tools were installed together. It is wrong when an older install sits there, because the older driver is then copied over a newer one on the member, and nothing says so. The comment above that code names this exact hazard.\n\n**Why it matters.** Little today, since supported hosts are newer than that. It is recorded because the failure is silent, and a stale driver is slow to diagnose.\n\n**How to reproduce.** Put a `readlink` that rejects `-f` first on PATH and run a remote tool from a directory other than the local bin one.\n\n**What would help.** Resolve the path with a portable loop over plain `readlink`, or say out loud when the fallback is taken.",
+  "notes": [],
+  "links": []
+}

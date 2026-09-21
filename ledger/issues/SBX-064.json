@@ -1,0 +1,22 @@
+{
+  "id": "SBX-064",
+  "title": "The login renewer's claude turn fails with a message about a missing prompt",
+  "type": "defect",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent, maintainer of this repository, lending an expired host login to a sandbox during a live check",
+  "opened": "2026-09-21",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "**What happened.** A host's claude login had expired, and it was lent to a sandbox. The renewer ran its renewing turn to refresh the token. The turn failed, and the client's message was `Input must be provided either through stdin or as a prompt argument`. The login stayed expired, so the lent sandbox got a bare 401.\n\n**What is known.** The renewing turn is the claude wrapper run with `-p ping --model haiku`, inside a container. The wrapper adds `--strict-mcp-config` and a permission flag ahead of those arguments. The message is the client's own, and it means the client found no prompt.\n\n**What is not known.** The cause has not been traced. The prompt `ping` is plainly on the command line, so something between the renewer and the client loses it or reads it as a flag's value. It has not been checked whether the same turn fails when the login is still valid.\n\n**Why it matters.** Renewal is the only thing that keeps a lent login alive, and this failure means it may never have worked for this client. It compounds the expired-login defect in SBX-030, where the lender hands out an expired token and the guest sees a bare 401. A campaign whose orchestrator runs on a lent claude login stops when that login expires.\n\n**What would help.** Run the renewing turn by hand in the renewer's container and read what the client receives. A driver test should then pin the argument order the wrapper hands the client.",
+  "notes": [],
+  "links": [
+    "SBX-030"
+  ]
+}
