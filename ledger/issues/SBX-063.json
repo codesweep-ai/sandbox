@@ -3,13 +3,15 @@
   "title": "A prompt is entered twice, and its transcript is waited for only ten seconds",
   "type": "defect",
   "severity": "high",
-  "status": "open",
+  "status": "closed",
   "foundBy": "session agent, maintainer of this repository, reading the evidence a failed continuous integration leg kept",
   "opened": "2026-09-21",
-  "resolved": null,
+  "resolved": "2026-09-21",
   "stint": null,
   "evidence": {
-    "commits": [],
+    "commits": [
+      "262b747"
+    ],
     "integrated": [],
     "verified": "Two tests drive the driver against a stubbed terminal. One accepted prompt is entered once, and was entered twice before. A transcript that never appears is waited for twice over a budget the failure names, and the wait was a fixed ten seconds that said nothing. Both are red on the driver as it was, the second after exactly ten seconds."
   },
