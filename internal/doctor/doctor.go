@@ -79,6 +79,8 @@ type Deps struct {
 	// (image/rootfs/home/.local/bin), the tree `install-agent-tools` copies
 	// onto PATH. nil skips the identity check and leaves the presence one.
 	BundledTools fs.FS
+	// Version is this cs-sandbox's own, which the agent tools line names.
+	Version string
 	// ToolPins are the sibling cs- tool versions this build's go.mod names, as
 	// module path -> version. nil skips the sibling version checks.
 	ToolPins map[string]string
@@ -280,30 +282,51 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		r.addGroup(memoryGroup())
 	}
 
-	// agent tooling (optional).
-	ag := Group{Title: "agent tooling (optional — host-side sign-in that instances inherit)"}
+	// agent tools (optional). cs-sandbox ships them and never runs them, so a
+	// host without them is complete; cs-campaign's doctor prints this group in
+	// the same words and marks it required, because cs-campaign does run them.
+	ag := Group{Title: "agent tools (optional — cs-sandbox never runs them)"}
 	// Identity first, presence as the fallback. A host with the tools installed
-	// gets told whether they are THIS build's; a host with none gets told to
-	// install them, which is the only useful thing to say to it.
-	if checks, ok := bundledToolsGroup(d.BundledTools); ok {
+	// gets told whether they are THIS build's; a host with none gets told that
+	// is fine, and how to add them.
+	if checks, ok := bundledToolsGroup(d.BundledTools, d.Version); ok {
 		ag.Checks = append(ag.Checks, checks...)
-	} else if have("cs-claude") && have("cs-codex") && have("cs-opencode") {
-		ag.add(OK, "agent tools on PATH (cs-claude, cs-codex, cs-opencode)")
 	} else {
-		ag.add(HM, "agent tools not on PATH — install them:  cs-sandbox install-agent-tools")
-	}
-	var agentMiss []string
-	for _, b := range []string{"claude", "codex", "opencode"} {
-		if !have(b) {
-			agentMiss = append(agentMiss, b)
+		var missing []string
+		for _, w := range []string{"cs-claude", "cs-codex", "cs-opencode"} {
+			if !have(w) {
+				missing = append(missing, w)
+			}
+		}
+		switch len(missing) {
+		case 0:
+			ag.add(OK, "on PATH: cs-claude cs-codex cs-opencode (this build carries no copy to compare them with)")
+		case 3:
+			ag.add(OK, "not on PATH (fine — nothing here needs them); to add them:  cs-sandbox install-agent-tools")
+		default:
+			ag.add(HM, "missing from PATH: "+strings.Join(missing, " ")+" — install them:  cs-sandbox install-agent-tools")
 		}
 	}
-	if len(agentMiss) == 0 {
-		ag.add(OK, "agent CLIs present (claude, codex, opencode)")
-	} else {
-		ag.add(HM, "agent CLI(s) not found: "+strings.Join(agentMiss, " ")+" — or sign in inside an instance: cs-sandbox agent-login claude <name>")
-	}
 	r.addGroup(ag)
+
+	// agent CLIs (optional). Nothing here runs them either: they are how you
+	// sign in on this host, which is where a lent or copied login comes from.
+	cl := Group{Title: "agent CLIs (optional — only to sign in on this host)"}
+	var present, absent []string
+	for _, b := range []string{"claude", "codex", "opencode"} {
+		if have(b) {
+			present = append(present, b)
+		} else {
+			absent = append(absent, b)
+		}
+	}
+	if len(present) > 0 {
+		cl.add(OK, "on PATH: "+strings.Join(present, " "))
+	}
+	if len(absent) > 0 {
+		cl.add(OK, "not on PATH (fine — nothing here needs them): "+strings.Join(absent, " "))
+	}
+	r.addGroup(cl)
 	r.addGroup(siblingToolsGroup(ctx, d.Runner, d.ToolPins))
 
 	if g, ok := lendGroup(d.Lend); ok {

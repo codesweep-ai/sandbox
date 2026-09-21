@@ -16,6 +16,11 @@ package doctor
 // only boots sandboxes needs none. A host that HAS one at a version this build
 // does not name is the case worth a line, because the two will disagree about
 // something and nothing else would say so.
+//
+// Worth a line, not a failure, in both groups: cs-sandbox runs none of these
+// tools, so a wrong one is `??` with its fix and never counts against the host.
+// `cs-campaign doctor` prints the same groups in the same words, and fails on
+// the agent tools only because cs-campaign does run them.
 
 import (
 	"context"
@@ -52,9 +57,12 @@ var siblingTools = []struct{ bin, module string }{
 // not a harness that behaves differently.
 //
 // Returns ok=false when there is nothing to compare — no bundled tree, or not
-// one tool installed — so the caller can keep saying "install them" rather than
-// reporting 23 deviations at someone who has installed nothing.
-func bundledToolsGroup(bundled fs.FS) (checks []Check, ok bool) {
+// one tool installed — so the caller can say "not installed, and fine" rather
+// than reporting 23 deviations at someone who has installed nothing.
+//
+// version is this cs-sandbox's, named so the line reads the same as the one
+// cs-campaign prints about the cs-sandbox on its PATH.
+func bundledToolsGroup(bundled fs.FS, version string) (checks []Check, ok bool) {
 	if bundled == nil {
 		return nil, false
 	}
@@ -87,17 +95,21 @@ func bundledToolsGroup(bundled fs.FS) (checks []Check, ok bool) {
 	if matched == 0 && len(deviating) == 0 {
 		return nil, false // nothing installed; the presence advice covers it
 	}
+	shipper := "cs-sandbox " + version
+	if version == "" {
+		shipper = "this build"
+	}
 	if len(missing) == 0 && len(deviating) == 0 {
-		return []Check{{OK, fmt.Sprintf("agent tools on PATH are the %d this build ships", matched)}}, true
+		return []Check{{OK, fmt.Sprintf("the %d on PATH match %s", matched, shipper)}}, true
 	}
 	if len(missing) > 0 {
-		checks = append(checks, Check{NO, fmt.Sprintf("agent tools missing from PATH: %s — reinstall them:  cs-sandbox install-agent-tools",
+		checks = append(checks, Check{HM, fmt.Sprintf("missing from PATH: %s — install them:  cs-sandbox install-agent-tools",
 			strings.Join(missing, " "))})
 	}
 	if len(deviating) > 0 {
-		checks = append(checks, Check{NO, "agent tools on PATH are NOT the ones this build ships:\n      " +
+		checks = append(checks, Check{HM, "on PATH but not the ones " + shipper + " ships:\n      " +
 			strings.Join(deviating, "\n      ") +
-			"\n      the host is running a harness from another build — reinstall:  cs-sandbox install-agent-tools"})
+			"\n      reinstall them:  cs-sandbox install-agent-tools"})
 	}
 	return checks, true
 }
@@ -126,12 +138,15 @@ func bundledToolNames(bundled fs.FS) ([]string, error) {
 // Absent is not a finding. Present-and-unpinnable is: a go.mod that names no
 // version for a tool the image installs is a build that cannot be reproduced,
 // and it would otherwise pass silently as "nothing to compare".
+//
+// The ok lines come first and the findings last, so the lines worth acting on
+// are the ones nearest the summary — the order cs-campaign prints them in.
 func siblingToolsGroup(ctx context.Context, r run.Runner, pins map[string]string) Group {
-	g := Group{Title: "codesweep tools (optional — checked against this build's go.mod)"}
+	g := Group{Title: "developer tools (optional — checked against this build's go.mod)"}
 	if pins == nil {
 		return g
 	}
-	var absent []string
+	var absent, findings []string
 	for _, t := range siblingTools {
 		if _, err := lookPath(t.bin); err != nil {
 			absent = append(absent, t.bin)
@@ -139,22 +154,25 @@ func siblingToolsGroup(ctx context.Context, r run.Runner, pins map[string]string
 		}
 		want := pins[t.module]
 		if want == "" {
-			g.add(NO, t.bin+" is on PATH but this build's go.mod pins no version for it — run:  go get -tool "+t.module+"/cmd/"+t.bin+"@main")
+			findings = append(findings, t.bin+" is on PATH but this build's go.mod pins no version for it — run:  go get -tool "+t.module+"/cmd/"+t.bin+"@main")
 			continue
 		}
 		got := toolVersion(run.Output(ctx, r, t.bin, "version"))
 		switch {
 		case got == "":
-			g.add(NO, t.bin+" is on PATH but did not answer `"+t.bin+" version` — it cannot be identified")
+			findings = append(findings, t.bin+" is on PATH but did not answer `"+t.bin+" version` — it cannot be identified")
 		case got != want:
-			g.add(NO, fmt.Sprintf("%s on PATH is %s, this build pins %s — install the pinned one:  go install %s/cmd/%s@%s",
+			findings = append(findings, fmt.Sprintf("%s on PATH is %s, this build pins %s — install the pinned one:  go install %s/cmd/%s@%s",
 				t.bin, got, want, t.module, t.bin, want))
 		default:
 			g.add(OK, t.bin+" on PATH matches the pin ("+want+")")
 		}
 	}
 	if len(absent) > 0 {
-		g.add(HM, "not on PATH (fine — nothing here needs them): "+strings.Join(absent, " "))
+		g.add(OK, "not on PATH (fine — nothing here needs them): "+strings.Join(absent, " "))
+	}
+	for _, f := range findings {
+		g.add(HM, f)
 	}
 	return g
 }

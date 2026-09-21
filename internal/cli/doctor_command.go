@@ -88,6 +88,7 @@ func newDoctorCmd(app *App) *cobra.Command {
 				Lend: app.lendState(cmd.Context()),
 
 				BundledTools: bundled,
+				Version:      buildVersion(),
 				ToolPins:     pins,
 			}
 			rep := doctor.Diagnose(cmd.Context(), engine, d)

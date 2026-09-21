@@ -53,17 +53,17 @@ func checksText(checks []Check) string {
 // The whole point of the identity check: a host with the tools installed, but
 // installed from some OTHER build, must not read as healthy. Presence alone
 // said "ok" here, which is the state that let a fleet run a harness nobody
-// pinned.
+// pinned. A warning rather than a failure, because cs-sandbox never runs them.
 func TestBundledToolsFlagsAToolThatDiffers(t *testing.T) {
 	ship := map[string]string{"cs-claude": "v2", "cs-claude-turn": "same"}
 	installOnPath(t, map[string]string{"cs-claude": "v1", "cs-claude-turn": "same"})
 
-	checks, ok := bundledToolsGroup(bundled(ship))
+	checks, ok := bundledToolsGroup(bundled(ship), "v0.0.0-test")
 	if !ok {
 		t.Fatal("a host with tools installed must be compared, not skipped")
 	}
 	text := checksText(checks)
-	if !strings.Contains(text, "NOT the ones this build ships") {
+	if !strings.Contains(text, "not the ones cs-sandbox v0.0.0-test ships") {
 		t.Errorf("a differing tool must be named as such:\n%s", text)
 	}
 	if !strings.Contains(text, "cs-claude differs") {
@@ -72,19 +72,19 @@ func TestBundledToolsFlagsAToolThatDiffers(t *testing.T) {
 	if strings.Contains(text, "cs-claude-turn differs") {
 		t.Errorf("a tool that matches must not be reported:\n%s", text)
 	}
-	if statusOf(checks) != NO {
-		t.Errorf("a drifted harness is a problem, not advice: %v", statusOf(checks))
+	if statusOf(checks) != HM {
+		t.Errorf("a drifted harness is worth a warning, and cs-sandbox runs none of it: %v", statusOf(checks))
 	}
 }
 
 func TestBundledToolsAcceptsAnIdenticalInstall(t *testing.T) {
 	same := map[string]string{"cs-claude": "a", "cs-codex": "b"}
 	installOnPath(t, same)
-	checks, ok := bundledToolsGroup(bundled(same))
+	checks, ok := bundledToolsGroup(bundled(same), "v0.0.0-test")
 	if !ok {
 		t.Fatal("an installed surface must be compared")
 	}
-	if text := checksText(checks); !strings.Contains(text, "are the 2 this build ships") {
+	if text := checksText(checks); !strings.Contains(text, "the 2 on PATH match cs-sandbox v0.0.0-test") {
 		t.Errorf("an identical install should say so:\n%s", text)
 	}
 	if statusOf(checks) != OK {
@@ -97,30 +97,30 @@ func TestBundledToolsAcceptsAnIdenticalInstall(t *testing.T) {
 // make the tally disagree with what `install-agent-tools` calls a tool.
 func TestBundledToolsIgnoresDocs(t *testing.T) {
 	installOnPath(t, map[string]string{"cs-claude": "a"})
-	checks, ok := bundledToolsGroup(bundled(map[string]string{"cs-claude": "a", "CS_RC.md": "prose"}))
+	checks, ok := bundledToolsGroup(bundled(map[string]string{"cs-claude": "a", "CS_RC.md": "prose"}), "v0.0.0-test")
 	if !ok {
 		t.Fatal("an installed surface must be compared")
 	}
-	if text := checksText(checks); !strings.Contains(text, "are the 1 this build ships") {
+	if text := checksText(checks); !strings.Contains(text, "the 1 on PATH match cs-sandbox v0.0.0-test") {
 		t.Errorf("docs must not be counted as tools:\n%s", text)
 	}
 }
 
 // A host that has installed nothing is not a host running the wrong harness.
 // Reporting every tool as missing there buries the one line it needs, which is
-// "install them".
+// "not installed, and fine".
 func TestBundledToolsSkipsAHostWithNothingInstalled(t *testing.T) {
 	installOnPath(t, nil)
-	if _, ok := bundledToolsGroup(bundled(map[string]string{"cs-claude": "a"})); ok {
+	if _, ok := bundledToolsGroup(bundled(map[string]string{"cs-claude": "a"}), "v0.0.0-test"); ok {
 		t.Error("a host with no tools installed must fall through to the presence advice")
 	}
 }
 
-// Half an install is its own failure: the tools that are there can be perfectly
+// Half an install is its own finding: the tools that are there can be perfectly
 // current while the ones that are not make a dispatch die on a missing verb.
 func TestBundledToolsNamesAMissingTool(t *testing.T) {
 	installOnPath(t, map[string]string{"cs-claude": "a"})
-	checks, ok := bundledToolsGroup(bundled(map[string]string{"cs-claude": "a", "cs-codex": "b"}))
+	checks, ok := bundledToolsGroup(bundled(map[string]string{"cs-claude": "a", "cs-codex": "b"}), "v0.0.0-test")
 	if !ok {
 		t.Fatal("a partially installed surface must be compared")
 	}
@@ -128,8 +128,8 @@ func TestBundledToolsNamesAMissingTool(t *testing.T) {
 	if !strings.Contains(text, "missing from PATH: cs-codex") {
 		t.Errorf("the missing tool must be named:\n%s", text)
 	}
-	if statusOf(checks) != NO {
-		t.Errorf("a half-installed harness is a problem: %v", statusOf(checks))
+	if statusOf(checks) != HM {
+		t.Errorf("a half-installed harness is worth a warning, and cs-sandbox runs none of it: %v", statusOf(checks))
 	}
 }
 
@@ -186,8 +186,12 @@ func TestSiblingToolsComparesAgainstThePin(t *testing.T) {
 		t.Errorf("absent siblings must be reported as fine, together:\n%s", text)
 	}
 	for _, c := range g.Checks {
-		if strings.Contains(c.Message, "not on PATH") && c.Status != HM {
-			t.Errorf("an absent sibling must not count as an issue: %v", c.Status)
+		if strings.Contains(c.Message, "not on PATH") && c.Status != OK {
+			t.Errorf("an absent sibling is fine, and must read as ok: %v", c.Status)
+		}
+		// Wrong but optional: worth acting on, never an issue that fails doctor.
+		if strings.Contains(c.Message, "v0.0.0-WRONG") && c.Status != HM {
+			t.Errorf("a mismatched sibling must warn rather than fail: %v", c.Status)
 		}
 	}
 }

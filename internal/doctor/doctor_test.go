@@ -148,28 +148,43 @@ func TestDiagnoseFirecrackerVersionReporting(t *testing.T) {
 	}
 }
 
-// The agent-tooling group covers all three agents: every wrapper and every CLI has
-// to be present before it reports OK, and a missing one is named in the advice.
-func TestDiagnoseAgentTooling(t *testing.T) {
+// The agent tools and agent CLIs groups cover all three agents. cs-sandbox runs
+// neither, so no line in them may fail doctor: a missing wrapper is named as a
+// warning, and having none of them, or none of the CLIs, is fine.
+func TestDiagnoseAgentTools(t *testing.T) {
 	base := []string{"podman", "ssh", "ssh-keygen", "git"}
 	wrappers := []string{"cs-claude", "cs-codex", "cs-opencode"}
 	clis := []string{"claude", "codex", "opencode"}
 	diagnose := func(t *testing.T, present ...string) string {
 		t.Helper()
 		stubLookPath(t, append(append([]string{}, base...), present...)...)
-		return reportText(Diagnose(context.Background(), "podman", Deps{Runner: run.NewFake(), User: "ada"}))
+		r := Diagnose(context.Background(), "podman", Deps{Runner: run.NewFake(), User: "ada"})
+		for _, g := range r.Groups {
+			if !strings.HasPrefix(g.Title, "agent ") {
+				continue
+			}
+			for _, c := range g.Checks {
+				if c.Status == NO {
+					t.Errorf("%s: an optional tool must never fail doctor: %s", g.Title, c.Message)
+				}
+			}
+		}
+		return reportText(r)
 	}
 
 	all := diagnose(t, append(append([]string{}, wrappers...), clis...)...)
-	if !strings.Contains(all, "agent tools on PATH (cs-claude, cs-codex, cs-opencode)") {
+	if !strings.Contains(all, "on PATH: cs-claude cs-codex cs-opencode") {
 		t.Errorf("all wrappers present should report them all:\n%s", all)
 	}
-	if !strings.Contains(all, "agent CLIs present (claude, codex, opencode)") {
+	if !strings.Contains(all, "on PATH: claude codex opencode") {
 		t.Errorf("all CLIs present should report them all:\n%s", all)
 	}
+	if none := diagnose(t); !strings.Contains(none, "not on PATH (fine — nothing here needs them); to add them:  cs-sandbox install-agent-tools") {
+		t.Errorf("a host with no agent tools is complete, and should read that way:\n%s", none)
+	}
 
-	// Dropping any single wrapper or CLI has to show up — otherwise a half-installed
-	// toolset reads as healthy.
+	// Dropping any single wrapper has to show up — otherwise a half-installed
+	// toolset reads as healthy. A missing CLI is only named, and fine.
 	for _, missing := range wrappers {
 		var have []string
 		for _, w := range wrappers {
@@ -178,8 +193,8 @@ func TestDiagnoseAgentTooling(t *testing.T) {
 			}
 		}
 		out := diagnose(t, append(have, clis...)...)
-		if !strings.Contains(out, "agent tools not on PATH") {
-			t.Errorf("missing %s should report the tools as not installed:\n%s", missing, out)
+		if !strings.Contains(out, "missing from PATH: "+missing) {
+			t.Errorf("missing %s should be named:\n%s", missing, out)
 		}
 	}
 	for _, missing := range clis {
@@ -190,8 +205,8 @@ func TestDiagnoseAgentTooling(t *testing.T) {
 			}
 		}
 		out := diagnose(t, append(have, wrappers...)...)
-		if !strings.Contains(out, "agent CLI(s) not found: "+missing) {
-			t.Errorf("missing %s should be named in the advice:\n%s", missing, out)
+		if !strings.Contains(out, "not on PATH (fine — nothing here needs them): "+missing) {
+			t.Errorf("missing %s should be named as fine:\n%s", missing, out)
 		}
 	}
 }
