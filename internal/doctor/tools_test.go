@@ -8,6 +8,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	assets "github.com/codesweep-ai/sandbox"
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
 
@@ -129,6 +130,30 @@ func TestBundledToolsNamesAMissingTool(t *testing.T) {
 	}
 	if statusOf(checks) != NO {
 		t.Errorf("a half-installed harness is a problem: %v", statusOf(checks))
+	}
+}
+
+// Every codesweep-ai module go.mod pins is a tool the image installs, and
+// doctor checks only the ones siblingTools names. A pin added without an entry
+// here is a tool on PATH that doctor never compares, which reads exactly like
+// one that matched. The other way round, an entry with no pin reports "pins no
+// version" at everyone who has the tool installed.
+func TestSiblingToolsCoverEveryPin(t *testing.T) {
+	pins, err := assets.ToolPins("")
+	if err != nil {
+		t.Fatalf("ToolPins: %v", err)
+	}
+	listed := map[string]bool{}
+	for _, tool := range siblingTools {
+		listed[tool.module] = true
+		if pins[tool.module] == "" {
+			t.Errorf("siblingTools names %s but go.mod pins no version for %s", tool.bin, tool.module)
+		}
+	}
+	for module := range pins {
+		if !listed[module] {
+			t.Errorf("go.mod pins %s but siblingTools does not name it, so doctor never checks its pin", module)
+		}
 	}
 }
 
