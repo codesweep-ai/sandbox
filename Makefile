@@ -175,7 +175,7 @@ versions:
 
 ## repin: pin each codesweep-ai tool to the last commit its CI passed, and report
 ##
-## Each project names that commit as `built` in the ci-status.json it publishes
+## Each project names that commit in `built` in the ci-status.json it publishes
 ## (codesweep-ai/dashboards SPEC.md), so a pin never lands on a commit CI failed,
 ## is still building, or never built because it changed only the ledger. curl
 ## reads it from the project's Pages site, which no API rate limit applies to.
@@ -196,7 +196,7 @@ repin:
 	for t in $$tools; do \
 		owner=$$(echo "$$t" | cut -d/ -f2); repo=$$(echo "$$t" | cut -d/ -f3); \
 		built=$$(curl -fsSL "https://$$owner.github.io/$$repo/ci-status.json" 2>/dev/null | \
-			sed -n 's/^ *"built": *"\([0-9a-f]\{40\}\)".*/\1/p'); \
+			sed -n '/^ "built": {/,/^ }/s/^ *"commit": *"\([0-9a-f]\{40\}\)".*/\1/p'); \
 		if [ -n "$$built" ]; then echo "$$repo: $$(echo "$$built" | cut -c1-7), the last commit its CI passed"; \
 		else echo "$$repo: main, as its CI names no commit it passed"; fi; \
 		pins="$$pins $$t@$${built:-main}"; \
