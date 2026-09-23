@@ -86,7 +86,7 @@ jobs:
       # change what this build runs. Moving the pin is a commit here, and that
       # commit says what moving it buys.
       - name: write the CI status
-        uses: codesweep-ai/dashboards/action@4c204c69b8b2b79a101c65520b86944de06942a0
+        uses: codesweep-ai/dashboards/action@0ccee507ca4bf48268eccf8cc48ed23ff148424f
         with:
           window: "20"
 
