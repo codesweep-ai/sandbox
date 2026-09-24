@@ -173,15 +173,15 @@ versions:
 		*)      printf '%-14s %s\n' 'workspace' "$$w — local checkouts override the go.mod pins" ;; \
 	esac
 
-## repin: pin each codesweep-ai tool to the last commit its CI passed, and report
+## repin: pin each codesweep-ai tool to the last commit its CI built, and report
 ##
-## Each project names that commit in `built` in the ci-status.json it publishes
-## (codesweep-ai/dashboards SPEC.md), so a pin never lands on a commit CI failed,
-## is still building, or never built because it changed only the ledger. curl
-## reads it from the project's Pages site, which no API rate limit applies to.
-## Where the file cannot be read or names no commit, the pin moves to the branch
-## tip, as it always did. Uses GOPROXY=direct because the module proxy caches
-## branch resolution and `@main` can come back a commit behind origin/main. Uses
+## Each project lists the commits its CI built and passed in `built` in the
+## ci-status.json it publishes (codesweep-ai/dashboards SPEC.md), newest first,
+## so a pin never lands on a commit CI failed, is still building, or never built
+## because it changed only the ledger. curl reads it from the project's Pages
+## site, which no API rate limit applies to. A tool whose project's file cannot
+## be read or lists no build keeps its pin, and says so. Uses GOPROXY=direct so
+## each commit is read from its repository, whatever the module proxy holds. Uses
 ## GOWORK=off so this edits the recorded pins even while a workspace is serving
 ## local checkouts.
 .PHONY: repin
@@ -196,12 +196,12 @@ repin:
 	for t in $$tools; do \
 		owner=$$(echo "$$t" | cut -d/ -f2); repo=$$(echo "$$t" | cut -d/ -f3); \
 		built=$$(curl -fsSL "https://$$owner.github.io/$$repo/ci-status.json" 2>/dev/null | \
-			sed -n '/^ "built": {/,/^ }/s/^ *"commit": *"\([0-9a-f]\{40\}\)".*/\1/p'); \
-		if [ -n "$$built" ]; then echo "$$repo: $$(echo "$$built" | cut -c1-7), the last commit its CI passed"; \
-		else echo "$$repo: main, as its CI names no commit it passed"; fi; \
-		pins="$$pins $$t@$${built:-main}"; \
+			sed -n '/^ "built": \[$$/,/^ \]/s/^ *"commit": *"\([0-9a-f]\{40\}\)".*/\1/p' | head -1); \
+		if [ -n "$$built" ]; then echo "$$repo: $$(echo "$$built" | cut -c1-7), the last commit its CI built"; \
+			pins="$$pins $$t@$$built"; \
+		else echo "$$repo: held, as its status file lists no build"; fi; \
 	done; \
-	GOWORK=off GOPROXY=direct go get -tool $$pins
+	if [ -n "$$pins" ]; then GOWORK=off GOPROXY=direct go get -tool $$pins; fi
 	@GOWORK=off go mod tidy
 	@$(MAKE) versions
 

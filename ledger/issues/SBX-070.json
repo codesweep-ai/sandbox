@@ -15,6 +15,11 @@
   },
   "resolution": null,
   "details": "`make repin` moves every codesweep-ai tool pin to its sibling's main with `go get …@main`. The tip of main may be a commit whose CI failed, one still building, or one that changed only the ledger and was never built. The status file each project publishes now names the newest commit its CI built and passed, as `built`. `make repin` pins that commit, and falls back to the tip where the file names none.",
-  "notes": [],
+  "notes": [
+    {
+      "date": "2026-09-23",
+      "text": "`make repin` now reads `built` as the list the status file holds, and keeps a pin whose project lists no build. Moving it to the tip would pin a commit that may not have built."
+    }
+  ],
   "links": []
 }

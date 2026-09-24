@@ -13,6 +13,13 @@ name: publish images
 # the self-hosted Mac mini: while it is offline its jobs queue, ci does not
 # finish, and nothing publishes until it does. A workflow of its own rather than
 # jobs in ci.yml, so its builds show on the CI dashboard as a row of their own.
+#
+# It says on the commit it published that its images are out: a `publish
+# images` commit status, or a failed one, which GitHub shows beside the commit.
+# GitHub lists this run under main's head when ci finished, which can be a later
+# commit. The CI status file reads the registry instead: a commit is built once
+# both images' version tags are there, which the join below writes last, and
+# campaign pins a sandbox only when built.
 on:
   workflow_run:
     workflows: [ci]
@@ -176,6 +183,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      statuses: write # say on the commit that its images are out
     env:
       IMAGES: >-
         ${{ needs.publish-images.outputs.image }}
@@ -211,3 +219,38 @@ jobs:
               echo "    $ref  (linux/amd64, linux/arm64)"
             done
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Once every version tag is written, on the commit ci tested, which is the
+      # one published. Only for a push to main: a release tag's run publishes the
+      # same commit again, and a failed leg there must not take back the status
+      # main's run gave it.
+      - name: say on the commit that its images are out
+        if: github.event.workflow_run.head_branch == github.event.repository.default_branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=success \
+            -f context="publish images" -f target_url="$URL" -f description="images: success" >/dev/null
+
+  # A leg or the join that failed leaves no success on the commit, and this says
+  # so. A cancelled run says nothing, and a run for a pull request's ci skips
+  # every job, so this job with them. A release tag's run says nothing either, as
+  # above.
+  images-failed:
+    name: say on the commit that its images failed
+    needs: [publish-images, publish-image-lists]
+    if: failure() && github.event.workflow_run.head_branch == github.event.repository.default_branch
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state=failure \
+            -f context="publish images" -f target_url="$URL" -f description="images: failure" >/dev/null

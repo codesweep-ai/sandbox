@@ -76,7 +76,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # The branch's history without its file contents, beyond what the site is
+      # built from: the status file asks git whether each build it lists is
+      # still on the branch, rather than asking GitHub's API.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
 
       # Written before Jekyll runs, so Jekyll copies it into the site like any
       # other static file at the repository root. It reads this repository's own
@@ -87,7 +93,7 @@ jobs:
       # change what this build runs. Moving the pin is a commit here, and that
       # commit says what moving it buys.
       - name: write the CI status
-        uses: codesweep-ai/dashboards/action@0ccee507ca4bf48268eccf8cc48ed23ff148424f
+        uses: codesweep-ai/dashboards/action@bdffc5c0da3e90b7f2714d5c1157c1ab1cb9ef6f
         with:
           window: "20"
 
