@@ -17,6 +17,46 @@ permissions:
   contents: read
 
 jobs:
+  # prose, refs and oss read the records along with the rest of the tree, so
+  # a record can fail them: its prose, the record IDs the documents cite,
+  # what a record may not publish, and the commits that changed it. Each is
+  # a job of its own, named as in ci.yml, so a failed run names the check
+  # that failed.
+  prose:
+    name: docs prose
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: make prose
+
+  refs:
+    name: docs refs
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: make refs
+
+  oss:
+    name: open-source readiness
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: make oss
+
   check:
     name: ledger check
     runs-on: ubuntu-26.04
@@ -24,19 +64,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # the check resolves every sha a record cites, and oss reads the history
+          fetch-depth: 0 # the check resolves every sha a record cites
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           check-latest: true
       - name: records and page
         run: make ledger
-      # These read the records along with the rest of the tree, so a record can
-      # fail them: its prose, the record IDs the documents cite, what a record
-      # may not publish, and the commits that changed it.
-      - name: prose
-        run: make prose
-      - name: refs
-        run: make refs
-      - name: open-source readiness
-        run: make oss
