@@ -3,17 +3,19 @@
   "title": "A ledger-only push during ci keeps the tested build out of `built`",
   "type": "defect",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, while tracing which commit a publish images run is listed under",
   "opened": "2026-09-23",
-  "resolved": null,
+  "resolved": "2026-09-23",
   "stint": "last-green-pins",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "213c0de"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "sandbox's status file lists 213c0de first in `built`, found by the version tags ghcr.io holds for both images. The action's tests hold that a build counts by the registry, whatever commit GitHub lists its image run under."
   },
-  "resolution": null,
+  "resolution": "The status file no longer pairs runs. A commit is built once ci passed on it and both images' version tags are in the registry.",
   "details": "GitHub lists the `publish images` run that `ci` finishing starts under main's head at that moment, not the commit `ci` built. A ledger-only push that lands while `ci` runs puts the run under the ledger commit, which has no `ci` run. The status file then never names the build, and campaign, which pins only a built sandbox, waits for the next code push.",
   "notes": [],
   "links": []

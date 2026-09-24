@@ -3,13 +3,19 @@
   "title": "A background turn launched from under launchd never starts on macOS",
   "type": "defect",
   "severity": "high",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "campaign CI: every smoke podman (macos-arm64) leg since the self-hosted runners came back as LaunchDaemons on 2026-09-21; diagnosed by session agent",
   "opened": "2026-09-21",
-  "resolved": null,
+  "resolved": "2026-09-23",
   "stint": "macOS runner session, 2026-09-21",
-  "evidence": { "commits": [], "integrated": [], "verified": null },
-  "resolution": null,
+  "evidence": {
+    "commits": [
+      "b9183b6"
+    ],
+    "integrated": [],
+    "verified": "go test ./internal/cli -run TestRemoteBackgroundTurnRuns -count=1 passes for claude, codex and opencode at 213c0de. In ci run 35943262899 at 213c0de, build-test on the self-hosted macos-arm64 runner passed internal/cli under make test-race. Campaign's ci run 35943266251 passed every smoke leg on that runner, where the record saw background turns never start."
+  },
+  "resolution": "The remote tools now start a background turn with `set -m` and `trap '' HUP`, using neither nohup nor setsid, so launchd has nothing to refuse.",
   "details": "**What happened.** On macOS, `cs-<agent>-remote -b` prints `Running:  background (PID unknown)` and the turn never runs. The log holds the prompt header and nothing else, `-output -s` calls the session crashed, and the per-session `.runner` script is left behind unexecuted. In campaign CI, every macOS smoke leg waited out its 15-minute readback with no member having run a turn.\n\n**Why.** The launch SBX-038 added for hosts without `setsid` is `( set -m; nohup \"$RUNNER_FILE\" … 2>&1 & )`. Apple's `nohup` is not GNU's. It calls `_vprocmgr_detach_from_console` before it execs, and when its caller runs in launchd's system domain, as a LaunchDaemon does, launchd refuses (`Session adoption is only allowed in user domains`). nohup then exits `can't detach from console` without running anything. That message goes to /dev/null with the rest of the launch's output. The self-hosted runners had been started by hand from a login session, where the detach succeeds, and SBX-038 was verified there. So the launch never ran under launchd until the machine rebooted and the runners came back as services.\n\n**Why it matters.** A CI runner, a launchd job, or anything else that drives turns from under launchd on a Mac cannot dispatch a single background turn, and nothing says why.\n\n**How to reproduce.** Run `cs-claude-remote -b` from any process in launchd's system domain on macOS. A self-hosted Actions runner installed with `svc.sh install` is one. The unified log shows `nohup[…] Could not adopt Background session: 125` at the moment of the launch.\n\n**What would help.** Launch with a form that needs no external program, so it behaves the same on every host. `set -m` gives the runner a process group of its own, and the hangup is ignored before the exec rather than by nohup.",
   "notes": [
     {
@@ -17,5 +23,7 @@
       "text": "The three remote tools now launch with `( set -m; trap '' HUP; \"$RUNNER_FILE\" … & )` on every host, with no setsid and no nohup. On Linux and macOS, with and without a terminal, the runner gets its own process group, ignores SIGHUP, and survives its caller killing its own group. `TestRemoteBackgroundTurnRuns` runs every family with a nohup that fails the way Apple's does under launchd. It fails on the old launch (`PID unknown` for claude, codex and opencode) and passes on the new one. It stays open until a macOS runner, which runs as a LaunchDaemon, passes that test."
     }
   ],
-  "links": ["SBX-038"]
+  "links": [
+    "SBX-038"
+  ]
 }

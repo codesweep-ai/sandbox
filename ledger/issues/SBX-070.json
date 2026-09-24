@@ -3,17 +3,21 @@
   "title": "make repin pins a sibling's tip whether or not its CI passed",
   "type": "improvement",
   "severity": "low",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "user report (host): \"If I wanted make repin to look for the last green built commit, could this just work with curl?\"",
   "opened": "2026-09-23",
-  "resolved": null,
+  "resolved": "2026-09-23",
   "stint": "last-green-pins",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "6bb1a6e",
+      "57caf31",
+      "213c0de"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "`make repin` in a clean clone of main at 213c0de pinned each codesweep-ai tool at the first commit in its project's `built` list. The pin on lint went to its last build, though lint's main had since moved on to commits that changed only the ledger."
   },
-  "resolution": null,
+  "resolution": "`make repin` pins each codesweep-ai tool to the first commit in the `built` list of that project's status file. A tool whose project lists no build keeps its pin rather than moving to the tip.",
   "details": "`make repin` moves every codesweep-ai tool pin to its sibling's main with `go get …@main`. The tip of main may be a commit whose CI failed, one still building, or one that changed only the ledger and was never built. The status file each project publishes now names the newest commit its CI built and passed, as `built`. `make repin` pins that commit, and falls back to the tip where the file names none.",
   "notes": [
     {
