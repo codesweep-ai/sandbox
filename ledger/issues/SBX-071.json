@@ -1,0 +1,20 @@
+{
+  "id": "SBX-071",
+  "title": "A push that changes only the ledger runs ci and republishes both images",
+  "type": "improvement",
+  "severity": "low",
+  "status": "in-progress",
+  "foundBy": "user report (host): \"support ledger builds on pushes that only contain ledger changes, with just linting, ledger checking, and a pages build to publish the ledger page\"",
+  "opened": "2026-09-23",
+  "resolved": null,
+  "stint": "ledger-builds",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "Closing an issue is a commit that changes only `ledger/`, and pushing it runs the whole of `ci`. `ci` finishing then publishes a build of code that has not changed: both images, on both architectures. Such a push needs only the ledger check, the document linters and a site build, which publishes the ledger's page.",
+  "notes": [],
+  "links": []
+}
