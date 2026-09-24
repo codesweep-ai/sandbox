@@ -106,6 +106,10 @@ on:
     # A push event runs the workflow file from the pushed ref, so a branch can
     # opt itself in here without any change on main — no entry needed for one.
     branches: [main]
+    # A push that changes nothing but the ledger builds and publishes nothing,
+    # and ledger.yml checks it. Its commit then has no ci run, so it is never a
+    # build a sibling pins. Path filters do not apply to a pushed tag.
+    paths-ignore: ["ledger/**"]
     # Tags too, for publish-images.yml, which starts when this run finishes: a
     # v0.1.0 image can only be built from the tagged commit, because that is the
     # only place cs-sandbox reports v0.1.0. Without a ci run on the tag, nothing

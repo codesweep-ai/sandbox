@@ -354,8 +354,9 @@ rather than guessing; `make build` from a git clone gives it one.
 
 Images are published by CI alone, for every push to `main` and every release tag whose CI run passes.
 Both platforms are published together once each has booted sandboxes on a host of its own, or
-neither is. A commit that has not reached `main`, or whose CI run failed, therefore has no image to
-pull, and `build` builds one. Images for release
+neither is. A push that changes only the ledger runs no CI, and publishes no image. A commit that has
+not reached `main`, whose CI run failed, or whose push changed only the ledger therefore has no image
+to pull, and `build` builds one. Images for release
 tags are kept; the rest expire ten days after they are published.
 
 `completion` writes a script to stdout. It completes sandbox names, store names and flag values

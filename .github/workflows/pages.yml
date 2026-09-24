@@ -17,12 +17,12 @@ name: pages
 
 # Only on a finished build, deliberately.
 #
-# Every push to main runs ci.yml, so a workflow_run on its completion already
-# covers "the documents changed" as well as "the status changed". A `push`
-# trigger here would publish the same commit a second time, racing its own
-# deployment. The cost is that documents publish when ci finishes rather than
-# immediately, which is arguably right: nothing reaches the site from a commit
-# that has not been checked.
+# Every push to main runs ci.yml, or ledger.yml when it changes nothing but the
+# ledger, so a workflow_run on their completion already covers "the documents
+# changed" as well as "the status changed". A `push` trigger here would publish
+# the same commit a second time, racing its own deployment. The cost is that
+# documents publish when ci finishes rather than immediately, which is arguably
+# right: nothing reaches the site from a commit that has not been checked.
 #
 # `completed` rather than a success filter: a failed build is exactly the news
 # the CI dashboard exists to show, so it has to publish too.
@@ -34,7 +34,8 @@ name: pages
 # starts base-images beside ci, and base-images can outlast it. prune-images runs
 # on a schedule of its own. Waking on each of them means the last deploy of a
 # push comes after the last of its workflows has finished. A new workflow that
-# runs on main belongs in this list too.
+# runs on main belongs in this list too. ledger takes the place of ci for a push
+# that changes only the ledger.
 #
 # A push therefore publishes the site two or three times. The concurrency group
 # below keeps one run waiting behind the one deploying, and a newer run replaces
@@ -45,7 +46,7 @@ name: pages
 # the daily republish does not hide one that has stopped building.
 on:
   workflow_run:
-    workflows: [ci, publish images, base-images, prune-images]
+    workflows: [ci, publish images, base-images, prune-images, ledger]
     types: [completed]
   workflow_dispatch:
 

@@ -1,0 +1,42 @@
+name: ledger
+
+# The checks of a push to main that changes the ledger. ci.yml ignores a push
+# that changes nothing outside ledger/, and without this such a push would be
+# checked by nothing. It builds and publishes nothing: the ledger is no part of
+# any package, and its commit never becomes a build a sibling pins. pages.yml
+# runs when this finishes, and republishes the ledger's page.
+#
+# A push that changes the ledger and anything else runs ci as well, which checks
+# the ledger again. The second check costs a minute.
+on:
+  push:
+    branches: [main]
+    paths: ["ledger/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ledger check
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the check resolves every sha a record cites, and oss reads the history
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: records and page
+        run: make ledger
+      # These read the records along with the rest of the tree, so a record can
+      # fail them: its prose, the record IDs the documents cite, what a record
+      # may not publish, and the commits that changed it.
+      - name: prose
+        run: make prose
+      - name: refs
+        run: make refs
+      - name: open-source readiness
+        run: make oss
