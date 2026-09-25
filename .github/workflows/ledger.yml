@@ -12,6 +12,9 @@ on:
   push:
     branches: [main]
     paths: ["ledger/**"]
+  # By hand as well, as ci can be: `gh workflow run ledger.yml`, and --ref to
+  # check a branch. pages.yml republishes only after a run on main.
+  workflow_dispatch:
 
 permissions:
   contents: read
