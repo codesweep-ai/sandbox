@@ -1,0 +1,23 @@
+{
+  "id": "SBX-073",
+  "title": "cs-claude-turn classes a response that failed mid-stream as capacity, which tells a caller to wait",
+  "type": "defect",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "user report (host): a caller's session log from a sandboxed Claude Code turn on build 3d3fbb666359, confirmed against main by reading the driver",
+  "opened": "2026-09-25",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "**What was seen.** A turn ended with Claude Code's message `API Error: Server error mid-response. The response above may be incomplete.` The assistant message was flagged `isApiErrorMessage`, with `error: \"server_error\"` and no `apiErrorStatus`. `cs-claude-turn` exited 5 and printed `failure class=capacity retry_after=-`. The request had streamed part of its answer for about three minutes before it failed. It was the only error in a long session.\n\n**Why.** The classifier in `image/rootfs/home/.local/bin/cs-claude-turn` maps every server error to one class:\n\n```\nelif kind == \"server_error\" or (isinstance(status, int) and status >= 500):\n    cls = \"capacity\"\n```\n\n**Why it matters.** CS_CLAUDE_REMOTE.md tells a caller to wait after `capacity`, as it does after `throttled`. A fleet harness that honours the class then idles for its capacity back-off. A stream that broke once is a transient failure of that one request, and the provider was answering. Sending the prompt again at once is the right move for it.\n\n**How to reproduce.** Append to a turn's session JSONL a last assistant message with `\"isApiErrorMessage\": true`, `\"error\": \"server_error\"`, no `apiErrorStatus`, and the text above, then a `turn_duration` marker. The driver prints `class=capacity`. A lender fault that closes a 200 stream partway would reproduce it live.\n\n**What is asked for.** Tell a stream that failed after it began apart from an overload or a 5xx refused at the start. The message text `mid-response` and the missing status both mark it. Give it `other` or a class of its own whose documented move is to retry promptly.",
+  "notes": [],
+  "links": [
+    "SBX-051",
+    "SBX-062"
+  ]
+}

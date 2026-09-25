@@ -1,0 +1,22 @@
+{
+  "id": "SBX-075",
+  "title": "cs-claude-turn does not recognise Claude Code's one-time promotional dialog, and fails the turn after waiting a minute",
+  "type": "defect",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "user report (host): a turn failed at setup on Claude Code 2.1.258 on build 3d3fbb666359, confirmed against main by reading the driver",
+  "opened": "2026-09-25",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "**What was seen.** Claude Code 2.1.258 showed a one-time dialog at start-up, after an interactive session had run in the same config directory:\n\n```\nTry the new fullscreen renderer? …\n1. Yes, try it\n2. Not now\nEnter to confirm · Esc to cancel\n```\n\n`cs-claude-turn` waited for the TUI to become ready, then printed `timed out waiting for the TUI to become ready (last state: unknown)` and exited 3, a setup failure. Every later turn in that session would meet the same dialog until a person answered it.\n\n**Why.** `detect_state` knows the trust prompt, the sign-in and onboarding screens, a picker that reads `Enter to select … Esc to cancel`, and a tool approval. This dialog matches none of them, so it reads `unknown`. `wait_ready` treats `unknown` as a screen still loading and polls it for 60 seconds. `--state` also answers `unknown` rather than `blocked`.\n\n**Why it matters.** A caller learns only that the driver timed out, not that a screen is waiting for a person or what it says. Claude Code adds dialogs like this from release to release, so a list of known screens will keep falling behind.\n\n**How to reproduce.** Start a tmux session whose pane shows the text above and no status line, then run a turn against it. After about 60 seconds the driver fails with exit code 3, and its message says `last state: unknown`.\n\n**What would help.** Read a pane with a numbered choice and `Enter to confirm` or `Esc to cancel` as `blocked`, and put the screen's text in the failure message. A dialog whose refusal is safe, like this one, could be answered with Esc, the way the trust prompt is answered with Enter.",
+  "notes": [],
+  "links": [
+    "SBX-056"
+  ]
+}
