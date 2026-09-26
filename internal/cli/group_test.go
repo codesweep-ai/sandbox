@@ -560,3 +560,36 @@ func TestDestroySaysWhenItEmptiesAGroup(t *testing.T) {
 		})
 	}
 }
+
+// TestAgentLoginTakesTheReferenceExecTakes: agent-login resolved <name>.<group> and then
+// handed the reference on as typed, which the engine refuses as an invalid sandbox name. A
+// sandbox outside the default group then had no way to log an agent in (SBX-074). The same
+// bare name lives in both groups here, so each reference must reach its own.
+func TestAgentLoginTakesTheReferenceExecTakes(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CS_SANDBOX_INSTANCES_DIR", dir) // the root command resolves state dirs from the env
+	if err := state.SaveGroup(dir, &state.Group{Name: "team", Created: "2026-01-01T00:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range []string{"team", state.DefaultGroup} {
+		if err := state.Save(dir, &state.Instance{
+			Name: "worker", Group: g, Type: "agent", Engine: state.Podman, Port: 2200,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct{ ref, container string }{
+		{"worker.team", "worker.team"},
+		{"worker", "worker.default"},
+	} {
+		t.Run(tc.ref, func(t *testing.T) {
+			f, err := runRootWith(t, &App{InstDir: dir}, run.NewFake(), "agent-login", "claude", tc.ref)
+			if err != nil {
+				t.Fatalf("agent-login claude %s: %v", tc.ref, err)
+			}
+			if !f.Contains(" " + tc.container + " bash -lc cs-claude") {
+				t.Errorf("want cs-claude launched in %s, among:\n%s", tc.container, f)
+			}
+		})
+	}
+}

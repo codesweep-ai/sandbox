@@ -534,12 +534,14 @@ func newAgentLoginCmd(app *App) *cobra.Command {
 			if !ok {
 				return fmt.Errorf("unknown agent %q: use one of %s", agent, strings.Join(agentNames(), ", "))
 			}
-			e, _, err := app.engineFor(name)
+			e, in, err := app.engineFor(name)
 			if err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "cs-sandbox: launching %s inside %s — follow the prompts, then exit.\n", launch, name)
-			return e.Exec(cmd.Context(), name, engine.ExecIO{
+			// in.Name, not the reference: the engine takes the bare name and its own group,
+			// so <name>.<group> handed on as typed is refused as an invalid name.
+			return e.Exec(cmd.Context(), in.Name, engine.ExecIO{
 				Interactive: true, Argv: []string{"bash", "-lc", launch},
 			})
 		},
