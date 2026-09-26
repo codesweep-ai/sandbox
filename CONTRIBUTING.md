@@ -36,10 +36,17 @@ That is every gate the CI workflow has, on this machine and in the order the wor
 so a green run here is a green run there. `make check` is the faster subset to keep beside you
 while you work, and `make ci` is the one that has to pass.
 
+A run that passes on a clean tree also records its commit as a local build, so a sibling project
+can pin it before it is pushed. `scripts/record-build.sh` files it, with its module zip, in the
+build store of the repository's owner, `~/.local/share/cs-builds/<owner>/`, and says so. A run
+over uncommitted changes records nothing.
+
 No linter needs installing. Every one the gates shell out to is pinned and built from the module
-cache on first use: `golangci-lint`, `deadcode`, `actionlint`, `cs-lint` and `cs-ledger`.
-`make repin` moves the `cs-` pins to the last commit each one's CI built, and leaves one whose
-project names none. `make versions` says which builds the gates used.
+cache on first use: `golangci-lint`, `deadcode`, `actionlint`, `cs-lint` and `cs-ledger`. `make
+repin` moves each `cs-` pin to the newer of its project's last CI build and its newest local
+one, which a clean `make ci` records. It names each pin taken from a local build, and leaves one
+whose project has neither. `make repin LOCAL=0` takes CI builds only. `make versions` says which
+builds the gates used.
 
 Moving a linter pin is an edit to `go.mod`, or to `go.golangci.mod` for `golangci-lint`. A linter
 release reaches you when you ask for it, not on an unrelated pull request.
