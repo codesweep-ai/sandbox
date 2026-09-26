@@ -1042,6 +1042,14 @@ func TestClaudeTurnReportsAProviderFailure(t *testing.T) {
 			5, "failure class=throttled retry_after=-"},
 		{"overloaded", entry("server_error", 529, "API Error: Repeated 529 Overloaded errors. The API is at capacity."),
 			5, "failure class=capacity retry_after=-"},
+		// A stream that broke after it began carries no status. The same session is sent the
+		// prompt again at once, so the wait is 0 rather than a back-off (SBX-073).
+		{"a response that broke mid-stream",
+			`{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"error":"server_error",` +
+				`"message":{"content":[{"type":"text","text":"API Error: Server error mid-response. The response above may be incomplete."}]}}`,
+			5, "failure class=capacity retry_after=0"},
+		{"a 500 refused at the start", entry("server_error", 500, "API Error: 500 Internal server error"),
+			5, "failure class=capacity retry_after=-"},
 		{"bad credential", entry("authentication_failed", 401, "Invalid API key · Fix external API key"),
 			5, "failure class=unauthorized retry_after=-"},
 		{"context too long", entry("invalid_request", 400, "Prompt is too long · the request is ~250000 tokens (limit 200000)"),

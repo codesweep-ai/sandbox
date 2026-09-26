@@ -191,6 +191,10 @@ in seconds when the message names one, and `-` when it does not. After `throttle
 wait and send the prompt again to the same session. The session is still alive, so do not restart
 it: a restart sends the whole context again into the same limit.
 
+`capacity` with `retry_after=0` is a response that broke after it began, which Claude Code reports
+as `Server error mid-response`. The provider was answering, and only that one request failed. Send
+the prompt again to the same session at once, without a back-off.
+
 After `unauthorized`, do not send it again. The provider rejected the credential, and waiting does
 not fix that. Claude Code retries a rejected credential for about three minutes by itself, so the
 driver ends its TUI and reports the turn within seconds. The next turn resumes the same conversation.
