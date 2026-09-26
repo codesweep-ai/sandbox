@@ -1,0 +1,20 @@
+{
+  "id": "SBX-084",
+  "title": "Codex 0.156.1 and later exit at startup when a sandbox holds a lent ChatGPT login",
+  "type": "defect",
+  "severity": "high",
+  "status": "open",
+  "foundBy": "session agent, re-recording the agent fixtures for a bump to Codex 0.157.1",
+  "opened": "2026-09-25",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "On a ChatGPT login, Codex's TUI now makes a workspace routing discovery call to chatgpt.com at startup. When that call fails, Codex prints `Error: account/read failed during TUI bootstrap: account/read failed: workspace routing discovery failed (code -32603)` and exits 1.\n\nA sandbox created with `--lend-agent-login codex` cannot make that call succeed. Its side calls to chatgpt.com are blocked by default. With `--block-side-calls=false` the call carries the sandbox's fabricated token, and Codex exits on `workspace routing discovery unauthorized (401)` instead. A sandbox given the real login with `--inherit-agent-login codex` starts normally.\n\nEach stable release was started with a lent login in the slim image. Releases 0.152.1, 0.153.4, 0.154.0 and 0.155.1 reach the prompt. Releases 0.156.1, 0.157.0 and 0.157.1 exit, and 0.156.0 was not tested. The fixture recording fails the same way in both codex-login cases, because cs-vcr refuses chatgpt.com in the shared case as well.\n\nThis holds the image's Codex pin at 0.155.1. Moving past it needs the lender, and cs-vcr in replay, to answer the discovery call for a lent login.\n\nTo reproduce, build the image with `CODEX_VERSION=0.156.1`, create a sandbox with `--lend-agent-login codex`, and run `cs-codex` inside it.",
+  "notes": [],
+  "links": []
+}

@@ -1,0 +1,20 @@
+{
+  "id": "SBX-085",
+  "title": "cs-codex-turn reads Codex's model migration dialog as ready and pastes the prompt into it",
+  "type": "defect",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent, re-recording the agent fixtures for a bump to Codex 0.157.1",
+  "opened": "2026-09-25",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "Codex 0.157.0 added a dialog that offers a newer model when the configured one has a successor. With `model = \"gpt-5.6-sol\"`, which the agent matrix configures, it opens at startup as `Meet GPT-6 Sol` with `1. Try new model` and `2. Use existing model`.\n\nThe dialog's footer, `enter/esc confirm · ctrl+c quit`, contains the ` · ` separator that `detect_state` takes for Codex's status line. The driver therefore reads the dialog as ready and pastes the prompt into it. No turn starts, and the driver exits 3 with `could not locate the codex rollout JSONL after submitting` about 25 seconds later.\n\nChoosing `2. Use existing model` writes `\"gpt-5.6-sol\" = \"gpt-6-sol\"` under `[notice.model_migrations]` in config.toml, and the dialog does not return. The image's Codex is held at 0.155.1 by the lent-login failure in SBX-084, and that release has no such dialog. A bump to 0.157 needs the driver to recognise the dialog and keep the configured model.",
+  "notes": [],
+  "links": ["SBX-084"]
+}
