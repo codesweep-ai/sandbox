@@ -1,33 +1,21 @@
 event: message_start
-data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_011CfGBYCE9W7pAZL7ejCE8i","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":606,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":8,"service_tier":"standard","inference_geo":"not_available"}}        }
+data: {"type":"message_start","message":{"model":"claude-opus-5","id":"msg_011CfRYuT3wSXMn4HA7sQ2VJ","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2,"cache_creation_input_tokens":11542,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":11542,"ephemeral_1h_input_tokens":0},"output_tokens":4,"service_tier":"standard","inference_geo":"global"},"diagnostics":null}          }
 
 event: content_block_start
-data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}    }
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}        }
 
 event: ping
 data: {"type": "ping"}
 
 event: content_block_delta
-data: {"delta":{"thinking":"The user is asking me to generate a title for a conversation where someone said \"Reply with the single word: pong\"\n\nThis is a simple ping-pong request or test interaction. The user is asking the other party to respond with \"pong\" to a \"ping\" command.\n\nI need to create a title that:\n- Is ≤50 characters\n- Reflects what's happening in the conversation\n- Is grammatically correct\n- Follows the rules\n\nThis is a very short, conversational/test message. According to the rules, if it's short or conversational, I should create a title reflecting the tone or intent.\n\nThis is essentially a ping-pong interaction or a simple response test.\n\nGood title options:\n- \"Ping pong test\" (14 chars) ✓\n- \"Ping-pong exchange\" (18 chars) ✓\n- \"Pong reply request\" (18 chars) ✓\n- \"Ping test\" (9 chars) ✓\n- \"Pong request\" (12 chars) ✓\n\nI think \"Ping pong test\" or \"Pong reply request\" work well. Let me go with \"Ping pong test\" as it's simple and clearly describes the interaction.\n\nActually, looking at the examples more carefully - when something is minimal/conversational, I should still be specific about what's happening. \"Ping pong test\" captures the essence well.\n\nLet me count: P-i-n-g- -p-o-n-g- -t-e-s-t = 14 characters. Good.","type":"thinking_delta"},"index":0,"type":"content_block_delta"}
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EsoLCpoBCBIYAipAzte33Wb6lEdu6Jlw4BfoZfahNCMhxPDrLpv3HYsqCdDboxA0DCTujTXcCslqZiYJeTw97/ZMJpnsmub51JNoITIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okYTYzM2U0MTQtYjEzZi00ZDEwLTk4YjItMjA0YWUzNTUwMmNjqAG6tsPVBhIM4tiKKYJWxMyu7apdGgwQp36fixg4FWiQcL8iMOCf6SdcJobOTCOZy1DvJzFea4yIKPpzGc5T17T1szbQsJYnee/ycAGyXYnq2pIOmircCTHwD4NPZP47rxRFp4K7hohEc+7hWvFkysuu09Z/7v1kSbYLuIQYfueFwDY163R8+pKowKdXQYerJuXFgJnDE1I6t70MYa/ECymHW/y4boO/7OFwRgQsOqmFimGBAmxew8kca/rqM2GyTqldunS/VTvuupDQ31fosxth4z8r7S14qA3rCYahgP03bqtqFc1UvjjNSGUpy1m4kxa0OKfNulRJ02926Rcpt8Bxm9PQ84egq2j1/tPURj8iDUmK0XjDnJ4gG7jl5P31g5r56U7g/XmLMyWvyh31sa3p83zWOYkUW0nua1dEqRr80d/Oz67n0cQhas4r+Hn3LVTZJ0c77EI8rWFA4EKd/1TezwoCL5lrCbDGSqN2MFaXFsqgAMtKm7BXjiBMPqiVA5lF7dGvpMvOZ3eBoAMpqoUvy8sJF2bOWxZcwyyQnRzDaAgsu74hhounxIYgyJ3mrD9POgqexbqlcEt+n+PQ2IrdSwf5mZIsjO0CFeENZKyroIQ44lGN5Gj3K79CFIl64tVpxIGTJufcp8gHij4Q4rDGAYfvu8b9x1NRzqhefn1dQL1ljysCn5OAuWPkLvjJ7FXpVf4t5ZKcP9138Ob0NHc6s8iMzaDbOXKLILyjZMaYJtdsoQxkhd2M2+x7JyBibsM0GJXqy3dwXLp2QiSnBzScQWzM5I+Y43U+X+x0TUbcSdrV6xbxaKclXae/y+2f9B4ltfkypG0QGF3IzZzph7gyluC5FwUVJj5zFYRTzsN0ab7BnuMhQAB0mMNgoDxQBbvV28rbV9IA2K9APxOSAwzvHcLhlyzPzvcVv4KKREwwh8GQ1ZRFyQDO0Gp5unTdb8YWYsrfGfgfMsiuuvW3Y/ZUlFjprPBhCLN3vsXY2UbM836fAICxaP677hiwXBQKlg2fEzqEpxPawvyY0yB8o3/cgLCtAdTIILiGjCJF/SuXTlHRuoxbUsay+KKyFSFTutmeNmhWm5s/Cgu55/D7Tam2rz6NIibtSaz4fe2SPwO6U0jDltxWGuHIUB3CjxSa/XVmdYqeoD9IMLrkEncppx8WHTwDAVMbv+fzJYOK1Jek8KkDaSuFK+A9XWjNJeRJmjJDJ3qqvUJ1RPBEYQMA7jcDyfA7qKPHQG6bxYbAeWsIwfEXnqdZIREOp6Vv6TLyrxxA3HvpURr+1fWtS1I5Omcp2PjKfmwQIKzJNnFu2pBDrFseAdMKOESSnmAN+iIifU1dt7Oy0rkY1/C2/gq8nx/TGC+Fg4x7H7mQbzS8IHpgEwPHyiCBp3eAwsMKVC4njrmxzfeCBINGFmZo73qCXZxUv/DePVfEbuZfuR0fjQm8XPd0ZgFIPr6KIzMcEtULnwhFNz74m0/W2b3pEFVk2v8pxKE+Re19+t9kTRo0M04WLnH7hLeDRqABDvR4vlj6gNz6yQDPDzo9vobNZ1ut6WHkpNbxV8XY4R/A5z9o0THnhl5bKjaamHz8x7d0BW4FnWnzRLM7pe8Ra904veffEnDMTqvqV+SLE/1Pp/b3MrkADXLswYj2LkSbWit4vTQlTnHG7MEMO+68mIGqitlZ+Rngd3y4O45+iPMus5yBOe+zFboXfUZ9OljczxQM/mhi1XzOaBh6Ij/klmYMWQ2pW9QqeRaFbSLkvca5aNj8n2rkcjFJGAE="}               }
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"pong"}        }
 
 event: content_block_stop
-data: {"type":"content_block_stop","index":0  }
-
-event: content_block_start
-data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}     }
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Ping pong test"}              }
-
-event: content_block_stop
-data: {"type":"content_block_stop","index":1   }
+data: {"type":"content_block_stop","index":0         }
 
 event: message_delta
-data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":606,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":377,"output_tokens_details":{"thinking_tokens":366}} }
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":2,"cache_creation_input_tokens":11542,"cache_read_input_tokens":0,"output_tokens":4,"output_tokens_details":{"thinking_tokens":0}}     }
 
 event: message_stop
-data: {"type":"message_stop"       }
+data: {"type":"message_stop"             }
 

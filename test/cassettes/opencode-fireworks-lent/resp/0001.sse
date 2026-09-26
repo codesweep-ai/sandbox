@@ -1,14 +1,18 @@
-data: {"id":"chatcmpl-4931b37514ef4f3b85f4bd97a21dbf7e","object":"chat.completion.chunk","created":1789975452,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-ba59d103070245bd882c43923999f5a2","object":"chat.completion.chunk","created":1790403033,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"choices":[{"delta":{"reasoning_content":"The user wants a single word reply: pong. Just reply with \"pong\"."},"finish_reason":null,"index":0,"raw_output":null}],"created":1789975452,"id":"chatcmpl-4931b37514ef4f3b85f4bd97a21dbf7e","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
+data: {"choices":[{"delta":{"reasoning_content":"Reply with single word pong? Need generate title for conversation where user message is \"Reply with the single word: pong\". Same language English. Title should reflect intent. Need output only title ≤50 chars. Could be \"Pong reply request\" or \"Single-word pong response\". Need not answer pong because instruction says generate title. Final only title."},"finish_reason":null,"index":0,"raw_output":null}],"created":1790403033,"id":"chatcmpl-ba59d103070245bd882c43923999f5a2","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
 
-data: {"id":"chatcmpl-4931b37514ef4f3b85f4bd97a21dbf7e","object":"chat.completion.chunk","created":1789975452,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"p"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-ba59d103070245bd882c43923999f5a2","object":"chat.completion.chunk","created":1790403033,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"Single"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-4931b37514ef4f3b85f4bd97a21dbf7e","object":"chat.completion.chunk","created":1789975452,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"ong"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-ba59d103070245bd882c43923999f5a2","object":"chat.completion.chunk","created":1790403033,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"-word"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-4931b37514ef4f3b85f4bd97a21dbf7e","object":"chat.completion.chunk","created":1789975452,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-ba59d103070245bd882c43923999f5a2","object":"chat.completion.chunk","created":1790403033,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" pong"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-4931b37514ef4f3b85f4bd97a21dbf7e","object":"chat.completion.chunk","created":1789975452,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":7441,"total_tokens":7473,"completion_tokens":32,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":17},"output_tokens_details":{"reasoning_tokens":17}}}
+data: {"id":"chatcmpl-ba59d103070245bd882c43923999f5a2","object":"chat.completion.chunk","created":1790403033,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" reply"},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-ba59d103070245bd882c43923999f5a2","object":"chat.completion.chunk","created":1790403033,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-ba59d103070245bd882c43923999f5a2","object":"chat.completion.chunk","created":1790403033,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":624,"total_tokens":711,"completion_tokens":87,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":70},"output_tokens_details":{"reasoning_tokens":70}}}
 
 data: [DONE]
 

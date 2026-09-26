@@ -32,5 +32,6 @@
     "summary": "auto"
   },
   "store": false,
-  "stream": true
+  "stream": true,
+  "temperature": 0.5
 }
