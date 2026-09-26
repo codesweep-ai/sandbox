@@ -47,8 +47,9 @@ func ValidName(name string) error {
 // sits under those packages, and the one test that could go stale — the name
 // really being the one internal/lend uses — is asserted where both are visible.
 var ReservedNames = map[string]bool{
-	"cs-lender": true, // internal/lend.GuestName — the credential lender
-	"cs-vcr":    true, // the replay recorder the agent tier puts on the network
+	"cs-lender":         true, // internal/lend.GuestName — the credential lender
+	"cs-lender-chatgpt": true, // internal/lend.BackendName — the same lender, for ChatGPT's backend
+	"cs-vcr":            true, // the replay recorder the agent tier puts on the network
 }
 
 // sunPathMax is the AF_UNIX sun_path limit, terminator included. Not a Linux

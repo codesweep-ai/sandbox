@@ -471,6 +471,21 @@ func TestCodexWrapperForwardsABaseURL(t *testing.T) {
 				`{name="cs-proxy", base_url="http://vcr:8080/c/chatgpt/demo", requires_openai_auth=true, wire_api="responses", stream_max_retries=10} exec do it`,
 			notWantArgv: "env_key",
 		},
+		{
+			// A lent login is also told where ChatGPT's own backend is: the
+			// lender's second name, which answers the one call Codex 0.156 and
+			// later need to start (SBX-084).
+			name: "a lent login is told where ChatGPT's backend is",
+			env: []string{"OPENAI_BASE_URL=http://cs-lender:2500", "OPENAI_API_KEY=",
+				"CS_CODEX_CHATGPT_BASE_URL=http://cs-lender-chatgpt:2500/backend-api"},
+			wantArgv: `-c chatgpt_base_url="http://cs-lender-chatgpt:2500/backend-api" exec do it`,
+		},
+		{
+			name:        "no backend variable, no backend override",
+			env:         []string{"OPENAI_BASE_URL=http://vcr:8080/c/chatgpt/demo", "OPENAI_API_KEY=", "CS_CODEX_CHATGPT_BASE_URL="},
+			wantArgv:    `requires_openai_auth=true`,
+			notWantArgv: "chatgpt_base_url",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, exit := runScriptStdin(t, home, bin, tc.env, "", "cs-codex", "exec", "do it")

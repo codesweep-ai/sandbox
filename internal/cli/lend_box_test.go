@@ -34,6 +34,9 @@ func TestLenderBoxJoinsOneNetworkAndNothingElse(t *testing.T) {
 	for _, want := range []string{
 		"--network cs-sandbox-net",
 		"--network-alias " + lend.GuestName,
+		// Its second name, for ChatGPT's backend: a second origin, so Codex
+		// does not move its model calls past the lender (see lend.BackendName).
+		"--network-alias " + lend.BackendName,
 		"--label cs-sandbox.lender=1",
 		"--entrypoint cs-sandbox",
 		"lender --addr " + lend.DefaultBind + " --callers network",
@@ -211,8 +214,10 @@ func TestEnsureAdoptsARunningLender(t *testing.T) {
 // The name a sandbox reaches the lender by is a name a sandbox may not have.
 // Two packages have to agree on it, and this is where both are visible.
 func TestTheLendersNameIsReservedForIt(t *testing.T) {
-	if err := state.ValidName(lend.GuestName); err == nil {
-		t.Fatalf("a sandbox may be called %q, which would take the alias from the lender", lend.GuestName)
+	for _, name := range []string{lend.GuestName, lend.BackendName} {
+		if err := state.ValidName(name); err == nil {
+			t.Errorf("a sandbox may be called %q, which would take the alias from the lender", name)
+		}
 	}
 }
 

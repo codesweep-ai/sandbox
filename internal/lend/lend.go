@@ -24,6 +24,7 @@ package lend
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -86,6 +87,14 @@ type Slot struct {
 	// at all for the former.
 	AuthEnvs []string
 	BaseEnv  string
+
+	// BackendEnv is the variable that points this slot's client at its
+	// vendor's own backend, for a client that calls that backend beside the
+	// model and will not start unless one of those calls succeeds. backend
+	// answers such a call, or returns nil for one it refuses. Both are unset
+	// for every slot but Codex's: see backend.go.
+	BackendEnv string
+	backend    func(loan Loan, r *http.Request) (any, error)
 
 	// read returns the real credential and any per-credential headers that
 	// travel with it (Codex's account id). It is called per request rather than
@@ -160,6 +169,7 @@ var slots = []Slot{
 		Origin: "https://chatgpt.com/backend-api/codex",
 		Header: "authorization", Prefix: "Bearer ",
 		AuthEnvs: []string{"OPENAI_API_KEY"}, BaseEnv: "OPENAI_BASE_URL",
+		BackendEnv: "CS_CODEX_CHATGPT_BASE_URL", backend: codexBackend,
 		read:      readCodexLogin,
 		where:     func(home, _ string) string { return filepath.Join(home, ".cs-codex", "auth.json") },
 		guestFile: "auth.json",

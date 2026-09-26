@@ -53,6 +53,17 @@ fi
 # meant to run on its ChatGPT subscription, but carrying an OPENAI_API_KEY for
 # something else, is put on the key path here. Give a subscription sandbox no
 # OPENAI_API_KEY.
+# ChatGPT's own backend, for a lent login. Codex 0.156 and later will not start on
+# a ChatGPT login until one call to that backend succeeds with the token codex
+# holds, and a lent sandbox's token succeeds only at the lender, which answers that
+# call itself. `create` sets the variable for a lent Codex login and nothing else,
+# so unset it changes nothing. It is a separate name from OPENAI_BASE_URL's on
+# purpose: codex moves a provider that shares the backend's origin onto the
+# workspace's own HTTPS origin, which is past the lender.
+if [ -n "${CS_CODEX_CHATGPT_BASE_URL:-}" ]; then
+  set -- -c "chatgpt_base_url=\"$CS_CODEX_CHATGPT_BASE_URL\"" "$@"
+fi
+
 if [ -n "${OPENAI_BASE_URL:-}" ]; then
   if [ -n "${OPENAI_API_KEY:-}" ]; then
     cs_auth='env_key="OPENAI_API_KEY"'

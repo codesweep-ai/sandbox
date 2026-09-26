@@ -3,11 +3,11 @@
   "title": "Codex 0.156.1 and later exit at startup when a sandbox holds a lent ChatGPT login",
   "type": "defect",
   "severity": "high",
-  "status": "open",
+  "status": "in-progress",
   "foundBy": "session agent, re-recording the agent fixtures for a bump to Codex 0.157.1",
   "opened": "2026-09-25",
   "resolved": null,
-  "stint": null,
+  "stint": "codex-discovery",
   "evidence": {
     "commits": [],
     "integrated": [],

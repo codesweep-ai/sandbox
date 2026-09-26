@@ -28,6 +28,19 @@ package lend
 // the lender on the network they share. state.ValidName refuses it.
 const GuestName = "cs-lender"
 
+// BackendName is the lender's second name, which a lent Codex reaches
+// ChatGPT's own backend by (see backend.go). It is the same server, and the
+// name is the whole point: Codex moves a model provider that shares an origin
+// with that backend onto the workspace's HTTPS origin, which is past the
+// lender. A second name is a second origin.
+//
+// Reserved like GuestName, for the same reason.
+const BackendName = "cs-lender-chatgpt"
+
+// BackendURL is what a lent Codex is told ChatGPT's backend is at. The path
+// is what makes Codex call it by ChatGPT's own paths rather than the API's.
+func BackendURL(bind string) string { return GuestURL(BackendName, bind) + backendPrefix }
+
 // BoxName is the lender container for one network. Named after the network the
 // way the keepalive is, because that is its lifetime: one lender per group,
 // serving the sandboxes that can reach it.

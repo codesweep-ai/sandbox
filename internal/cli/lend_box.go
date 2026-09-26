@@ -83,6 +83,10 @@ func (b lenderBox) name() string { return lend.BoxName(b.Spec.Network) }
 // guestBase is the base URL a sandbox on this network reaches the lender at.
 func (b lenderBox) guestBase() string { return lend.GuestURL(lend.GuestName, lend.DefaultBind) }
 
+// backendBase is where a sandbox on this network reaches the lender for a
+// vendor's own backend: the same server, under its second name.
+func (b lenderBox) backendBase() string { return lend.BackendURL(lend.DefaultBind) }
+
 // lenderBoxArgv is the `podman run` command, pure so a golden test can pin it.
 //
 // --entrypoint skips the image's own, which exists to bring up a SANDBOX: a dev
@@ -100,6 +104,7 @@ func lenderBoxArgv(name string, s lenderBoxSpec) []string {
 		"--hostname", lend.GuestName,
 		"--network", s.Network,
 		"--network-alias", lend.GuestName,
+		"--network-alias", lend.BackendName,
 		"--restart=always",
 		"--label", "cs-sandbox.managed=1",
 		"--label", "cs-sandbox.lender=1",

@@ -230,6 +230,11 @@ func (app *App) resolveLoans(ctx context.Context, f *createFlags, name, injected
 				plan.seeded = append(plan.seeded, seed.LentCredential{Agent: g.Agent, File: e.File, Doc: e.Doc})
 			}
 			plan.env = append(plan.env, s.BaseEnv+"="+guestBase)
+			// And the vendor's own backend, for a client that will not start
+			// without one call to it. The lender answers that call itself.
+			if s.BackendEnv != "" {
+				plan.env = append(plan.env, s.BackendEnv+"="+app.lenderBox(f.group).backendBase())
+			}
 		} else {
 			plan.env = append(plan.env, s.Env(g.Wire, guestBase)...)
 		}

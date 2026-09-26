@@ -55,6 +55,7 @@ type Stats struct {
 	NotLocal  int `json:"not_local"`
 	Upstream5 int `json:"upstream_errors"`
 	Injected  int `json:"injected,omitempty"`
+	Answered  int `json:"answered,omitempty"` // backend calls the lender answered itself
 
 	// Slots is what each slot's upstream answered, by slot id. Lent says a
 	// request went out, and this says what came back: a throttled key, a
@@ -196,6 +197,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.count(func(st *Stats) { st.Refused++ })
 		writeError(w, http.StatusInternalServerError, "unknown_slot",
 			fmt.Sprintf("this loan names a slot this build does not have (%q)", loan.Slot))
+		return
+	}
+
+	// A call to the vendor's own backend is answered here or refused, and is
+	// never forwarded, so the credential is not read for it. Before the fault,
+	// which stands for the provider, because this is not a provider call.
+	if slot.backend != nil && underBackend(r.URL.Path) {
+		s.serveBackend(w, r, loan, slot)
 		return
 	}
 
@@ -609,6 +618,9 @@ func (st Stats) Summary() string {
 		st.Requests, st.Lent, st.Refused, st.Tunnels, st.Blocked)
 	if st.Injected > 0 {
 		fmt.Fprintf(&out, " · injected %d", st.Injected)
+	}
+	if st.Answered > 0 {
+		fmt.Fprintf(&out, " · answered %d", st.Answered)
 	}
 	for _, id := range slices.Sorted(maps.Keys(st.Slots)) {
 		o := st.Slots[id]

@@ -169,15 +169,9 @@ func codexExpiryOf(doc []byte) (time.Time, error) {
 
 // jwtExpiry reads the exp claim out of a JWT's payload without verifying it.
 func jwtExpiry(token string) (time.Time, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return time.Time{}, errors.New("the access token is not a JWT, so it states no expiry")
-	}
-	// Unpadded base64url is what a JWT uses, but a producer that pads is not
-	// malformed, so the padding is trimmed rather than rejected.
-	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	payload, err := jwtPayload(token)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("the access token's payload is not base64url: %w", err)
+		return time.Time{}, err
 	}
 	var claims struct {
 		Exp int64 `json:"exp"`
@@ -189,4 +183,20 @@ func jwtExpiry(token string) (time.Time, error) {
 		return time.Time{}, errors.New("the access token carries no exp claim")
 	}
 	return time.Unix(claims.Exp, 0), nil
+}
+
+// jwtPayload decodes a JWT's claims without verifying it. Nothing here needs
+// to: the tokens read are the host's own login and the loans this tool forged.
+func jwtPayload(token string) ([]byte, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, errors.New("the access token is not a JWT, so it states no expiry")
+	}
+	// Unpadded base64url is what a JWT uses, but a producer that pads is not
+	// malformed, so the padding is trimmed rather than rejected.
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return nil, fmt.Errorf("the access token's payload is not base64url: %w", err)
+	}
+	return payload, nil
 }

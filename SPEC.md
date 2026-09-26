@@ -838,6 +838,14 @@ anywhere but on the host that minted it.
 **R146.** The lender **MUST** resolve a loan token to exactly one slot. It **MUST** replace the token with
 that slot's real credential, in that slot's own header shape, before forwarding.
 
+**R146a.** For a lent Codex login, the lender **MUST** answer Codex's startup call to ChatGPT's own
+backend itself, naming the loan's own account and an HTTPS origin. It **MUST NOT** read the credential or
+call a provider for that answer, and **MUST** refuse every other call to that backend. `create` **MUST**
+point a lent Codex at that backend under a second name for the lender. *Codex 0.156 and later will not
+start on a ChatGPT login until that call succeeds with the token they hold, and a loan's token succeeds
+nowhere but here. Codex requires the origin in the answer to be HTTPS. It also moves a model provider on
+the backend's own origin onto that one, which is past the lender, so the backend needs a second origin.*
+
 **R147.** The upstream **MUST** be a property of the slot or of the loan. No part of a request **MUST**
 select or change it: not the host, not the path, not the query, not a header.
 

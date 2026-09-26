@@ -512,7 +512,8 @@ lender swaps that token for your real credential before passing the call to the 
 lender knows which credential a token names.
 
 It runs as a container on the group's own network. There it answers to `cs-lender`, and nowhere
-else: nothing is bound on your machine, and a sandbox in another group has no route to it. Your
+else: nothing is bound on your machine, and a sandbox in another group has no route to it. A lent
+Codex also reaches it as `cs-lender-chatgpt`, for its calls to ChatGPT's own backend. Your
 credential stays in your filesystem. The lender reads it through a read-only mount, on every call,
 exactly as a process on the host would have.
 

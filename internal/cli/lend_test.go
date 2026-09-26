@@ -582,6 +582,31 @@ func TestAKeySeedsEveryVariableItsClientsRead(t *testing.T) {
 	}
 }
 
+// A lent Codex is pointed at ChatGPT's own backend on the lender's second name,
+// because Codex 0.156 and later will not start until one call there succeeds
+// (SBX-084). Only Codex: no other client is told anything new.
+func TestALentCodexIsToldWhereItsBackendIs(t *testing.T) {
+	home := lendHome(t)
+	want := "CS_CODEX_CHATGPT_BASE_URL=http://" + lend.BackendName + ":2500/backend-api"
+	for _, agent := range []string{"codex", "claude"} {
+		t.Run(agent, func(t *testing.T) {
+			app := lendApp(t, home)
+			app.Exec = &run.Exec{DryRun: true}
+			plan, err := app.resolveLoans(context.Background(), &createFlags{lendAgentLogin: []string{agent}}, "box", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := slices.Contains(plan.env, want)
+			if agent == "codex" && !got {
+				t.Errorf("a lent Codex was not told where its backend is:\n%s", strings.Join(plan.env, "\n"))
+			}
+			if agent != "codex" && strings.Contains(strings.Join(plan.env, "\n"), "CHATGPT_BASE_URL") {
+				t.Errorf("a lent %s was told about ChatGPT's backend:\n%s", agent, strings.Join(plan.env, "\n"))
+			}
+		})
+	}
+}
+
 // TestALenderInUseIsNotStoppedAsIdle: a destroy must not take the lender away
 // from a create that is still building the sandbox whose loan would have kept
 // it alive.
