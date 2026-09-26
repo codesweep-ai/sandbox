@@ -3,17 +3,19 @@
   "title": "agent-login refuses a sandbox named with its group, so it cannot log in a sandbox outside the default group",
   "type": "defect",
   "severity": "med",
-  "status": "open",
+  "status": "closed",
   "foundBy": "user report (host): agent-login failed on a sandbox in a named group on build 3d3fbb666359, confirmed against main by reading the command",
   "opened": "2026-09-25",
-  "resolved": null,
-  "stint": null,
+  "resolved": "2026-09-26",
+  "stint": "2026-09-26 session",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "b549614"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "TestAgentLoginTakesTheReferenceExecTakes passes under `go test ./internal/cli/ -count=1`. Two sandboxes named `worker` sit in `team` and in `default`, and `agent-login claude worker.team` launches cs-claude in `worker.team` while the bare `worker` reaches `worker.default`. With the command from a84365f the qualified case fails and the bare one passes. The full gate, `make check`, exits 0."
   },
-  "resolution": null,
+  "resolution": "`agent-login` now hands the engine the resolved sandbox's own name, as `exec` does, so it accepts every reference `exec` accepts. The repository had no table of commands tested with a group-qualified reference, so the test stands on its own in internal/cli/group_test.go.",
   "details": "**What was seen.** This is what it prints for a sandbox in a group other than `default`:\n\n```console\n$ cs-sandbox agent-login claude <name>.<group>\ncs-sandbox: launching cs-claude inside <name>.<group> — follow the prompts, then exit.\ncs-sandbox: invalid sandbox name \"<name>.<group>\": use letters, digits and dashes only (must start and end alphanumeric)\n```\n\nThe bare name resolves only in `default`, and fails with `no such sandbox \"<name>\" in group \"default\"; it exists as <name>.<group> — name the group`. The command has no flag for the group. So `agent-login` cannot reach any sandbox outside `default`. `cs-sandbox exec <name>.<group>` accepts the same reference.\n\n**Why.** `newAgentLoginCmd` in `internal/cli/misc_commands.go` resolves the reference with `app.engineFor(name)` and then passes the unresolved `name` to `e.Exec`. The engine validates it as a bare sandbox name and refuses the dot. `exec` passes `in.Name`, the resolved instance's own name, and works.\n\n**Why it matters.** SPEC section 10.1 names `agent-login` as the route for a sandbox that needs a login of its own. It is also how a person replaces an inherited login that has stopped working. The launch line printed before the failure also reads as though the login had started.\n\n**Workaround.** Run `cs-sandbox exec <name>.<group>`, start the agent's CLI there, and log in by hand.\n\n**What would help.** Pass `in.Name` to `Exec`, as `exec` does, and add `agent-login` to the table of commands tested with a group-qualified reference.",
   "notes": [],
   "links": []
