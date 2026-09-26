@@ -74,6 +74,11 @@ func TestTurnDriversSayWhetherAnAgentIsInATurn(t *testing.T) {
 		{"claude at sign-in", "cs-claude-turn", "cs-claude-a", "Login expired · Please run /login\n", "blocked"},
 		{"claude at a tool approval", "cs-claude-turn", "cs-claude-a", "Do you want to proceed?\n" + claudeReady, "blocked"},
 		{"claude on a screen nobody has seen", "cs-claude-turn", "cs-claude-a", "something new\n", "unknown"},
+		{"claude on a dialog nobody has seen", "cs-claude-turn", "cs-claude-a",
+			"Share usage data?\n❯ 1. Yes\n  2. No\nEnter to confirm · Esc to cancel\n", "blocked"},
+		// The driver refuses this one itself at the start of the next turn.
+		{"claude at a dialog the driver answers", "cs-claude-turn", "cs-claude-a",
+			"Try the new fullscreen renderer?\n❯ 1. Yes, try it\n  2. Not now\nEnter to confirm · Esc to cancel\n", "idle"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, calls := runState(t, tc.script, map[string]string{tc.session: tc.pane}, nil)

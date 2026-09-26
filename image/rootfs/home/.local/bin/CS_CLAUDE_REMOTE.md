@@ -139,7 +139,12 @@ cs-claude-turn --state
 It prints one line and always exits 0. The first word is `busy`, `idle`, `blocked`, `unknown` or
 `absent`, and `absent` means no Claude Code session exists there. `busy` can be followed by a second
 word, `busy retrying`, while the agent waits out a provider error. `blocked` is a screen that needs a person, such as sign-in, onboarding or a tool approval.
+It also covers any dialog the driver does not know that asks for a numbered choice or a confirmation.
 `unknown` is a screen the driver does not recognise.
+
+A few one-time dialogs are safe to refuse, such as Claude Code's offer to try its fullscreen
+renderer. The driver refuses them itself at the start of a turn, and the turn goes on, so `--state`
+reads such a screen as `idle`.
 
 It answers for a turn whoever started it. An agent can start one of its own, when a background
 command it left running finishes, and no turn driver wraps that turn. A count of live
@@ -165,6 +170,8 @@ started the turn, which may be another machine. This file is for a caller that a
 own machine, as `--state` is. Read the last line: a turn that ended well is recorded too, so an
 older failure is known to be over. `--state`, `--help` and a usage error are not turns and write
 nothing. A driver that was killed writes nothing, so a missing line means the ending is not known.
+A turn that ended well has `-` for its reason, or `dismissed a dialog: <its text>` when the driver
+refused a one-time dialog on the way.
 The file keeps between 200 and 400 lines. `CS_TURN_LOG` names another path.
 
 ## Exit codes
@@ -173,7 +180,7 @@ A turn surfaces the remote driver's exit status:
 
 - `0` — turn completed.
 - `2` — turn timed out (`--timeout`) **or** the stall watchdog tripped (`CS_CLAUDE_STALL_SECS`).
-- `3` — launch/setup failure, including screens that need a human: the remote Claude is at an **OAuth sign-in** or **first-run onboarding** wizard (attach with `--attach <name>` to complete it), or is wedged on a **tool-approval prompt** (the warm session is meant to run with permissions skipped — attach to inspect).
+- `3` — launch/setup failure, including screens that need a human: the remote Claude is at an **OAuth sign-in** or **first-run onboarding** wizard (attach with `--attach <name>` to complete it), or is wedged on a **tool-approval prompt** (the warm session is meant to run with permissions skipped — attach to inspect). A dialog the driver does not know fails the turn at once, and the message quotes the screen, so it says what a person has to answer.
 - `4` — the session is **busy**: a live turn holds the lock and it could not be acquired within `CS_CLAUDE_LOCK_WAIT`. The error prints the lock directory, which is what to remove if you are certain the process holding it is not a turn.
 - `5` — the turn **failed**: the provider ended it with an error, such as a rate limit, an overloaded API, a rejected credential or a prompt that is too long. It is not a finished turn, and the text Claude shows for it ("API Error: …") is not a reply.
 - `1` — usage or other error.

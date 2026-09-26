@@ -1239,6 +1239,91 @@ func TestClaudeTurnReadyStates(t *testing.T) {
 	}
 }
 
+// claudeDialogTmux is a tmux whose pane shows dialog.txt until the driver sends Escape, then
+// the ready composer. The Enter that submits the prompt ends the turn with STUB ANSWER.
+const claudeDialogTmux = `#!/bin/sh
+echo "$*" >> "$STUB_DIR/calls"
+case "$1" in
+  has-session) exit 0 ;;
+  capture-pane)
+    if [ -f "$STUB_DIR/.dismissed" ]; then printf '❯ \n  bypass permissions on\n'; else cat "$STUB_DIR/dialog.txt"; fi
+    exit 0 ;;
+  send-keys)
+    for last; do :; done
+    if [ "$last" = Escape ]; then touch "$STUB_DIR/.dismissed"; exit 0; fi
+    if [ ! -f "$STUB_DIR/.submitted" ]; then
+      touch "$STUB_DIR/.submitted"
+      printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"STUB ANSWER"}]}}' >> "$STUB_DIR/session.jsonl"
+      printf '%s\n' '{"type":"system","subtype":"turn_duration"}' >> "$STUB_DIR/session.jsonl"
+    fi
+    exit 0 ;;
+esac
+exit 0
+`
+
+// TestClaudeTurnAnswersADialogOrSaysWhoMust: Claude Code shows new one-time dialogs from
+// release to release. Read as a screen still loading, one failed the turn after a minute with
+// "last state: unknown", and nothing said a person was needed or what for (SBX-075). A dialog
+// the driver knows is refused with its own key and the turn goes on, and the turn log says
+// so. Any other screen asking for a choice fails the turn at once, quoting the screen, and
+// the driver presses nothing on it.
+func TestClaudeTurnAnswersADialogOrSaysWhoMust(t *testing.T) {
+	skipUnlessLinux(t)
+	for _, tc := range []struct {
+		name, dialog   string
+		wantExit       int
+		wantIn, reason string
+		wantEscape     bool
+	}{
+		{"the fullscreen renderer offer is refused",
+			"Try the new fullscreen renderer? It redraws the whole screen.\n❯ 1. Yes, try it\n  2. Not now\nEnter to confirm · Esc to cancel\n",
+			0, "STUB ANSWER", "dismissed a dialog: Try the new fullscreen renderer?", true},
+		{"a dialog nobody has seen needs a person",
+			"Share usage data to help improve Claude Code?\n❯ 1. Yes\n  2. No\nEnter to confirm · Esc to cancel\n",
+			3, "needs a person: Share usage data to help improve Claude Code? | ❯ 1. Yes | 2. No",
+			"needs a person: Share usage data", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-claude-remote")
+			writeStub(t, bin, "claude", "#!/bin/sh\nexit 0\n")
+			writeStub(t, bin, "cs-claude", "#!/bin/sh\nexit 0\n")
+			writeStub(t, bin, "tmux", claudeDialogTmux)
+			stubDir := t.TempDir()
+			projects := filepath.Join(home, "projects")
+			if err := os.MkdirAll(projects, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			jsonl := filepath.Join(projects, claudeTestUUID+".jsonl")
+			if err := os.WriteFile(jsonl, []byte(""), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(jsonl, filepath.Join(stubDir, "session.jsonl")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(stubDir, "dialog.txt"), []byte(tc.dialog), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			out, exit := runScriptStdin(t, home, bin,
+				[]string{"STUB_DIR=" + stubDir, "CS_CLAUDE_STALL_SECS=0"}, "do the thing\n",
+				"cs-claude-turn", "--uuid", claudeTestUUID, "--projects", projects, "--timeout", "30")
+			if exit != tc.wantExit || !strings.Contains(out, tc.wantIn) {
+				t.Fatalf("exit = %d; want %d with %q: %s", exit, tc.wantExit, tc.wantIn, out)
+			}
+			if took := time.Since(start); took > 20*time.Second {
+				t.Errorf("the driver took %s over it, as though waiting the screen out", took)
+			}
+			calls, _ := os.ReadFile(filepath.Join(stubDir, "calls"))
+			if pressed := strings.Contains(string(calls), "Escape"); pressed != tc.wantEscape {
+				t.Errorf("Escape sent = %v; tmux calls:\n%s", pressed, calls)
+			}
+			if l := lastTurnLine(t, home, "claude"); l.exit != tc.wantExit || !strings.Contains(l.reason, tc.reason) {
+				t.Errorf("turn log line = %+v; want exit %d and a reason holding %q", l, tc.wantExit, tc.reason)
+			}
+		})
+	}
+}
+
 // TestCodexTurnReadyStates: Codex writes its status line as "<model> <effort> · <dir>", and
 // the effort segment reads "default" only while none is configured. Keying readiness on that
 // literal left every member carrying an explicit model_reasoning_effort un-ready until the
