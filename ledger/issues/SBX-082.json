@@ -3,17 +3,19 @@
   "title": "build cannot read a store named outright, as a campaign member's is",
   "type": "improvement",
   "severity": "low",
-  "status": "open",
+  "status": "closed",
   "foundBy": "session agent, reviewing how local builds reach campaign members (tasks/pin-on-local-builds.md, section 8)",
   "opened": "2026-09-25",
-  "resolved": null,
+  "resolved": "2026-09-25",
   "stint": "local-builds",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "1b95c11"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "TestBuildStore passes: `CS_BUILD_STORE` names the store outright, ahead of `CS_BUILDS_DIR` and the default. TestLocalModulesNamesAnotherStore passes too. GitHub CI's `ci` passed on 3b3e213, once the nested sandbox smoke job was run again: its microVM had stopped answering."
   },
-  "resolution": null,
+  "resolution": "`build` reads the store `CS_BUILD_STORE` names, as the other tools do, and `--local-modules DIR` names one for a single build.",
   "details": "`cs-sandbox build` reads the store of the owner it names its images after. A campaign member holds its store as a clone at a path of its own. The other tools will find that path through CS_BUILD_STORE (DSH-029), and `build` does not read it.",
   "notes": [],
   "links": []

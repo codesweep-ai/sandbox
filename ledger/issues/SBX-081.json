@@ -3,17 +3,19 @@
   "title": "A local image build leaves nothing a sibling's repin can wait on",
   "type": "improvement",
   "severity": "low",
-  "status": "open",
+  "status": "closed",
   "foundBy": "session agent, reviewing how local builds reach images (tasks/pin-on-local-builds.md, section 7)",
   "opened": "2026-09-25",
-  "resolved": null,
+  "resolved": "2026-09-25",
   "stint": "local-builds",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "1b95c11"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "TestBuildRecordsItsImageForASiblingsRepin, TestBuildCommitsItsImageRecordInARepositoryStore and TestBuildRecordsNoImageSiblingsMayNotPin pass. For real, `cs-sandbox build` and `cs-sandbox build --slim` at 3b3e213 wrote sandbox.json and sandbox-slim.json under images/sandbox/<commit>/ in the store. GitHub CI's `ci` passed on 3b3e213, once the nested sandbox smoke job was run again: its microVM had stopped answering."
   },
-  "resolution": null,
+  "resolution": "An image `build` makes of a commit the store records is recorded there, and committed where the store is a git repository (SPEC R168). The `make ci` here records its build awaiting both images, so a sibling's repin waits for them.",
   "details": "CI's status file lists a sandbox commit only once both of its images are published. `make ci` records a local build of sandbox with no word of images, and `cs-sandbox build` writes nothing to the build store once it has made one. So campaign's `make repin` cannot tell a local sandbox build that has its images from one that has none.",
   "notes": [],
   "links": [

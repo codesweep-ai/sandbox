@@ -3,17 +3,19 @@
   "title": "The local module proxy writes the wrong go.mod and no time",
   "type": "defect",
   "severity": "low",
-  "status": "open",
+  "status": "closed",
   "foundBy": "session agent, reviewing internal/cli/localproxy.go (tasks/pin-on-local-builds.md, section 9)",
   "opened": "2026-09-25",
-  "resolved": null,
+  "resolved": "2026-09-25",
   "stint": "local-builds",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "1b95c11"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "TestLocalModuleProxyServesTheRevisionNotTheTree passes. With go.mod edited in the working tree, the proxy serves the revision's own go.mod, and its `.info` carries the commit's time. GitHub CI's `ci` passed on 3b3e213, once the nested sandbox smoke job was run again: its microVM had stopped answering."
   },
-  "resolution": null,
+  "resolution": "The local module proxy takes go.mod from the revision it zips rather than from the working tree. Its `.info` carries the commit's time as well as the version.",
   "details": "`localModuleProxy` zips a revision but copies go.mod from the working tree, so a checkout with an edited go.mod serves a manifest that does not match its zip. Go records the manifest's hash in go.sum, so the line it writes is wrong. Its `.info` carries only `Version`, with no `Time`, which Go reads to order versions.",
   "notes": [],
   "links": []

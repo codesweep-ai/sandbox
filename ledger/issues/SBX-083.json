@@ -3,17 +3,19 @@
   "title": "make build-go names a fork's images codesweep-ai",
   "type": "defect",
   "severity": "low",
-  "status": "open",
+  "status": "closed",
   "foundBy": "session agent, reviewing how local builds reach installs (tasks/pin-on-local-builds.md, section 9)",
   "opened": "2026-09-25",
-  "resolved": null,
+  "resolved": "2026-09-25",
   "stint": "local-builds",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "1c5870f"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "In a scratch clone at 3b3e213 whose origin is `git@github.com-fork:forker/sandbox.git`, `make build-go` built a bin/cs-sandbox whose `version --images` names ghcr.io/forker/sandbox and localhost/forker/sandbox. GitHub CI's `ci` passed on 3b3e213, once the nested sandbox smoke job was run again: its microVM had stopped answering."
   },
-  "resolution": null,
+  "resolution": "The owner is read from origin with a pattern that takes an SSH host alias, as record-build.sh already did. A fork's build now names its images after the fork's owner.",
   "details": "`Makefile's IMAGE_OWNER` reads the owner from origin with `[@/]github\\.com[:/]`, which needs a `:` or `/` right after `github.com`. An SSH host alias such as `git@github.com-fork:forker/sandbox.git`, which a fork's clones use, does not match. The build then falls back to `codesweep-ai`, so a fork's binary names its images under this project's name.",
   "notes": [],
   "links": []

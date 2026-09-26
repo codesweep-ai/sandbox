@@ -3,17 +3,19 @@
   "title": "build installs a sibling's local build only by hand",
   "type": "improvement",
   "severity": "low",
-  "status": "open",
+  "status": "closed",
   "foundBy": "session agent, reviewing how local builds reach images (tasks/pin-on-local-builds.md, section 7)",
   "opened": "2026-09-25",
-  "resolved": null,
+  "resolved": "2026-09-25",
   "stint": "local-builds",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "1b95c11"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "TestBuildTakesAPinTheStoreHolds, TestBuildPacksItsOwnUnrecordedCommit, TestBuildTakesItsOwnCommitFromTheStoreFirst, TestLocalModulesNoneReadsNothing and TestLocalModulesNamesAnotherStore pass. For real, `cs-sandbox build` at 3b3e213 installed sandbox v0.0.0-20260926051938-3b3e2139d9e9 from the local build store. GitHub CI's `ci` passed on 3b3e213, once the nested sandbox smoke job was run again: its microVM had stopped answering."
   },
-  "resolution": null,
+  "resolution": "`build` installs each pinned cs- tool from the owner's build store where it holds that version, and from the Go module proxy otherwise. It packs its own commit from its checkout when no store holds it (SPEC R167). `--local-modules DIR` reads another store, `--local-modules none` reads none, and `--local-sandbox` is gone.",
   "details": "The image installs each cs- tool by version from proxy.golang.org. A tool pinned at a version a clean `make ci` recorded in the local store is not there, so the image stops at `go install`. `--local-sandbox` covers cs-sandbox's own commit, and nothing covers a sibling's. It is also a flag to remember for what should be the default.",
   "notes": [],
   "links": []

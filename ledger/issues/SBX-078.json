@@ -3,17 +3,19 @@
   "title": "A local image build takes the name CI publishes",
   "type": "defect",
   "severity": "med",
-  "status": "open",
+  "status": "closed",
   "foundBy": "session agent, reviewing how local builds reach images (tasks/pin-on-local-builds.md, section 7)",
   "opened": "2026-09-25",
-  "resolved": null,
+  "resolved": "2026-09-25",
   "stint": "local-builds",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "1b95c11"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "TestEnsureImagePrefersThePublishedImage, TestEnsureImageFallsBackToTheLocalBuild and TestEnsureImageWithNeitherNamesBuild pass, and the build tests now expect the localhost/ names. For real, `cs-sandbox build` at 3b3e213 found no published image, and built localhost/codesweep-ai/sandbox:v0.0.0-20260926051938-3b3e2139d9e9. GitHub CI's `ci` passed on 3b3e213, once the nested sandbox smoke job was run again: its microVM had stopped answering."
   },
-  "resolution": null,
+  "resolution": "An image `build` makes on this host is tagged `localhost/<owner>/sandbox:<version>`, or sandbox-slim for the slim one, never the name CI publishes (SPEC R166). `create` takes the published image first, from this host or the registry, and the local build only when neither has it.",
   "details": "`cs-sandbox build` of a version no registry holds tags the image `ghcr.io/<owner>/sandbox:<version>`. That is the name CI pushes for the same version, so bytes built on this machine pass for CI's. Images are not reproducible, so the two differ. `create` only ever asks for that name, so a host keeps its local image even once CI publishes the real one. The slim image is named the same way.",
   "notes": [],
   "links": []
