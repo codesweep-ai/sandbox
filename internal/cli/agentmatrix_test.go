@@ -683,6 +683,14 @@ func linkLoginProfile(t *testing.T, s lend.Slot, real, home string) {
 // that it is fake, which is what lets a leak scan over a cassette stay strict.
 const replayKey = "not-a-real-key-replay-only"
 
+// replayClaudeAccount is the account a replay host says it is signed in as:
+// the fields that identify one, and nothing a real account could be mistaken
+// for.
+const replayClaudeAccount = `{"oauthAccount":{` +
+	`"accountUuid":"00000000-0000-4000-8000-000000000000",` +
+	`"emailAddress":"replay@example.invalid",` +
+	`"organizationUuid":"00000000-0000-4000-8000-000000000000"}}`
+
 // fabricatedAgentHome builds the host profile the replay tier lends and shares
 // from, holding credentials that authenticate nothing.
 //
@@ -724,6 +732,13 @@ func fabricatedAgentHome(t *testing.T) {
 		}
 		writeSecret(t, filepath.Join(home, ".cs-"+g.Agent, g.File), g.Doc)
 	}
+	// A signed-in host names its account as well, and a LENT Claude sandbox
+	// is handed that too. A recording runs on the real profile, so its lent
+	// sandbox knows an address and Claude Code writes it into the prompt, in
+	// a reminder that holds nothing else. cs-vcr strips the address and keeps
+	// the reminder, so a replay host with no account sends one item fewer and
+	// misses.
+	writeSecret(t, filepath.Join(home, ".cs-claude", ".claude.json"), []byte(replayClaudeAccount))
 }
 
 // agentHomeShell is the empty profile tree both homes are built in, with
