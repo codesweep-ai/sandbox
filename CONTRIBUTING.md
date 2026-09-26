@@ -39,7 +39,8 @@ while you work, and `make ci` is the one that has to pass.
 A run that passes on a clean tree also records its commit as a local build, so a sibling project
 can pin it before it is pushed. `scripts/record-build.sh` files it, with its module zip, in the
 build store of the repository's owner, `~/.local/share/cs-builds/<owner>/`, and says so. A run
-over uncommitted changes records nothing.
+over uncommitted changes records nothing. campaign pins `cs-sandbox`, and takes such a build once
+`cs-sandbox build` and `cs-sandbox build --slim` have made its two images, which each notes there.
 
 No linter needs installing. Every one the gates shell out to is pinned and built from the module
 cache on first use: `golangci-lint`, `deadcode`, `actionlint`, `cs-lint` and `cs-ledger`. `make

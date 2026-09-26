@@ -1,18 +1,18 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 )
 
-// TestLocalModuleProxyInstallsAnUnpushedRevision is the whole point of
-// --local-sandbox, end to end: a module zip written from this checkout's git
-// tree, served over file://, installs BY VERSION — and the binary reports that
-// version, exactly as it would coming from proxy.golang.org.
+// TestLocalModuleProxyInstallsAnUnpushedRevision is the whole point of packing
+// an unrecorded commit, end to end: a module zip written from this checkout's
+// git tree, served over file://, installs BY VERSION — and the binary reports
+// that version, exactly as it would coming from proxy.golang.org.
 //
 // It builds the real thing, so it needs git and a network-free `go install`
 // against the local proxy. GOFLAGS carries the toolchain fallback the image
@@ -62,129 +62,81 @@ func TestLocalModuleProxyInstallsAnUnpushedRevision(t *testing.T) {
 	}
 }
 
-// TestLocalSandboxRefusesWithoutARevision: the flag names a commit to zip, so
-// the cases with no commit to name have to fail before podman is started rather
-// than half way through an image build. There are two, and they fail for
-// different reasons: a binary with no version at all cannot name the image it
-// would build, and never reaches the flag; one whose version came from -ldflags
-// with no VCS stamp behind it has a version to install by and no commit to zip.
-func TestLocalSandboxRefusesWithoutARevision(t *testing.T) {
-	cases := []struct {
-		name, version, want string
-		revision            func() string
-	}{
-		{"no version at all", devVersion, "reports no version", nil},
-		{"a version with no commit behind it", "v1.2.3", "--local-sandbox", func() string { return "" }},
+// TestLocalModuleProxyServesTheRevisionNotTheTree: the three files agree with
+// one another and with what the real proxy serves, however the working tree has
+// moved on (SBX-080). Go records a hash of the .mod in go.sum, so a manifest
+// from the tree would write a line the real module never matches. And it works
+// from a worktree, whose .git is a file rather than a directory (SBX-050).
+func TestLocalModuleProxyServesTheRevisionNotTheTree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("needs git")
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			savedV, savedR := Version, sandboxRevision
-			t.Cleanup(func() { Version, sandboxRevision = savedV, savedR })
-			Version = c.version
-			if c.revision != nil {
-				sandboxRevision = c.revision
-			}
+	for k, v := range map[string]string{
+		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+		"GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
+		"GIT_AUTHOR_DATE": "2026-09-25T10:11:12-07:00", "GIT_COMMITTER_DATE": "2026-09-25T10:11:12-07:00",
+	} {
+		t.Setenv(k, v)
+	}
+	repo := filepath.Join(t.TempDir(), "m")
+	committed := "module example.com/m\n\ngo 1.21\n"
+	for name, body := range map[string]string{"go.mod": committed, "m.go": "package m\n"} {
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := gitAt(dir, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	git(repo, "init", "-q", "-b", "main")
+	git(repo, "add", "-A")
+	git(repo, "commit", "-q", "-m", "one")
+	revision := git(repo, "rev-parse", "HEAD")
+	// The tree moves on after the commit, as it does while somebody works.
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte(committed+"\nrequire example.com/other v1.0.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(filepath.Dir(repo), "wt")
+	git(repo, "worktree", "add", "-q", "--detach", wt, revision)
+	const version = "v0.0.0-20260925171112-000000000000"
 
-			f, err := runRootAsBuilt(t, &App{}, "build", "--engine", "podman", "--local-sandbox")
-			if err == nil {
-				t.Fatalf("build --local-sandbox succeeded; calls=%s", f)
-			}
-			if !strings.Contains(err.Error(), c.want) {
-				t.Errorf("error does not say %q: %v", c.want, err)
-			}
-			for _, call := range f.Calls {
-				if len(call) >= 2 && call[0] == "podman" && call[1] == "build" {
-					t.Errorf("podman build ran anyway: %v", call)
-				}
-			}
-		})
-	}
-}
-
-// TestLocalSandboxMountsTheProxyAndOverridesGOPROXY: the happy path. The build
-// has to bind-mount the generated proxy and point the install at it — and keep
-// the upstream proxy in the list, because a one-module proxy 404s for the Go
-// toolchain and every other module the image installs.
-func TestLocalSandboxMountsTheProxyAndOverridesGOPROXY(t *testing.T) {
-	repo := repoRoot(t)
-	rev, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Skipf("no git revision to zip: %v", err)
-	}
-	savedV, savedR := Version, sandboxRevision
-	t.Cleanup(func() { Version, sandboxRevision = savedV, savedR })
-	Version = "v0.0.0-20200101000000-000000000000"
-	sandboxRevision = func() string { return strings.TrimSpace(string(rev)) }
-	// root resolves AssetDir itself, so point it at the checkout the way an
-	// operator would rather than setting the field and watching it be replaced.
-	t.Setenv("CS_SANDBOX_ASSETS_DIR", repo)
-
-	f, err := runRootAsBuilt(t, &App{}, "build", "--engine", "podman", "--local-sandbox")
-	if err != nil {
-		t.Fatalf("build --local-sandbox: %v", err)
-	}
-	var argv []string
-	for _, call := range f.Calls {
-		if len(call) >= 2 && call[0] == "podman" && call[1] == "build" {
-			argv = call
+	for _, from := range []string{repo, wt} {
+		dir, cleanup, err := localModuleProxy(from, version, revision)
+		if err != nil {
+			t.Fatalf("localModuleProxy from %s: %v", from, err)
 		}
-	}
-	if argv == nil {
-		t.Fatalf("no podman build call; calls=%s", f)
-	}
-	var proxyArg, mount string
-	for i, a := range argv {
-		if strings.HasPrefix(a, "CS_GOPROXY=") {
-			proxyArg = a
+		at := filepath.Join(dir, "example.com", "m", "@v", version)
+		mod, err := os.ReadFile(at + ".mod")
+		if err != nil {
+			t.Fatal(err)
 		}
-		if a == "-v" && i+1 < len(argv) {
-			mount = argv[i+1]
+		if string(mod) != committed {
+			t.Errorf("from %s, .mod = %q, want the revision's %q", from, mod, committed)
 		}
-	}
-	if !strings.HasPrefix(proxyArg, "CS_GOPROXY=file://") {
-		t.Errorf("CS_GOPROXY is not a file:// proxy: %q", proxyArg)
-	}
-	if !strings.Contains(proxyArg, ",https://proxy.golang.org") {
-		t.Errorf("CS_GOPROXY drops the upstream fallback, so the toolchain would 404: %q", proxyArg)
-	}
-	if !slices.Contains(argv, "CS_GONOSUMDB=github.com/codesweep-ai/*") {
-		t.Errorf("no scoped checksum-db bypass; an unpublished module cannot verify (%v)", argv)
-	}
-	if !strings.HasSuffix(mount, guestProxyDir+":ro") {
-		t.Errorf("proxy is not mounted read-only at %s: %q", guestProxyDir, mount)
-	}
-	// Without this an SELinux host denies the build every read of the mount and
-	// `go install` stops on the .info with "permission denied".
-	if i := slices.Index(argv, "--security-opt"); i < 0 || i+1 >= len(argv) || argv[i+1] != "label=disable" {
-		t.Errorf("the mounted proxy is not readable under SELinux confinement (%v)", argv)
-	}
-	if !slices.Contains(argv, "CS_SANDBOX_VERSION="+Version) {
-		t.Errorf("the image would install a different version than the proxy serves (%v)", argv)
-	}
-}
-
-// TestBuildWithoutLocalSandboxSetsNoProxy: the ordinary build must not carry
-// the override, or every image would install from a proxy that is not there.
-func TestBuildWithoutLocalSandboxSetsNoProxy(t *testing.T) {
-	f, err := runRoot(t, &App{}, "build", "--engine", "podman")
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	for _, call := range f.Calls {
-		if len(call) < 2 || call[0] != "podman" || call[1] != "build" {
-			continue
+		raw, err := os.ReadFile(at + ".info")
+		if err != nil {
+			t.Fatal(err)
 		}
-		for _, a := range call {
-			if strings.HasPrefix(a, "CS_GOPROXY=") && a != "CS_GOPROXY=" {
-				t.Errorf("plain build passed %s", a)
-			}
+		var info struct {
+			Version string
+			Time    string
 		}
-		if slices.Contains(call, "-v") {
-			t.Errorf("plain build bind-mounts something: %v", call)
+		if err := json.Unmarshal(raw, &info); err != nil {
+			t.Fatal(err)
 		}
-		if slices.Contains(call, "--security-opt") {
-			t.Errorf("plain build drops SELinux confinement: %v", call)
+		if info.Version != version || info.Time != "2026-09-25T17:11:12Z" {
+			t.Errorf("from %s, .info = %s, want the version and the commit time in UTC", from, raw)
 		}
+		cleanup()
 	}
 }
 

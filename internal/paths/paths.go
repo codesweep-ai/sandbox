@@ -211,6 +211,28 @@ func AssetDir() string {
 	return wd
 }
 
+// BuildStore is the local build store of one owner: where a clean `make ci` in
+// any of its projects records what it built, for siblings to pin before it is
+// pushed (codesweep-ai/dashboards SPEC.md, "The local build store"). The path
+// is the one every project's scripts/record-build.sh writes to. That is a shell
+// script following XDG alone, so macOS uses ~/.local/share here too.
+// CS_BUILD_STORE names the store outright, owner and all, as a campaign does
+// for the clone of its store each member holds.
+func BuildStore(owner string) string {
+	if d := os.Getenv("CS_BUILD_STORE"); d != "" {
+		return d
+	}
+	root := os.Getenv("CS_BUILDS_DIR")
+	if root == "" {
+		data := os.Getenv("XDG_DATA_HOME")
+		if data == "" {
+			data = filepath.Join(userHome(), ".local", "share")
+		}
+		root = filepath.Join(data, "cs-builds")
+	}
+	return filepath.Join(root, owner)
+}
+
 func dataHome() string {
 	if d := os.Getenv("XDG_DATA_HOME"); d != "" {
 		return d

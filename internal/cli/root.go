@@ -64,6 +64,14 @@ var (
 	slimImageRepo       = imageRepo + "-slim"
 	slimBaseImageRepo   = slimImageRepo + "-base"
 	slimAgentsImageRepo = slimImageRepo + "-agents"
+
+	// Where an image built on this machine goes, rather than under the name CI
+	// publishes. Images are not reproducible, so a local build of a version is
+	// never the bytes CI pushes for it, and a name of its own keeps it from
+	// passing for them. localhost/ is podman's registry for images that exist
+	// only in local storage, so nothing ever tries to pull or push one.
+	localImageRepo     = "localhost/" + imageOwner + "/sandbox"
+	localSlimImageRepo = localImageRepo + "-slim"
 )
 
 // devVersion marks a binary that carried no release stamp.
@@ -151,14 +159,18 @@ type App struct {
 	AssetDir string // checkout root holding the build assets (or "" -> embedded)
 	Image    string
 	ImageErr error // why Image is empty; raised by the commands that need one
-	Network  string
-	SSHBind  string
-	TZ       string
-	Timeout  int
-	Quiet    bool      // --quiet: silence everything, including build-phase lines
-	Verbose  bool      // --verbose: also show per-command progress + full podman output
-	Exec     *run.Exec // concrete, for toggling dry-run
-	errW     io.Writer // sink for phase/progress lines (nil -> os.Stderr); tests inject a buffer
+	// LocalImage is this machine's own build of Image's version, which a command
+	// falls back to when no registry holds Image. Empty when CS_SANDBOX_IMAGE
+	// names the image, since a name somebody chose is the one used.
+	LocalImage string
+	Network    string
+	SSHBind    string
+	TZ         string
+	Timeout    int
+	Quiet      bool      // --quiet: silence everything, including build-phase lines
+	Verbose    bool      // --verbose: also show per-command progress + full podman output
+	Exec       *run.Exec // concrete, for toggling dry-run
+	errW       io.Writer // sink for phase/progress lines (nil -> os.Stderr); tests inject a buffer
 }
 
 // stderr is the writer for phase/progress lines: the injected errW (tests) or
@@ -327,6 +339,7 @@ func newRootCmd(app *App) *cobra.Command {
 				app.Image = img
 			} else {
 				app.Image, app.ImageErr = imageRef(imageRepo)
+				app.LocalImage, _ = imageRef(localImageRepo)
 			}
 			app.Network = state.NetworkName(state.DefaultGroup)
 			// Empty by default, which means "publish nothing". A sandbox is
@@ -383,11 +396,14 @@ func newVersionCmd(app *App) *cobra.Command {
 			// --images: every reference this binary names, for a caller that has
 			// to act on one. The release workflow builds and pushes all three,
 			// and asking here is what keeps the naming rule in one place instead
-			// of half here and half in a shell substitution.
+			// of half here and half in a shell substitution. The two -local
+			// names are what `build` tags an image it made here with.
 			if images {
 				for _, r := range []struct{ label, repo string }{
 					{"image", imageRepo},
 					{"image-slim", slimImageRepo},
+					{"image-local", localImageRepo},
+					{"image-slim-local", localSlimImageRepo},
 				} {
 					ref, err := imageRef(r.repo)
 					if err != nil {

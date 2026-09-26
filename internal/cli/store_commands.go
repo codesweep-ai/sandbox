@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,7 +9,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func (a *App) storeManager() store.Manager {
+// storeManager runs its helper containers from the sandbox image, or from this
+// machine's own build of it where that is the one here.
+func (a *App) storeManager(ctx context.Context) store.Manager {
+	a.useLocalBuild(ctx)
 	return store.Manager{Runner: a.Runner, Image: a.Image}
 }
 
@@ -18,7 +22,7 @@ func newStoreCmds(app *App) []*cobra.Command {
 		Short: "Create an empty shared image store",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := app.storeManager().Create(cmd.Context(), args[0]); err != nil {
+			if err := app.storeManager(cmd.Context()).Create(cmd.Context(), args[0]); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "created empty shared store %q — seed it with: cs-sandbox seed-store %s <image>...\n", args[0], args[0])
@@ -34,7 +38,7 @@ func newStoreCmds(app *App) []*cobra.Command {
 		ValidArgsFunction: app.completeStore,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, images := args[0], args[1:]
-			if err := app.storeManager().Seed(cmd.Context(), name, images, fromHost); err != nil {
+			if err := app.storeManager(cmd.Context()).Seed(cmd.Context(), name, images, fromHost); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "seeded shared store %q — use it with: cs-sandbox create <name> --image-store %s\n", name, name)
@@ -48,7 +52,7 @@ func newStoreCmds(app *App) []*cobra.Command {
 		Short: "List shared image stores and their images",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			m := app.storeManager()
+			m := app.storeManager(cmd.Context())
 			names := m.List(cmd.Context())
 			if len(names) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "no shared stores (create one with: cs-sandbox create-store <name>)")
@@ -80,7 +84,7 @@ func newStoreCmds(app *App) []*cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: app.completeStore,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := app.storeManager().Remove(cmd.Context(), args[0], force); err != nil {
+			if err := app.storeManager(cmd.Context()).Remove(cmd.Context(), args[0], force); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "removed shared store %q\n", args[0])

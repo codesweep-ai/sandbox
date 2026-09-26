@@ -45,7 +45,11 @@ func newDoctorCmd(app *App) *cobra.Command {
 					return err
 				}
 				app.Image = ref
+				app.LocalImage, _ = imageRef(localSlimImageRepo)
 			}
+			// The image create would boot: this machine's own build of the
+			// version, where that is the one here (R166).
+			app.useLocalBuild(cmd.Context())
 			switch engine {
 			case "podman", "firecracker":
 			default:

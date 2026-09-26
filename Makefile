@@ -816,6 +816,10 @@ endef
 ## here: it is the gates, plus as much of the smoke profile as this machine can
 ## run. The firecracker leg is not reproduced — CI selects a different set for
 ## it (see the smoke-firecracker job).
+##
+## A clean pass records the commit as a local build. It names the two images CI
+## publishes for a commit, and a sibling's `make repin` takes the build once
+## `cs-sandbox build` and `cs-sandbox build --slim` have made them from it.
 ci:
 	@scripts/record-build.sh start
 	$(call say,the gate a contributor runs before pushing)
@@ -838,7 +842,7 @@ ci:
 	$(call say,the smoke profile on real sandboxes)
 	@$(MAKE) --no-print-directory test-smoke
 	$(call say,the local build record)
-	@scripts/record-build.sh finish
+	@CS_BUILD_IMAGES='sandbox sandbox-slim' scripts/record-build.sh finish
 	@printf '\nci: every gate ran. Not reproduced here: build-test on macOS and\n'
 	@printf 'WSL, the firecracker smoke leg, and the coverage job that merges tiers.\n'
 

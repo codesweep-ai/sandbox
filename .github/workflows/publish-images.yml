@@ -143,7 +143,10 @@ jobs:
       # Each build tags the version name, and the push takes it under this leg's
       # architecture. `build` pulls before it builds, so a re-run of this workflow
       # finds the published list, takes this platform's entry from it, and pushes
-      # back the digest it just fetched.
+      # back the digest it just fetched. CS_SANDBOX_IMAGE names the published
+      # reference, since an image `build` makes is otherwise tagged under
+      # localhost/, and `--local-modules none` installs from published modules
+      # alone, never packing this checkout's commit (SPEC R166, R167).
       # The runner's root volume holds the whole layer store. The shipped image is
       # ~6 GB — pulled as two tiers rather than built, but it lands on the same
       # disk — so print the headroom either side: a job that dies at 90% for want
@@ -155,7 +158,7 @@ jobs:
         run: |
           set -euo pipefail
           df -h / | tail -1
-          ./bin/cs-sandbox build --engine podman
+          CS_SANDBOX_IMAGE="$IMAGE" ./bin/cs-sandbox build --engine podman --local-modules none
           df -h / | tail -1
           podman tag "$IMAGE" "$IMAGE-$ARCH"
           podman push "$IMAGE-$ARCH"
@@ -165,7 +168,7 @@ jobs:
           IMAGE: ${{ steps.refs.outputs.image_slim }}
         run: |
           set -euo pipefail
-          ./bin/cs-sandbox build --engine podman --slim
+          CS_SANDBOX_IMAGE="$IMAGE" ./bin/cs-sandbox build --engine podman --slim
           podman tag "$IMAGE" "$IMAGE-$ARCH"
           podman push "$IMAGE-$ARCH"
 

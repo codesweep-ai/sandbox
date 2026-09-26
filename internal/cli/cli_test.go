@@ -322,6 +322,9 @@ func TestImageRefUsesTheVersionedPackages(t *testing.T) {
 		imageRepo:           "ghcr.io/codesweep-ai/sandbox:" + testVersion,
 		slimImageRepo:       "ghcr.io/codesweep-ai/sandbox-slim:" + testVersion,
 		slimAgentsImageRepo: "ghcr.io/codesweep-ai/sandbox-slim-agents:" + testVersion,
+		// What `build` tags an image it made here with (R166).
+		localImageRepo:     "localhost/codesweep-ai/sandbox:" + testVersion,
+		localSlimImageRepo: "localhost/codesweep-ai/sandbox-slim:" + testVersion,
 	} {
 		got, err := imageRef(repo)
 		if err != nil {
@@ -518,7 +521,7 @@ func TestVersionImages(t *testing.T) {
 // the Makefile and .goreleaser.yaml set imageOwner with -X. The linker ignores
 // -X on a symbol that is missing or not a string variable, so a rename would
 // silently put every fork back on these names. This links an owner in and reads
-// all six names back.
+// all eight names back.
 func TestImageOwnerLinksIn(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "cs-sandbox")
 	build := exec.Command("go", "build", "-o", bin, "-ldflags",
@@ -534,11 +537,11 @@ func TestImageOwnerLinksIn(t *testing.T) {
 		t.Fatalf("version --images: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) != 6 {
-		t.Fatalf("want six image names, got:\n%s", out)
+	if len(lines) != 8 {
+		t.Fatalf("want eight image names, got:\n%s", out)
 	}
 	for _, line := range lines {
-		if !strings.Contains(line, " ghcr.io/fork-owner/sandbox") {
+		if !strings.Contains(line, " ghcr.io/fork-owner/sandbox") && !strings.Contains(line, " localhost/fork-owner/sandbox") {
 			t.Errorf("not in the linked-in namespace: %q", line)
 		}
 	}
@@ -581,7 +584,8 @@ func TestDoctorSlim(t *testing.T) {
 // TestBuildSlim: --slim derives a Containerfile with ci-slim.sh and builds from
 // that one, under a tag of its own; the default build is untouched. The tag
 // matters as much as the file — three images that are not interchangeable, and
-// only the tag tells a later `create` which one it got.
+// only the tag tells a later `create` which one it got. Each is built here, so
+// it goes under the localhost/ name rather than the one CI publishes (R166).
 func TestBuildSlim(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -590,10 +594,12 @@ func TestBuildSlim(t *testing.T) {
 		wantImage    string
 		wantSlimFile bool
 	}{
-		{"default", nil, "", imageRepo + ":" + testVersion, false},
-		{"slim", []string{"--slim"}, "", slimImageRepo + ":" + testVersion, true},
+		{"default", nil, "", localImageRepo + ":" + testVersion, false},
+		{"slim", []string{"--slim"}, "", localSlimImageRepo + ":" + testVersion, true},
 		// An explicit reference wins: it is how CI pins the build and the test run to one.
 		{"slim honours CS_SANDBOX_IMAGE", []string{"--slim"}, "localhost/pinned:7", "localhost/pinned:7", true},
+		// Which is how CI's publish workflow names what it pushes.
+		{"CS_SANDBOX_IMAGE keeps the published name", nil, imageRepo + ":" + testVersion, imageRepo + ":" + testVersion, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

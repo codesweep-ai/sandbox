@@ -17,13 +17,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// guestProxyDir is where --local-sandbox mounts the throwaway module proxy
-// inside the build. Under /tmp so nothing survives into the image.
-const guestProxyDir = "/tmp/cs-goproxy"
-
 func newBuildCmd(app *App) *cobra.Command {
 	var engines []string
-	var slim, localSandbox, rebuildBase bool
+	var slim, rebuildBase bool
+	var localModules string
 	cmd := &cobra.Command{
 		Use:   "build",
 		Short: "Set up the sandbox image and, on capable hosts, the Firecracker artifacts",
@@ -49,10 +46,16 @@ func newBuildCmd(app *App) *cobra.Command {
 			"A slim build goes to " + slimImageRepo + ",\n" +
 			"tagged with this cs-sandbox's version, unless CS_SANDBOX_IMAGE says otherwise — so it\n" +
 			"can never be mistaken for the shipped image. Point the same variable at that reference\n" +
-			"when running the tests.",
+			"when running the tests.\n\n" +
+			"An image built here, rather than pulled, is tagged " + localImageRepo + "\n" +
+			"(or -slim) instead, so it never passes for the one CI publishes.\n\n" +
+			"The image installs cs-sandbox and the cs- tools go.mod pins by version. A version only\n" +
+			"this machine built comes from the local build store a clean `make ci` records it in,\n" +
+			"and cs-sandbox's own commit, when nothing recorded it, is packed from this checkout.\n" +
+			"--local-modules DIR reads another store, and --local-modules none neither, as CI does.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runBuild(cmd, app, engines, slim, localSandbox, rebuildBase)
+			return runBuild(cmd, app, engines, slim, localModules, rebuildBase)
 		},
 	}
 	cmd.Flags().StringArrayVar(&engines, "engine", nil,
@@ -61,13 +64,13 @@ func newBuildCmd(app *App) *cobra.Command {
 		"build the slimmed CI image (no developer toolchains) instead of the shipped one")
 	cmd.Flags().BoolVar(&rebuildBase, "rebuild-base", false,
 		"build the OS/toolchain and agent tiers locally too, instead of pulling the tags image/Containerfile pins")
-	cmd.Flags().BoolVar(&localSandbox, "local-sandbox", false,
-		"install cs-sandbox in the image from this checkout's commit instead of from the module proxy, for a revision that is not pushed yet")
+	cmd.Flags().StringVar(&localModules, "local-modules", "",
+		"the build store to install unpublished cs- tool versions from, or none for published modules only (default: this owner's store)")
 	_ = cmd.RegisterFlagCompletionFunc("engine", fixedComp("podman", "firecracker"))
 	return cmd
 }
 
-func runBuild(cmd *cobra.Command, app *App, engines []string, slim, localSandbox, rebuildBase bool) error {
+func runBuild(cmd *cobra.Command, app *App, engines []string, slim bool, localModules string, rebuildBase bool) error {
 	wantFC, err := buildWantsFirecracker(app, engines)
 	if err != nil {
 		return err
@@ -93,6 +96,7 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim, localSandbox
 			return err
 		}
 		app.Image = ref
+		app.LocalImage, _ = imageRef(localSlimImageRepo)
 	}
 	if err := app.requireImage(); err != nil {
 		return err
@@ -121,7 +125,7 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim, localSandbox
 	// store is asked what arrived. One that does not match is built here
 	// instead: the tiers are published for both architectures, so this host's
 	// build is native even where the registry's image is not.
-	pulled := !localSandbox && !rebuildBase && app.pullImage(cmd.Context())
+	pulled := !rebuildBase && app.pullImage(cmd.Context())
 	if pulled {
 		if mm := engine.CheckImageArch(cmd.Context(), app.Runner, app.Image); mm != nil {
 			app.phase(mm.Error() + ", so building " + mm.Want + " here instead…")
@@ -131,8 +135,18 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim, localSandbox
 		}
 	}
 	if !pulled {
-		if err := buildImage(cmd, app, slim, localSandbox, rebuildBase); err != nil {
+		// Built here, so tagged under a name of its own rather than the one CI
+		// publishes the version under (SPEC R166). A name somebody
+		// chose with CS_SANDBOX_IMAGE is kept, which is how CI's own builds
+		// come out under the published name.
+		if app.LocalImage != "" {
+			app.Image = app.LocalImage
+		}
+		if err := buildImage(cmd, app, slim, localModules, rebuildBase); err != nil {
 			return err
+		}
+		if app.LocalImage != "" {
+			app.recordImage(slim)
 		}
 	}
 
@@ -254,7 +268,7 @@ func (a *App) buildTier(ctx context.Context, containerfile, tag, ctxDir string, 
 // images that image/Containerfile names by tag, rebuilt on a schedule rather
 // than per commit — see Containerfile.base for why. --rebuild-base builds all
 // three here and wires the FROMs to the local ones.
-func buildImage(cmd *cobra.Command, app *App, slim, localSandbox, rebuildBase bool) error {
+func buildImage(cmd *cobra.Command, app *App, slim bool, localModules string, rebuildBase bool) error {
 	// The build assets come from the checkout when present, else from the
 	// binary's embedded copy (so a downloaded binary can build the image).
 	imgDir, cleanup, err := assets.ImageDir(app.AssetDir)
@@ -359,66 +373,44 @@ func buildImage(cmd *cobra.Command, app *App, slim, localSandbox, rebuildBase bo
 		// want of it.
 		"CS_SANDBOX_REVISION="+sandboxRevision())
 
-	var extra []string
-
-	// --local-sandbox: serve that version from a file:// proxy built out of this
-	// checkout, so a revision nobody has pushed can still be installed BY
-	// VERSION. Bind-mounted rather than copied: the build context is rootfs/,
-	// and `COPY . /sandbox` would put the proxy inside every sandbox.
-	if localSandbox {
-		// A binary with no module version never reaches here — it cannot name the
-		// image either, so the build refused before this. What remains is the
-		// binary whose version came from -ldflags with no VCS stamp behind it:
-		// it has a version to install by, and no commit to zip.
-		rev := sandboxRevision()
-		if rev == "" {
-			return errors.New("--local-sandbox needs the revision this binary was built from, and its build info records none")
-		}
-		if app.AssetDir == "" {
-			return errors.New("--local-sandbox needs a checkout to read the module from; set CS_SANDBOX_ASSETS_DIR or run from one")
-		}
-		proxyDir, proxyCleanup, err := localModuleProxy(app.AssetDir, sbVersion, rev)
-		if err != nil {
-			return err
-		}
-		defer proxyCleanup()
-		app.phase(fmt.Sprintf("installing cs-sandbox %s from this checkout rather than the module proxy", sbVersion))
-		extra = append(extra,
-			"-v", proxyDir+":"+guestProxyDir+":ro",
-			// The proxy is a host temp dir the invoking user owns, and on an
-			// SELinux host the build's RUN steps are denied every read of it:
-			// `go install` fails on the .info with "permission denied" and the
-			// mount looks empty rather than forbidden. Confinement off rather
-			// than a :z relabel, the same choice the run paths make — a relabel
-			// also has to be undone, and it fails outright on the virtiofs
-			// mounts a macOS podman machine serves host directories from.
-			"--security-opt", "label=disable")
-		args = append(args,
-			// The real proxy still serves everything else, the Go toolchain
-			// included: a bare file:// proxy 404s for those and the build stops.
-			"CS_GOPROXY=file://"+guestProxyDir+",https://proxy.golang.org,direct",
-			// Scoped, not GOSUMDB=off: an unpublished module has no checksum-db
-			// entry, but every other module must still be verified.
-			"CS_GONOSUMDB=github.com/codesweep-ai/*")
-	}
-
 	pins, err := assets.ToolPins(app.AssetDir)
 	if err != nil {
 		return err
 	}
-	for _, tool := range []struct{ arg, module, bin string }{
+	tools := []struct{ arg, module, bin string }{
 		{"CS_LINT_VERSION", "github.com/codesweep-ai/lint", "cs-lint"},
 		{"CS_LEDGER_VERSION", "github.com/codesweep-ai/ledger", "cs-ledger"},
 		{"CS_TRACER_VERSION", "github.com/codesweep-ai/tracer", "cs-tracer"},
 		{"CS_VCR_VERSION", "github.com/codesweep-ai/vcr", "cs-vcr"},
 		{"CS_NPMREVS_VERSION", "github.com/codesweep-ai/npmrevs", "cs-npmrevs"},
-	} {
+	}
+	installs := map[string]string{}
+	for _, tool := range tools {
 		v := pins[tool.module]
 		if v == "" {
 			return fmt.Errorf("go.mod pins no version for %s: run `go get -tool %s/cmd/%s@main`",
 				tool.module, tool.module, tool.bin)
 		}
 		args = append(args, tool.arg+"="+v)
+		installs[tool.module] = v
+	}
+
+	// Where each of those comes from, when proxy.golang.org is not the place.
+	// The slim image installs none of them (ci-slim.sh drops the stanza), so
+	// it reads no store and packs nothing.
+	var extra []string
+	if !slim {
+		src, err := app.resolveModuleSources(localModules, sbVersion, installs)
+		if err != nil {
+			return err
+		}
+		defer src.cleanup()
+		for _, line := range src.from {
+			app.phase("installing " + line)
+		}
+		srcArgs, srcExtra := src.buildArgs()
+		args = append(args, srcArgs...)
+		extra = append(extra, srcExtra...)
 	}
 	return app.buildTier(cmd.Context(), files.leaf, app.Image, ctxDir, args, extra)
 }

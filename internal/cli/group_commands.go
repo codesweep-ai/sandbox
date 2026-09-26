@@ -228,6 +228,7 @@ func (a *App) ensureGroupArtifacts(ctx context.Context, g *state.Group) error {
 	if err := a.requireImage(); err != nil {
 		return err
 	}
+	a.useLocalBuild(ctx)
 	d := a.engineDepsFor(g.Name)
 	if err := engine.VerifyImage(ctx, d.Runner, d.Image); err != nil {
 		return err

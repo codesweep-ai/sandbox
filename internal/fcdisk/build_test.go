@@ -789,6 +789,9 @@ func TestImageSlot(t *testing.T) {
 		{"localhost/sandbox-slim-agents:ci", "localhost-sandbox-slim-agents"},
 		{"ghcr.io/codesweep-ai/sandbox:v0.1.0", "ghcr.io-codesweep-ai-sandbox"},
 		{"ghcr.io/codesweep-ai/sandbox-slim:v0.1.0", "ghcr.io-codesweep-ai-sandbox-slim"},
+		// A build of the same version made on this host, which has to keep a
+		// rootfs of its own rather than stand in for the published one's.
+		{"localhost/codesweep-ai/sandbox:v0.1.0", "localhost-codesweep-ai-sandbox"},
 		// A registry port is not a tag: cutting at that colon would file every
 		// image on the host under the registry's own name.
 		{"myreg:5000/team/img:v2", "myreg-5000-team-img"},

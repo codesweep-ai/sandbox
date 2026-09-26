@@ -73,9 +73,8 @@ pinned by this module's `go.mod` rather than installed at `@latest`.
 
 Pinning those in `go.mod` keeps one source of truth: `make versions` reports what an image will
 ship, and `make repin` moves the pins in a diff somebody reviews. `cs-sandbox` itself is pinned to
-the revision of the binary running the build, because a module cannot name its own version. That
-revision has to be published for the install to resolve. Serving it from the checkout instead is
-what `cs-sandbox build --local-sandbox` is for, and it is the deliberate exception.
+the revision of the binary running the build, because a module cannot name its own version. R167
+says where each version is installed from.
 
 **R160.** The image **MUST** be named after the version of `cs-sandbox` that built it, in the
 package `ghcr.io/codesweep-ai/sandbox`, and a sandbox **MUST** run the image its own binary names. A
@@ -87,8 +86,9 @@ installing an unnamed `cs-sandbox` into one.
 
 **R162.** `build` **MUST** try the registry before building. `create` **MUST** fetch a published
 image it does not have, and **MUST** then build whatever engine artifacts are missing. `create`
-**MUST NOT** build the image itself. Where the image is neither present nor published, `create`
-**MUST** fail with an error naming `build`, before fetching or building anything.
+**MUST NOT** build the image itself. Where the image is neither present, nor published, nor built
+here under its local name (R166), `create` **MUST** fail with an error naming `build`, before
+fetching or building anything.
 
 R162 used to say that `create` did neither, on the grounds that it stayed fast and predictable. The
 cost was that a new host had to know to run `build` first, and the error was the only thing that
@@ -138,6 +138,45 @@ the podman machine that runs the container. A `localhost/` image was built or lo
 somebody who chose it, so running one under emulation on purpose stays possible. A platform podman
 cannot report is not treated as a mismatch, because refusing an image that works costs more than
 running one slowly.
+
+**R166.** An image `build` makes on this host, rather than pulls, **MUST** be tagged
+`localhost/<owner>/sandbox:<version>`, or `localhost/<owner>/sandbox-slim:<version>` for the slim
+one, unless `CS_SANDBOX_IMAGE` names it. `create` **MUST** look for the image in this order: the
+published image in local storage, then in the registry, then the local build. The
+Firecracker artifacts made from a local image **MUST** be kept apart from those of the published one.
+
+Images are not reproducible. A local build under the published name would pass for bytes CI never
+made, and a host holding one would keep it once CI published the real one. Asking the registry
+before the local name is what moves every host to CI's image as soon as it exists. No committed
+file names either image, since the binary works the name out from its own version, so a local one
+never blocks a push. The Firecracker cache keeps a base rootfs per image repository (R124), and the
+two names differ there.
+
+**R167.** `build` **MUST** install each `cs-` tool at the version R8 pins, and `cs-sandbox` at its
+own. A version the owner's local build store holds **MUST** come from there, and every other from
+the Go module proxy. The store is the one every project's `make ci` records a clean build in
+(codesweep-ai/dashboards SPEC.md, "The local build store"), or the one `CS_BUILD_STORE` names. `cs-sandbox`'s own version, where the
+store lacks it and a checkout holds its revision, **MUST** be packed from that checkout. The
+checksum database **MUST** be skipped only for the modules served from the store or the checkout.
+`--local-modules DIR` **MUST** read `DIR` in place of the owner's store, and `--local-modules none`
+**MUST** read no store and pack nothing.
+
+A local pin is the real pin. A module's pseudo-version and its hashes come from the commit alone,
+so the store serves what the proxy will once the commit is pushed. So a sibling's
+local build, which a local-first `make repin` pins, installs with no flag. The owner is the one the
+binary names its images after, so no checkout is needed to find the store. `none` is the build CI's
+publish workflow runs, from published modules alone.
+
+**R168.** An image `build` makes under its local name, of a commit the owner's build store records,
+**MUST** be recorded there as `images/sandbox/<commit>/<image>.json`, where `<image>` is `sandbox` or
+`sandbox-slim`. A dirty binary, and a commit no clean `make ci` recorded, **MUST NOT** be recorded.
+A file already there **MUST NOT** be rewritten.
+
+sandbox's `make ci` records its commit awaiting both images. A sibling's `make repin` takes that
+build only once both files exist, just as CI's status file lists a commit only once both images are
+published. The file names the local tag rather than the image's bytes, so a second build writes the
+same file. In a store that is a git repository, as a campaign's is, the file is committed, just as
+`make ci` commits each build there.
 
 Toolchains under `/opt` are read-only for the dev user, so a new language version or a global
 package needs `sudo`. Per-project virtualenvs and `node_modules` are unaffected. Two cases would

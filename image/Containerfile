@@ -89,9 +89,10 @@ RUN install -Dm0644 /sandbox/etc/cs-sandbox/env /etc/cs-sandbox/env
 #
 # The module cache and build cache go in the same layer, or the ~400 MB they hold ships too. One
 # `go install` per tool: it refuses a command line naming packages from more than one module.
-# CS_GOPROXY/CS_GONOSUMDB are set only by `cs-sandbox build --local-sandbox`, which mounts a
-# file:// proxy holding this checkout's own module zip so a revision nobody has pushed can still be
-# installed by version. Empty on every other build, which leaves the toolchain defaults alone.
+# CS_GOPROXY/CS_GONOSUMDB are set by `cs-sandbox build` when a pinned version is one only this
+# machine built. It mounts a file:// proxy of the local build store, or of this checkout's own
+# commit, so a revision nobody has pushed still installs by version (SPEC R167). Empty on every
+# build of published modules, which leaves the toolchain defaults alone.
 ARG CS_GOPROXY=
 ARG CS_GONOSUMDB=
 ARG CS_SANDBOX_VERSION=

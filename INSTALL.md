@@ -178,6 +178,7 @@ cs-sandbox build --engine firecracker  # force the Firecracker set (implies the 
 
 The image is named after the version of `cs-sandbox` that built it, and `build` looks for that one
 on the registry before building anything. A released binary usually gets its image by download.
+An image it builds is tagged under `localhost/` instead, so it never passes for the published one.
 [MANUAL.md](MANUAL.md#which-image-a-sandbox-runs) has the naming rules.
 
 The shipped image is 6.04 GB, more than a test job on a hosted runner wants to build on every push.

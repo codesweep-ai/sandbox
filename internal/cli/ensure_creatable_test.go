@@ -137,6 +137,71 @@ func TestEnsureImageSaysAnUnfetchableImageIsTheWrongPlatform(t *testing.T) {
 	}
 }
 
+// localBuildApp is creatableApp on a host that also holds, or lacks, this
+// machine's own build of the version under its localhost/ name.
+func localBuildApp(f *run.Fake) *App {
+	app := creatableApp(f)
+	app.LocalImage = "localhost/codesweep-ai/sandbox:v1"
+	return app
+}
+
+// TestEnsureImageFallsBackToTheLocalBuild: no registry serves an unpushed
+// version, and the build this machine made of it is the image create boots
+// (R166). It is asked for only after the registry, so nothing is pulled.
+func TestEnsureImageFallsBackToTheLocalBuild(t *testing.T) {
+	said := `Error: reading image "docker://ghcr.io/x:v1": manifest unknown`
+	f := run.NewFake().
+		On("podman image exists ghcr.io/", run.Result{ExitCode: 1}, &run.ExitError{ExitCode: 1}).
+		On("podman manifest inspect", run.Result{ExitCode: 125, Stderr: said}, &run.ExitError{ExitCode: 125, Stderr: said})
+	app := localBuildApp(f)
+
+	if err := app.ensureImage(context.Background()); err != nil {
+		t.Fatalf("ensureImage with a local build here = %v, want nil", err)
+	}
+	if app.Image != app.LocalImage {
+		t.Errorf("Image = %q, want the local build %q", app.Image, app.LocalImage)
+	}
+	if f.Contains("podman pull") {
+		t.Errorf("pulled an image the registry does not have: %s", f)
+	}
+}
+
+// TestEnsureImagePrefersThePublishedImage: once CI publishes the version, a
+// host that holds its own build of it moves to CI's, without being told.
+func TestEnsureImagePrefersThePublishedImage(t *testing.T) {
+	f := run.NewFake().
+		On("podman image exists ghcr.io/", run.Result{ExitCode: 1}, &run.ExitError{ExitCode: 1})
+	app := localBuildApp(f)
+
+	if err := app.ensureImage(context.Background()); err != nil {
+		t.Fatalf("ensureImage = %v, want nil", err)
+	}
+	if !f.Contains("podman pull ghcr.io/codesweep-ai/sandbox:v1") {
+		t.Errorf("did not fetch the published image: %s", f)
+	}
+	if app.Image != "ghcr.io/codesweep-ai/sandbox:v1" {
+		t.Errorf("Image = %q, want the published one", app.Image)
+	}
+}
+
+// TestEnsureImageWithNeitherNamesBuild: with no published image and no local
+// build, the error is the one it always was.
+func TestEnsureImageWithNeitherNamesBuild(t *testing.T) {
+	said := `Error: reading image "docker://ghcr.io/x:v1": manifest unknown`
+	f := run.NewFake().
+		On("podman image exists", run.Result{ExitCode: 1}, &run.ExitError{ExitCode: 1}).
+		On("podman manifest inspect", run.Result{ExitCode: 125, Stderr: said}, &run.ExitError{ExitCode: 125, Stderr: said})
+	app := localBuildApp(f)
+
+	err := app.ensureImage(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "could not be fetched") || !strings.Contains(err.Error(), "cs-sandbox build") {
+		t.Fatalf("ensureImage = %v, want the error naming build", err)
+	}
+	if app.Image != "ghcr.io/codesweep-ai/sandbox:v1" {
+		t.Errorf("Image = %q, want it left on the published name", app.Image)
+	}
+}
+
 // TestEnsureCreatableAlwaysPrepares: the bug this exists to stop. A base rootfs
 // is kept per image repository, so an upgrade that moves the tag leaves one that
 // exists and mounts and is the PREVIOUS image. Verify passes on it. Only the

@@ -232,7 +232,7 @@ cs-sandbox rm-store [-f] <name>
 cs-sandbox build [--engine ENGINE]...     # the image, and the Firecracker artifacts
 cs-sandbox build --slim                   # the CI image instead: no developer toolchains
 cs-sandbox build --rebuild-base           # rebuild the OS/toolchain and agent tiers too
-cs-sandbox build --local-sandbox          # take cs-sandbox from this checkout, not the proxy
+cs-sandbox build --local-modules none     # install the cs- tools from published modules only
 cs-sandbox doctor [--engine ENGINE]       # check prerequisites, print the fix for each gap
 cs-sandbox doctor --slim                  # check the CI image and its artifacts instead
 cs-sandbox install-agent-tools [dir]      # the agent tools onto your PATH
@@ -286,14 +286,28 @@ an agent **inside** the sandbox fails its readback at `command -v` without them.
 agent-free variant. The saving was about 325 MB on a CI artifact. In exchange it cost a seventh
 package, and a name that meant a product in one family and a tier in the other.
 
-`--local-sandbox` installs `cs-sandbox` in the image from this checkout rather than from the module
-proxy. The image installs it by version, which needs that revision pushed. On one you have not, the
-build stops at `unknown revision`. The flag writes the module zip the proxy would have served, out
-of your git tree, and the build reads it over a temporary `file://` mount. The binary still reports
-its own version. It takes the commit rather than the working tree, and needs a checkout to read.
+The image installs `cs-sandbox` and the `cs-` tools `go.mod` pins, each by version. A version CI
+built comes from the Go module proxy. A version only this machine built comes from the local build
+store, where a clean `make ci` in its project recorded it. That store is
+`${CS_BUILDS_DIR:-~/.local/share/cs-builds}/<owner>/`, and the owner is the one this binary names its
+images after. `CS_BUILD_STORE` names the store outright instead, as a campaign does for its members. A `make repin` that took a sibling's local build therefore needs nothing more here.
 
-A slim build goes to `ghcr.io/codesweep-ai/sandbox-slim`, tagged with the same version as the
-shipped image. The two are not interchangeable, because a sandbox made from the slim one has no
+`cs-sandbox`'s own commit, when no `make ci` recorded it, is packed from this checkout instead. The
+build writes the module zip the proxy would serve, out of your git tree, and reads it over a
+temporary `file://` mount. The binary still reports its own version. It takes the commit rather than
+the working tree. The checksum database is skipped only for the modules taken from the store or the
+checkout, and the build names each one as it goes.
+
+An image built here of a commit a clean `make ci` recorded is noted in the same store. A sibling
+that pins `cs-sandbox`, as campaign does, takes a local build of it only once both images are made
+of it, with `cs-sandbox build` and `cs-sandbox build --slim`.
+
+`--local-modules DIR` reads another store in place of the owner's, such as a campaign's.
+`--local-modules none` reads no store and packs nothing, so the image installs from published
+modules alone, as CI's does. The slim image installs no `cs-` tools, so it reads neither.
+
+The slim image is published as `ghcr.io/codesweep-ai/sandbox-slim`, and one built here is
+`localhost/codesweep-ai/sandbox-slim`. Either is tagged with the same version as the shipped image. The two are not interchangeable, because a sandbox made from the slim one has no
 toolchains, and the name is all a later `create` has to tell them apart. `CS_SANDBOX_IMAGE` names
 one directly, which is how to build and test against a name of your own:
 
@@ -317,13 +331,15 @@ cs-sandbox v0.1.0 (linux/amd64, go1.27.0)
 image      ghcr.io/codesweep-ai/sandbox:v0.1.0
 ```
 
-`--images` prints every reference this binary names instead, one per line, including the two CI
-images that `--slim` builds:
+`--images` prints every reference this binary names instead, one per line. That includes the CI
+image `--slim` builds, and the local names an image built here takes:
 
 ```
 $ cs-sandbox version --images
 image              ghcr.io/codesweep-ai/sandbox:v0.1.0
 image-slim         ghcr.io/codesweep-ai/sandbox-slim:v0.1.0
+image-local        localhost/codesweep-ai/sandbox:v0.1.0
+image-slim-local   localhost/codesweep-ai/sandbox-slim:v0.1.0
 tier-base          ghcr.io/codesweep-ai/sandbox-base
 tier-agents        ghcr.io/codesweep-ai/sandbox-agents
 tier-slim-base     ghcr.io/codesweep-ai/sandbox-slim-base
@@ -336,8 +352,16 @@ different images. GHCR tags are mutable, so the second would silently overwrite 
 tags are stamped with the build time instead, and the pair in use is named in `image/tiers.env`.
 
 `build` looks for that image on the registry and builds it only when there is none. A released
-binary usually reaches a working image in the time a download takes. `create` fetches a published
-image it does not have, and when none is published it says so and names `build`.
+binary usually reaches a working image in the time a download takes. An image `build` makes here is
+tagged under `localhost/` instead, as `localhost/codesweep-ai/sandbox:<version>` or
+`localhost/codesweep-ai/sandbox-slim:<version>`. Images are not reproducible, so one built here is
+never the bytes CI publishes for the version, and its name says so. `CS_SANDBOX_IMAGE` still names
+the image outright, and CI's own builds use it to come out under the published name.
+
+`create` takes the image from local storage, else fetches the published one, else uses the one
+built here under the local name. So once CI publishes a version, every host moves to CI's image by
+itself. With none of the three, it says so and names `build`. The Firecracker artifacts made from a
+local image are kept apart from those of the published one.
 
 The published image carries both `linux/amd64` and `linux/arm64`, and podman fetches the one its
 engine runs. On macOS that is the podman machine's platform. Every image `build` and `create` use is
@@ -348,7 +372,7 @@ such an image. An image under `localhost/` is not checked, so one you built or l
 whatever its platform.
 
 A binary built from a modified tree names a `-dirty` tag. No `-dirty` image is ever published, so
-that binary always builds its own. That is what keeps a Containerfile you are editing from being
+that binary always builds its own, under the local name. That is what keeps a Containerfile you are editing from being
 answered by a published image. A binary that reports no version at all names no image, and says so
 rather than guessing; `make build` from a git clone gives it one.
 

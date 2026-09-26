@@ -410,6 +410,9 @@ func newEngine(d engine.Deps, name string) engine.Engine {
 //
 // A dry run fetches nothing, because fetching is a mutation. What is missing is
 // then reported by the group setup below, exactly as create reported it before.
+//
+// So the order is the image in local storage, then the registry, then the
+// build of the same version this machine made, if it made one.
 func (a *App) ensureImage(ctx context.Context) error {
 	if a.dryRun() {
 		return nil
@@ -418,6 +421,23 @@ func (a *App) ensureImage(ctx context.Context) error {
 	if have == nil {
 		return nil
 	}
+	err := a.fetchImage(ctx, have)
+	if err == nil {
+		return nil
+	}
+	// Last, this machine's own build of the version, which `build` tags under a
+	// localhost/ name of its own. Asked after the registry, so once CI publishes
+	// the version every host moves to CI's image without being told.
+	if a.useLocalBuild(ctx) {
+		a.phase("using " + a.Image + ", built on this machine, as no registry serves this version")
+		return nil
+	}
+	return err
+}
+
+// fetchImage pulls the image this binary names, or says why it cannot. have is
+// what VerifyImage said of the copy on this host.
+func (a *App) fetchImage(ctx context.Context, have error) error {
 	if reg := engine.CheckRegistry(ctx, a.Runner, a.Image); !reg.Fetchable {
 		// Not "not on this host": an image is, only for another platform, and
 		// VerifyImage's own sentence says so and names the remedy.
@@ -435,6 +455,20 @@ func (a *App) ensureImage(ctx context.Context) error {
 	}
 	a.phase("pulled " + a.Image)
 	return nil
+}
+
+// useLocalBuild points Image at LocalImage when the image this binary names is
+// not on this host and this machine's own build of the same version is. It asks
+// local storage only, and reports whether it moved.
+func (a *App) useLocalBuild(ctx context.Context) bool {
+	if a.LocalImage == "" || a.LocalImage == a.Image {
+		return false
+	}
+	if engine.VerifyImage(ctx, a.Runner, a.Image) == nil || engine.VerifyImage(ctx, a.Runner, a.LocalImage) != nil {
+		return false
+	}
+	a.Image = a.LocalImage
+	return true
 }
 
 // ensureCreatable runs the same preparation `build` runs, so that a sandbox is

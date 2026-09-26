@@ -158,3 +158,27 @@ func TestAgentLoginHomeRedirects(t *testing.T) {
 		t.Errorf("CS_SANDBOX_AGENT_HOME moved the instance dir: %q -> %q", before, after)
 	}
 }
+
+// TestBuildStore: the path scripts/record-build.sh writes to, on every OS, so
+// the image build reads the store a sibling's `make ci` filled.
+func TestBuildStore(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("CS_BUILDS_DIR", "")
+	t.Setenv("CS_BUILD_STORE", "")
+	if got, want := BuildStore("acme"), "/home/tester/.local/share/cs-builds/acme"; got != want {
+		t.Errorf("BuildStore default = %q, want %q", got, want)
+	}
+	t.Setenv("XDG_DATA_HOME", "/data")
+	if got, want := BuildStore("acme"), "/data/cs-builds/acme"; got != want {
+		t.Errorf("BuildStore under XDG_DATA_HOME = %q, want %q", got, want)
+	}
+	t.Setenv("CS_BUILDS_DIR", "/builds")
+	if got, want := BuildStore("acme"), "/builds/acme"; got != want {
+		t.Errorf("BuildStore under CS_BUILDS_DIR = %q, want %q", got, want)
+	}
+	// A campaign member's clone of the campaign's store, wherever it sits.
+	t.Setenv("CS_BUILD_STORE", "/work/cs-builds")
+	if got, want := BuildStore("acme"), "/work/cs-builds"; got != want {
+		t.Errorf("BuildStore under CS_BUILD_STORE = %q, want %q", got, want)
+	}
+}
