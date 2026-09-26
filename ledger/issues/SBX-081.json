@@ -1,0 +1,22 @@
+{
+  "id": "SBX-081",
+  "title": "A local image build leaves nothing a sibling's repin can wait on",
+  "type": "improvement",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "session agent, reviewing how local builds reach images (tasks/pin-on-local-builds.md, section 7)",
+  "opened": "2026-09-25",
+  "resolved": null,
+  "stint": "local-builds",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "CI's status file lists a sandbox commit only once both of its images are published. `make ci` records a local build of sandbox with no word of images, and `cs-sandbox build` writes nothing to the build store once it has made one. So campaign's `make repin` cannot tell a local sandbox build that has its images from one that has none.",
+  "notes": [],
+  "links": [
+    "SBX-078"
+  ]
+}

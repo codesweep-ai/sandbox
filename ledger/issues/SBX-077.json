@@ -1,0 +1,20 @@
+{
+  "id": "SBX-077",
+  "title": "make repin cannot pin a sibling's local build",
+  "type": "improvement",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "user report (host): \"it doesn't seem possible anymore to have make repin do pin on local builds, which haven't been published to ghcr.io or npmjs.com or built in the Github CI builds\"",
+  "opened": "2026-09-25",
+  "resolved": null,
+  "stint": "local-builds",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`make repin` moves each codesweep-ai tool pin to the first commit in `built` of its project's status file, and to nothing else. A build that a clean `make ci` recorded in the build store is invisible to it. So a change made across several projects cannot pin its own parts before they are pushed. Every module is also fetched with `GOPROXY=direct`. On a cold cache that reaches every module's source host, and it hung for over seven minutes where one did not answer.",
+  "notes": [],
+  "links": []
+}

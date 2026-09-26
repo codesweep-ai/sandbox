@@ -1,0 +1,20 @@
+{
+  "id": "SBX-076",
+  "title": "A passing make ci leaves no build a sibling can pin",
+  "type": "improvement",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "user report (host): \"it doesn't seem possible anymore to have make repin do pin on local builds, which haven't been published to ghcr.io or npmjs.com or built in the Github CI builds\"",
+  "opened": "2026-09-25",
+  "resolved": null,
+  "stint": "local-builds",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`make ci` runs every gate CI runs, on this machine, and leaves nothing another project can pin. Pins move only to commits GitHub CI lists as built. So a change across several projects has to be pushed and built one project at a time before the next can pin it. A clean passing run could record its commit as a local build instead: the module zip Go resolves it from, and an entry naming its versions. They would go in a store the sibling projects read. Go and npm builds of a clean commit are byte-identical to CI's. A pin on such a build is therefore the pin CI writes once that commit is pushed.",
+  "notes": [],
+  "links": []
+}

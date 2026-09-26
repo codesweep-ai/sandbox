@@ -1,0 +1,20 @@
+{
+  "id": "SBX-078",
+  "title": "A local image build takes the name CI publishes",
+  "type": "defect",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent, reviewing how local builds reach images (tasks/pin-on-local-builds.md, section 7)",
+  "opened": "2026-09-25",
+  "resolved": null,
+  "stint": "local-builds",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`cs-sandbox build` of a version no registry holds tags the image `ghcr.io/<owner>/sandbox:<version>`. That is the name CI pushes for the same version, so bytes built on this machine pass for CI's. Images are not reproducible, so the two differ. `create` only ever asks for that name, so a host keeps its local image even once CI publishes the real one. The slim image is named the same way.",
+  "notes": [],
+  "links": []
+}
