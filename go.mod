@@ -15,7 +15,7 @@ require (
 	github.com/codesweep-ai/lint v0.0.0-20260924012322-5ffce6301cbf // indirect
 	github.com/codesweep-ai/npmrevs v0.0.0-20260924012324-0b587a7c4645 // indirect
 	github.com/codesweep-ai/tracer v0.0.0-20260924053404-19c407e0dd13 // indirect
-	github.com/codesweep-ai/vcr v0.0.0-20260924052733-41c67be96268 // indirect
+	github.com/codesweep-ai/vcr v0.0.0-20260926092408-4b0cad9d6823 // indirect
 	github.com/docker/cli v29.7.2+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.3 // indirect
 	github.com/fatih/color v1.19.0 // indirect
