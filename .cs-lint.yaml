@@ -132,7 +132,10 @@ oss:
   # prompt would replay for nobody. The domain rather than the address, because
   # this list matches domains, and writing the address here would be the very
   # thing the rule is looking for.
-  emailAllow: ["Microsoft.com", "anthropic.com"]
+  #
+  # github.com because git@github.com is the user of every GitHub SSH remote,
+  # which the Makefile reads the image owner out of, and its records quote.
+  emailAllow: ["Microsoft.com", "anthropic.com", "github.com"]
 
   # The one job `make ci` does not mirror. Building the Firecracker artifacts
   # needs a writable /dev/kvm and 676 MB on disk, and it exists to feed the

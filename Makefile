@@ -20,7 +20,8 @@ VERSION    := $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 # repository being built, so a fork publishes to packages of its own. GitHub
 # Actions says which, and elsewhere the GitHub remote the checkout tracks does.
 # That is the remote goreleaser reads as .GitURL, so the two builds agree.
-IMAGE_OWNER ?= $(shell o="$${GITHUB_REPOSITORY_OWNER:-$$(git ls-remote --get-url 2>/dev/null | sed -nE 's|^.*[@/]github\.com[:/]([^/]+)/.*$$|\1|p')}"; printf '%s' "$${o:-codesweep-ai}" | tr '[:upper:]' '[:lower:]')
+# `[^:/]*` after github.com takes an SSH host alias, as a fork's clone uses.
+IMAGE_OWNER ?= $(shell o="$${GITHUB_REPOSITORY_OWNER:-$$(git ls-remote --get-url 2>/dev/null | sed -nE 's|^.*[@/]github\.com[^:/]*[:/]+([^/]+)/.*$$|\1|p')}"; printf '%s' "$${o:-codesweep-ai}" | tr '[:upper:]' '[:lower:]')
 LDFLAGS    := -s -w -X github.com/codesweep-ai/sandbox/internal/cli.imageOwner=$(IMAGE_OWNER)
 GO_FILES   := $(shell git ls-files '*.go')
 
