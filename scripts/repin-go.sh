@@ -14,7 +14,10 @@
 #     build store"). scripts/record-build.sh names the store. A build whose
 #     entry awaits images, as sandbox's does, counts once the store holds
 #     them, as CI's status file waits for a project's images. A newer one
-#     still waiting is named.
+#     still waiting is named. So is a newer one whose commit the project's
+#     checkout beside this one holds on no branch, as after a rebase: it is left
+#     out. Without such a checkout, as in a campaign member, the store is taken
+#     as it stands.
 #
 # The time is the one each build's Go pseudo-version carries, which Go renders
 # in UTC, so builds from machines in different zones compare as they should. A
@@ -54,14 +57,21 @@ store="$("$ROOT/scripts/record-build.sh" store 2>/dev/null || true)"
 # The 14 digits of UTC commit time a Go pseudo-version carries, or nothing.
 stamp() { printf '%s\n' "$1" | sed -nE 's/^v[0-9.]+-(0\.)?([0-9]{14})-[0-9a-f]{12}$/\2/p'; }
 
-# The newest local build of $1 in the store, into local_best as "stamp version
-# commit recorded". A build whose entry awaits images counts once the store
-# holds a file for each, as CI's status file waits for a project's images. The
-# newest build still waiting goes into local_waiting as "stamp commit images".
+# The newest local build of $1, module $2, in the store, into local_best as
+# "stamp version commit recorded". A build whose entry awaits images counts once
+# the store holds a file for each, as CI's status file waits for a project's
+# images. The newest build still waiting goes into local_waiting as "stamp commit
+# images". Where the project's own checkout sits beside this one, a build of a
+# commit it holds on no branch is left out, and the newest such goes into
+# local_gone as "stamp commit".
 newest_local() {
-  local f v c r t image missing
-  local_best="" local_waiting=""
+  local f v c r t image missing sibling=""
+  local_best="" local_waiting="" local_gone=""
   [ -n "$store" ] && [ -d "$store/status/$1" ] || return 0
+  if [ -f "$(dirname "$ROOT")/$1/go.mod" ] &&
+      [ "$(awk '$1 == "module" { print $2; exit }' "$(dirname "$ROOT")/$1/go.mod")" = "$2" ]; then
+    sibling="$(dirname "$ROOT")/$1"
+  fi
   for f in "$store/status/$1"/*.json; do
     [ -e "$f" ] || continue
     v="$(sed -nE 's/.*"go": "([^"]+)".*/\1/p' "$f" | head -1)"
@@ -69,6 +79,10 @@ newest_local() {
     r="$(sed -nE 's/^ *"recorded": "([^"]+)".*/\1/p' "$f" | head -1)"
     t="$(stamp "$v")"
     [ -n "$t" ] && [ -n "$c" ] || continue
+    if [ -n "$sibling" ] && [ -z "$(git -C "$sibling" for-each-ref --count=1 --contains "$c" refs/heads 2>/dev/null)" ]; then
+      if [ -z "$local_gone" ] || [ "$t" \> "${local_gone%% *}" ]; then local_gone="$t $c"; fi
+      continue
+    fi
     missing=""
     for image in $(sed -nE 's/^ *"awaits": \[(.*)\],?$/\1/p' "$f" | tr -d '",'); do
       [ -f "$store/images/$1/$c/$image.json" ] || missing="${missing:+$missing, }$image"
@@ -108,8 +122,8 @@ for t in $tools; do
   fi
   ci_stamp="$(stamp "$ci_version")"
 
-  local_best="" local_waiting=""
-  [ "$LOCAL" = 0 ] || newest_local "$repo"
+  local_best="" local_waiting="" local_gone=""
+  [ "$LOCAL" = 0 ] || newest_local "$repo" "$module"
 
   if [ -n "$local_best" ] && { [ -z "$ci_commit" ] || { [ -n "$ci_stamp" ] && [ "${local_best%% *}" \> "$ci_stamp" ]; }; }; then
     read -r _ version commit recorded <<<"$local_best"
@@ -123,12 +137,17 @@ for t in $tools; do
   else
     echo "$repo: held, as neither its status file nor the build store lists a build"
   fi
-  # A newer local build than the one taken, left out for want of its images.
+  # A newer local build than the one taken, left out for want of its images, or
+  # because its commit is no longer on a branch of the project's checkout.
+  taken="${ci_stamp:-0}"
+  [ -z "$local_best" ] || [ "${local_best%% *}" \< "$taken" ] || taken="${local_best%% *}"
   if [ -n "$local_waiting" ]; then
     read -r wt wc wmissing <<<"$local_waiting"
-    taken="${ci_stamp:-0}"
-    [ -z "$local_best" ] || [ "${local_best%% *}" \< "$taken" ] || taken="${local_best%% *}"
     [ "$wt" \> "$taken" ] && echo "$repo: ${wc:0:7}, a newer local build, waits for its images: $wmissing"
+  fi
+  if [ -n "$local_gone" ]; then
+    read -r gt gc <<<"$local_gone"
+    [ "$gt" \> "$taken" ] && echo "$repo: ${gc:0:7}, a newer local build, is left out: ../$repo holds that commit on no branch"
   fi
 done
 
