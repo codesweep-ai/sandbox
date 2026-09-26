@@ -3,17 +3,19 @@
   "title": "The lent Claude login replay misses on Claude Code 2.1.283, because the replay host names no account",
   "type": "defect",
   "severity": "high",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, replaying the fixtures re-recorded for a bump to Claude Code 2.1.283",
   "opened": "2026-09-25",
-  "resolved": null,
+  "resolved": "2026-09-25",
   "stint": "agent-cli-bump",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "34a01b6"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "With the fixtures recorded on Claude Code 2.1.283, `make test-agents-replay` passed 14 of 14 cases in two podman runs and in one with `AGENTS_ENGINE=firecracker`. Before the change, claude-login-lent missed in 4 runs out of 4 with `4 items vs 3`. The `make ci` gate then passed, all 14 replays included."
   },
-  "resolution": null,
+  "resolution": "The replay host now names a fabricated account, as a signed-in host does. A lent replay then carries an address as well, the recorder strips it on both sides, and the requests match.",
   "details": "Recorded on Claude Code 2.1.283, `TestAgentReplay/claude-login-lent` misses at its third request with `messages[0].content: 4 items vs 3 recorded`. It failed 4 runs out of 4, and the other 13 cases pass.\n\nA lent Claude login carries the host's `oauthAccount`, address included, into the sandbox. A recording runs on the real profile, so its sandbox knows an address, and Claude Code writes it into a `# userEmail` section of a system reminder. The recorder, cs-vcr, strips that section and leaves the reminder. The replay host is fabricated with a credential and no account, so its sandbox knows no address and sends no reminder at all.\n\nClaude Code 2.1.258 was not affected. Its reminder also carried `# claudeMd` and `# currentDate`, so it was present either way. 2.1.283 moved both out, and the address is now all that reminder holds.\n\nThe replay is part of `make test-smoke`, so a cassette recorded on 2.1.283 turns CI red.",
   "notes": [],
   "links": []
