@@ -19,6 +19,10 @@
     {
       "date": "2026-09-26",
       "text": "804ee40 has the lender answer the discovery itself for a lent login, under a second name, cs-lender-chatgpt (R146a). In a lent Firecracker sandbox with Codex 0.157.1 installed, a real turn answered, and the lender answered the discovery once and lent the model calls. Without the new variable, the same sandbox failed with the error above. Codex 0.155.1 still works through the change, and all 14 agent replays pass on an image rebuilt with it. The pin stays at 0.155.1 for two reasons. The fixture recording's codex-login-shared case still fails, because cs-vcr refuses chatgpt.com there. And 0.157 opens the dialog in SBX-085."
+    },
+    {
+      "date": "2026-09-26",
+      "text": "The shared case is fixed too. Now cs-vcr answers the discovery itself, as its record VCR-044 describes. Commit 3ca7df4 pins that build and points the agent matrix's shared Codex login at it under a second name, cs-vcr-chatgpt. Codex 0.157.1 recorded and replayed a real turn that way with the host's own login, and all 14 agent replays pass. What still holds the pin at 0.155.1 is the dialog in SBX-085."
     }
   ],
   "links": []
