@@ -10,8 +10,8 @@ github.com/codesweep-ai/npmrevs v0.0.0-20260926051938-ebb13b8ef732 h1:O1bUA9QRBj
 github.com/codesweep-ai/npmrevs v0.0.0-20260926051938-ebb13b8ef732/go.mod h1:0BJWIfDIaJA77Rf5tH5ce9vmtntIPGS8JWROvTYZH6I=
 github.com/codesweep-ai/tracer v0.0.0-20260926051938-c342fc49291f h1:h+nIvkxFmvE2X14kXpjo7uL7S3VHR4BaVssod9myP1I=
 github.com/codesweep-ai/tracer v0.0.0-20260926051938-c342fc49291f/go.mod h1:IIPAR8j9qe/z6o2bP4ox4bLfOO7CpenQ5ISx308uDu4=
-github.com/codesweep-ai/vcr v0.0.0-20260927003056-21f4c2e02bfa h1:MW3ZiSsGT4mohz9Met+eY6lse4reaHMUSX5+/KQmVxo=
-github.com/codesweep-ai/vcr v0.0.0-20260927003056-21f4c2e02bfa/go.mod h1:VEADjRP9/DYK4HWaOViAPkoU1GsYbhP+3eXvYXigJTQ=
+github.com/codesweep-ai/vcr v0.0.0-20260927003752-bfd215531214 h1:wl3cc3fE9DRuuzsVpQoDz+YTm+DzcnH39h5GiTfgb+k=
+github.com/codesweep-ai/vcr v0.0.0-20260927003752-bfd215531214/go.mod h1:VEADjRP9/DYK4HWaOViAPkoU1GsYbhP+3eXvYXigJTQ=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
