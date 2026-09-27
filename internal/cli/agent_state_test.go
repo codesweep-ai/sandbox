@@ -65,6 +65,11 @@ func TestTurnDriversSayWhetherAnAgentIsInATurn(t *testing.T) {
 		{"codex at the trust prompt", "cs-codex-turn", "cs-codex-a", "Do you trust the contents of this directory?\n", "blocked"},
 		{"codex at sign-in", "cs-codex-turn", "cs-codex-a", "Welcome to Codex\n  Sign in with ChatGPT\n", "blocked"},
 		{"codex on a screen nobody has seen", "cs-codex-turn", "cs-codex-a", "something new\n", "unknown"},
+		// The driver declines this one itself at the start of the next turn (SBX-085).
+		{"codex offering a newer model", "cs-codex-turn", "cs-codex-a",
+			"  Meet GPT-6 Sol\n  › 1. Try new model\n    2. Use existing model\n  enter/esc confirm · ctrl + c quit\n", "idle"},
+		{"codex on a modal nobody has seen", "cs-codex-turn", "cs-codex-a",
+			"  GPT-5.4 Mini is no longer available\n  enter/esc continue · ctrl + c quit\n", "blocked"},
 
 		{"claude in a turn nobody is driving", "cs-claude-turn", "cs-claude-a", "✻ Cooking… (41s · esc to interrupt)\n" + claudeReady, "busy"},
 		// No "esc to interrupt" on this one, which is how it was once read as idle.

@@ -1339,6 +1339,98 @@ func TestClaudeTurnAnswersADialogOrSaysWhoMust(t *testing.T) {
 	}
 }
 
+// codexDialogTmux is a tmux whose pane shows dialog.txt until the driver sends "2", then the
+// ready composer. The Enter that submits the prompt ends the turn with STUB ANSWER.
+const codexDialogTmux = `#!/bin/sh
+echo "$*" >> "$STUB_DIR/calls"
+case "$1" in
+  has-session) [ -f "$STUB_DIR/.launched" ] && exit 0 || exit 1 ;;
+  new-session)
+    touch "$STUB_DIR/.launched"
+    : > "$FRESH_ROLLOUT"
+    exit 0 ;;
+  capture-pane)
+    if [ -f "$STUB_DIR/.dismissed" ]; then printf '  › Ask Codex to do anything\n  gpt-5.6-sol medium · /work\n'; else cat "$STUB_DIR/dialog.txt"; fi
+    exit 0 ;;
+  send-keys)
+    for last; do :; done
+    if [ "$last" = 2 ]; then touch "$STUB_DIR/.dismissed"; exit 0; fi
+    if [ -f "$STUB_DIR/.dismissed" ] && [ ! -f "$STUB_DIR/.submitted" ]; then
+      touch "$STUB_DIR/.submitted"
+      printf '%s\n' '{"payload":{"type":"agent_message","message":"STUB ANSWER"}}' >> "$FRESH_ROLLOUT"
+      printf '%s\n' '{"payload":{"type":"task_complete"}}' >> "$FRESH_ROLLOUT"
+    fi
+    exit 0 ;;
+esac
+exit 0
+`
+
+// TestCodexTurnAnswersADialogOrSaysWhoMust: Codex 0.157 offers a newer model at startup when
+// the configured one has a successor. Its footer carries the " · " the ready check keys on,
+// so the driver read the dialog as ready, pasted the prompt into it, and no turn started
+// (SBX-085). The offer is declined with "2", which keeps the configured model, and the turn
+// goes on. A migration with no way to decline, or any other modal, fails the turn at once,
+// quoting the screen, and the driver presses nothing on it.
+func TestCodexTurnAnswersADialogOrSaysWhoMust(t *testing.T) {
+	skipUnlessLinux(t)
+	for _, tc := range []struct {
+		name, dialog   string
+		wantExit       int
+		wantIn, reason string
+		wantAnswer     bool
+	}{
+		{"a newer model is declined",
+			"  Meet GPT-6 Sol\n\n  Codex just got an upgrade.\n\n  › 1. Try new model\n    2. Use existing model\n\n  enter/esc confirm · ctrl + c quit\n",
+			0, "STUB ANSWER", "answered a dialog: Use existing model", true},
+		{"a migration that cannot be declined needs a person",
+			"  GPT-5.4 Mini is no longer available\n\n  Codex now uses GPT-6 Luna in place of GPT-5.4 Mini.\n\n  enter/esc continue · ctrl + c quit\n",
+			3, "needs a person: GPT-5.4 Mini is no longer available",
+			"needs a person: GPT-5.4 Mini is no longer available", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, bin := agentHome(t, ".cs-codex-remote")
+			sess := filepath.Join(home, ".cs-codex", "sessions")
+			if err := os.MkdirAll(sess, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fresh := filepath.Join(sess, "rollout-2026-01-02-33333333-3333-4333-8333-333333333333.jsonl")
+			stubDir := t.TempDir()
+			writeStub(t, bin, "codex", "#!/bin/sh\nexit 0\n")
+			writeStub(t, bin, "cs-codex", "#!/bin/sh\nexit 0\n")
+			writeStub(t, bin, "tmux", codexDialogTmux)
+			if err := os.WriteFile(filepath.Join(stubDir, "dialog.txt"), []byte(tc.dialog), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			out, exit := runScriptStdin(t, home, bin,
+				[]string{"STUB_DIR=" + stubDir, "FRESH_ROLLOUT=" + fresh, "CS_CODEX_STALL_SECS=0"},
+				"do the thing\n", "cs-codex-turn", "--tmux", "codextoken", "--timeout", "30")
+			if exit != tc.wantExit || !strings.Contains(out, tc.wantIn) {
+				t.Fatalf("exit = %d; want %d with %q: %s", exit, tc.wantExit, tc.wantIn, out)
+			}
+			if took := time.Since(start); took > 20*time.Second {
+				t.Errorf("the driver took %s over it, as though waiting the screen out", took)
+			}
+			calls, _ := os.ReadFile(filepath.Join(stubDir, "calls"))
+			answered := false
+			for line := range strings.SplitSeq(string(calls), "\n") {
+				if strings.HasPrefix(line, "send-keys") && strings.HasSuffix(line, " 2") {
+					answered = true
+				}
+			}
+			if answered != tc.wantAnswer {
+				t.Errorf("answered with 2 = %v; tmux calls:\n%s", answered, calls)
+			}
+			if !tc.wantAnswer && strings.Contains(string(calls), "paste-buffer") {
+				t.Errorf("the prompt was pasted into a screen that needs a person:\n%s", calls)
+			}
+			if l := lastTurnLine(t, home, "codex"); l.exit != tc.wantExit || !strings.Contains(l.reason, tc.reason) {
+				t.Errorf("turn log line = %+v; want exit %d and a reason holding %q", l, tc.wantExit, tc.reason)
+			}
+		})
+	}
+}
+
 // TestCodexTurnReadyStates: Codex writes its status line as "<model> <effort> · <dir>", and
 // the effort segment reads "default" only while none is configured. Keying readiness on that
 // literal left every member carrying an explicit model_reasoning_effort un-ready until the

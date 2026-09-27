@@ -170,8 +170,34 @@ auth_rejected() {
 }
 session_alive() { tmux has-session -t "$TMUX_SESSION" 2>/dev/null; }
 
+# The bottom of the screen, where a dialog draws its choices. What the model wrote higher up
+# is left out, so a numbered list in an answer is not read as a question.
+pane_bottom() { pane | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -n 15; }
+
+# Dialogs codex shows once, whose answer keeps what the caller configured, and the key that
+# gives that answer. The driver answers them itself and carries on. One entry per line:
+# <text it shows>|<key>.
+KNOWN_DIALOGS=(
+    # 0.157 offers a newer model when the configured one has a successor, as "Meet GPT-6
+    # Sol". "2" is "Use existing model": the member keeps the model it was given, and codex
+    # records the answer in config.toml so it does not ask again (SBX-085).
+    "Use existing model|2"
+)
+
+# Prints the entry for the known dialog on screen, or nothing.
+known_dialog() {
+    local bottom d; bottom="$(pane_bottom)"
+    for d in "${KNOWN_DIALOGS[@]}"; do
+        [[ "$bottom" == *"${d%|*}"* ]] && { printf '%s\n' "$d"; return 0; }
+    done
+    return 1
+}
+
+# The screen's own words, on one line, for a message that has to say what a person is asked.
+screen_text() { pane_bottom | tr -s ' \t' ' ' | sed 's/^ //' | paste -sd'|' - | sed 's/|/ | /g' | cut -c1-240; }
+
 # Classify the current TUI screen from the pane. Order matters: blocking overlays (trust,
-# sign-in) before the "working" indicator, before the ready status line.
+# sign-in) before the "working" indicator, before dialogs, before the ready status line.
 detect_state() {
     local p; p="$(pane)"
     [[ -z "$p" ]] && { echo "unknown"; return; }
@@ -180,6 +206,14 @@ detect_state() {
         *"Sign in with ChatGPT"*|*"Welcome to Codex"*|*"Provide your own API key"*) echo "login"; return ;;
         *"esc to interrupt"*)                                            echo "working"; return ;;
     esac
+    known_dialog >/dev/null && { echo "dialog"; return; }
+    # A modal this driver has never seen. codex draws "enter/esc confirm" or "enter/esc
+    # continue" under one, and that footer carries the " · " the ready check below keys on:
+    # read as ready, the dialog had the prompt pasted into it and no turn ever started
+    # (SBX-085). It waits for a person, so it is named rather than waited out.
+    if pane_bottom | grep -Eqi "enter/esc (confirm|continue) ·"; then
+        echo "prompt"; return
+    fi
     # No blocking overlay and not working: ready once codex's status line is up. Match its
     # SHAPE, not any segment's text — the bottom-most non-blank row, carrying the separator
     # codex joins status segments with. Every segment varies: the model slug differs per
@@ -197,7 +231,7 @@ detect_state() {
 # Wait until the TUI is ready to accept input. Auto-clears the first-run trust prompt; fails fast
 # on a sign-in screen (needs a human).
 wait_ready() {
-    local deadline=$(( SECONDS + 60 )) st
+    local deadline=$(( SECONDS + 60 )) st d answered=0
     while (( SECONDS < deadline )); do
         session_alive || { err "tmux session died during startup"; return 3; }
         st="$(detect_state)"
@@ -208,6 +242,21 @@ wait_ready() {
             login)
                 err "remote codex needs interactive sign-in — cannot proceed unattended"
                 err "  sign in on the remote: 'cs-codex login' (or 'cs-sandbox codex-login <name>')"
+                return 3 ;;
+            dialog)
+                # A dialog that is still up after three answers is not the one this driver knows.
+                d="$(known_dialog)"
+                if (( answered++ >= 3 )); then
+                    err "remote codex is on a screen that needs a person: $(screen_text)"
+                    err "  attach to answer it: tmux attach -t $TMUX_SESSION"
+                    return 3
+                fi
+                tmux send-keys -t "$TMUX_SESSION" "${d##*|}"
+                err "answered a dialog: ${d%|*}"
+                sleep 1 ;;
+            prompt)
+                err "remote codex is on a screen that needs a person: $(screen_text)"
+                err "  attach to answer it: tmux attach -t $TMUX_SESSION"
                 return 3 ;;
             ready)
                 return 0 ;;
@@ -243,8 +292,9 @@ state_word() {
     case "$(detect_state)" in
         working)
             if pane | grep -q "Reconnecting\.\.\."; then echo "busy retrying"; else echo busy; fi ;;
-        trust_folder|login) echo blocked ;;
-        ready)              echo idle ;;
+        trust_folder|login|prompt) echo blocked ;;
+        # A known one-time dialog is answered by the driver at the start of the next turn.
+        ready|dialog)              echo idle ;;
         *)                  echo unknown ;;
     esac
 }

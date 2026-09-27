@@ -156,6 +156,11 @@ It prints one line and always exits 0. The first word is `busy`, `idle`, `blocke
 word, `busy retrying`, while the agent waits out a provider error. `blocked` is a screen that needs a person, such as sign-in or the trust prompt. `unknown` is a
 screen the driver does not recognise.
 
+`blocked` also covers any other dialog that asks for a confirmation. One dialog is safe to answer:
+Codex's offer of a newer model than the one configured, which the driver declines with "Use
+existing model". It does that itself at the start of a turn, and the turn goes on, so `--state`
+reads that screen as `idle`.
+
 It answers for a turn whoever started it. An agent can start one of its own, when a background
 command it left running finishes, and no turn driver wraps that turn. A count of live
 `cs-codex-turn` processes misses it, and this does not. Nudge a member only when the word is `idle`.
@@ -182,10 +187,14 @@ older failure is known to be over. `--state`, `--help` and a usage error are not
 nothing. A driver that was killed writes nothing, so a missing line means the ending is not known.
 The file keeps between 200 and 400 lines. `CS_TURN_LOG` names another path.
 
+A turn that ended well has `-` for its reason, or `answered a dialog: <its text>` when the driver
+declined a newer model on the way.
+
 ## Exit codes
 
 - `0` turn completed · `2` timed out or stalled · `3` launch/setup failure (e.g. the remote
-  codex needs interactive sign-in — run `cs-codex login` there) · `4` session busy (another turn
+  codex needs interactive sign-in — run `cs-codex login` there, or a dialog the driver does not
+  know, whose message quotes the screen) · `4` session busy (another turn
   holds the lock) · `5` turn failed (the provider ended it with an error) · `1` usage/other.
 
 A failed turn is not a finished one with an empty reply. The provider refused it, for a rate limit,
