@@ -69,10 +69,11 @@ RUN base=https://downloads.claude.ai/claude-code-releases \
 # into /opt for the same reason as Claude Code above: pinned, read-only-friendly, no Node.
 # --no-same-owner because the archive carries a build-machine uid: preserving it would leave the
 # agent binaries owned by whichever sandbox user happens to share that uid, and writable by them.
-# Bump CODEX_VERSION (or pass --build-arg) to upgrade. Held at 0.155.1: from 0.156.1 the TUI
-# exits at startup unless a call it makes to chatgpt.com succeeds, and a sandbox holding a lent
-# login cannot make it (SBX-084).
-ARG CODEX_VERSION=0.155.1
+# Bump CODEX_VERSION (or pass --build-arg) to upgrade. From 0.156.1 the TUI will not start on a
+# ChatGPT login until a workspace discovery at chatgpt_base_url succeeds; the lender and cs-vcr
+# answer it for a lent and a recorded sandbox (SBX-084). From 0.157.0 it may offer a newer model
+# at startup, which cs-codex-turn declines (SBX-085).
+ARG CODEX_VERSION=0.157.1
 RUN case "$(uname -m)" in x86_64|amd64) tgt=x86_64-unknown-linux-musl ;; arm64|aarch64) tgt=aarch64-unknown-linux-musl ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
   && base="https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}" \
   && asset="codex-package-${tgt}.tar.gz" \
