@@ -535,7 +535,14 @@ func (c liveCase) proxyEnv(t *testing.T) []string {
 		env = append(env, "--env", k+"=http://"+guest)
 	}
 	for _, k := range []string{"NO_PROXY", "no_proxy"} {
-		env = append(env, "--env", k+"="+vcrName+",127.0.0.1,localhost")
+		env = append(env, "--env", k+"="+vcrName+","+vcrBackendName+",127.0.0.1,localhost")
+	}
+	// A login whose client calls its vendor's own backend is pointed at the
+	// recorder's second name for it. A lent one is pointed at the lender's by
+	// create; a shared one holds the credential itself, so it is done here.
+	// Codex 0.156 and later will not start on a ChatGPT login without it.
+	if s, ok := lend.SlotByID(c.slot); ok && s.Kind == lend.Login && s.BackendEnv != "" {
+		env = append(env, "--env", s.BackendEnv+"=http://"+vcrBackendName+":"+vcrPort+"/backend-api")
 	}
 	return env
 }
@@ -909,13 +916,20 @@ func recorderSideOfTheHop(ctx context.Context, r *run.Exec, box string) string {
 // The admin port stays on the container's own loopback, deliberately. It is the
 // control plane, and putting it on the network would let a sandbox drive the
 // recorder. Nothing but `podman exec` can reach it.
+//
+// vcrBackendName is the recorder's second name, which a shared Codex login
+// reaches ChatGPT's own backend by. cs-vcr answers the one call there Codex
+// needs to start (its R33a). A second name is a second origin, and Codex moves a
+// model provider that shares the backend's origin onto the workspace's HTTPS
+// origin, past the recorder. The lender has the same pair (lend.BackendName).
 const (
-	vcrName     = "cs-vcr"
-	vcrPort     = "8080"
-	vcrListen   = "0.0.0.0:" + vcrPort
-	vcrAdmin    = "127.0.0.1:8081"
-	vcrGuest    = vcrName + ":" + vcrPort
-	vcrInternal = "127.0.0.1:" + vcrPort
+	vcrName        = "cs-vcr"
+	vcrBackendName = "cs-vcr-chatgpt"
+	vcrPort        = "8080"
+	vcrListen      = "0.0.0.0:" + vcrPort
+	vcrAdmin       = "127.0.0.1:8081"
+	vcrGuest       = vcrName + ":" + vcrPort
+	vcrInternal    = "127.0.0.1:" + vcrPort
 )
 
 // vcrProxy is one running cs-vcr, and the knowledge of how to stop it and read
@@ -994,6 +1008,7 @@ func startVCR(t *testing.T, mode, store string) *vcrProxy {
 		"--hostname", vcrName,
 		"--network", state.NetworkName(testGroup()),
 		"--network-alias", vcrName,
+		"--network-alias", vcrBackendName,
 		"--label", "cs-sandbox.managed=1",
 		"--label", "cs-sandbox.vcr=1",
 		// The same reason the gateway and the lender use it: these are host

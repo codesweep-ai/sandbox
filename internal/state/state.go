@@ -50,6 +50,7 @@ var ReservedNames = map[string]bool{
 	"cs-lender":         true, // internal/lend.GuestName — the credential lender
 	"cs-lender-chatgpt": true, // internal/lend.BackendName — the same lender, for ChatGPT's backend
 	"cs-vcr":            true, // the replay recorder the agent tier puts on the network
+	"cs-vcr-chatgpt":    true, // the same recorder, for ChatGPT's backend
 }
 
 // sunPathMax is the AF_UNIX sun_path limit, terminator included. Not a Linux
