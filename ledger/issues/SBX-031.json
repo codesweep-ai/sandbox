@@ -23,6 +23,10 @@
     {
       "date": "2026-09-28",
       "text": "A fifth occurrence, in CI run 36381446652 on 7ecbc17, again on a hosted Ubuntu runner. The microVM reached its ready marker, and all eight probes then failed with ssh exit 255. That commit changed only how a stopped network keepalive is replaced, a host-side step the nested create never reaches. A rerun of the job passed."
+    },
+    {
+      "date": "2026-09-28",
+      "text": "A sixth occurrence, in CI run 36492302753 on 479d822, and the first with the smoke profile in a group of its own. All eight probes failed with ssh exit 255, as before, and a rerun of the job passed. So the stall does not depend on the default network."
     }
   ],
   "links": []
