@@ -227,6 +227,9 @@ func TestBuildTakesItsOwnCommitFromTheStoreFirst(t *testing.T) {
 // installs from the proxy. One with no version at all cannot name an image, so
 // it never reaches the question.
 func TestBuildWithoutARevisionPacksNothing(t *testing.T) {
+	// A build takes its image name from CS_SANDBOX_IMAGE where that is set, as
+	// `make test-integration` sets it, and then never meets the refusal below.
+	t.Setenv("CS_SANDBOX_IMAGE", "")
 	asBuilt(t, "")
 	t.Setenv("CS_SANDBOX_ASSETS_DIR", repoRoot(t))
 	argv, err := leafBuild(t)
