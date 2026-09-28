@@ -1,0 +1,20 @@
+{
+  "id": "SBX-092",
+  "title": "TestBuildWithoutARevisionPacksNothing fails wherever CS_SANDBOX_IMAGE is set, as make test-integration sets it",
+  "type": "defect",
+  "severity": "low",
+  "status": "in-progress",
+  "foundBy": "session agent, running make test-integration while verifying SBX-091",
+  "opened": "2026-09-28",
+  "resolved": null,
+  "stint": "reliability session, 2026-09-28",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "The test builds with no version and expects the refusal of a build that cannot name its image. `make test-integration` sets CS_SANDBOX_IMAGE, and a build takes its image name from there. So it passes that refusal and meets a later one about the module version, and the test fails although the build is still refused. It fails only in that target, which no gate runs, so nobody saw it.",
+  "notes": [],
+  "links": []
+}
