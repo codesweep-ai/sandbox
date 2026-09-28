@@ -212,7 +212,7 @@ RUN mkdir -p "$NVM_DIR" \
   && bash -c '. "$NVM_DIR/nvm.sh" && nvm install v24.19.0 && nvm alias default v24.19.0' \
   && chmod -R a+rX "$NVM_DIR"
 
-# Go 1.27.0 (GOROOT=/opt/go) — the upstream tarball, pinned and checksum-verified, replacing
+# Go 1.27.1 (GOROOT=/opt/go) — the upstream tarball, pinned and checksum-verified, replacing
 # Fedora's golang-bin. Go is a first-class runtime here, on the same footing as the pyenv and
 # nvm toolchains above rather than whatever `dnf update` last pulled in:
 #   * pinned + reproducible, and an unpatched upstream build (Fedora ships a patched
@@ -270,9 +270,9 @@ RUN curl -fsSL -o /tmp/maven.tar.gz \
   && chmod -R a+rX /opt/maven \
   && JAVA_HOME=/opt/java /opt/maven/bin/mvn --version | head -1
 
-ARG GO_VERSION=1.27.0
-ARG GO_SHA256_AMD64=675c26c449cbb18fc24b74650de1eabbae6e16f64326fd85a283fb3b58280685
-ARG GO_SHA256_ARM64=51798d2c42d0e1c6ed7fd9f48728b4193abac9e8aad6dbac2fe96a81f5909bda
+ARG GO_VERSION=1.27.1
+ARG GO_SHA256_AMD64=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
+ARG GO_SHA256_ARM64=3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec
 RUN case "$(uname -m)" in \
       x86_64|amd64)  garch=amd64; want="$GO_SHA256_AMD64" ;; \
       arm64|aarch64) garch=arm64; want="$GO_SHA256_ARM64" ;; \
