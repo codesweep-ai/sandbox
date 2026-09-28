@@ -59,8 +59,10 @@ return {
     -- The image pre-installs every parser above, so this is a no-op in a sandbox.
     -- It only does work — and only for what is missing — if you edit the list or
     -- run this config somewhere unprovisioned. A normal start touches no network.
+    -- A headless start skips it: the install is async, and the image build's
+    -- `+qa` would cut it short and leave a half-removed source tree behind.
     local missing = missing_parsers()
-    if #missing > 0 then
+    if #missing > 0 and #vim.api.nvim_list_uis() > 0 then
       ts.install(missing)
     end
 

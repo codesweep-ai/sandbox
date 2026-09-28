@@ -427,7 +427,7 @@ RUN set -e; \
     rm -f "$log"; \
     chmod -R a+rX /opt/nvim; \
     rm -rf "$HOME/.npm" "$HOME/.cache/pip" "$HOME/.cache/go-build" "$HOME/go" \
-           "$HOME/.cache/tree-sitter" \
+           "$HOME/.cache/tree-sitter" "$XDG_CACHE_HOME"/nvim/tree-sitter-* \
            "$XDG_CACHE_HOME/nvim/luac" "$XDG_STATE_HOME/nvim" \
            "$XDG_DATA_HOME/nvim/mason"; \
     seed_mb=$(du -sm "$HOME" | cut -f1); \
