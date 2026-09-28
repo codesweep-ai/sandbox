@@ -205,7 +205,7 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	// Before the boot, which is the whole point. What this replaces is a guest
 	// that comes up, finds nobody at the address its seed pins, and times out
 	// ten seconds later inside whatever was running in it.
-	if err = fe.ensurePasta(ctx); err != nil {
+	if err = fe.ensurePasta(ctx, fab); err != nil {
 		return nil, err
 	}
 	unlock()

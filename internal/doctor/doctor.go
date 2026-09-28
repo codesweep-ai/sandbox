@@ -249,6 +249,9 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		if eng.PastaIsSetUp(ctx, d.Runner) {
 			fg.add(OK, "podman's rootless network answers at "+eng.HostReachableIP+
 				", where a microVM looks for the host")
+		} else if stale := eng.StaleRootlessAddr(ctx, d.Runner); stale != "" {
+			fg.add(NO, "podman's rootless network still has "+stale+" — the host changed networks "+
+				"after it was set up, and the next firecracker create sets it up again once no sandbox runs")
 		} else {
 			fg.add(NO, "nothing answers at "+eng.HostReachableIP+" from podman's rootless network, "+
 				"where a microVM looks for the host — firecracker needs podman 5.0 or later with "+

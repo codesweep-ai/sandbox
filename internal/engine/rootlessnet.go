@@ -5,8 +5,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
+	"time"
 
+	"github.com/codesweep-ai/sandbox/internal/fcnet"
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
 
@@ -93,17 +98,156 @@ func PastaIsSetUp(ctx context.Context, r run.Runner) bool {
 	return ask()
 }
 
-// ErrNoPasta is what a caller gets when the hop does not work, and it is one
-// sentence on purpose. The cause is always the same requirement, and a report
-// that enumerated the ways of failing it took longer to read than to act on.
+// ErrNoPasta is what a caller gets when the hop does not work on a namespace
+// that has the host's own address, and it is one sentence on purpose. The cause
+// is then the same requirement, and a report that enumerated the ways of failing
+// it took longer to read than to act on.
 var ErrNoPasta = fmt.Errorf(
 	"fc: nothing answers at %s from podman's rootless network, where a microVM looks for the host. "+
 		"The firecracker engine needs podman 5.0 or later with pasta networking: check `podman "+
 		"--version` and that passt is installed", HostReachableIP)
 
-func (fe *Firecracker) ensurePasta(ctx context.Context) error {
-	if PastaIsSetUp(ctx, fe.d.Runner) {
+// ensurePasta checks the hop with the fabric up. A namespace set up before the
+// host changed networks is rebuilt when nothing but idle fabrics holds it, and
+// the fabric brought up again in the new one.
+func (fe *Firecracker) ensurePasta(ctx context.Context, fab fcnet.Fabric) error {
+	r := fe.d.Runner
+	if PastaIsSetUp(ctx, r) {
 		return nil
 	}
-	return ErrNoPasta
+	stale := StaleRootlessAddr(ctx, r)
+	if stale == "" {
+		return ErrNoPasta
+	}
+	if busy := rootlessBusy(ctx, r, fe.anyVMRunning(ctx)); busy != "" {
+		return staleError(stale, busy)
+	}
+	releaseRootless(ctx, r)
+	if err := fab.Up(ctx); err != nil {
+		return err
+	}
+	if PastaIsSetUp(ctx, r) {
+		return nil
+	}
+	return staleError(stale, "")
+}
+
+// StaleRootlessAddr says how podman's rootless network namespace has fallen
+// behind the host, or nothing where it has not. pasta copies the host's
+// addresses in once, when it starts. After the host moves to another network,
+// as a laptop does on a new Wi-Fi lease, the namespace keeps the old address
+// while anything holds it, and nothing answers at HostReachableIP inside it
+// (SBX-088).
+func StaleRootlessAddr(ctx context.Context, r run.Runner) string {
+	res, _ := r.Run(ctx, run.Opts{ReadOnly: true}, "podman", "unshare", "--rootless-netns",
+		"ip", "-4", "-o", "addr", "show", "scope", "global")
+	return staleAddr(res.Stdout, hostAddrs())
+}
+
+// staleAddr compares the namespace's `ip -4 -o addr` with the host's addresses,
+// interface by interface. Only an interface the host has counts: the bridges in
+// the namespace are its own.
+func staleAddr(nsAddrs string, host map[string][]string) string {
+	for line := range strings.SplitSeq(nsAddrs, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 || f[2] != "inet" {
+			continue
+		}
+		name := f[1]
+		ip, _, _ := strings.Cut(f[3], "/")
+		have, ok := host[name]
+		if !ok || slices.Contains(have, ip) {
+			continue
+		}
+		if len(have) == 0 {
+			return fmt.Sprintf("%s on %s, which has no address on the host now", ip, name)
+		}
+		return fmt.Sprintf("%s on %s, where the host now has %s", ip, name, strings.Join(have, ", "))
+	}
+	return ""
+}
+
+// hostAddrs is the host's global IPv4 addresses by interface, with an entry for
+// each interface even where it has none. A variable, so a test can stand in
+// for the host.
+var hostAddrs = func() map[string][]string {
+	out := map[string][]string{}
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, i := range ifs {
+		out[i.Name] = nil
+		addrs, _ := i.Addrs()
+		for _, a := range addrs {
+			if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil && n.IP.IsGlobalUnicast() {
+				out[i.Name] = append(out[i.Name], n.IP.String())
+			}
+		}
+	}
+	return out
+}
+
+// rootlessBusy names what, besides the fabrics' keepalives and resolvers, runs
+// in podman's rootless namespace, or nothing. Such a thing is somebody's work,
+// and a rebuild would take its network from under it. vm is whether a microVM
+// of this root runs; one of any root counts too.
+func rootlessBusy(ctx context.Context, r run.Runner, vm bool) string {
+	if vm || microVMRunning() {
+		return "a microVM"
+	}
+	var others []string
+	out := run.Output(ctx, r, "podman", "ps", "--format", `{{.Names}} {{index .Labels "cs-sandbox.keepalive"}}`)
+	for line := range strings.SplitSeq(out, "\n") {
+		name, keepalive, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if name != "" && keepalive != "1" {
+			others = append(others, name)
+		}
+	}
+	if len(others) > 0 {
+		return "the container " + strings.Join(others, ", ")
+	}
+	return ""
+}
+
+// microVMRunning reports whether a firecracker process runs on the host,
+// whichever root started it. A variable, so a test can stand in for the host.
+var microVMRunning = func() bool {
+	comms, _ := filepath.Glob("/proc/[0-9]*/comm")
+	for _, c := range comms {
+		if b, err := os.ReadFile(c); err == nil && strings.TrimSpace(string(b)) == "firecracker" {
+			return true
+		}
+	}
+	return false
+}
+
+// releaseRootless lets go of podman's rootless namespace: it removes the
+// fabrics' keepalives and stops their resolvers, which the next Up starts
+// again, then waits for podman to tear the namespace down, so that the fabric
+// that follows comes up in a new one.
+func releaseRootless(ctx context.Context, r run.Runner) {
+	if ids := strings.Fields(run.Output(ctx, r, "podman", "ps", "-q", "--filter", "label=cs-sandbox.keepalive=1")); len(ids) > 0 {
+		_, _ = r.Run(ctx, run.Opts{}, append([]string{"podman", "rm", "-f"}, ids...)...)
+	}
+	fcnet.StopResolvers()
+	for range 10 {
+		if StaleRootlessAddr(ctx, r) == "" {
+			return
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// staleError says what is wrong with a namespace the host has moved away from,
+// and what the caller can do about it.
+func staleError(stale, busy string) error {
+	why := fmt.Sprintf("fc: podman's rootless network still has %s. The host changed networks after "+
+		"that network was set up, so nothing answers at %s from it", stale, HostReachableIP)
+	if busy == "" {
+		return fmt.Errorf("%s, and setting it up again did not help: stop every podman container and "+
+			"microVM, then create again", why)
+	}
+	return fmt.Errorf("%s. It is set up again once nothing else runs in it, and %s still does: stop "+
+		"that, then create again", why, busy)
 }

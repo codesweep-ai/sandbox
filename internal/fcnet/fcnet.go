@@ -264,6 +264,18 @@ func scanDNSMasq() []dnsProc {
 	return out
 }
 
+// StopResolvers stops the dnsmasq of every fabric on the host, whichever group
+// or root started it: each serves a hosts.d directory on a .53 address, as
+// dnsUp starts it, and runs inside podman's rootless namespace, which it holds
+// while it lives. The next Up starts one again. Any other dnsmasq is left alone.
+func StopResolvers() {
+	for _, p := range scanDNSMasq() {
+		if strings.HasSuffix(p.addr, ".53") && filepath.Base(p.hostsDir) == "hosts.d" {
+			_ = syscall.Kill(p.pid, syscall.SIGTERM)
+		}
+	}
+}
+
 // dnsState reports the fabric's resolver: its pid if it is up and ours, 0 if
 // nothing holds the address. One on our address serving a DIFFERENT hostsdir is
 // a conflict, not something to adopt — its answers come from another directory,

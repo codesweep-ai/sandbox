@@ -954,6 +954,13 @@ A microVM is starting outside the cgroup that would cap it. The sandbox runs, bu
 charged to the shell that launched it. Under WSL2, enable systemd as
 [INSTALL.md](INSTALL.md#windows-wsl2) describes.
 
+**`podman's rootless network still has <address>`**
+
+The host changed networks after podman set up the network its sandboxes share, as a laptop does on
+a new Wi-Fi lease. That network keeps the old address, so a microVM cannot reach the host. A
+firecracker `create` sets it up again by itself when nothing else runs in it. Otherwise the error
+names what does: stop that, then create again. `cs-sandbox doctor` reports the same state.
+
 **Anything about a missing prerequisite**
 
 Run `cs-sandbox doctor`, which names the gap and the fix. Add `--engine podman` or `--engine

@@ -56,3 +56,75 @@ func TestNoPastaSaysWhatIsRequired(t *testing.T) {
 		}
 	}
 }
+
+// TestStaleAddrComparesTheNamespaceWithTheHost: pasta copies the host's
+// addresses into the namespace once, so after the host changes networks the
+// namespace keeps the old one (SBX-088). Only an interface the host has is
+// compared: the namespace's own bridges are not the host's.
+func TestStaleAddrComparesTheNamespaceWithTheHost(t *testing.T) {
+	ns := "2: wlp0s20f3    inet 192.168.40.105/24 brd 192.168.40.255 scope global dynamic wlp0s20f3\n" +
+		"3: podman1    inet 10.89.4.1/24 brd 10.89.4.255 scope global podman1\n"
+	for _, tc := range []struct {
+		name string
+		host map[string][]string
+		want string
+	}{
+		{"the host moved to another network", map[string][]string{"wlp0s20f3": {"192.168.5.109"}},
+			"192.168.40.105 on wlp0s20f3, where the host now has 192.168.5.109"},
+		{"the host lost its address", map[string][]string{"wlp0s20f3": nil},
+			"192.168.40.105 on wlp0s20f3, which has no address on the host now"},
+		{"the host has the same address", map[string][]string{"wlp0s20f3": {"192.168.40.105"}}, ""},
+		{"a bridge only the namespace has", map[string][]string{"lo": {"127.0.0.1"}}, ""},
+	} {
+		if got := staleAddr(ns, tc.host); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestRootlessBusyLeavesOnlyIdleFabrics: a rebuild takes the namespace's network
+// from everything in it, so it goes ahead only where nothing but the fabrics'
+// keepalives runs there.
+func TestRootlessBusyLeavesOnlyIdleFabrics(t *testing.T) {
+	was := microVMRunning
+	t.Cleanup(func() { microVMRunning = was })
+	microVMRunning = func() bool { return false }
+	for _, tc := range []struct {
+		name, ps string
+		vm       bool
+		want     string
+	}{
+		{"idle keepalives", "cs-sandbox-net-keepalive 1\ncs-sandbox-g-keepalive 1\n", false, ""},
+		{"a sandbox", "cs-sandbox-net-keepalive 1\napi.default <no value>\n", false, "the container api.default"},
+		{"a microVM", "cs-sandbox-net-keepalive 1\n", true, "a microVM"},
+	} {
+		f := run.NewFake()
+		f.OnStdout("podman ps", tc.ps)
+		if got := rootlessBusy(context.Background(), f, tc.vm); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	microVMRunning = func() bool { return true }
+	if got := rootlessBusy(context.Background(), run.NewFake(), false); got != "a microVM" {
+		t.Errorf("a microVM of another root: got %q", got)
+	}
+}
+
+// TestStaleErrorSaysWhatHoldsTheNetwork: the error names the address the host
+// no longer has, and what has to stop before the network can be set up again,
+// rather than blaming the podman version (SBX-088).
+func TestStaleErrorSaysWhatHoldsTheNetwork(t *testing.T) {
+	stale := "192.168.40.105 on wlp0s20f3, where the host now has 192.168.5.109"
+	err := staleError(stale, "the container api.default").Error()
+	for _, want := range []string{stale, "changed networks", HostReachableIP, "the container api.default still does"} {
+		if !strings.Contains(err, want) {
+			t.Errorf("error lacks %q: %s", want, err)
+		}
+	}
+	if strings.Contains(err, "podman 5.0") {
+		t.Errorf("error blames the podman version: %s", err)
+	}
+	if err := staleError(stale, "").Error(); !strings.Contains(err, "did not help") {
+		t.Errorf("a rebuild that did not help says so: %s", err)
+	}
+}
