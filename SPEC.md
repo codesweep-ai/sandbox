@@ -1605,7 +1605,8 @@ down, and skip gracefully when Podman or the image is unavailable. The suite run
 because packages share one rootless network namespace and one fabric.
 
 The **smoke profile** (`make test-smoke`) is not a third tier. It is the subset of the integration
-tier that CI runs on every host, against a slimmed image. Keep it short.
+tier that CI runs on every host, against a slimmed image. Keep it short. It runs in a group of its
+own, so it never makes or reuses the host's default network, and it removes that group when it ends.
 
 The **replay members** are the second half of the smoke profile: they drive a real agent inside a
 real sandbox, with its model turns served from a committed cassette. `make test-smoke` runs them,

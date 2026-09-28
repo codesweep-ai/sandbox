@@ -486,23 +486,37 @@ SMOKE_RUN := $(subst $(space),|,$(strip $(SMOKE_TESTS)))
 ##
 ## Their coverage lands in the same tier directory, appended rather than reset,
 ## because `reset smoke` ran once above and both halves are this one profile.
+##
+## The profile runs in a group of its own: CS_SANDBOX_GROUP where the caller
+## names one, and a new one otherwise. Its sandboxes get their own network,
+## keepalive and gateway, never the machine's default ones, which a test would
+## otherwise make from a temporary root it then deletes (SBX-087). The group's
+## network goes when the profile ends, pass or fail, and so does the resolver
+## its microVMs used, which is a process rather than a container: left running,
+## it holds the subnet's DNS address, and the next run to get that subnet fails.
 test-smoke: setup-smoke
 	@$(MAKE) --no-print-directory container-bins
 	@scripts/coverage.sh reset smoke
+	@CS_SANDBOX_GROUP="$${CS_SANDBOX_GROUP:-smoke-$$$$}"; export CS_SANDBOX_GROUP; status=0; \
+	echo "test-smoke: in the group $$CS_SANDBOX_GROUP"; \
+	set -x; \
 	$(WITH_TOOLS) $(WITH_LENDER) $(WITH_VCR) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
 	  go test -tags smoke $(COVERFLAGS) -count=1 -p 1 -v -timeout 1200s -run '$(SMOKE_RUN)' ./... \
-	  -args -test.gocoverdir=$(COVER_ABS)/smoke
-	@if [ "$(SMOKE_AGENTS)" = 1 ]; then \
-		set -x; \
+	  -args -test.gocoverdir=$(COVER_ABS)/smoke || status=$$?; \
+	if [ "$(SMOKE_AGENTS)" != 1 ]; then \
+		echo "test-smoke: SMOKE_AGENTS=0 — the replay members were not run"; \
+	elif [ "$$status" = 0 ]; then \
 		$(WITH_TOOLS) $(WITH_LENDER) $(WITH_VCR) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(CI_IMAGE)} CS_COVERDIR=$(COVER_ABS)/smoke \
 		  CS_SANDBOX_AGENTS_ENGINE=$(AGENTS_ENGINE) \
 		  go test -tags agents_replay $(COVERFLAGS) -count=1 -p 1 -parallel $(AGENTS_PARALLEL) \
 		  -v -timeout 1200s \
 		  -run '$(AGENTS_REPLAY_CASES)' ./internal/cli/ \
-		  -args -test.gocoverdir=$(COVER_ABS)/smoke; \
-	else \
-		echo "test-smoke: SMOKE_AGENTS=0 — the replay members were not run"; \
-	fi
+		  -args -test.gocoverdir=$(COVER_ABS)/smoke || status=$$?; \
+	fi; \
+	{ set +x; } 2>/dev/null; \
+	pkill -f -- "/$$CS_SANDBOX_GROUP/hosts.d" 2>/dev/null || true; \
+	podman network rm -f "cs-sandbox-$$CS_SANDBOX_GROUP" >/dev/null 2>&1 || true; \
+	exit $$status
 
 ## test-integration: live tests (real podman/firecracker on a Linux/KVM host);
 ## each skips gracefully when podman or the sandbox image is unavailable.
