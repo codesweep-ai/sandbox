@@ -3,17 +3,19 @@
   "title": "The integration tier, and an engine-level member of the smoke profile, still use the machine's default network",
   "type": "defect",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, extending the SBX-087 fix to make test-integration",
   "opened": "2026-09-28",
-  "resolved": null,
+  "resolved": "2026-09-28",
   "stint": "reliability session, 2026-09-28",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "5fb190e"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "`make test-smoke` with TestPodmanCreateLive and TestFirecrackerCreateLive ran both engine-level tests in the group smoke-2143452, and both passed. The default fabric's hosts.d was untouched, and the group used a directory of its own. No default keepalive, group network or resolver was left afterwards. The full `make test-integration` ran in the group integ-2147238 in 19 minutes and left the same state. Its one failure was SBX-092, which fails on unmodified main too. `make ci` on cf550a1 passed."
   },
-  "resolution": null,
+  "resolution": "`make test-integration` runs in the group CS_SANDBOX_GROUP names, or a new one for each run, as `make test-smoke` does. It removes that group's resolver and network when it ends. The engine-level live tests take that group, its network and a tap prefix of their own, and the CLI-level ones look for their state in it. The host-route test still covers the default group on purpose, and runs only when CS_SANDBOX_IT_HOSTROUTE asks for it.",
   "details": "SBX-087 moved `make test-smoke` into a group of its own, but `make test-integration` still runs every live test in the default group. It makes and reuses the machine's default network and keepalive, as the smoke profile did before. The engine-level live tests build their own Deps with the network `cs-sandbox-net`, whatever group a target names. One of them, TestPodmanCreateLive, is a smoke member, so its container joins the default network even inside the smoke profile's own group.",
   "notes": [],
   "links": [

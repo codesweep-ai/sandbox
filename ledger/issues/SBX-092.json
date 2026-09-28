@@ -3,17 +3,19 @@
   "title": "TestBuildWithoutARevisionPacksNothing fails wherever CS_SANDBOX_IMAGE is set, as make test-integration sets it",
   "type": "defect",
   "severity": "low",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, running make test-integration while verifying SBX-091",
   "opened": "2026-09-28",
-  "resolved": null,
+  "resolved": "2026-09-28",
   "stint": "reliability session, 2026-09-28",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "cf550a1"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "`go test -tags integration ./internal/cli/ -run '^TestBuildWithoutARevisionPacksNothing$'` passes on cf550a1, with CS_SANDBOX_IMAGE unset and with it set to an image. Before cf550a1 the same test failed with it set. `make ci` on cf550a1 passed."
   },
-  "resolution": null,
+  "resolution": "The test clears CS_SANDBOX_IMAGE, so the build it runs has to name its image from its version, and it meets the refusal under test.",
   "details": "The test builds with no version and expects the refusal of a build that cannot name its image. `make test-integration` sets CS_SANDBOX_IMAGE, and a build takes its image name from there. So it passes that refusal and meets a later one about the module version, and the test fails although the build is still refused. It fails only in that target, which no gate runs, so nobody saw it.",
   "notes": [],
   "links": []
