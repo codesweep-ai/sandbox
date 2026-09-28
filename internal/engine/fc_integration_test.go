@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codesweep-ai/sandbox/internal/fcnet"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/paths"
 	"github.com/codesweep-ai/sandbox/internal/run"
@@ -48,7 +47,7 @@ func fcTestDeps(t *testing.T) Deps {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return Deps{
+	d := Deps{
 		Runner:       &run.Exec{},
 		Host:         h,
 		InstDir:      dir,
@@ -61,6 +60,8 @@ func fcTestDeps(t *testing.T) Deps {
 		AssetDir:     repoRoot(t), // for fc/init if a base-rootfs rebuild is needed
 		StartTimeout: 120,
 	}
+	inLiveGroup(t, &d)
+	return d
 }
 
 // repoRoot walks up from the package dir to the checkout root (holding go.mod).
@@ -175,14 +176,16 @@ func TestFirecrackerCreateLive(t *testing.T) {
 	// not derived from FCCache: the fabric dir is deliberately host-global (one
 	// rootless fabric per host) and so does NOT follow CS_SANDBOX_FC_CACHE. The
 	// two coincide only while the cache sits at its default, which is why
-	// pointing the cache elsewhere — as CI does — used to fail here.
-	reg := filepath.Join(paths.FCNet(), "hosts.d", name)
+	// pointing the cache elsewhere — as CI does — used to fail here. It is the
+	// group's own dir, since a make target runs this in a group of its own.
+	reg := filepath.Join(paths.FCNetFor(d.group()), "hosts.d", name)
 	if _, err := os.Stat(reg); err != nil {
 		t.Errorf("dnsmasq registration %s missing: %v", reg, err)
 	}
 
-	// The tap exists on the bridge (inside podman's netns).
-	tap := fcnet.TapName(inst.FCIP)
+	// The tap exists on the bridge (inside podman's netns), named with the
+	// group's own prefix.
+	tap := fe.fabric().TapName(inst.FCIP)
 	if _, err := d.Runner.Run(ctx, run.Opts{}, "podman", "unshare", "--rootless-netns",
 		"ip", "link", "show", tap); err != nil {
 		t.Errorf("tap %s not present during run: %v", tap, err)

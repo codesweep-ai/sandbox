@@ -114,7 +114,7 @@ func lendUpstream(upstream string) []string {
 func lenderIsUp(t *testing.T, r *run.Exec) bool {
 	t.Helper()
 	out := run.Output(context.Background(), r, "podman", "container", "inspect",
-		lend.BoxName(state.NetworkName(state.DefaultGroup)), "--format", "{{.State.Running}}")
+		lend.BoxName(state.NetworkName(testGroup())), "--format", "{{.State.Running}}")
 	return strings.TrimSpace(out) == "true"
 }
 
@@ -123,7 +123,7 @@ func lenderIsUp(t *testing.T, r *run.Exec) bool {
 // on the host, and no other network can route to it. Returns the status code.
 func askTheLender(t *testing.T, r *run.Exec, token string) string {
 	t.Helper()
-	box := lend.BoxName(state.NetworkName(state.DefaultGroup))
+	box := lend.BoxName(state.NetworkName(testGroup()))
 	res, err := r.Run(context.Background(), run.Opts{ReadOnly: true}, "podman", "exec", box,
 		"curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-m", "10",
 		"-X", "POST", "-H", "x-api-key: "+token,
@@ -374,7 +374,7 @@ func TestCLILendRevokedByDestroyLive(t *testing.T) {
 		t.Fatalf("no loan token in the sandbox: %q", token)
 	}
 
-	loans := filepath.Join(state.Dir(paths.Instances(), state.DefaultGroup, name), "loans.json")
+	loans := filepath.Join(state.Dir(paths.Instances(), testGroup(), name), "loans.json")
 	if !fileExists(loans) {
 		t.Fatalf("no loan record at %s", loans)
 	}

@@ -10,6 +10,8 @@ package engine
 
 import (
 	"context"
+	"fmt"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/run"
+	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
 func testDeps(t *testing.T) Deps {
@@ -29,7 +32,7 @@ func testDeps(t *testing.T) Deps {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	return Deps{
+	d := Deps{
 		Runner:       &run.Exec{},
 		Host:         h,
 		InstDir:      dir,
@@ -39,6 +42,31 @@ func testDeps(t *testing.T) Deps {
 		SSHBind:      "127.0.0.1",
 		TZ:           "America/Los_Angeles",
 		StartTimeout: 90,
+	}
+	inLiveGroup(t, &d)
+	return d
+}
+
+// inLiveGroup puts d in the group a make target runs the live tests in, the one
+// CS_SANDBOX_GROUP names, on that group's own network. A run then never uses or
+// leaves behind the machine's default network (SBX-091), and the target removes
+// the group's network when it ends. Outside such a target the default stands.
+//
+// The group sets the fabric's working directory as well as the network, which
+// is why both move: on another network in the default group, a test's resolver
+// would serve the default fabric's hostsdir. A tap name is host-global, so the
+// group gets a prefix of its own, as a create would allocate.
+func inLiveGroup(t *testing.T, d *Deps) {
+	t.Helper()
+	g := os.Getenv("CS_SANDBOX_GROUP")
+	if g == "" {
+		return
+	}
+	d.Group = g
+	d.Network = state.NetworkName(g)
+	d.TapPrefix = fmt.Sprintf("fd%04x", crc32.ChecksumIEEE([]byte(g))&0xffff)
+	if err := d.EnsureNetwork(context.Background()); err != nil {
+		t.Fatalf("the network of the group %s: %v", g, err)
 	}
 }
 

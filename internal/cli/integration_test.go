@@ -360,7 +360,7 @@ func TestCLIAgentLoginInheritedLive(t *testing.T) {
 	if !strings.Contains(out, "agent login: claude") {
 		t.Errorf("create should report the inherited login, got:\n%s", out)
 	}
-	if !fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "claude", ".credentials.json")) {
+	if !fileExists(filepath.Join(state.Dir(instDir, testGroup(), name), "seed", "claude", ".credentials.json")) {
 		t.Error("create did not snapshot the host Claude login into the seed")
 	}
 	got := strings.TrimSpace(inBox(ctx, r, host, name,
@@ -369,7 +369,7 @@ func TestCLIAgentLoginInheritedLive(t *testing.T) {
 		t.Errorf("sandbox ~/.cs-claude/.credentials.json missing or wrong mode: %q (want 600)", got)
 	}
 	// The instance record remembers the choice, so it stays inspectable.
-	in, err := state.Load(instDir, state.DefaultGroup, name)
+	in, err := state.Load(instDir, testGroup(), name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,14 +398,14 @@ func TestCLIOpenCodeLoginInheritedLive(t *testing.T) {
 	if !strings.Contains(out, "agent login: opencode") {
 		t.Errorf("create should report the inherited login, got:\n%s", out)
 	}
-	if !fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "opencode", "auth.json")) {
+	if !fileExists(filepath.Join(state.Dir(instDir, testGroup(), name), "seed", "opencode", "auth.json")) {
 		t.Error("create did not snapshot the host OpenCode login into the seed")
 	}
 	if got := strings.TrimSpace(inBox(ctx, r, host, name,
 		"stat -c %a ~/.cs-opencode/auth.json 2>/dev/null")); got != "600" {
 		t.Errorf("sandbox ~/.cs-opencode/auth.json missing or wrong mode: %q (want 600)", got)
 	}
-	in, err := state.Load(instDir, state.DefaultGroup, name)
+	in, err := state.Load(instDir, testGroup(), name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +435,7 @@ func TestCLIAgentLoginOptInLive(t *testing.T) {
 	if !strings.Contains(out, "agent login: none") || !strings.Contains(out, "--inherit-agent-login") {
 		t.Errorf("create should say no login was inherited and how to get one, got:\n%s", out)
 	}
-	if fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, plain), "seed", "claude", ".credentials.json")) {
+	if fileExists(filepath.Join(state.Dir(instDir, testGroup(), plain), "seed", "claude", ".credentials.json")) {
 		t.Error("a plain create must not carry the host login")
 	}
 	// Without a login Claude must reach its own sign-in flow, so the onboarding
@@ -453,7 +453,7 @@ func TestCLIAgentLoginOptInLive(t *testing.T) {
 	one := boxName("onelogin")
 	createBox(t, r, one, "--inherit-agent-login", "claude")
 	for _, other := range []string{"codex", "opencode"} {
-		if fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, one), "seed", other, "auth.json")) {
+		if fileExists(filepath.Join(state.Dir(instDir, testGroup(), one), "seed", other, "auth.json")) {
 			t.Errorf("%s login carried when only claude was requested", other)
 		}
 	}
@@ -469,10 +469,10 @@ func TestCLIProviderKeysNotCarriedLive(t *testing.T) {
 	name := boxName("nokeys")
 	createBox(t, r, name, "--inherit-agent-login", "claude")
 
-	if _, err := os.Stat(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "claude", "env")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(state.Dir(instDir, testGroup(), name), "seed", "claude", "env")); !os.IsNotExist(err) {
 		t.Errorf("a provider key in the environment must not be carried into the seed (err=%v)", err)
 	}
-	if _, err := os.Stat(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "claude", "creds")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(state.Dir(instDir, testGroup(), name), "seed", "claude", "creds")); !os.IsNotExist(err) {
 		t.Errorf("no creds/ dir should be carried (err=%v)", err)
 	}
 }
@@ -526,7 +526,7 @@ func TestCLIUserTypeSeedLive(t *testing.T) {
 
 	uname := boxName("user")
 	createBox(t, r, uname, "--type", "user")
-	userSeed := filepath.Join(state.Dir(instDir, state.DefaultGroup, uname), "seed")
+	userSeed := filepath.Join(state.Dir(instDir, testGroup(), uname), "seed")
 	if !fileExists(filepath.Join(userSeed, "id_cs-sandbox_user")) {
 		t.Errorf("user sandbox missing user tier key in seed")
 	}
@@ -536,7 +536,7 @@ func TestCLIUserTypeSeedLive(t *testing.T) {
 
 	aname := boxName("agent")
 	createBox(t, r, aname, "--type", "agent")
-	if !fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, aname), "seed", "id_cs-sandbox_agent")) {
+	if !fileExists(filepath.Join(state.Dir(instDir, testGroup(), aname), "seed", "id_cs-sandbox_agent")) {
 		t.Errorf("agent sandbox missing agent tier key in seed")
 	}
 }
@@ -549,7 +549,7 @@ func TestCLIEnvInjectionLive(t *testing.T) {
 	name := boxName("env")
 	createBox(t, r, name, "-e", "CS_TEST_TOKEN=sekret123")
 
-	p := filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "inject-env")
+	p := filepath.Join(state.Dir(instDir, testGroup(), name), "seed", "inject-env")
 	data, err := os.ReadFile(p)
 	if err != nil {
 		t.Fatalf("read inject-env: %v", err)
@@ -639,7 +639,7 @@ func vmPostMortem(t *testing.T, host hostenv.Host, name string) {
 	// happens when the socat that bridges vsock to sshd goes away) all land there
 	// and nowhere else. Its mtime is half the evidence: a console that stopped
 	// writing minutes ago dates the death.
-	serial := filepath.Join(state.Dir(paths.Instances(), state.DefaultGroup, name), "serial.log")
+	serial := filepath.Join(state.Dir(paths.Instances(), testGroup(), name), "serial.log")
 	if fi, err := os.Stat(serial); err != nil {
 		t.Logf("post-mortem / serial.log: cannot stat %s: %v", serial, err)
 	} else if data, err := os.ReadFile(serial); err != nil {
@@ -792,7 +792,7 @@ func sshOK(t *testing.T, host hostenv.Host, name, sh string) string {
 func assertHostByName(t *testing.T, host hostenv.Host, name string, inGuest func(sh string) string) {
 	t.Helper()
 	instDir := os.Getenv("CS_SANDBOX_INSTANCES_DIR")
-	data, err := os.ReadFile(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", "host_hosts"))
+	data, err := os.ReadFile(filepath.Join(state.Dir(instDir, testGroup(), name), "seed", "host_hosts"))
 	if err != nil {
 		t.Fatalf("read host_hosts seed: %v", err)
 	}
@@ -1468,7 +1468,7 @@ func TestCLIFirecrackerCrossEngineLive(t *testing.T) {
 	step(t, "microVM %s booted (%s)", fbox, time.Since(start).Round(time.Second))
 	// The per-instance reflink rootfs and the seed.ext4 disk exist on disk.
 	for _, disk := range []string{"rootfs.ext4", "seed.ext4"} {
-		if !fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, fbox), disk)) {
+		if !fileExists(filepath.Join(state.Dir(instDir, testGroup(), fbox), disk)) {
 			t.Errorf("firecracker instance missing %s", disk)
 		}
 	}
@@ -1654,7 +1654,7 @@ func TestCLIAgentLoginSeedsEveryAgentLive(t *testing.T) {
 				t.Errorf("create should report the inherited login, got:\n%s", out)
 			}
 			cf := hostCredFile[agent]
-			if !fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", agent, cf)) {
+			if !fileExists(filepath.Join(state.Dir(instDir, testGroup(), name), "seed", agent, cf)) {
 				t.Errorf("%s: host credential was not snapshotted into the seed", agent)
 			}
 			got := strings.TrimSpace(inBox(ctx, r, host, name,
@@ -1699,7 +1699,7 @@ func TestCLIAgentLoginInheritedFirecrackerLive(t *testing.T) {
 
 	for _, agent := range agents {
 		cf := hostCredFile[agent]
-		if !fileExists(filepath.Join(state.Dir(instDir, state.DefaultGroup, name), "seed", agent, cf)) {
+		if !fileExists(filepath.Join(state.Dir(instDir, testGroup(), name), "seed", agent, cf)) {
 			t.Errorf("%s: host credential was not snapshotted into the seed", agent)
 		}
 		// The assertion that matters: it survived the trip through seed.ext4 and

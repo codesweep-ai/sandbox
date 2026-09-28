@@ -494,6 +494,8 @@ SMOKE_RUN := $(subst $(space),|,$(strip $(SMOKE_TESTS)))
 ## network goes when the profile ends, pass or fail, and so does the resolver
 ## its microVMs used, which is a process rather than a container: left running,
 ## it holds the subnet's DNS address, and the next run to get that subnet fails.
+LIVE_GROUP_TEARDOWN = pkill -f -- "/$$CS_SANDBOX_GROUP/hosts.d" 2>/dev/null || true; \
+	podman network rm -f "cs-sandbox-$$CS_SANDBOX_GROUP" >/dev/null 2>&1 || true
 test-smoke: setup-smoke
 	@$(MAKE) --no-print-directory container-bins
 	@scripts/coverage.sh reset smoke
@@ -514,8 +516,7 @@ test-smoke: setup-smoke
 		  -args -test.gocoverdir=$(COVER_ABS)/smoke || status=$$?; \
 	fi; \
 	{ set +x; } 2>/dev/null; \
-	pkill -f -- "/$$CS_SANDBOX_GROUP/hosts.d" 2>/dev/null || true; \
-	podman network rm -f "cs-sandbox-$$CS_SANDBOX_GROUP" >/dev/null 2>&1 || true; \
+	$(LIVE_GROUP_TEARDOWN); \
 	exit $$status
 
 ## test-integration: live tests (real podman/firecracker on a Linux/KVM host);
@@ -526,6 +527,7 @@ test-smoke: setup-smoke
 ## containers and microVMs, so without it a package prints nothing for minutes.
 ## The smoke suite is tagged for this run too, so a full local pass covers it
 ## first — its failures are cheap and point at the host, not the engine.
+## It runs in a group of its own and removes it after, as test-smoke does.
 ##
 ## -timeout is per package, and it is a deadlock detector rather than a budget:
 ## it exists to end a wedged test, not to hold the suite to a pace. Set near the
@@ -544,9 +546,15 @@ SBX_IMAGE = $(shell go run -buildvcs=true $(PKG) version 2>/dev/null | awk '$$1=
 test-integration:
 	@$(MAKE) --no-print-directory lender-bin CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(SBX_IMAGE)}
 	@scripts/coverage.sh reset integration
+	@CS_SANDBOX_GROUP="$${CS_SANDBOX_GROUP:-integ-$$$$}"; export CS_SANDBOX_GROUP; status=0; \
+	echo "test-integration: in the group $$CS_SANDBOX_GROUP"; \
+	set -x; \
 	$(WITH_LENDER) CS_SANDBOX_IMAGE=$${CS_SANDBOX_IMAGE:-$(SBX_IMAGE)} CS_COVERDIR=$(COVER_ABS)/integration \
 	  go test -tags integration $(COVERFLAGS) -p 1 -v -timeout 3600s ./... \
-	  -args -test.gocoverdir=$(COVER_ABS)/integration
+	  -args -test.gocoverdir=$(COVER_ABS)/integration || status=$$?; \
+	{ set +x; } 2>/dev/null; \
+	$(LIVE_GROUP_TEARDOWN); \
+	exit $$status
 
 ## test-live-agents: the credential matrix, against real providers.
 ##
