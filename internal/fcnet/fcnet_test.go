@@ -328,6 +328,32 @@ func TestStaleGatewayWithoutTheResolverIsReplaced(t *testing.T) {
 	}
 }
 
+// A stopped keepalive that will not start, such as a gateway whose seed dir has
+// been removed, still holds the name. Left in place, every later create fails on
+// "the container name is already in use", so it has to go before the run.
+func TestKeepaliveThatWillNotStartIsReplaced(t *testing.T) {
+	f := run.NewFake()
+	f.OnStdout("network inspect", "10.89.0.1\n")
+	f.OnStdout("--format {{.State.Running}}", "false\n") // exists, and stays stopped
+	fab := Fabric{Runner: f, Network: "cs-sandbox-g", Image: "img",
+		GWSeed: "/seed", GWUser: "dev", GWHome: "/home/dev"}
+	_ = fab.keepaliveUp(context.Background())
+
+	rm, create := -1, -1
+	for i, line := range f.Rendered() {
+		if strings.Contains(line, "podman rm -f cs-sandbox-g-keepalive") && rm < 0 {
+			rm = i
+		}
+		if strings.Contains(line, "podman run -d --name cs-sandbox-g-keepalive") && create < 0 {
+			create = i
+		}
+	}
+	if rm < 0 || create < 0 || rm > create {
+		t.Errorf("a keepalive that will not start must be removed before it is recreated:\n%s",
+			strings.Join(f.Rendered(), "\n"))
+	}
+}
+
 // And one that already has it is left alone: recreating a healthy gateway would
 // drop every ssh session jumping through it.
 func TestHealthyGatewayIsLeftAlone(t *testing.T) {

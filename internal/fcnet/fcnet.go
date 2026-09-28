@@ -152,12 +152,13 @@ func (f Fabric) keepaliveUp(ctx context.Context) error {
 	} else if _, err := f.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "container", "exists", f.Keepalive()); err == nil {
 		// Try to start an existing (stopped) one.
 		_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "start", f.Keepalive())
-		if f.keepaliveRunning(ctx) {
-			if f.gatewayResolvesVMs(ctx) {
-				return nil
-			}
-			_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", f.Keepalive())
+		if f.keepaliveRunning(ctx) && f.gatewayResolvesVMs(ctx) {
+			return nil
 		}
+		// One that will not start still holds the name, and the run below would
+		// fail on it on every create from then on. A gateway whose seed dir is
+		// gone is the usual case: a test's temp dir, removed after the test.
+		_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", f.Keepalive())
 	}
 	argv := []string{"podman", "run", "-d", "--name", f.Keepalive(),
 		"--hostname", "gateway", "--network", f.Network, "--restart=always",
