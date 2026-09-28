@@ -1,6 +1,6 @@
 {
-  "recommendedBy": "session agent, after landing the campaign and tour findings of 2026-09-20",
-  "updated": "2026-09-20",
+  "recommendedBy": "session agent, after the reliability session of 2026-09-28",
+  "updated": "2026-09-28",
   "items": [
     {
       "id": "SBX-047",
@@ -29,6 +29,10 @@
     {
       "id": "SBX-004",
       "why": "Past fourteen shares a microVM drops one and still reports success."
+    },
+    {
+      "id": "SBX-087",
+      "why": "A smoke run leaves the machine's shared gateway on a directory it deleted, and a later create reuses that gateway."
     }
   ]
 }

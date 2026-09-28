@@ -3,17 +3,19 @@
   "title": "The Codex and Claude turn drivers give up on a dialog they know after three quick answers",
   "type": "defect",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, reading a failed agent replay in a local smoke run",
   "opened": "2026-09-28",
-  "resolved": null,
+  "resolved": "2026-09-28",
   "stint": "reliability session, 2026-09-28",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "e02e24c"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "`go test ./internal/cli/ -run 'TestCodexTurnAnswersADialogOrSaysWhoMust|TestClaudeTurnAnswersADialogOrSaysWhoMust' -count=1` passes on e02e24c. Its new cases, where the TUI ignores its first four keys, fail on the drivers before that commit after about 3 seconds. `make ci` on d0c3796 passed."
   },
-  "resolution": null,
+  "resolution": "Both drivers answer a known dialog again every second for up to 15 seconds. The two variables CS_CODEX_DIALOG_SECS and CS_CLAUDE_DIALOG_SECS change that limit. Only then do they take it for a screen that needs a person. The answer is logged once.",
   "details": "cs-codex-turn and cs-claude-turn answer a one-time dialog they know with its key. They try three times, a second apart, then fail the turn as one that needs a person. A TUI ignores keys that arrive before it takes input, and on a busy host that can be several seconds after the dialog is drawn.\n\nOn 2026-09-28 the codex-openai-lent replay of a local smoke run failed this way. The screen still showed Codex's newer-model offer, with its first option selected. The same case passed in the next run.",
   "notes": [],
   "links": [

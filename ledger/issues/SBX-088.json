@@ -3,17 +3,19 @@
   "title": "After the host's address changes, a microVM create fails with an error that blames the podman version",
   "type": "defect",
   "severity": "high",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, reproducing a failed oss-repin gate on a laptop that had changed Wi-Fi networks",
   "opened": "2026-09-28",
-  "resolved": null,
+  "resolved": "2026-09-28",
   "stint": "reliability session, 2026-09-28",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "d0c3796"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "`go test ./internal/engine/ -run 'TestStaleAddr|TestRootlessBusy|TestStaleError' -count=1` passes on d0c3796. On a live host, the namespace was made stale by hand with an extra address on wlp0s20f3. StaleRootlessAddr reported it, and rootlessBusy found only the idle keepalive. releaseRootless then left a fresh namespace within 3.3 seconds, and the probe at 169.254.1.2 answered in it. `make ci` on d0c3796 passed afterwards, with the fabric brought up again. A real change of network was not repeated after the fix."
   },
-  "resolution": null,
+  "resolution": "A firecracker create whose probe fails compares the namespace's addresses with the host's, interface by interface. Where they differ and only idle fabrics hold the namespace, it takes those down and waits for podman to set up a fresh one. It then brings the fabric up again and probes once more. Anything else still running there is named in the error, and `cs-sandbox doctor` reports the stale address in the same words.",
   "details": "Podman's rootless network namespace keeps the host address that pasta copied into it when it started. When the host moves to another network, as a laptop does on a new Wi-Fi lease, the namespace keeps the old address. From then on nothing answers at 169.254.1.2 inside it, and every firecracker create fails. The error says the engine needs podman 5.0 or later with pasta, which is not the cause. A lent sandbox loses the host the same way: the smoke test's lender could no longer reach its recorder.\n\nIt lasts for as long as anything holds the namespace, and the fabric's keepalive and dnsmasq always do. On 2026-09-27 the namespace held 192.168.40.105 while the host had 192.168.5.109. It cleared once the keepalive was removed and dnsmasq was stopped.",
   "notes": [],
   "links": [

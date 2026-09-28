@@ -3,17 +3,19 @@
   "title": "A smoke run that fails breaks every later make ci, which judges the smoke coverage an earlier run left",
   "type": "defect",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, reading why a sandbox gate failed in oss-repin",
   "opened": "2026-09-28",
-  "resolved": null,
+  "resolved": "2026-09-28",
   "stint": "reliability session, 2026-09-28",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "14f671d"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "With a partial smoke tier in .coverage, `scripts/coverage.sh check` failed as before, and `scripts/coverage.sh check unit` passed. `make ci` on d0c3796 printed `coverage: every package in .coverage-baseline is still reached (tiers: unit)` inside check. After test-smoke it printed the same for `(tiers: unit smoke)`."
   },
-  "resolution": null,
+  "resolution": "`coverage.sh check` takes the tiers to judge. `make ci` judges the unit tier inside check, then the unit and smoke tiers once test-smoke has made them. It judges smoke only where podman and /dev/kvm let the whole profile run. The data another run left is no longer read.",
   "details": "`make ci` runs `coverage-check` inside `make check`, before its own `test-smoke`. That check judges every tier present in .coverage, so the smoke tier it reads is whatever an earlier run left. When that run failed partway, the tier is partial. Every later `make ci` then fails with packages \"no longer reached by the smoke tier\" before its own smoke run starts. A passing earlier run hides the other half of the fault: the smoke coverage of the run in progress is never judged.\n\nOn 2026-09-27 a smoke run that failed in its first minute failed the next two gates this way.",
   "notes": [],
   "links": []
