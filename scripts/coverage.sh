@@ -153,11 +153,21 @@ report)
 # thing that goes red.
 #
 # The baseline is per tier and only tiers present in $COVERDIR are checked, so
-# a unit-only `make check` is judged against the unit tier alone.
+# a unit-only `make check` is judged against the unit tier alone. Naming tiers
+# judges those alone, which is how a gate judges only the tiers it ran itself:
+# the data another run left can be stale, or partial where that run failed.
 check)
+  shift
   [ -f "$BASELINE" ] || die "$BASELINE is missing -- run 'make coverage-baseline' to record one"
   tiers=$(present_tiers)
   [ -n "$tiers" ] || die "no coverage data in $COVERDIR -- no test tier has run"
+  if [ "$#" -gt 0 ]; then
+    for want in "$@"; do
+      printf '%s\n' "$tiers" | grep -qx "$want" \
+        || die "tier '$want' has no data in $COVERDIR -- run it before checking it"
+    done
+    tiers=$(printf '%s\n' "$@")
+  fi
 
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   failures=0

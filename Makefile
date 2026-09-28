@@ -694,8 +694,9 @@ coverage:
 ## coverage-check: report, then fail if a package .coverage-baseline records as
 ## covered has stopped being reached. It checks presence, never a percentage:
 ## what it exists to catch is a suite that quietly stopped running.
+## COVERAGE_TIERS names the tiers to judge, and by default every tier present is.
 coverage-check: coverage
-	@scripts/coverage.sh check
+	@scripts/coverage.sh check $(COVERAGE_TIERS)
 
 ## coverage-baseline: re-record .coverage-baseline. Records every tier present
 ## by default; pass BASELINE_TIERS to restrict it to the tiers CI actually runs,
@@ -818,13 +819,17 @@ endef
 ## run. The firecracker leg is not reproduced — CI selects a different set for
 ## it (see the smoke-firecracker job).
 ##
+## Coverage is judged on the tiers this run makes, not on what an earlier run
+## left in .coverage: the unit tier inside check, and the smoke tier once
+## test-smoke has made it, where this machine can run all of it.
+##
 ## A clean pass records the commit as a local build. It names the two images CI
 ## publishes for a commit, and a sibling's `make repin` takes the build once
 ## `cs-sandbox build` and `cs-sandbox build --slim` have made them from it.
 ci:
 	@scripts/record-build.sh start
 	$(call say,the gate a contributor runs before pushing)
-	@$(MAKE) --no-print-directory check
+	@$(MAKE) --no-print-directory check COVERAGE_TIERS=unit
 	$(call say,actionlint)
 	@$(MAKE) --no-print-directory actionlint
 	$(call say,module verification)
@@ -842,6 +847,13 @@ ci:
 	@$(MAKE) --no-print-directory ledger
 	$(call say,the smoke profile on real sandboxes)
 	@$(MAKE) --no-print-directory test-smoke
+	$(call say,the coverage of the tiers this run made)
+	@if command -v podman >/dev/null 2>&1 && [ -w /dev/kvm ]; then \
+		scripts/coverage.sh check unit smoke; \
+	else \
+		scripts/coverage.sh check unit; \
+		echo "coverage: the smoke tier is not judged here, where its firecracker members cannot run"; \
+	fi
 	$(call say,the local build record)
 	@CS_BUILD_IMAGES='sandbox sandbox-slim' scripts/record-build.sh finish
 	@printf '\nci: every gate ran. Not reproduced here: build-test on macOS and\n'
