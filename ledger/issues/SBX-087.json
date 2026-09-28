@@ -1,0 +1,20 @@
+{
+  "id": "SBX-087",
+  "title": "The smoke tests leave the machine's network keepalive running on a directory they delete",
+  "type": "defect",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "session agent, reproducing a failed oss-repin gate on a developer machine",
+  "opened": "2026-09-28",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "The smoke profile's live tests create the machine-wide `cs-sandbox-net-keepalive` with its gateway seed bind-mounted from the test's own temp directory, and with `--restart=always`. The test then deletes that directory and leaves the container running. A later create on the same machine reuses it, because a running keepalive that has the fabric resolver is taken as healthy. After a reboot or a podman restart it cannot start again, since its mount source is gone. Until 7ecbc17 that failed every later create with \"the container name is already in use\". Since then the next create replaces it.\n\nTo see it, run `make test-smoke`, then `podman inspect cs-sandbox-net-keepalive --format '{{range .Mounts}}{{.Source}}{{end}}'`.",
+  "notes": [],
+  "links": []
+}

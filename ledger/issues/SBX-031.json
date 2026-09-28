@@ -19,6 +19,10 @@
     {
       "date": "2026-09-21",
       "text": "A fourth occurrence, again on a hosted Ubuntu runner, and the first since the probes learned to tell their failures apart. The store seeded, the microVM reached its ready marker, and the nested create never answered in five minutes. All eight probes reported an ssh failure with exit 255, and none reported a deadline. Each one failed after about 3.6 seconds, which is the time an unanswered address takes and not the instant refusal of a closed port. So the open question has an answer for this run: the ssh path to the guest was gone, and nothing says the create itself was wedged. The console again held no kill, no panic and no dead init. The same code had passed this job one push earlier, and the job passed in ten of the last eleven runs on the main branch. Beyond the console, the post-mortem still has no evidence from the host side. Whether the VMM was alive, and whether its tap still answered, would separate a hung guest from a lost network."
+    },
+    {
+      "date": "2026-09-28",
+      "text": "A fifth occurrence, in CI run 36381446652 on 7ecbc17, again on a hosted Ubuntu runner. The microVM reached its ready marker, and all eight probes then failed with ssh exit 255. That commit changed only how a stopped network keepalive is replaced, a host-side step the nested create never reaches. A rerun of the job passed."
     }
   ],
   "links": []

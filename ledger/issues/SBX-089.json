@@ -1,0 +1,20 @@
+{
+  "id": "SBX-089",
+  "title": "A smoke run that fails breaks every later make ci, which judges the smoke coverage an earlier run left",
+  "type": "defect",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "session agent, reading why a sandbox gate failed in oss-repin",
+  "opened": "2026-09-28",
+  "resolved": null,
+  "stint": "reliability session, 2026-09-28",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`make ci` runs `coverage-check` inside `make check`, before its own `test-smoke`. That check judges every tier present in .coverage, so the smoke tier it reads is whatever an earlier run left. When that run failed partway, the tier is partial. Every later `make ci` then fails with packages \"no longer reached by the smoke tier\" before its own smoke run starts. A passing earlier run hides the other half of the fault: the smoke coverage of the run in progress is never judged.\n\nOn 2026-09-27 a smoke run that failed in its first minute failed the next two gates this way.",
+  "notes": [],
+  "links": []
+}

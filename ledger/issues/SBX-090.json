@@ -1,0 +1,23 @@
+{
+  "id": "SBX-090",
+  "title": "The Codex and Claude turn drivers give up on a dialog they know after three quick answers",
+  "type": "defect",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "session agent, reading a failed agent replay in a local smoke run",
+  "opened": "2026-09-28",
+  "resolved": null,
+  "stint": "reliability session, 2026-09-28",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "cs-codex-turn and cs-claude-turn answer a one-time dialog they know with its key. They try three times, a second apart, then fail the turn as one that needs a person. A TUI ignores keys that arrive before it takes input, and on a busy host that can be several seconds after the dialog is drawn.\n\nOn 2026-09-28 the codex-openai-lent replay of a local smoke run failed this way. The screen still showed Codex's newer-model offer, with its first option selected. The same case passed in the next run.",
+  "notes": [],
+  "links": [
+    "SBX-085",
+    "SBX-075"
+  ]
+}
