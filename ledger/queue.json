@@ -29,10 +29,6 @@
     {
       "id": "SBX-004",
       "why": "Past fourteen shares a microVM drops one and still reports success."
-    },
-    {
-      "id": "SBX-087",
-      "why": "A smoke run leaves the machine's shared gateway on a directory it deleted, and a later create reuses that gateway."
     }
   ]
 }

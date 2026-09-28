@@ -3,17 +3,19 @@
   "title": "The smoke tests leave the machine's network keepalive running on a directory they delete",
   "type": "defect",
   "severity": "med",
-  "status": "open",
+  "status": "closed",
   "foundBy": "session agent, reproducing a failed oss-repin gate on a developer machine",
   "opened": "2026-09-28",
-  "resolved": null,
+  "resolved": "2026-09-28",
   "stint": null,
   "evidence": {
-    "commits": [],
+    "commits": [
+      "2b8fd5a"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "With the default keepalive removed first, `make test-smoke` on 2b8fd5a ran in the group smoke-2059934 and passed. Afterwards no cs-sandbox-net-keepalive existed, no cs-sandbox-smoke-* network remained, and the host ran as many dnsmasq processes as before. An earlier run that failed its nested microVM test also left no network behind. `make ci` on 2b8fd5a then passed, with the smoke profile in the group smoke-2102683 and the same state afterwards."
   },
-  "resolution": null,
+  "resolution": "`make test-smoke` runs the profile in the group that CS_SANDBOX_GROUP names, or in a new one for each run. Its sandboxes get their own network, keepalive and gateway, never the machine's default ones. When the profile ends, pass or fail, the recipe stops the group's resolver and removes its network. `make test-integration` is unchanged, and still runs in the default group.",
   "details": "The smoke profile's live tests create the machine-wide `cs-sandbox-net-keepalive` with its gateway seed bind-mounted from the test's own temp directory, and with `--restart=always`. The test then deletes that directory and leaves the container running. A later create on the same machine reuses it, because a running keepalive that has the fabric resolver is taken as healthy. After a reboot or a podman restart it cannot start again, since its mount source is gone. Until 7ecbc17 that failed every later create with \"the container name is already in use\". Since then the next create replaces it.\n\nTo see it, run `make test-smoke`, then `podman inspect cs-sandbox-net-keepalive --format '{{range .Mounts}}{{.Source}}{{end}}'`.",
   "notes": [],
   "links": []
