@@ -1,0 +1,22 @@
+{
+  "id": "SBX-091",
+  "title": "The integration tier, and an engine-level member of the smoke profile, still use the machine's default network",
+  "type": "defect",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "session agent, extending the SBX-087 fix to make test-integration",
+  "opened": "2026-09-28",
+  "resolved": null,
+  "stint": "reliability session, 2026-09-28",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "SBX-087 moved `make test-smoke` into a group of its own, but `make test-integration` still runs every live test in the default group. It makes and reuses the machine's default network and keepalive, as the smoke profile did before. The engine-level live tests build their own Deps with the network `cs-sandbox-net`, whatever group a target names. One of them, TestPodmanCreateLive, is a smoke member, so its container joins the default network even inside the smoke profile's own group.",
+  "notes": [],
+  "links": [
+    "SBX-087"
+  ]
+}
