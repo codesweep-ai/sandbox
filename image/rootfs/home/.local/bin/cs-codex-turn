@@ -183,6 +183,10 @@ KNOWN_DIALOGS=(
     # records the answer in config.toml so it does not ask again (SBX-085).
     "Use existing model|2"
 )
+# Codex ignores keys that arrive before its screen takes input, and on a busy host that can
+# be seconds after a dialog is drawn. So a known dialog is answered again for this long
+# before it is taken for one this driver does not know (SBX-090).
+DIALOG_SECS="${CS_CODEX_DIALOG_SECS:-15}"
 
 # Prints the entry for the known dialog on screen, or nothing.
 known_dialog() {
@@ -231,7 +235,7 @@ detect_state() {
 # Wait until the TUI is ready to accept input. Auto-clears the first-run trust prompt; fails fast
 # on a sign-in screen (needs a human).
 wait_ready() {
-    local deadline=$(( SECONDS + 60 )) st d answered=0
+    local deadline=$(( SECONDS + 60 )) st d answered=0 dialog_at=-1
     while (( SECONDS < deadline )); do
         session_alive || { err "tmux session died during startup"; return 3; }
         st="$(detect_state)"
@@ -244,15 +248,16 @@ wait_ready() {
                 err "  sign in on the remote: 'cs-codex login' (or 'cs-sandbox codex-login <name>')"
                 return 3 ;;
             dialog)
-                # A dialog that is still up after three answers is not the one this driver knows.
+                # A dialog still up after DIALOG_SECS of answers is not the one this driver knows.
                 d="$(known_dialog)"
-                if (( answered++ >= 3 )); then
+                (( dialog_at >= 0 )) || dialog_at=$SECONDS
+                if (( SECONDS - dialog_at >= DIALOG_SECS )); then
                     err "remote codex is on a screen that needs a person: $(screen_text)"
                     err "  attach to answer it: tmux attach -t $TMUX_SESSION"
                     return 3
                 fi
                 tmux send-keys -t "$TMUX_SESSION" "${d##*|}"
-                err "answered a dialog: ${d%|*}"
+                if (( answered++ == 0 )); then err "answered a dialog: ${d%|*}"; fi
                 sleep 1 ;;
             prompt)
                 err "remote codex is on a screen that needs a person: $(screen_text)"

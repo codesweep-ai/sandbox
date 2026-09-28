@@ -1265,7 +1265,11 @@ case "$1" in
     exit 0 ;;
   send-keys)
     for last; do :; done
-    if [ "$last" = Escape ]; then touch "$STUB_DIR/.dismissed"; exit 0; fi
+    if [ "$last" = Escape ]; then
+      n=$(cat "$STUB_DIR/ignore" 2>/dev/null || echo 0)
+      if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$STUB_DIR/ignore"; exit 0; fi
+      touch "$STUB_DIR/.dismissed"; exit 0
+    fi
     if [ ! -f "$STUB_DIR/.submitted" ]; then
       touch "$STUB_DIR/.submitted"
       printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"STUB ANSWER"}]}}' >> "$STUB_DIR/session.jsonl"
@@ -1289,14 +1293,19 @@ func TestClaudeTurnAnswersADialogOrSaysWhoMust(t *testing.T) {
 		wantExit       int
 		wantIn, reason string
 		wantEscape     bool
+		ignore         int
 	}{
 		{"the fullscreen renderer offer is refused",
 			"Try the new fullscreen renderer? It redraws the whole screen.\n❯ 1. Yes, try it\n  2. Not now\nEnter to confirm · Esc to cancel\n",
-			0, "STUB ANSWER", "dismissed a dialog: Try the new fullscreen renderer?", true},
+			0, "STUB ANSWER", "dismissed a dialog: Try the new fullscreen renderer?", true, 0},
+		// A busy host: Claude takes keys only seconds after it draws the dialog (SBX-090).
+		{"the offer is refused once Claude takes keys",
+			"Try the new fullscreen renderer? It redraws the whole screen.\n❯ 1. Yes, try it\n  2. Not now\nEnter to confirm · Esc to cancel\n",
+			0, "STUB ANSWER", "dismissed a dialog: Try the new fullscreen renderer?", true, 4},
 		{"a dialog nobody has seen needs a person",
 			"Share usage data to help improve Claude Code?\n❯ 1. Yes\n  2. No\nEnter to confirm · Esc to cancel\n",
 			3, "needs a person: Share usage data to help improve Claude Code? | ❯ 1. Yes | 2. No",
-			"needs a person: Share usage data", false},
+			"needs a person: Share usage data", false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, bin := agentHome(t, ".cs-claude-remote")
@@ -1316,6 +1325,9 @@ func TestClaudeTurnAnswersADialogOrSaysWhoMust(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(stubDir, "dialog.txt"), []byte(tc.dialog), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(stubDir, "ignore"), []byte(strconv.Itoa(tc.ignore)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			start := time.Now()
@@ -1354,7 +1366,11 @@ case "$1" in
     exit 0 ;;
   send-keys)
     for last; do :; done
-    if [ "$last" = 2 ]; then touch "$STUB_DIR/.dismissed"; exit 0; fi
+    if [ "$last" = 2 ]; then
+      n=$(cat "$STUB_DIR/ignore" 2>/dev/null || echo 0)
+      if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$STUB_DIR/ignore"; exit 0; fi
+      touch "$STUB_DIR/.dismissed"; exit 0
+    fi
     if [ -f "$STUB_DIR/.dismissed" ] && [ ! -f "$STUB_DIR/.submitted" ]; then
       touch "$STUB_DIR/.submitted"
       printf '%s\n' '{"payload":{"type":"agent_message","message":"STUB ANSWER"}}' >> "$FRESH_ROLLOUT"
@@ -1378,14 +1394,19 @@ func TestCodexTurnAnswersADialogOrSaysWhoMust(t *testing.T) {
 		wantExit       int
 		wantIn, reason string
 		wantAnswer     bool
+		ignore         int
 	}{
 		{"a newer model is declined",
 			"  Meet GPT-6 Sol\n\n  Codex just got an upgrade.\n\n  › 1. Try new model\n    2. Use existing model\n\n  enter/esc confirm · ctrl + c quit\n",
-			0, "STUB ANSWER", "answered a dialog: Use existing model", true},
+			0, "STUB ANSWER", "answered a dialog: Use existing model", true, 0},
+		// A busy host: Codex takes keys only seconds after it draws the dialog (SBX-090).
+		{"a newer model is declined once Codex takes keys",
+			"  Meet GPT-6 Sol\n\n  Codex just got an upgrade.\n\n  › 1. Try new model\n    2. Use existing model\n\n  enter/esc confirm · ctrl + c quit\n",
+			0, "STUB ANSWER", "answered a dialog: Use existing model", true, 4},
 		{"a migration that cannot be declined needs a person",
 			"  GPT-5.4 Mini is no longer available\n\n  Codex now uses GPT-6 Luna in place of GPT-5.4 Mini.\n\n  enter/esc continue · ctrl + c quit\n",
 			3, "needs a person: GPT-5.4 Mini is no longer available",
-			"needs a person: GPT-5.4 Mini is no longer available", false},
+			"needs a person: GPT-5.4 Mini is no longer available", false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, bin := agentHome(t, ".cs-codex-remote")
@@ -1399,6 +1420,9 @@ func TestCodexTurnAnswersADialogOrSaysWhoMust(t *testing.T) {
 			writeStub(t, bin, "cs-codex", "#!/bin/sh\nexit 0\n")
 			writeStub(t, bin, "tmux", codexDialogTmux)
 			if err := os.WriteFile(filepath.Join(stubDir, "dialog.txt"), []byte(tc.dialog), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(stubDir, "ignore"), []byte(strconv.Itoa(tc.ignore)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			start := time.Now()
