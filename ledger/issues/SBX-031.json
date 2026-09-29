@@ -27,6 +27,10 @@
     {
       "date": "2026-09-28",
       "text": "A sixth occurrence, in CI run 36492302753 on 479d822, and the first with the smoke profile in a group of its own. All eight probes failed with ssh exit 255, as before, and a rerun of the job passed. So the stall does not depend on the default network."
+    },
+    {
+      "date": "2026-09-28",
+      "text": "The cause is found, by reproducing the stall on a developer machine. Firecracker's default Sync block engine does disk IO on the thread that also runs the guest's network. When the host throttles that thread's writes, the guest goes dark for tens of seconds. A new connection then fails once ARP gives up after about three seconds, which is the ssh 255 every post-mortem saw. To reproduce it, give the outer VM's systemd scope IOReadBandwidthMax of 20 MB/s and IOWriteBandwidthMax of 5 MB/s, then run TestCLINestedSandboxInVMLive. Pings to the outer VM during the nested create stalled for up to 32.7 seconds, with a median round trip of 3.4 seconds. With io_engine Async on every drive, the same run lost no ping, and the median round trip was 0.61 ms. A 6 GiB memory ceiling made the stalls longer, up to 90.7 seconds, so memory headroom is not the fix. Firecracker still calls the Async engine a developer preview, so adopting it waits on a decision. Apart from the stalls, the nested create reads about 3.5 GB in the guest, which makes it slow on any slow disk."
     }
   ],
   "links": []

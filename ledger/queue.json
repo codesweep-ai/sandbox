@@ -12,7 +12,7 @@
     },
     {
       "id": "SBX-031",
-      "why": "An intermittent stall reds main CI, and nothing yet says whether the guest or its ssh died."
+      "why": "Heavy disk IO freezes a microVM's network for tens of seconds, which reds main CI and cuts off a user's sessions. The fix, Firecracker's Async engine, waits on a decision."
     },
     {
       "id": "SBX-002",
