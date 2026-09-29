@@ -379,8 +379,8 @@ COPY home/.config/nvim /sandbox/home/.config/nvim
 #                  `:TSInstallSync` is defined by lua/plugins/treesitter.lua; nvim-treesitter's
 #                  own install is async, so a plain headless call would exit before it finished.
 #   3. LSP servers / formatters -> /opt/nvim/mason, NOT the home. Mason bakes the absolute
-#                  install path into its bin/ wrappers (and into the venv it builds for
-#                  basedpyright), so ~1 GB of servers pre-installed under /sandbox/home would
+#                  install path into its bin/ wrappers (and into the venvs it builds for
+#                  the Python tools), so ~700 MB of servers pre-installed under /sandbox/home would
 #                  still point at /sandbox/home after being copied to a developer's home. They
 #                  go under /opt with the other shared toolchains instead: one root-owned,
 #                  path-stable copy, never duplicated into an instance's home. lua/plugins/

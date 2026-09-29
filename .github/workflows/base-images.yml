@@ -124,7 +124,7 @@ jobs:
 
   # One job per architecture, each on a runner of that architecture. Nothing is
   # cross-built: the shipped base compiles CPython from source through pyenv and
-  # pre-installs ~900 MB of language servers through mason, and under qemu that
+  # pre-installs ~700 MB of language servers through mason, and under qemu that
   # is hours rather than minutes.
   #
   # Each pushes ARCH-SUFFIXED tags and then proves them. The manifest job below

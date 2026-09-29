@@ -51,10 +51,54 @@ local shared_servers = {
   cssls = { package = "html-lsp", bin = "vscode-css-language-server" },
 }
 
+-- Packages installed from a different source than their upstream registry entry names.
+-- Each spec is upstream's with only the source changed, served to Mason as a Lua registry
+-- listed ahead of the upstream one; the first registry that has a package wins.
+--
+-- basedpyright: upstream installs it from PyPI, where it depends on nodejs-wheel-binaries,
+-- a ~200 MB Node private to its venv. The same release is on npm, and installed from there
+-- it runs on the Node already on PATH. The version is pinned here and does not follow the
+-- registry: bump it to upgrade.
+--
+-- A read-only root never refreshes its registries, so this one is not loaded there, and
+-- `:Mason` describes basedpyright from the upstream entry. What is installed is this one.
+local overrides = {
+  basedpyright = {
+    name = "basedpyright",
+    description = "Fork of the Pyright static type checker for Python, with extra Pylance features.",
+    homepage = "https://detachhead.github.io/basedpyright",
+    licenses = { "MIT" },
+    languages = { "Python" },
+    categories = { "LSP" },
+    source = { id = "pkg:npm/basedpyright@1.40.1" },
+    schemas = {
+      lsp = "vscode:https://raw.githubusercontent.com/DetachHead/basedpyright/v{{version}}/packages/vscode-pyright/package.json",
+    },
+    bin = {
+      basedpyright = "npm:basedpyright",
+      ["basedpyright-langserver"] = "npm:basedpyright-langserver",
+    },
+    neovim = { lspconfig = "basedpyright" },
+  },
+}
+
+-- A Lua registry is a module that names one module per package spec; preload serves both.
+local override_registry = "mason-overrides"
+package.preload[override_registry] = function()
+  local index = {}
+  for name, spec in pairs(overrides) do
+    index[name] = override_registry .. "." .. name
+    package.preload[index[name]] = function()
+      return spec
+    end
+  end
+  return index
+end
+
 -- Where the packages live.
 --
--- Mason bakes the absolute install path into the `bin/` wrappers (and into the venv it
--- builds for basedpyright), so these ~900 MB of servers cannot be pre-installed into the
+-- Mason bakes the absolute install path into the `bin/` wrappers (and into the venvs it
+-- builds for the Python tools), so these ~700 MB of servers cannot be pre-installed into the
 -- home skeleton and then copied to a developer's home — the wrappers would still point
 -- at the build-time path. They are therefore installed into /opt like the sandbox's
 -- other heavy toolchains: one shared, root-owned, path-stable copy that is never
@@ -98,6 +142,7 @@ return {
     -- enable mason and configure icons
     mason.setup({
       install_root_dir = mason_root,
+      registries = { "lua:" .. override_registry, "github:mason-org/mason-registry" },
       -- a read-only (shared) root cannot cache a registry refresh
       registry_cache = { refresh = writable },
       ui = {

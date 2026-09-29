@@ -10,7 +10,7 @@
 # rootfs. They need none of the toolchains a developer's sandbox exists to
 # provide — and those are ~5 GB of the shipped image and nearly all of its build
 # time (pyenv alone compiles CPython from source; the Neovim layer pre-installs
-# ~900 MB of language servers). Slimmed, the image is 474 MB and builds in about
+# ~700 MB of language servers). Slimmed, the image is 474 MB and builds in about
 # three minutes, which is what makes running the live tests in CI affordable.
 #
 # This DERIVES those images from the real Containerfiles rather than duplicating
