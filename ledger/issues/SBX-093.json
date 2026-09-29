@@ -3,13 +3,19 @@
   "title": "Neovim's Mason installs nothing into a root that does not exist yet",
   "type": "defect",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, setting up this repo's Neovim config on a host without /opt/nvim/mason",
   "opened": "2026-09-28",
-  "resolved": null,
+  "resolved": "2026-09-28",
   "stint": "host Neovim setup session, 2026-09-28",
-  "evidence": { "commits": [], "integrated": [], "verified": null },
-  "resolution": null,
+  "evidence": {
+    "commits": [
+      "4d50966"
+    ],
+    "integrated": [],
+    "verified": "I ran headless nvim on fresh XDG directories with no Mason root. On 75c104e the registry refresh was off, no registry downloaded and `html-lsp` was not found, for both the `stdpath(\"data\")/mason` fallback and a new `$MASON_ROOT`. On 4d50966 the refresh was on, the GitHub registry downloaded and `html-lsp` was found in both cases. A `$MASON_ROOT` that cannot be created, and an existing directory the user cannot write, still start with no error and stay read-only. `make ledger prose refs` passed."
+  },
+  "resolution": "`mason.lua` creates its Mason root before it tests whether it can write there. A new private root therefore counts as writable, and Mason fetches its registry.",
   "details": "`lua/plugins/mason.lua` treats its Mason root as read-only when the directory is missing, because `vim.uv.fs_access()` returns false for a missing path. A read-only root turns off Mason's registry refresh, so the registry is never downloaded. `:MasonInstallSync!` then fails with `Cannot find package \"html\"`, and nothing installs.\n\nIt happens to any root that nobody created in advance. One is `$MASON_ROOT` pointed at a new directory, which SPEC.md offers for a private writable package set. Another is the `stdpath(\"data\")/mason` fallback on a host without /opt/nvim/mason. The image build never sees it, because it creates /opt/nvim/mason before the pre-build.",
   "notes": [],
   "links": []
