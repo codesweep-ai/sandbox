@@ -863,6 +863,7 @@ you to one.
 | `CS_SANDBOX_FC_MEMORY_MAX` | the guest's memory + 256 MiB | The cgroup ceiling a microVM is killed at. |
 | `CS_SANDBOX_FC_MEMORY_SWAP_MAX` | `0` | The swap allowance on top of that ceiling. |
 | `CS_SANDBOX_FC_NO_CGROUP` | unset | Set to anything to launch microVMs outside a cgroup. |
+| `CS_SANDBOX_FC_IO_ENGINE` | `Async` where io_uring works | The block engine for microVM disks, `Sync` or `Async`. `doctor` says which one this host gets and why. |
 | `CS_SANDBOX_NO_KSM` | unset | Set to anything to stop offering guest memory to KSM. |
 
 ## Exit status

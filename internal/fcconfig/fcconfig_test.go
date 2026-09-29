@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -177,5 +178,24 @@ func TestBalloonEnablesFreePageReporting(t *testing.T) {
 	}
 	if got.Balloon.AmountMiB != 0 || got.Balloon.DeflateOnOOM {
 		t.Errorf("the balloon must stay inert, got %+v", *got.Balloon)
+	}
+}
+
+// TestSetIOEngine: the engine lands on every drive, and a config that never set
+// one says nothing, which leaves Firecracker on its default.
+func TestSetIOEngine(t *testing.T) {
+	c := Build(goldenSpec())
+	b, err := c.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "io_engine") {
+		t.Errorf("an unset engine was written: %s", b)
+	}
+	c.SetIOEngine("Async")
+	for _, d := range c.Drives {
+		if d.IOEngine != "Async" {
+			t.Errorf("drive %s io_engine = %q, want Async", d.DriveID, d.IOEngine)
+		}
 	}
 }

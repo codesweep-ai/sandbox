@@ -5,7 +5,8 @@
 //
 //	{
 //	  "boot-source":        { "kernel_image_path", "initrd_path", "boot_args" },
-//	  "drives":             [ { "drive_id", "path_on_host", "is_root_device", "is_read_only" }, ... ],
+//	  "drives":             [ { "drive_id", "path_on_host", "is_root_device", "is_read_only",
+//	                            "io_engine" }, ... ],
 //	  "network-interfaces": [ { "iface_id", "host_dev_name", "guest_mac" } ],
 //	  "vsock":              { "guest_cid", "uds_path" },
 //	  "machine-config":     { "vcpu_count", "mem_size_mib" },
@@ -37,12 +38,14 @@ type BootSource struct {
 	BootArgs        string `json:"boot_args"`
 }
 
-// Drive is a single virtio-block device attached to the microVM.
+// Drive is a single virtio-block device attached to the microVM. IOEngine is
+// Firecracker's block engine, Sync or Async; left empty, Firecracker uses Sync.
 type Drive struct {
 	DriveID      string `json:"drive_id"`
 	PathOnHost   string `json:"path_on_host"`
 	IsRootDevice bool   `json:"is_root_device"`
 	IsReadOnly   bool   `json:"is_read_only"`
+	IOEngine     string `json:"io_engine,omitempty"`
 }
 
 // NetworkInterface is a single virtio-net tap device.
@@ -207,4 +210,11 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(buf[i:])
+}
+
+// SetIOEngine puts every drive on one block engine.
+func (c *Config) SetIOEngine(engine string) {
+	for i := range c.Drives {
+		c.Drives[i].IOEngine = engine
+	}
 }

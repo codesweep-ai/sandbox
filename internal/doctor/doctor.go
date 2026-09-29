@@ -279,9 +279,11 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		fg.add(baseRootfsCheck(d))
 		fg.add(reflinkCheck(ctx, d))
 		r.addGroup(fg)
-		// Directly after the engine's own section, so it reads as a continuation
+		// Directly after the engine's own section, so they read as a continuation
 		// of it rather than as advice about the host in general — none of it
-		// applies to the podman engine, which reclaims on its own.
+		// applies to the podman engine, which reclaims on its own and has no
+		// block engine of its own.
+		r.addGroup(diskIOGroup())
 		r.addGroup(memoryGroup())
 	}
 

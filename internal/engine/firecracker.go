@@ -326,6 +326,9 @@ func (fe *Firecracker) launch(ctx context.Context, name string, inst *state.Inst
 	if err := fab.FwdUp(idir, inst.Port, inst.FCIP, d.SSHBind); err != nil {
 		return err
 	}
+	if err := setDiskIOEngine(idir); err != nil {
+		return err
+	}
 	// Firecracker runs INSIDE podman's rootless netns (it has /dev/kvm + the tap).
 	return launchFirecracker(idir, fe.cache().FirecrackerBin())
 }

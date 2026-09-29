@@ -1381,6 +1381,17 @@ Kept per image, that sandbox finds no rootfs under the name it asked for and is 
 The key is the repository rather than the whole reference, so a host holds one per variant instead
 of one per version it has ever built.
 
+**R169.** A microVM's disks **MUST** use Firecracker's Async block engine where the kernel is 5.12 or
+later and an io_uring can be set up, and the Sync engine elsewhere. The engine **MUST** be chosen at
+each launch, and `doctor` **MUST** warn where it is Sync.
+
+Sync does disk IO on the thread that also runs the guest's network. A write the host throttles
+therefore freezes the VM's network with it, on a slow disk for more than 30 seconds at a time
+(SBX-031). Async does the IO through io_uring, off that thread. Firecracker still calls Async a
+developer preview, and its open concerns are io_uring's worker threads, which count against the
+VM's cgroup only from 5.12. Choosing at each launch moves an older sandbox onto what the host can do
+now, and setting `CS_SANDBOX_FC_IO_ENGINE` overrides the choice.
+
 ### 12.4 Returning and sharing memory
 
 **R128.** Every microVM **MUST** get a `virtio-balloon` configured purely for free page reporting,

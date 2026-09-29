@@ -67,7 +67,7 @@ func TestMemoryGroupIsFirecrackerOnly(t *testing.T) {
 	if at < 1 {
 		t.Fatalf("firecracker report is missing %q", title)
 	}
-	if prev := fc.Groups[at-1].Title; !strings.HasPrefix(prev, "firecracker microVM engine") {
-		t.Errorf("memory section should follow the engine's own section, got %q before it", prev)
+	if prev := fc.Groups[at-1].Title; !strings.HasPrefix(prev, "firecracker") {
+		t.Errorf("memory section should follow the engine's own sections, got %q before it", prev)
 	}
 }
