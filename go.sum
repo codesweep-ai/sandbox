@@ -4,10 +4,10 @@ github.com/clipperhouse/uax29/v2 v2.7.0 h1:+gs4oBZ2gPfVrKPthwbMzWZDaAFPGYK72F0NJ
 github.com/clipperhouse/uax29/v2 v2.7.0/go.mod h1:EFJ2TJMRUaplDxHKj1qAEhCtQPW2tJSwu5BF98AuoVM=
 github.com/codesweep-ai/ledger v0.0.0-20260929191516-41ab75421bbb h1:kMcv6YvmL2nXGQYCMQF40UVoi5gT5LOjIDXXvwMTcaU=
 github.com/codesweep-ai/ledger v0.0.0-20260929191516-41ab75421bbb/go.mod h1:fyOvpXzvSsd9tS/dAklog3fxrkb9PetJnj57WUHZGxo=
-github.com/codesweep-ai/lint v0.0.0-20260928070756-b0b5bce85aad h1:ZXWVEC/YJQcVKQpBHOivlg2txCPdtdjoc0KzsNw8tK4=
-github.com/codesweep-ai/lint v0.0.0-20260928070756-b0b5bce85aad/go.mod h1:SXNSi94eHfoz9OtQa3bMHKiblDgY1yXETQjTw9xFxro=
-github.com/codesweep-ai/npmrevs v0.0.0-20260929194235-eda3da0cb7f9 h1:bZVdXXeFqBG1QAVsbCVFQyO23c5v8R92wosCurVIsxE=
-github.com/codesweep-ai/npmrevs v0.0.0-20260929194235-eda3da0cb7f9/go.mod h1:UnW8fx+sLpAIdRc5YHFcMVCJjca7GvaO9ePkP06nqWM=
+github.com/codesweep-ai/lint v0.0.0-20260929191516-795f6d166613 h1:ATVkJtP0UlY60N1HJBZO9KeGAYtPFzo4bADZjmxHCL8=
+github.com/codesweep-ai/lint v0.0.0-20260929191516-795f6d166613/go.mod h1:SXNSi94eHfoz9OtQa3bMHKiblDgY1yXETQjTw9xFxro=
+github.com/codesweep-ai/npmrevs v0.0.0-20260929195159-d74ecfc3b09b h1:gU0n4WjyigU74D8TWeLUJZEL15EDP86GMTWNTHkmyUQ=
+github.com/codesweep-ai/npmrevs v0.0.0-20260929195159-d74ecfc3b09b/go.mod h1:zpu/NPKfKBfRFIc2NhNdIFXI5cXo+XzXMIbOSRdVgAY=
 github.com/codesweep-ai/tracer v0.0.0-20260928070858-cf46c905b90f h1:q4Ew1+NMMtxFlrl2lUIoM1xdu3ze6uLG6GJ4OI/sLXA=
 github.com/codesweep-ai/tracer v0.0.0-20260928070858-cf46c905b90f/go.mod h1:Xl0h/zDM3sov48RF/SxlQFrDl06WDxXDp57P2HUXdPQ=
 github.com/codesweep-ai/vcr v0.0.0-20260927003752-bfd215531214 h1:wl3cc3fE9DRuuzsVpQoDz+YTm+DzcnH39h5GiTfgb+k=
