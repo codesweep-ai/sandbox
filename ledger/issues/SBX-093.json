@@ -1,0 +1,16 @@
+{
+  "id": "SBX-093",
+  "title": "Neovim's Mason installs nothing into a root that does not exist yet",
+  "type": "defect",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "session agent, setting up this repo's Neovim config on a host without /opt/nvim/mason",
+  "opened": "2026-09-28",
+  "resolved": null,
+  "stint": "host Neovim setup session, 2026-09-28",
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "`lua/plugins/mason.lua` treats its Mason root as read-only when the directory is missing, because `vim.uv.fs_access()` returns false for a missing path. A read-only root turns off Mason's registry refresh, so the registry is never downloaded. `:MasonInstallSync!` then fails with `Cannot find package \"html\"`, and nothing installs.\n\nIt happens to any root that nobody created in advance. One is `$MASON_ROOT` pointed at a new directory, which SPEC.md offers for a private writable package set. Another is the `stdpath(\"data\")/mason` fallback on a host without /opt/nvim/mason. The image build never sees it, because it creates /opt/nvim/mason before the pre-build.",
+  "notes": [],
+  "links": []
+}

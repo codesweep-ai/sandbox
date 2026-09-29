@@ -112,6 +112,9 @@ local mason_root = vim.env.MASON_ROOT
 if not mason_root or mason_root == "" then
   mason_root = (vim.fn.isdirectory(shared_root) == 1) and shared_root or (vim.fn.stdpath("data") .. "/mason")
 end
+-- Create the root if it is missing, so a new private root counts as writable. fs_access()
+-- is false for a missing directory, and a read-only root never downloads the registry.
+pcall(vim.fn.mkdir, mason_root, "p")
 local writable = vim.uv.fs_access(mason_root, "W") or false
 
 -- Where a ride-along server's binary lands: npm's .bin/ inside its host package.
