@@ -42,6 +42,15 @@
 # The module zip comes from Go itself, resolving the commit out of this
 # checkout, so its pseudo-version and its hash are the ones the proxy will give.
 #
+# Each recorded build then removes the npm packages of older ones. cs-npmrevs
+# reads every package it serves before it answers, so a store that only grew
+# would keep every install waiting longer. A build keeps its packages while it
+# is one of its project's CS_BUILDS_KEEP newest (3) and was recorded within
+# CS_BUILDS_KEEP_DAYS days (3). The newest build of each project keeps them
+# whatever its age. Entries, modules and images stay, and a repin passes over a
+# build whose package is gone. A store that is a repository is left whole: it
+# lasts as long as its campaign, and its members pin each other's builds.
+#
 # The same file is in lint, ledger, npmrevs, tracer, vcr, sandbox, campaign, ui
 # and dashboards, so a fix made in one is copied to the others rather than
 # rewritten there. dashboards' SPEC.md describes the store, and its tests run
@@ -108,6 +117,42 @@ take_in() {
   git -C "$STORE" merge -q --ff-only "$ref" 2>/dev/null ||
     git -C "$STORE" merge -q --no-edit -m "Take in the builds the orchestrator delivered" "$ref" >/dev/null ||
     echo "record-build: could not take in $ref in $STORE" >&2
+  return 0
+}
+
+# Remove the npm packages of the builds past what the header says each project
+# keeps. An entry whose times cannot be read keeps its packages.
+prune_npm() {
+  local keep="${CS_BUILDS_KEEP:-3}" days="${CS_BUILDS_KEEP_DAYS:-3}"
+  local since cutoff dir e committed entry pkg version recorded rank flat f removed=0
+  store_repo && return 0
+  [ -d "$STORE/npm" ] || return 0
+  since=$(($(date -u +%s) - days * 86400))
+  cutoff="$(date -u -d "@$since" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$since" +%Y-%m-%dT%H:%M:%SZ)"
+  for dir in "$STORE"/status/*/; do
+    rank=0
+    # Newest first: a commit time in UTC sorts as it reads.
+    while read -r committed entry; do
+      read -r pkg version <<<"$(sed -nE 's/.*"npm": \{ "([^"]+)": "([^"]+)" \}.*/\1 \2/p' "$entry")"
+      [ -n "$version" ] || continue
+      rank=$((rank + 1))
+      recorded="$(sed -nE 's/^[[:space:]]*"recorded": "([^"]*)".*/\1/p' "$entry")"
+      [ -n "$committed" ] && [ -n "$recorded" ] || continue
+      [ "$rank" -eq 1 ] && continue
+      [ "$rank" -le "$keep" ] && [[ ! "$recorded" < "$cutoff" ]] && continue
+      # npm pack names @scope/name-linux-x64 scope-name-linux-x64-<version>.tgz.
+      flat="${pkg#@}"
+      flat="${flat//\//-}"
+      for f in "$STORE/npm/$flat-$version.tgz" "$STORE/npm/$flat"-*-"$version.tgz"; do
+        [ -f "$f" ] || continue
+        rm -f "$f"
+        removed=$((removed + 1))
+      done
+    done < <(for e in "$dir"*.json; do
+      [ -f "$e" ] && printf '%s %s\n' "$(sed -nE 's/^[[:space:]]*"committed": "([^"]*)".*/\1/p' "$e")" "$e"
+    done | LC_ALL=C sort -r)
+  done
+  [ "$removed" -eq 0 ] || say "removed $removed npm packages of older builds from $STORE/npm"
   return 0
 }
 
@@ -273,3 +318,5 @@ if store_repo; then
     say "could not commit it in $STORE; it is recorded, and stays uncommitted" >&2
   fi
 fi
+
+prune_npm
