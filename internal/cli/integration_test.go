@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -653,6 +654,8 @@ func vmPostMortem(t *testing.T, host hostenv.Host, name string) {
 			fi.Size(), time.Since(fi.ModTime()).Round(time.Second), strings.Join(lines, "\n"))
 	}
 
+	vmHostPostMortem(t, name)
+
 	argv := append([]string{"ssh"}, sshArgv(t, host, name)...)
 	for _, probe := range []struct{ what, sh string }{
 		{"containers", "podman ps -a 2>&1"},
@@ -672,6 +675,170 @@ func vmPostMortem(t *testing.T, host hostenv.Host, name string) {
 		cancel()
 		t.Logf("post-mortem / %s:\n%s", probe.what, probeReport(res, err, timedOut))
 	}
+}
+
+// vmHostPostMortem reports the host's side of a microVM that stopped answering,
+// which is all there is to read once nothing reaches the guest (SBX-031). An
+// ssh probe goes through the forwarder, the tap and the guest's kernel, so its
+// failure says only that the path broke. These say where. The forwarder's log
+// says why its connections failed. The neighbour entry and a ping say whether
+// the guest still answers on its tap. The VMM's threads, sampled twice, say
+// whether its vCPUs run or sit in the host kernel, and on what. The pressure
+// its cgroup and the host were under says what they would be waiting for.
+func vmHostPostMortem(t *testing.T, name string) {
+	t.Helper()
+	idir := state.Dir(paths.Instances(), testGroup(), name)
+	in, err := state.Load(paths.Instances(), testGroup(), name)
+	if err != nil {
+		t.Logf("post-mortem / host: cannot load %s: %v", name, err)
+		return
+	}
+	ns := func(argv ...string) string {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		res, err := (&run.Exec{}).Run(ctx, run.Opts{ReadOnly: true},
+			append([]string{"podman", "unshare", "--rootless-netns"}, argv...)...)
+		out := strings.TrimSpace(res.Stdout + "\n" + res.Stderr)
+		if err != nil {
+			out += fmt.Sprintf("\n(%v)", err)
+		}
+		return out
+	}
+	tail := func(path string, n int) string {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err.Error()
+		}
+		lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		if len(lines) > n {
+			lines = lines[len(lines)-n:]
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	t.Logf("post-mortem / host: forwarder log:\n%s", tail(filepath.Join(idir, "fwd-ns.log"), 20))
+	t.Logf("post-mortem / host: neighbour %s:\n%s", in.FCIP, ns("ip", "neigh", "show", in.FCIP))
+	t.Logf("post-mortem / host: ping %s:\n%s", in.FCIP, ns("ping", "-c", "3", "-W", "1", in.FCIP))
+	tap := fcnet.Fabric{}.TapName(in.FCIP)
+	if g, err := state.LoadGroup(paths.Instances(), testGroup()); err == nil {
+		tap = fcnet.Fabric{TapPrefix: g.TapPrefix}.TapName(in.FCIP)
+	}
+	t.Logf("post-mortem / host: tap %s:\n%s", tap, ns("ip", "-s", "link", "show", tap))
+
+	pid := vmmPid(filepath.Join(idir, "run.json"))
+	if pid == 0 {
+		t.Logf("post-mortem / host: no firecracker process holds %s", filepath.Join(idir, "run.json"))
+	} else {
+		first := vmmThreads(pid)
+		time.Sleep(2 * time.Second)
+		t.Logf("post-mortem / host: firecracker pid %d threads (state, CPU ticks over 2s, wait channel):\n%s",
+			pid, vmmThreadReport(first, vmmThreads(pid)))
+		t.Logf("post-mortem / host: its cgroup:\n%s", cgroupReport(pid))
+	}
+	var host []string
+	for _, f := range []string{"/proc/pressure/cpu", "/proc/pressure/memory", "/proc/pressure/io"} {
+		host = append(host, filepath.Base(f)+": "+strings.ReplaceAll(tail(f, 2), "\n", " | "))
+	}
+	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
+		for l := range strings.SplitSeq(string(data), "\n") {
+			for _, k := range []string{"MemAvailable:", "Dirty:", "Writeback:", "SwapTotal:", "SwapFree:"} {
+				if strings.HasPrefix(l, k) {
+					host = append(host, strings.Join(strings.Fields(l), " "))
+				}
+			}
+		}
+	}
+	t.Logf("post-mortem / host: pressure and memory:\n%s", strings.Join(host, "\n"))
+}
+
+// vmmPid finds the firecracker process booted from run.json, by its command
+// line: it runs under systemd-run and podman unshare, so no pid file of ours
+// is necessarily its own.
+func vmmPid(runJSON string) int {
+	cmdlines, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+	for _, c := range cmdlines {
+		data, err := os.ReadFile(c)
+		if err != nil {
+			continue
+		}
+		args := strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
+		if filepath.Base(args[0]) == "firecracker" && strings.Contains(string(data), runJSON) {
+			pid, _ := strconv.Atoi(filepath.Base(filepath.Dir(c)))
+			return pid
+		}
+	}
+	return 0
+}
+
+// vmmThread is one sample of a VMM thread: its name, scheduler state, CPU time
+// in clock ticks and what it waits on in the kernel.
+type vmmThread struct {
+	comm, state, wchan string
+	ticks              int64
+}
+
+func vmmThreads(pid int) map[string]vmmThread {
+	out := map[string]vmmThread{}
+	tasks, _ := filepath.Glob(fmt.Sprintf("/proc/%d/task/*", pid))
+	for _, task := range tasks {
+		stat, err := os.ReadFile(filepath.Join(task, "stat"))
+		if err != nil {
+			continue
+		}
+		s := string(stat)
+		open, end := strings.IndexByte(s, '('), strings.LastIndexByte(s, ')')
+		if open < 0 || end < open {
+			continue
+		}
+		f := strings.Fields(s[end+1:])
+		if len(f) < 13 {
+			continue
+		}
+		utime, _ := strconv.ParseInt(f[11], 10, 64)
+		stime, _ := strconv.ParseInt(f[12], 10, 64)
+		wchan, _ := os.ReadFile(filepath.Join(task, "wchan"))
+		out[filepath.Base(task)] = vmmThread{comm: s[open+1 : end], state: f[0], wchan: string(wchan), ticks: utime + stime}
+	}
+	return out
+}
+
+func vmmThreadReport(first, second map[string]vmmThread) string {
+	var lines []string
+	for tid, b := range second {
+		used := "?"
+		if a, ok := first[tid]; ok {
+			used = strconv.FormatInt(b.ticks-a.ticks, 10)
+		}
+		lines = append(lines, fmt.Sprintf("%-16s %s %4s  %s", b.comm, b.state, used, b.wchan))
+	}
+	sort.Strings(lines)
+	return strings.Join(lines, "\n")
+}
+
+// cgroupReport reads the memory and IO state of the cgroup process pid is in.
+func cgroupReport(pid int) string {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return err.Error()
+	}
+	path := ""
+	for l := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
+		if p, ok := strings.CutPrefix(l, "0::"); ok {
+			path = filepath.Join("/sys/fs/cgroup", p)
+		}
+	}
+	if path == "" {
+		return "no cgroup v2 path"
+	}
+	lines := []string{path}
+	for _, f := range []string{"memory.current", "memory.max", "memory.events", "memory.pressure", "io.pressure"} {
+		v, err := os.ReadFile(filepath.Join(path, f))
+		if err != nil {
+			continue
+		}
+		lines = append(lines, f+": "+strings.ReplaceAll(strings.TrimSpace(string(v)), "\n", " | "))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // probeTimeout bounds one post-mortem probe. Shared with probeReport so the
