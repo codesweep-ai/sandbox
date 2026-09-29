@@ -3,19 +3,19 @@
   "title": "A nested sandbox create inside a microVM stalls, and the guest stops answering ssh",
   "type": "defect",
   "severity": "high",
-  "status": "closed",
+  "status": "in-progress",
   "foundBy": "session agent, reviewing failed CI run 33581884555 on 2026-09-02",
   "opened": "2026-09-02",
-  "resolved": "2026-09-28",
-  "stint": null,
+  "resolved": null,
+  "stint": "reliability session, 2026-09-28",
   "evidence": {
     "commits": [
       "db8f9c7"
     ],
     "integrated": [],
-    "verified": "The outer VM's scope was limited to 20 MB/s read and 5 MB/s write, and TestCLINestedSandboxInVMLive ran on the change db8f9c7 carries. It chose Async for every drive: rootfs, seed and store1. Pings to the outer VM during the nested create lost none, the largest gap was 0.6 seconds, and the median round trip was 0.69 ms. Before the change the same run stalled for up to 32.7 seconds. The smoke-firecracker job's three members passed on the unthrottled disk, and `make ci` on db8f9c7 passed. Inside a podman container, `doctor` fell back to Sync and warned, with ENOSYS under the default seccomp profile and EPERM with seccomp off."
+    "verified": null
   },
-  "resolution": "MicroVM disks use Firecracker's Async block engine wherever the kernel is 5.12 or later and an io_uring can be set up. Their IO then no longer runs on the thread that serves the guest's network. Elsewhere they stay on Sync, and `doctor` warns in its firecracker disk IO section. The engine is chosen at each launch, and CS_SANDBOX_FC_IO_ENGINE overrides it.",
+  "resolution": null,
   "details": "`TestCLINestedSandboxInVMLive` boots a microVM and creates a podman sandbox inside it. In CI run 33581884555 that nested create never answered. The step is bounded at five minutes and it spent all five.\n\nThe guest was healthy until the create started. The store seeded in 20s and the microVM booted in 27s. The test then shipped its CLI over ssh, ran `cs-sandbox ls` in the guest, and read `podman images` there. Every one of those commands returned what the test expected. The create began at 02:12:01 UTC and nothing answered again.\n\nThe console says nothing at all. `serial.log` stopped writing at the boot marker and stayed silent for the whole five minutes. An out of memory kill, a kernel panic and a dead PID 1 all print there, and the log holds none of them.\n\nThe post-mortem that runs on the stall could not name the fault either. It reported all eight of its probes as `no answer within 20s`, which the timing contradicts. The test ran 401 seconds, and the probes shared about fifty of them. Eight real deadlines would have taken 160. The probes had failed in about a second each and were reported as a stall.\n\nThat reporting is fixed as of this record. A probe now reports a deadline, an ssh failure and a non-zero exit apart from each other, because they point at different faults. A fast ssh 255 is the vsock bridge or sshd being gone, and the guest may be fine. Whether this run was a wedged guest or a lost ssh path is still unknown, and the next occurrence should say which.\n\nThis is the third occurrence and the first since the step was bounded. The two before it ran out the 20 minute package timeout and left only a goroutine dump, which is what the bound was added to prevent. Every occurrence is a GitHub `ubuntu-latest` runner. The same step takes 14 seconds on bare metal. The commit under test changed only ledger files, so nothing in the shipped code explains it.\n\nA guest that stops answering is a lost sandbox rather than a slow one. The same nested create is what an agent runs inside a microVM, so a user would meet this as a VM that never comes back. CI meets it as an intermittent red on main with no diagnosis.",
   "notes": [
     {
@@ -33,6 +33,10 @@
     {
       "date": "2026-09-28",
       "text": "The cause is found, by reproducing the stall on a developer machine. Firecracker's default Sync block engine does disk IO on the thread that also runs the guest's network. When the host throttles that thread's writes, the guest goes dark for tens of seconds. A new connection then fails once ARP gives up after about three seconds, which is the ssh 255 every post-mortem saw. To reproduce it, give the outer VM's systemd scope IOReadBandwidthMax of 20 MB/s and IOWriteBandwidthMax of 5 MB/s, then run TestCLINestedSandboxInVMLive. Pings to the outer VM during the nested create stalled for up to 32.7 seconds, with a median round trip of 3.4 seconds. With io_engine Async on every drive, the same run lost no ping, and the median round trip was 0.61 ms. A 6 GiB memory ceiling made the stalls longer, up to 90.7 seconds, so memory headroom is not the fix. Firecracker still calls the Async engine a developer preview, so adopting it waits on a decision. Apart from the stalls, the nested create reads about 3.5 GB in the guest, which makes it slow on any slow disk."
+    },
+    {
+      "date": "2026-09-28",
+      "text": "Reopened. The first CI run with the Async engine, run 36512296950 on e24306f, stalled the same way. Its doctor step confirmed Async on the runner, and the serial log shows Firecracker using it on every drive. All eight probes still failed with ssh exit 255. That runner copied the 1.3 GiB base rootfs in about two and a half minutes, near 9 MB/s, so its disk was as slow as the local throttle. Async stays, since it removes the event-loop freeze reproduced here, but it is not the cause CI meets. The post-mortem still has no evidence from the host side, and that is the next step."
     }
   ],
   "links": []
