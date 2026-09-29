@@ -667,6 +667,15 @@ jobs:
           tar -C bin/fc-cache -xzf bin/fc-artifacts.tar.gz
           ls -1 bin/fc-cache
 
+      # What this runner gives a microVM, in the words a person's doctor uses.
+      # Its disk IO section says whether the disks run on the Async engine,
+      # which is what keeps a slow disk from freezing a guest's network
+      # (SBX-031), and which a green run would otherwise never show.
+      # Informational: the smoke step below is what passes or fails this job,
+      # and a runner fails several checks that have nothing to do with it.
+      - name: doctor (firecracker)
+        run: go run ./cmd/cs-sandbox doctor --engine firecracker || true
+
       # Three members, and this is the only leg with a /dev/kvm to run them:
       # TestFirecrackerCreateLive is the cheapest proof that a microVM boots, gets
       # its disks, answers ssh as the dev user over the vsock bridge, and registers
