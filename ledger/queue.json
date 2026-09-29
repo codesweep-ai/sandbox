@@ -11,10 +11,6 @@
       "why": "A throttle delivered inside a 200 stream reads as a success in the lender's log, so a fleet at its limit still looks healthy."
     },
     {
-      "id": "SBX-031",
-      "why": "Heavy disk IO freezes a microVM's network for tens of seconds, which reds main CI and cuts off a user's sessions. The fix, Firecracker's Async engine, waits on a decision."
-    },
-    {
       "id": "SBX-002",
       "why": "A stale pid file can send SIGKILL to another of your processes after a host reboot."
     },
