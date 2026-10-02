@@ -138,6 +138,9 @@ rootfs. The binary is pinned to a release, `v1.17.0` by default and overridable 
 `CS_SANDBOX_FC_VERSION`, and is verified against a SHA256 committed in the source. You provide a few
 host packages and `/dev/kvm` access first.
 
+The Firecracker engine also needs **podman 5.0 or later**. A microVM reaches the host through pasta,
+which podman 5.0 made its rootless network. `podman --version` says which one you have.
+
 ```bash
 # Fedora  (the base packages above are required too)
 sudo dnf install passt dnsmasq fakeroot e2fsprogs socat python3 shadow-utils iproute curl
