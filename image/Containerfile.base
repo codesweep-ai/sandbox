@@ -201,7 +201,7 @@ RUN curl -fsSL https://pyenv.run | PYENV_GIT_TAG=v2.8.4 bash \
   && PATH="$PYENV_ROOT/bin:$PATH" pyenv global 3.14.7 \
   && chmod -R a+rX "$PYENV_ROOT"
 
-# NVM + Node 24.19.0 (NVM_DIR=/opt/nvm): a general JS/TS runtime; npm -g lands in shared node.
+# NVM + Node 24.21.0 (NVM_DIR=/opt/nvm): a general JS/TS runtime; npm -g lands in shared node.
 # 24.x is the Active LTS line ("Krypton", LTS since 2025-10, maintenance from 2026-10) — so
 # this line is worth re-evaluating in Oct 2026, when 24 goes to maintenance and 26 takes over
 # as Active LTS.
@@ -209,7 +209,7 @@ RUN curl -fsSL https://pyenv.run | PYENV_GIT_TAG=v2.8.4 bash \
 ENV NVM_DIR=/opt/nvm
 RUN mkdir -p "$NVM_DIR" \
   && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.7/install.sh | bash \
-  && bash -c '. "$NVM_DIR/nvm.sh" && nvm install v24.19.0 && nvm alias default v24.19.0' \
+  && bash -c '. "$NVM_DIR/nvm.sh" && nvm install v24.21.0 && nvm alias default v24.21.0' \
   && chmod -R a+rX "$NVM_DIR"
 
 # Go 1.27.1 (GOROOT=/opt/go) — the upstream tarball, pinned and checksum-verified, replacing
@@ -357,7 +357,7 @@ RUN python3 -m venv /opt/py-tools \
 # the agents (claude, codex, opencode), and the py-tools are found without sourcing ~/.bashrc.
 # (~/.bashrc additionally runs pyenv/nvm init for interactive version switching.)
 ENV JAVA_HOME=/opt/java
-ENV PATH=/opt/nvm/versions/node/v24.19.0/bin:/opt/py-tools/bin:/opt/claude/bin:/opt/codex/bin:/opt/opencode/bin:/opt/pyenv/bin:/opt/go/bin:/opt/java/bin:/opt/maven/bin:${PATH}
+ENV PATH=/opt/nvm/versions/node/v24.21.0/bin:/opt/py-tools/bin:/opt/claude/bin:/opt/codex/bin:/opt/opencode/bin:/opt/pyenv/bin:/opt/go/bin:/opt/java/bin:/opt/maven/bin:${PATH}
 
 # The Neovim config, and ONLY that, ahead of the pre-build below — 72 KB of the 392 KB
 # `COPY . /sandbox` used to bring here. That pre-build is the single largest layer in the
