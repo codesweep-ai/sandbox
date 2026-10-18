@@ -48,6 +48,13 @@ RUN if [ -n "$CS_SANDBOX_PRIVATE_REGISTRY" ]; then \
 # it was copied from a moment ago.
 COPY . /sandbox
 
+# python's jsonschema in every python the image offers (pyenv's, the /opt/py-tools venv, the system's): the
+# JSON Schema validators our tooling runs in a sandbox import it, and a member had to pip-install it itself.
+# Belongs in Containerfile.base beside the /opt/py-tools venv; here until the base at tiers.env next carries it.
+RUN /opt/pyenv/versions/3.14.7/bin/python -m pip install --no-cache-dir --disable-pip-version-check 'jsonschema>=4.18' \
+ && /opt/py-tools/bin/pip install --no-cache-dir --disable-pip-version-check 'jsonschema>=4.18' \
+ && dnf install -y python3-jsonschema && dnf clean all
+
 # The other half of the guard written in Containerfile.base. Fail loudly rather than ship a
 # Neovim config whose plugins were pre-built from a different one.
 RUN want=$(cat /opt/nvim/.config-hash) \
