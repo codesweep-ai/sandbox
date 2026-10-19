@@ -6,11 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/codesweep-ai/sandbox/internal/proc"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/state"
 )
@@ -58,8 +58,9 @@ func TestPollUntilStopsOnErrorAndCancel(t *testing.T) {
 	}
 }
 
-// fcInstance makes an instance dir whose fc.pid names pid.
-func fcInstance(t *testing.T, pid int) (*Firecracker, string) {
+// fcInstance makes an instance dir whose fc.pid records pid, with its start
+// time, the way launchFirecracker does (R170).
+func fcInstance(t *testing.T, pid func(idir string) int) (*Firecracker, string) {
 	t.Helper()
 	dir := t.TempDir()
 	fe := NewFirecracker(Deps{Runner: run.NewFake(), InstDir: dir, FCCache: t.TempDir(), Network: "cs-sandbox-net", StartTimeout: 5})
@@ -67,14 +68,19 @@ func fcInstance(t *testing.T, pid int) (*Firecracker, string) {
 		t.Fatal(err)
 	}
 	idir := fe.d.InstanceDir("box")
-	if err := os.WriteFile(filepath.Join(idir, "fc.pid"), []byte(strconv.Itoa(pid)), 0o600); err != nil {
+	if err := proc.WriteFile(filepath.Join(idir, "fc.pid"), proc.Of(pid(idir))); err != nil {
 		t.Fatal(err)
 	}
 	return fe, idir
 }
 
+// liveVMM is a pid for fcInstance: a stand-in VMM whose argv names the instance.
+func liveVMM(t *testing.T) func(string) int {
+	return func(idir string) int { return fakeVMM(t, idir).Process.Pid }
+}
+
 func TestFirecrackerWaitReadySeesTheMarkerPromptly(t *testing.T) {
-	fe, idir := fcInstance(t, os.Getpid())
+	fe, idir := fcInstance(t, liveVMM(t))
 	serial := filepath.Join(idir, "serial.log")
 	if err := os.WriteFile(serial, []byte("booting\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -93,7 +99,7 @@ func TestFirecrackerWaitReadySeesTheMarkerPromptly(t *testing.T) {
 }
 
 func TestFirecrackerWaitReadyFailsWhenTheVMMDies(t *testing.T) {
-	fe, _ := fcInstance(t, deadPid(t))
+	fe, _ := fcInstance(t, func(string) int { return deadPid(t) })
 	if err := fe.waitReady(context.Background(), "box"); err == nil {
 		t.Fatal("waitReady passed a microVM whose VMM is gone")
 	}
@@ -113,12 +119,8 @@ func (b *blockingRunner) Run(ctx context.Context, _ run.Opts, _ ...string) (run.
 // The ssh that asks for the reboot hangs once the guest is gone, so stop used to
 // sit out its whole 8s timeout. It has to end as soon as the VMM exits.
 func TestRebootGuestReturnsWhenTheVMMExits(t *testing.T) {
-	vmm := exec.Command("sleep", "30")
-	if err := vmm.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = vmm.Process.Kill() })
-	fe, idir := fcInstance(t, vmm.Process.Pid)
+	var vmm *exec.Cmd
+	fe, idir := fcInstance(t, func(idir string) int { vmm = fakeVMM(t, idir); return vmm.Process.Pid })
 	r := &blockingRunner{}
 	fe.d.Runner = r
 	go func() {
@@ -128,8 +130,12 @@ func TestRebootGuestReturnsWhenTheVMMExits(t *testing.T) {
 	}()
 	start := time.Now()
 	fe.rebootGuest(context.Background(), idir, []string{"ssh", "box", "reboot"})
-	if took := time.Since(start); took > 2*time.Second {
+	took := time.Since(start)
+	if took > 2*time.Second {
 		t.Errorf("rebootGuest returned %s after start for a VMM that exited at 200ms", took)
+	}
+	if took < 150*time.Millisecond {
+		t.Errorf("rebootGuest returned %s after start, before the VMM exited at 200ms", took)
 	}
 	if !r.cancelled.Load() {
 		t.Error("rebootGuest left the ssh running")
