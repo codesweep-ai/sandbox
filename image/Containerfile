@@ -56,6 +56,11 @@ RUN for py in /opt/pyenv/versions/*/bin/python /opt/py-tools/bin/python3; do \
       [ -x "$py" ] && "$py" -m pip install --no-cache-dir --disable-pip-version-check 'jsonschema>=4.18'; \
     done; dnf install -y python3-jsonschema && dnf clean all
 
+# The agents tier's build ran its CLIs as root and left their temp directories in /tmp, which the member (uid 1000)
+# cannot write (opencode's /tmp/opencode: a modeller lost its scratch there, 2026-10-19). Belongs in
+# Containerfile.agents after the opencode stanza; here until AGENTS_REF next moves.
+RUN find /tmp -mindepth 1 -delete
+
 # The other half of the guard written in Containerfile.base. Fail loudly rather than ship a
 # Neovim config whose plugins were pre-built from a different one.
 RUN want=$(cat /opt/nvim/.config-hash) \
