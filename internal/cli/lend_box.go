@@ -13,6 +13,7 @@ import (
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/lend"
+	"github.com/codesweep-ai/sandbox/internal/lock"
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
 
@@ -117,6 +118,7 @@ func lenderBoxArgv(name string, s lenderBoxSpec) []string {
 		"--restart=always",
 		"--label", "cs-sandbox.managed=1",
 		"--label", "cs-sandbox.lender=1",
+		"--label", lenderLayoutLabel + "=" + lenderLayout,
 		"--security-opt", "label=disable",
 		// The lender resolves its own paths from these, so the container reads
 		// exactly the files the host process would have read.
@@ -188,6 +190,9 @@ var errUnreadable = errors.New("the lender container cannot read it")
 // a stopped one is started, and only an absent one is created. That matters
 // because every create in a group calls this.
 func (b lenderBox) ensure(ctx context.Context) (string, error) {
+	if err := b.retireStale(ctx); err != nil {
+		return "", err
+	}
 	if b.running(ctx) {
 		return b.serving(ctx), nil
 	}
@@ -237,6 +242,70 @@ func (b lenderBox) ensure(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return b.serving(ctx), nil
+}
+
+// lenderLayout names the set of mounts lenderBoxArgv gives a box, and the label
+// carries it on the container. Bump it whenever that set changes, so ensure
+// replaces a box that would otherwise keep the old mounts for as long as its
+// group lives: adoption never looks at what a box mounts.
+//
+// A version rather than a hash of the mounts. The mount paths come from the
+// caller's environment, so two creates in one group with different agent homes
+// would replace each other's lender on every call, cutting the streams of every
+// sandbox in it.
+const (
+	lenderLayoutLabel = "cs-sandbox.lender-mounts"
+	lenderLayout      = "2" // the credential directories and the group's, R150f
+)
+
+// layout is the mount layout an existing box was created with, "" for one that
+// carries no label. ok is false when podman could not say, which is never a
+// reason to remove a box.
+func (b lenderBox) layout(ctx context.Context) (string, bool) {
+	res, err := b.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "inspect", "--type", "container", b.name(),
+		"--format", `{{index .Config.Labels "`+lenderLayoutLabel+`"}}`)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(res.Stdout), true
+}
+
+// retireStale removes a box created with another mount layout, running or
+// stopped, keeping its log first, so ensure creates one with the current mounts.
+//
+// Every sandbox in the group loses its lender for the second or so that takes:
+// a call in flight is cut, and the agent's client retries it or fails that turn.
+// It happens once per group, on the first create or start after an upgrade.
+//
+// Serialized on a lock in the group's directory and decided again under it,
+// because every create in a group calls ensure and a matrix starts several at
+// once. Without that, a second create that saw the same stale box could remove
+// the box the first had just put in its place.
+func (b lenderBox) retireStale(ctx context.Context) error {
+	stale := func() bool {
+		if !b.exists(ctx) {
+			return false
+		}
+		got, ok := b.layout(ctx)
+		return ok && got != lenderLayout
+	}
+	if !stale() {
+		return nil
+	}
+	if b.Spec.GroupDir != "" {
+		l := lock.NewAt(filepath.Join(b.Spec.GroupDir, ".lender", "replace.lock"))
+		if err := l.Acquire(); err != nil {
+			return err
+		}
+		defer l.Release()
+		if !stale() {
+			return nil
+		}
+	}
+	if err := b.stop(ctx); err != nil {
+		return fmt.Errorf("replace the credential lender on %s, which has an older set of mounts: %w", b.Spec.Network, err)
+	}
+	return nil
 }
 
 // serving is the address callers get once the box is up, and the one place the

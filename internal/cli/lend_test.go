@@ -444,6 +444,7 @@ func TestACredentialTheLenderCannotReadIsRefusedAtCreate(t *testing.T) {
 	app := lendApp(t, home)
 	fake := app.Runner.(*run.Fake)
 	fake.OnStdout("container inspect", "true\n") // a lender is already up
+	fake.OnStdout(lenderLayoutLabel, lenderLayout+"\n")
 	// Exit 1 is `test -r` itself answering no, which is what this case is. A
 	// bare error would stand in for podman failing to ask, which is a different
 	// refusal with a different remedy.
@@ -478,6 +479,7 @@ func TestALenderThatIsGoneIsNotReportedAsABadCredential(t *testing.T) {
 	app := lendApp(t, home)
 	fake := app.Runner.(*run.Fake)
 	fake.OnStdout("container inspect", "true\n")
+	fake.OnStdout(lenderLayoutLabel, lenderLayout+"\n")
 	fake.On("test -r", run.Result{ExitCode: 125}, &run.ExitError{
 		Argv:     []string{"podman", "exec", "lender", "test", "-r"},
 		ExitCode: 125,
@@ -505,6 +507,7 @@ func TestACredentialTheLenderCanReadIsNotRefused(t *testing.T) {
 	app := lendApp(t, lendHome(t))
 	fake := app.Runner.(*run.Fake)
 	fake.OnStdout("container inspect", "true\n")
+	fake.OnStdout(lenderLayoutLabel, lenderLayout+"\n")
 
 	if _, err := app.resolveLoans(context.Background(),
 		&createFlags{lendAPIKey: []string{"anthropic"}}, "box", ""); err != nil {

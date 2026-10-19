@@ -900,7 +900,9 @@ rotation R150b is about.*
 
 **R150f.** The lender's container **MUST** mount only what the lender reads, read-only and at the host's
 own paths. That is the directory each slot's credential is kept in, and its own group's directory
-under the instances root. It **MUST NOT** mount a credential as a file. *A lender bug then reaches no
+under the instances root. It **MUST NOT** mount a credential as a file. A lender container created
+with other mounts **MUST** be replaced rather than adopted, so the rule reaches groups that already
+exist. *A lender bug then reaches no
 `~/.ssh`, no tier key and no other group's loans. A credential is replaced by a rename, by the client
 that owns it and by the renewer, and a mount of the file keeps serving the inode it started with. The
 cost is the rest of each profile directory, such as an agent's transcripts. A mask cannot cover them

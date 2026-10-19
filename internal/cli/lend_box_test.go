@@ -303,6 +303,7 @@ func TestCreatesStagingTogetherEachLandACompleteCopy(t *testing.T) {
 func TestEnsureAdoptsARunningLender(t *testing.T) {
 	fake := run.NewFake()
 	fake.OnStdout("container inspect", "true\n")
+	fake.OnStdout(lenderLayoutLabel, lenderLayout+"\n") // and it has the current mounts
 	b := lenderBox{Runner: fake, Spec: lenderBoxSpec{Network: "cs-sandbox-net", Image: "img"}}
 	base, err := b.ensure(context.Background())
 	if err != nil {
@@ -311,8 +312,87 @@ func TestEnsureAdoptsARunningLender(t *testing.T) {
 	if base != "http://"+lend.GuestName+":2500" {
 		t.Errorf("base = %q", base)
 	}
-	if fake.Contains("podman run") {
-		t.Errorf("a running lender was replaced:\n%s", strings.Join(fake.Rendered(), "\n"))
+	for _, verb := range []string{"podman run", "podman stop", "podman rm"} {
+		if fake.Contains(verb) {
+			t.Errorf("a running lender was replaced:\n%s", strings.Join(fake.Rendered(), "\n"))
+		}
+	}
+}
+
+// A box made before its mounts were narrowed has no layout label, and one made
+// with another layout carries a different value. Adopting either would keep its
+// mounts for as long as the group lives, so ensure replaces it, running or
+// stopped, and keeps its log first (R150f).
+func TestEnsureReplacesALenderWithOlderMounts(t *testing.T) {
+	for _, tc := range []struct{ name, running, label string }{
+		{"running, no label", "true", ""},
+		{"stopped, no label", "false", ""},
+		{"running, older layout", "true", "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := filepath.Join(t.TempDir(), "lender-logs", "default", "g")
+			fake := run.NewFake()
+			fake.OnStdout(lenderLayoutLabel, tc.label+"\n")
+			fake.OnStdout("container inspect", tc.running+"\n")
+			fake.On("podman logs", run.Result{Stderr: "level=INFO msg=lending\n"}, nil)
+			b := lenderBox{Runner: &lenderUntilRemoved{Fake: fake}, Spec: lenderBoxSpec{
+				Network: "cs-sandbox-net", Image: "img", LogDir: logs, GroupDir: t.TempDir(),
+			}}
+			_, _ = b.ensure(context.Background())
+
+			calls := fake.Rendered()
+			at := func(sub string) int {
+				return slices.IndexFunc(calls, func(c string) bool { return strings.Contains(c, sub) })
+			}
+			if at("podman rm -f") < 0 || at("podman logs") > at("podman rm -f") {
+				t.Errorf("the stale lender was not removed after its log was kept:\n%s", strings.Join(calls, "\n"))
+			}
+			if run := at("podman run"); run < at("podman rm -f") {
+				t.Errorf("no lender was created in its place:\n%s", strings.Join(calls, "\n"))
+			}
+			if !strings.Contains(calls[at("podman run")], lenderLayoutLabel+"="+lenderLayout) {
+				t.Errorf("the new lender does not carry its layout: %s", calls[at("podman run")])
+			}
+			if kept, _ := filepath.Glob(filepath.Join(logs, "*.log")); len(kept) != 1 {
+				t.Errorf("the stale lender's log was not kept: %v", kept)
+			}
+		})
+	}
+}
+
+// lenderUntilRemoved is the Fake with one piece of state: once `podman rm` runs,
+// the box is gone, so ensure goes on to create one rather than adopt the old.
+type lenderUntilRemoved struct {
+	*run.Fake
+	gone bool
+}
+
+func (r *lenderUntilRemoved) Run(ctx context.Context, opts run.Opts, argv ...string) (run.Result, error) {
+	res, err := r.Fake.Run(ctx, opts, argv...)
+	line := strings.Join(argv, " ")
+	switch {
+	case strings.Contains(line, "podman rm"):
+		r.gone = true
+	case r.gone && strings.Contains(line, "container exists"):
+		return run.Result{ExitCode: 1}, &run.ExitError{Argv: argv, ExitCode: 1}
+	case r.gone && strings.Contains(line, "container inspect"):
+		return run.Result{}, nil
+	}
+	return res, err
+}
+
+// A podman that cannot say what a box carries is not evidence that the box is
+// stale, and removing it would cut every stream in the group for nothing.
+func TestEnsureKeepsALenderItCannotInspect(t *testing.T) {
+	fake := run.NewFake()
+	fake.On(lenderLayoutLabel, run.Result{ExitCode: 125}, errors.New("inspect failed"))
+	fake.OnStdout("container inspect", "true\n")
+	b := lenderBox{Runner: fake, Spec: lenderBoxSpec{Network: "cs-sandbox-net", Image: "img"}}
+	if _, err := b.ensure(context.Background()); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if fake.Contains("podman rm") || fake.Contains("podman run") {
+		t.Errorf("a lender was replaced on a failed inspect:\n%s", strings.Join(fake.Rendered(), "\n"))
 	}
 }
 
@@ -369,6 +449,7 @@ func TestEnsureStatesTheLendersMTU(t *testing.T) {
 	fake := run.NewFake()
 	fake.OnStdout("{{.State.Pid}}", "4242\n")
 	fake.OnStdout("container inspect", "true\n")
+	fake.OnStdout(lenderLayoutLabel, lenderLayout+"\n")
 	b := lenderBox{Runner: fake, Spec: lenderBoxSpec{Network: "cs-sandbox-net", Image: "img"}}
 	if _, err := b.ensure(context.Background()); err != nil {
 		t.Fatalf("ensure: %v", err)
@@ -505,6 +586,7 @@ func TestALenderThatWillNotStartKeepsItsLog(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "lender-logs", "default", "g")
 	fake := run.NewFake()
 	fake.OnStdout("container inspect", "false\n") // it exists, and it is not running
+	fake.OnStdout(lenderLayoutLabel, lenderLayout+"\n")
 	fake.On("podman start", run.Result{ExitCode: 125}, errors.New("cannot start"))
 	fake.On("podman logs", run.Result{Stderr: "level=ERROR msg=\"the last thing it said\"\n"}, nil)
 	b := lenderBox{Runner: fake, Spec: lenderBoxSpec{Network: "cs-sandbox-net", Image: "img", LogDir: dir}}
