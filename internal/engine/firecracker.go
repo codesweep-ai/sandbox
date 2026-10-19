@@ -432,13 +432,35 @@ func (fe *Firecracker) shutdown(ctx context.Context, name string) {
 	if fcRunning(idir) {
 		// Best-effort graceful reboot, by whatever route reaches this VM.
 		if in, err := state.Load(fe.d.InstDir, fe.d.group(), name); err == nil {
-			reboot := append(fe.sshArgs(name, in), "sync; sudo sh -c \"sync; reboot -f\"")
-			cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			_, _ = fe.d.Runner.Run(cctx, run.Opts{}, reboot...)
-			cancel()
+			fe.rebootGuest(ctx, idir, append(fe.sshArgs(name, in), "sync; sudo sh -c \"sync; reboot -f\""))
 		}
 	}
 	killFirecracker(idir)
+}
+
+// rebootGuest runs the reboot over ssh and returns once ssh exits or the VMM
+// does, whichever is first. A guest that reboots sends no FIN over the tap, so
+// ssh would otherwise hold its connection open until the 8 s timeout, long after
+// the VM is gone.
+func (fe *Firecracker) rebootGuest(ctx context.Context, idir string, argv []string) {
+	const budget = 8 * time.Second
+	cctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	sshDone := make(chan struct{})
+	go func() {
+		defer close(sshDone)
+		_, _ = fe.d.Runner.Run(cctx, run.Opts{}, argv...)
+	}()
+	_ = pollUntil(cctx, budget, 50*time.Millisecond, 100*time.Millisecond, func() (bool, error) {
+		select {
+		case <-sshDone:
+			return true, nil
+		default:
+			return !fcRunning(idir), nil
+		}
+	})
+	cancel()
+	<-sshDone
 }
 
 // anyVMRunning reports whether any firecracker instance is still up (for GC).

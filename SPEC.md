@@ -641,6 +641,10 @@ git push  worker:api HEAD:cs-sandbox/worker
 
 **R73.** `stop` and `start` **MUST** keep the sandbox and all its disks.
 
+**R73a.** `stop` on a microVM **MUST** ask the guest over ssh to sync and reboot before it kills the
+Firecracker process. It **MUST** stop waiting on that ssh once Firecracker exits, since a guest that
+reboots leaves the connection open.
+
 **R74.** `rm` **MUST** keep the data and remove only the instance, and `ls` **MUST** keep listing that data with
 status `removed`.
 

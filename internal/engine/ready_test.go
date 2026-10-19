@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -95,6 +96,43 @@ func TestFirecrackerWaitReadyFailsWhenTheVMMDies(t *testing.T) {
 	fe, _ := fcInstance(t, deadPid(t))
 	if err := fe.waitReady(context.Background(), "box"); err == nil {
 		t.Fatal("waitReady passed a microVM whose VMM is gone")
+	}
+}
+
+// blockingRunner stands in for an ssh that never returns on its own, which is
+// what one does when the guest it reached reboots without closing the
+// connection.
+type blockingRunner struct{ cancelled atomic.Bool }
+
+func (b *blockingRunner) Run(ctx context.Context, _ run.Opts, _ ...string) (run.Result, error) {
+	<-ctx.Done()
+	b.cancelled.Store(true)
+	return run.Result{}, ctx.Err()
+}
+
+// The ssh that asks for the reboot hangs once the guest is gone, so stop used to
+// sit out its whole 8s timeout. It has to end as soon as the VMM exits.
+func TestRebootGuestReturnsWhenTheVMMExits(t *testing.T) {
+	vmm := exec.Command("sleep", "30")
+	if err := vmm.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = vmm.Process.Kill() })
+	fe, idir := fcInstance(t, vmm.Process.Pid)
+	r := &blockingRunner{}
+	fe.d.Runner = r
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		_ = vmm.Process.Kill()
+		_ = vmm.Wait()
+	}()
+	start := time.Now()
+	fe.rebootGuest(context.Background(), idir, []string{"ssh", "box", "reboot"})
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("rebootGuest returned %s after start for a VMM that exited at 200ms", took)
+	}
+	if !r.cancelled.Load() {
+		t.Error("rebootGuest left the ssh running")
 	}
 }
 
