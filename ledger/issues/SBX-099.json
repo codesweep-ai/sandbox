@@ -1,0 +1,22 @@
+{
+  "id": "SBX-099",
+  "title": "Nothing restarts sshd in a sandbox, so a crashed sshd leaves it unreachable until a restart",
+  "type": "defect",
+  "severity": "med",
+  "status": "closed",
+  "foundBy": "session agent, comparing with another agent sandbox",
+  "opened": "2026-10-19",
+  "resolved": "2026-10-19",
+  "stint": "sandbox-hardening",
+  "evidence": {
+    "commits": [
+      "de290f7"
+    ],
+    "integrated": [],
+    "verified": "On a real microVM, `pkill -x sshd` used to leave `exec` failing for 20 seconds without recovery. With the fix, one attempt failed and `exec` and `ssh` worked again 0.9 seconds later. Killing the vsock bridge, and the sshd supervisor itself, were each recovered too. A TERM sent to PID 1 in the guest now gives a clean reboot in 0.25 seconds. On podman, `ssh` was back 0.22 seconds after `pkill sshd`. The full `make ci` gate on the six commits together exited 0, with 14 of 14 agent replay cells passing on podman. `make test-agents-lent AGENTS_ENGINE=firecracker` passed 7 of 7."
+  },
+  "resolution": "sshd and the vsock bridge run under a small supervisor that restarts them with a backoff, on both engines (R99a, R131a). In a microVM, bash stays PID 1 and reaps orphans, and TERM to it syncs and reboots.",
+  "details": "The microVM's init ended in `exec socat`, so the vsock bridge was PID 1 and nothing watched sshd. If sshd died, `cs-sandbox ssh` and `exec` failed until the sandbox was restarted. A TERM sent to the bridge made the guest kernel panic. The podman entrypoint had the same gap, since it left sshd in the background unwatched. There, the ready file could also appear before sshd listened.",
+  "notes": [],
+  "links": []
+}

@@ -1,0 +1,23 @@
+{
+  "id": "SBX-098",
+  "title": "Nothing caps a sandbox's processes, CPU or memory, so a fleet of agents can starve the desktop",
+  "type": "improvement",
+  "severity": "med",
+  "status": "closed",
+  "foundBy": "session agent, comparing with another agent sandbox",
+  "opened": "2026-10-19",
+  "resolved": "2026-10-19",
+  "stint": "sandbox-hardening",
+  "evidence": {
+    "commits": [
+      "ec803b6",
+      "086f032"
+    ],
+    "integrated": [],
+    "verified": "On this 28-core host, a podman sandbox made with `--cpus 2 --mem 3072` read pids.max 8192, cpu.max `200000 100000` and memory.max 3221225472. Four busy loops were throttled, and a 4 GiB allocation was OOM-killed while the container stayed up. A microVM's scope sat under cs-sandbox.slice with CPUQuota 3s/s and TasksMax 1024, and kept both after stop and start. Under podman's cgroupfs manager, create succeeded outside the slice with the same container limits. TestCLINestedSandboxInVMLive and TestCLINestedRootlessPodmanLive PASS. The full `make ci` gate on the six commits together exited 0, with 14 of 14 agent replay cells passing on podman. `make test-agents-lent AGENTS_ENGINE=firecracker` passed 7 of 7."
+  },
+  "resolution": "Every sandbox runs under cs-sandbox.slice, capped at 75% of memory with no swap, all but an eighth of the cores, and a quarter of the kernel's tasks (R171). A podman sandbox gets a pids limit by default and takes `--cpus` and `--mem` as caps. The scope of a microVM is limited to its vCPUs plus one core (R130a).",
+  "details": "A podman sandbox ran with podman's default of 2048 pids and no CPU or memory cap. The scope of a microVM had a memory cap and nothing else. Ten agents building at once could take every core and all memory, and nothing bounded the fleet as a whole.",
+  "notes": [],
+  "links": []
+}

@@ -1,0 +1,22 @@
+{
+  "id": "SBX-101",
+  "title": "Waiting for a sandbox to become ready polls once a second, which adds up to a second to every create",
+  "type": "improvement",
+  "severity": "low",
+  "status": "closed",
+  "foundBy": "session agent, comparing with another agent sandbox",
+  "opened": "2026-10-19",
+  "resolved": "2026-10-19",
+  "stint": "sandbox-hardening",
+  "evidence": {
+    "commits": [
+      "f4c5dbd"
+    ],
+    "integrated": [],
+    "verified": "Over five creates per engine, a Firecracker create went from 4.4 to 5.1 seconds down to 3.6 to 4.1. A podman create went from 2.77 to 2.97 seconds down to 2.08 to 2.63. The full `make ci` gate on the six commits together exited 0, with 14 of 14 agent replay cells passing on podman. `make test-agents-lent AGENTS_ENGINE=firecracker` passed 7 of 7."
+  },
+  "resolution": "Readiness is polled every 50 ms with a backoff, capped at 100 ms for a microVM's serial log and at one second for podman's exec check (R138a).",
+  "details": "Both engines checked for readiness once a second, so a sandbox that became ready just after a check waited almost a second more.",
+  "notes": [],
+  "links": []
+}

@@ -1,6 +1,6 @@
 {
   "recommendedBy": "session agent, after the reliability session of 2026-09-28",
-  "updated": "2026-09-28",
+  "updated": "2026-10-19",
   "items": [
     {
       "id": "SBX-047",
@@ -9,10 +9,6 @@
     {
       "id": "SBX-054",
       "why": "A throttle delivered inside a 200 stream reads as a success in the lender's log, so a fleet at its limit still looks healthy."
-    },
-    {
-      "id": "SBX-002",
-      "why": "A stale pid file can send SIGKILL to another of your processes after a host reboot."
     },
     {
       "id": "SBX-003",

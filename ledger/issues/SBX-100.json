@@ -1,0 +1,22 @@
+{
+  "id": "SBX-100",
+  "title": "Stopping a microVM always waits out an eight-second ssh timeout",
+  "type": "defect",
+  "severity": "low",
+  "status": "closed",
+  "foundBy": "session agent, comparing with another agent sandbox",
+  "opened": "2026-10-19",
+  "resolved": "2026-10-19",
+  "stint": "sandbox-hardening",
+  "evidence": {
+    "commits": [
+      "b3f7136"
+    ],
+    "integrated": [],
+    "verified": "Five stops on a real microVM took 8.67 to 8.70 seconds before the fix and 0.92 to 1.0 seconds after. The guest's serial log still shows a clean reboot. go test ./internal/engine/ -count=20: TestRebootGuestReturnsWhenTheVMMExits PASS. The full `make ci` gate on the six commits together exited 0, with 14 of 14 agent replay cells passing on podman. `make test-agents-lent AGENTS_ENGINE=firecracker` passed 7 of 7."
+  },
+  "resolution": "`stop` runs the reboot ssh beside a poll of the VMM and cancels the ssh as soon as Firecracker exits (R73a).",
+  "details": "`stop` asks the guest to reboot over ssh. A guest that reboots sends no FIN, so ssh waited its full eight-second timeout after the VM was already gone.",
+  "notes": [],
+  "links": []
+}
