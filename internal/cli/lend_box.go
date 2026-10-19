@@ -50,11 +50,20 @@ type lenderBox struct {
 // lenderBoxSpec is what the container is built from. The paths are HOST paths,
 // mounted at the same location inside, so nothing is translated on the way in
 // and a log line means the same thing on both sides.
+//
+// Home and InstDir are where the lender resolves its paths from, and neither is
+// mounted whole (R150f). Reads and GroupDir are the parts of them it reads.
 type lenderBoxSpec struct {
 	Network string // the group's podman network
 	Image   string // the sandbox image, which every group already has
 	Home    string // the host home holding the ~/.cs-<agent> profiles and .cs-keys
-	InstDir string // the instances root, where the loans are
+	InstDir string // the instances root
+	// Reads are the directories the credentials are read from, which is all of
+	// Home the lender sees: lend.CredentialDirs.
+	Reads []string
+	// GroupDir is this group's directory under InstDir, where its loans and
+	// faults are. One lender serves one group, so no other group's is mounted.
+	GroupDir string
 	// Bin is a Linux cs-sandbox to run instead of the image's own. It is not
 	// optional in every case: the slim CI image drops the whole codesweep-tools
 	// stanza, so there is no cs-sandbox in it at all.
@@ -71,7 +80,7 @@ type lenderBoxSpec struct {
 	// long as any lent sandbox was up, which is exactly when somebody is
 	// iterating on the lender.
 	//
-	// It sits under InstDir, which is already mounted read-only at the same
+	// It sits under GroupDir, which is already mounted read-only at the same
 	// path, so the copy needs no mount of its own and the container's view of it
 	// is the host's path.
 	Stage string
@@ -114,10 +123,15 @@ func lenderBoxArgv(name string, s lenderBoxSpec) []string {
 		"-e", "HOME=" + s.Home,
 		"-e", "CS_SANDBOX_AGENT_HOME=" + s.Home,
 		"-e", "CS_SANDBOX_INSTANCES_DIR=" + s.InstDir,
-		// Read-only, both. The lender writes nothing: it reads a credential per
-		// request and a loan table that create and destroy own (R150, R151).
-		"-v", s.Home + ":" + s.Home + ":ro",
-		"-v", s.InstDir + ":" + s.InstDir + ":ro",
+	}
+	// Read-only, every one. The lender writes nothing: it reads a credential per
+	// request and a loan table that create and destroy own (R150, R151). And
+	// nothing else of the home or the instances root, so a lender bug cannot
+	// reach ~/.ssh, the tier keys or another group's loans (R150f).
+	for _, d := range append(slices.Clone(s.Reads), s.GroupDir) {
+		if d != "" {
+			a = append(a, "-v", d+":"+d+":ro")
+		}
 	}
 	entry := "cs-sandbox"
 	if s.Bin != "" {
@@ -130,11 +144,11 @@ func lenderBoxArgv(name string, s lenderBoxSpec) []string {
 // canRead reports whether the running lender can read a path, asked from inside
 // the container rather than from here.
 //
-// The frame of reference is the whole point. The lender bind-mounts the agent
-// home and the instances root and nothing else, so a path the host resolves
-// perfectly well can be absent over there — a symlink pointing out of the
-// mounted tree is the case that costs the most, because it dangles inside the
-// container while every host-side check passes.
+// The frame of reference is the whole point. The lender bind-mounts the
+// credentials' directories and its group's and nothing else, so a path the host
+// resolves perfectly well can be absent over there — a symlink pointing out of
+// a mounted directory is the case that costs the most, because it dangles
+// inside the container while every host-side check passes.
 //
 // `test -r` rather than a read: this asks whether the file is there and
 // readable, and must never move the credential itself (R149, R150).
@@ -190,6 +204,9 @@ func (b lenderBox) ensure(ctx context.Context) (string, error) {
 		_, _ = b.Runner.Run(ctx, run.Opts{}, "podman", "rm", "-f", b.name())
 	}
 	if err := b.stage(); err != nil {
+		return "", err
+	}
+	if err := b.mountSources(); err != nil {
 		return "", err
 	}
 	res, err := b.Runner.Run(ctx, run.Opts{}, lenderBoxArgv(b.name(), b.Spec)...)
@@ -307,6 +324,30 @@ func (b lenderBox) stage() error {
 		_ = os.Remove(tmp.Name())
 		return err
 	}
+	return nil
+}
+
+// mountSources makes every directory the container mounts, because podman
+// refuses to start a container whose bind source is missing.
+//
+// A credential directory is made empty and owner-only rather than left out, so
+// a key saved or a login made after the lender started is still visible to it:
+// the mounts are fixed for the container's life. One that cannot be made a
+// directory, such as a dangling symlink, holds nothing the lender could read. It
+// is dropped from the mounts, and create's canRead names it if it is lent.
+func (b *lenderBox) mountSources() error {
+	if b.Spec.GroupDir != "" {
+		if err := os.MkdirAll(b.Spec.GroupDir, 0o700); err != nil {
+			return err
+		}
+	}
+	var kept []string
+	for _, d := range b.Spec.Reads {
+		if os.MkdirAll(d, 0o700) == nil {
+			kept = append(kept, d)
+		}
+	}
+	b.Spec.Reads = kept
 	return nil
 }
 

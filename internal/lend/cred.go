@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -187,3 +188,20 @@ func (s Slot) Available(home, keysDir string) error {
 
 // Source is the file this slot's credential is read from, for reporting.
 func (s Slot) Source(home, keysDir string) string { return s.where(home, keysDir) }
+
+// CredentialDirs are the directories every slot's credential is read from, once
+// each, in table order. They are all a lender has to see of a home.
+//
+// Directories rather than the files, because a credential is replaced by a
+// rename: the client that owns a login rewrites it that way, and so does the
+// renewer. A mount of the file would keep the inode it was given and serve the
+// old token for ever after.
+func CredentialDirs(home, keysDir string) []string {
+	var out []string
+	for _, s := range slots {
+		if d := filepath.Dir(s.where(home, keysDir)); !slices.Contains(out, d) {
+			out = append(out, d)
+		}
+	}
+	return out
+}

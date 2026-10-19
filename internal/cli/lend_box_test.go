@@ -24,10 +24,12 @@ import (
 // is load-bearing and none of it is visible from anywhere else.
 func TestLenderBoxJoinsOneNetworkAndNothingElse(t *testing.T) {
 	argv := lenderBoxArgv("cs-sandbox-net-lender", lenderBoxSpec{
-		Network: "cs-sandbox-net",
-		Image:   "localhost/sandbox:test",
-		Home:    "/home/dev",
-		InstDir: "/home/dev/.local/share/cs-sandbox/instances",
+		Network:  "cs-sandbox-net",
+		Image:    "localhost/sandbox:test",
+		Home:     "/home/dev",
+		InstDir:  "/home/dev/.local/share/cs-sandbox/instances",
+		Reads:    []string{"/home/dev/.cs-claude", "/home/dev/.cs-keys"},
+		GroupDir: "/home/dev/.local/share/cs-sandbox/instances/default",
 	})
 	line := strings.Join(argv, " ")
 
@@ -40,10 +42,14 @@ func TestLenderBoxJoinsOneNetworkAndNothingElse(t *testing.T) {
 		"--label cs-sandbox.lender=1",
 		"--entrypoint cs-sandbox",
 		"lender --addr " + lend.DefaultBind + " --callers network",
-		// Read-only, both: the lender reads a credential per request and a loan
-		// table it does not own (R150, R151).
-		"-v /home/dev:/home/dev:ro",
-		"-v /home/dev/.local/share/cs-sandbox/instances:/home/dev/.local/share/cs-sandbox/instances:ro",
+		// The lender resolves its paths from these, and neither is mounted.
+		"-e HOME=/home/dev",
+		"-e CS_SANDBOX_INSTANCES_DIR=/home/dev/.local/share/cs-sandbox/instances",
+		// Read-only, every one: the lender reads a credential per request and a
+		// loan table it does not own (R150, R151).
+		"-v /home/dev/.cs-claude:/home/dev/.cs-claude:ro",
+		"-v /home/dev/.cs-keys:/home/dev/.cs-keys:ro",
+		"-v /home/dev/.local/share/cs-sandbox/instances/default:/home/dev/.local/share/cs-sandbox/instances/default:ro",
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the lender command is missing %q:\n%s", want, line)
@@ -74,23 +80,122 @@ func TestLenderBoxRunsTheStagedCopyNotTheLiveBinary(t *testing.T) {
 	}
 }
 
-// The copy lands under the instances root, which is already mounted, so it
+// The copy lands under the group's directory, which is already mounted, so it
 // needs no mount of its own. A second -v for it would be a second thing to keep
 // in step with the path the entrypoint names.
 func TestTheStagedCopyNeedsNoMountOfItsOwn(t *testing.T) {
 	spec := lenderBoxSpec{
-		Network: "n", Image: "img", InstDir: "/root",
-		Bin: "/build/cs-sandbox", Stage: "/root/n/.lender/cs-sandbox",
+		Network: "n", Image: "img", InstDir: "/root", GroupDir: "/root/n",
+		Reads: []string{"/home/dev/.cs-keys"},
+		Bin:   "/build/cs-sandbox", Stage: "/root/n/.lender/cs-sandbox",
 	}
-	argv := lenderBoxArgv("n-lender", spec)
-	mounts := 0
+	if got := lenderMounts(lenderBoxArgv("n-lender", spec)); !slices.Equal(got, []string{"/home/dev/.cs-keys", "/root/n"}) {
+		t.Errorf("want exactly the credential and group mounts, got %v", got)
+	}
+}
+
+// lenderMounts is the host side of every -v in a lender command, each of which
+// has to be read-only and mounted at its own path.
+func lenderMounts(argv []string) []string {
+	var out []string
 	for i, a := range argv {
 		if a == "-v" && i+1 < len(argv) {
-			mounts++
+			src, rest, _ := strings.Cut(argv[i+1], ":")
+			if rest != src+":ro" {
+				out = append(out, "NOT READ-ONLY AT ITS OWN PATH: "+argv[i+1])
+				continue
+			}
+			out = append(out, src)
 		}
 	}
-	if mounts != 2 {
-		t.Errorf("want exactly the home and instances mounts, got %d:\n%s", mounts, strings.Join(argv, " "))
+	return out
+}
+
+// The lender sees what it reads and nothing else of the home or the instances
+// root (R150f). A whole-home mount handed a lender bug ~/.ssh, the tier keys
+// and every group's state, and a whole-root one every other group's loans.
+//
+// Asserted from what the lender reads rather than from a list: every slot's
+// credential and this group's loan and fault files resolve under a mount, and
+// another group's do not.
+func TestTheLenderMountsOnlyWhatItReads(t *testing.T) {
+	t.Setenv("CS_SANDBOX_AGENT_HOME", "")
+	home := lendHome(t)
+	app := lendApp(t, home)
+	spec := app.lenderBox("team").Spec
+	mounts := lenderMounts(lenderBoxArgv("n-lender", spec))
+
+	under := func(p string) bool {
+		for _, m := range mounts {
+			if p == m || strings.HasPrefix(p, m+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, m := range mounts {
+		if strings.HasPrefix(m, "NOT") {
+			t.Error(m)
+		}
+	}
+	for _, whole := range []string{home, app.InstDir} {
+		if slices.Contains(mounts, whole) {
+			t.Errorf("%s is mounted whole: %v", whole, mounts)
+		}
+	}
+	for _, id := range append(lend.SlotIDs(lend.Login), lend.SlotIDs(lend.Key)...) {
+		s, _ := lend.SlotByID(id)
+		src := s.Source(home, lend.KeysDir(home))
+		if !under(src) {
+			t.Errorf("the %s credential %s is not under any mount: %v", id, src, mounts)
+		}
+		// A directory and never the file: the file is replaced by a rename, and
+		// a mount of it would keep serving the inode it started with.
+		if slices.Contains(mounts, src) {
+			t.Errorf("the %s credential is mounted as a file", id)
+		}
+	}
+	mine := state.Dir(app.InstDir, "team", "box")
+	for _, p := range []string{filepath.Join(mine, "loans.json"), filepath.Join(mine, lend.FaultsFile), spec.Stage} {
+		if !under(p) {
+			t.Errorf("%s is not under any mount: %v", p, mounts)
+		}
+	}
+	for _, p := range []string{
+		filepath.Join(state.Dir(app.InstDir, "other", "box"), "loans.json"),
+		filepath.Join(home, ".ssh", "id_ed25519"),
+		filepath.Join(home, ".cs-claude-other", ".credentials.json"),
+	} {
+		if under(p) {
+			t.Errorf("%s is visible to the lender: %v", p, mounts)
+		}
+	}
+}
+
+// Podman refuses a bind source that does not exist, so a host with no Codex
+// login or no ~/.cs-keys must still get a lender. The directory is made rather
+// than skipped, so a key saved after the lender started is still seen by it. One
+// that cannot be a directory is left out, because it holds nothing to read.
+func TestTheLendersMountSourcesAreMadeWhenMissing(t *testing.T) {
+	home := t.TempDir()
+	dangling := filepath.Join(home, ".cs-codex")
+	if err := os.Symlink(filepath.Join(home, "gone"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	keys := filepath.Join(home, ".cs-keys")
+	group := filepath.Join(t.TempDir(), "instances", "team")
+	b := lenderBox{Spec: lenderBoxSpec{Reads: []string{keys, dangling}, GroupDir: group}}
+	if err := b.mountSources(); err != nil {
+		t.Fatalf("mountSources: %v", err)
+	}
+	for _, d := range []string{keys, group} {
+		fi, err := os.Stat(d)
+		if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+			t.Errorf("%s was not made an owner-only directory: %v %v", d, fi, err)
+		}
+	}
+	if !slices.Equal(b.Spec.Reads, []string{keys}) {
+		t.Errorf("mounts = %v, want only %s", b.Spec.Reads, keys)
 	}
 }
 

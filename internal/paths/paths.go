@@ -159,7 +159,8 @@ func rootKey(instDir string) string {
 // login, and pointing HOME at a fake profile tree would move the instance
 // directory and the caches with it.
 //
-// Nothing is written here. The seed is still written under the instance.
+// Nothing of this tool's is written here, beyond the empty profile directories a
+// lender mounts. The seed is still written under the instance.
 func AgentLoginHome(home string) string {
 	if d := os.Getenv("CS_SANDBOX_AGENT_HOME"); d != "" {
 		return d

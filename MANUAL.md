@@ -514,8 +514,9 @@ lender knows which credential a token names.
 It runs as a container on the group's own network. There it answers to `cs-lender`, and nowhere
 else: nothing is bound on your machine, and a sandbox in another group has no route to it. A lent
 Codex also reaches it as `cs-lender-chatgpt`, for its calls to ChatGPT's own backend. Your
-credential stays in your filesystem. The lender reads it through a read-only mount, on every call,
-exactly as a process on the host would have.
+credential stays in your filesystem. The lender reads it through a read-only mount of the directory
+that holds it, on every call, exactly as a process on the host would have. It sees nothing else of
+your home, and of the instances root only its own group's directory.
 
 Lending comes in two kinds. A **token loan** lends an agent's login, and arrives as the credential
 file that agent's own sign-in would have written, holding fabricated values. The agent therefore

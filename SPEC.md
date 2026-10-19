@@ -874,8 +874,8 @@ output of any command.
 **R150.** The lender **MUST** read the host's credential per request, and **MUST NOT** refresh it.
 
 **R150a.** `create` **MUST** refuse a lent slot whose credential the lender cannot read, and **MUST** ask
-the lender rather than the host. *The lender reads from inside a container that mounts the agent home
-and nothing else, so a path this host resolves can be absent there. Left to the first request, the
+the lender rather than the host. *The lender reads from inside a container that mounts the credentials'
+directories and nothing else of the home (R150f), so a path this host resolves can be absent there. Left to the first request, the
 disagreement is reported per call into a container log nobody opens. The sandbox above it then waits
 for a turn that never comes, which reads as a hang rather than an error.*
 
@@ -897,6 +897,14 @@ extended. Unconfirmed, a renewer spends a turn on every attempt and reports succ
 **R150e.** At most one renewal of a credential **MUST** run on a host at a time, however many groups or
 instance roots are lending it. *There is one login per host to renew, and concurrent renewals race the
 rotation R150b is about.*
+
+**R150f.** The lender's container **MUST** mount only what the lender reads, read-only and at the host's
+own paths. That is the directory each slot's credential is kept in, and its own group's directory
+under the instances root. It **MUST NOT** mount a credential as a file. *A lender bug then reaches no
+`~/.ssh`, no tier key and no other group's loans. A credential is replaced by a rename, by the client
+that owns it and by the renewer, and a mount of the file keeps serving the inode it started with. The
+cost is the rest of each profile directory, such as an agent's transcripts. A mask cannot cover them
+reliably, because a file cannot be masked, and a directory only if it exists when the lender starts.*
 
 **R151.** A loan **MUST** be recorded in the instance directory at mode 600. It **MUST** stop being honoured
 when that directory is removed, and there **MUST** be no other revocation.

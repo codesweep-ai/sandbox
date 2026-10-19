@@ -434,8 +434,8 @@ func TestALentSlotTakesTheBaseURLTheCallerNamed(t *testing.T) {
 // A credential the HOST can read and the LENDER cannot is refused at create.
 //
 // The two are not the same question. Available answers it from here; the lender
-// answers it from inside a container that mounts the agent home and nothing
-// else, and a symlink out of that tree passes the first and fails the second.
+// answers it from inside a container that mounts the credentials' directories
+// and nothing else, and a symlink out of one passes the first and fails the second.
 // Left to the lender, the disagreement is reported once per request into a
 // container log, while the sandbox waits for a model turn that never comes —
 // which is a hang, not an error.

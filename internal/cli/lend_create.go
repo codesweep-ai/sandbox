@@ -178,8 +178,8 @@ func (app *App) resolveLoans(ctx context.Context, f *createFlags, name, injected
 	// reference that decides it.
 	//
 	// Available reads the credential from HERE, and here is the host. The lender
-	// reads it from inside a container that mounts the agent home and nothing
-	// else, so the two answers can differ — and when they do, nothing says so:
+	// reads it from inside a container that mounts the credentials' directories
+	// and nothing else of the home, so the two answers can differ — and when they do, nothing says so:
 	// the lender reports the missing file once per request, from a container log
 	// nobody opens, while the sandbox above it waits for a model turn that can
 	// never arrive. Measured: a campaign sat twelve minutes with no request
@@ -203,10 +203,10 @@ func (app *App) resolveLoans(ctx context.Context, f *createFlags, name, injected
 				}
 				return nil, fmt.Errorf(
 					"the lender cannot read the %s credential this create would lend: %s\n"+
-						"  it reads that path from inside a container, which mounts %s and nothing else, "+
-						"so a symlink pointing out of that tree does not resolve there\n"+
-						"  hold the file itself under that tree, or point CS_SANDBOX_AGENT_HOME at one that does",
-					s.ID, src, home)
+						"  it reads that path from inside a container, which mounts %s and nothing else of %s, "+
+						"so a symlink pointing out of that directory does not resolve there\n"+
+						"  hold the file itself in that directory, or point CS_SANDBOX_AGENT_HOME at a home that does",
+					s.ID, src, filepath.Dir(src), home)
 			}
 		}
 	}
@@ -372,13 +372,15 @@ func (app *App) ensureLender(ctx context.Context, group string) (guestBase strin
 func (app *App) lenderBox(group string) lenderBox {
 	home := paths.AgentLoginHome(app.Host.Home)
 	return lenderBox{Runner: app.Runner, Spec: lenderBoxSpec{
-		Network: state.NetworkName(group),
-		Image:   app.Image,
-		Home:    home,
-		InstDir: app.InstDir,
-		Bin:     lenderBinary(),
-		Stage:   filepath.Join(state.GroupDir(app.InstDir, group), ".lender", "cs-sandbox"),
-		LogDir:  paths.LenderLogs(app.InstDir, group),
+		Network:  state.NetworkName(group),
+		Image:    app.Image,
+		Home:     home,
+		InstDir:  app.InstDir,
+		Reads:    lend.CredentialDirs(home, lend.KeysDir(home)),
+		GroupDir: state.GroupDir(app.InstDir, group),
+		Bin:      lenderBinary(),
+		Stage:    filepath.Join(state.GroupDir(app.InstDir, group), ".lender", "cs-sandbox"),
+		LogDir:   paths.LenderLogs(app.InstDir, group),
 	}}
 }
 

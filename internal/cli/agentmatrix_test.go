@@ -641,11 +641,11 @@ func liveAgentHome(t *testing.T, env map[string]string) {
 // symlink to the real one, except the credential the lender reads, which is
 // copied.
 //
-// The lender runs in a container that mounts home and nothing else, so a
-// symlink pointing out of it dangles in there, and create refuses a lent login
-// it can see the lender would never read. Everything else in the profile is read
-// on the host, where a symlink resolves, so the one file is all that has to be
-// real.
+// The lender runs in a container that mounts the profile directory and nothing
+// else of home, so a symlink pointing out of it dangles in there, and create
+// refuses a lent login it can see the lender would never read. Everything else
+// in the profile is read on the host, where a symlink resolves, so the one file
+// is all that has to be real.
 //
 // A copy is a snapshot, and that has one way to hurt: a renewal would write the
 // rotated refresh token into the snapshot, and leave the real profile holding a
