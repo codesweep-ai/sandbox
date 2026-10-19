@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/hostcfg"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
 	"github.com/codesweep-ai/sandbox/internal/ports"
+	"github.com/codesweep-ai/sandbox/internal/proc"
 	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
@@ -31,6 +33,9 @@ type Record struct {
 	HostPort int
 	Target   string
 	Bind     string
+	// Start is the ssh process's start time, which with PID identifies it
+	// (R170). Empty in a record written before start times were kept.
+	Start string
 }
 
 // dir is the instance's own forwards directory. It takes (group, name) rather
@@ -79,19 +84,20 @@ func Start(h hostenv.Host, tierDir, instDir, group, name string, route hostcfg.R
 		return nil, err
 	}
 	_ = logf.Close()
-	pid := cmd.Process.Pid
-	// Release the child so it keeps running after we return.
+	// Read the start time while the child is still unreaped, so it cannot be
+	// another process's. Then release it so it keeps running after we return.
+	id := proc.Of(cmd.Process.Pid)
 	_ = cmd.Process.Release()
+	r := &Record{PID: id.PID, Start: id.Start, Kind: kind, HostPort: hostPort, Target: target, Bind: bind}
 
 	time.Sleep(600 * time.Millisecond)
-	if !alive(pid) {
+	if !r.alive() {
 		tail, _ := os.ReadFile(rec + ".log")
 		_ = os.Remove(rec + ".log")
 		return nil, fmt.Errorf("forward %d failed: %s", hostPort, strings.TrimSpace(lastLine(string(tail))))
 	}
-	r := &Record{PID: pid, Kind: kind, HostPort: hostPort, Target: target, Bind: bind}
 	if err := writeRecord(rec, r); err != nil {
-		kill(pid)
+		r.kill()
 		_ = os.Remove(rec + ".log")
 		return nil, err
 	}
@@ -111,12 +117,18 @@ func forwardArgs(h hostenv.Host, tierDir, group, name string, route hostcfg.Rout
 	obj := state.ObjectName(group, name)
 	args := hostcfg.SSHOptions(h, tierDir, obj, route)
 	args = append(args, "-N", "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes")
-	if kind == "D" {
-		args = append(args, "-D", fmt.Sprintf("%s:%d", bind, hostPort))
-	} else {
-		args = append(args, "-L", fmt.Sprintf("%s:%d:%s", bind, hostPort, target))
-	}
+	flag, spec := forwardSpec(kind, hostPort, target, bind)
+	args = append(args, flag, spec)
 	return append(args, hostcfg.SSHDest(h, obj, route))
+}
+
+// forwardSpec is the ssh flag and its value that make a forward: -D bind:port
+// for SOCKS, -L bind:port:target otherwise.
+func forwardSpec(kind string, hostPort int, target, bind string) (flag, spec string) {
+	if kind == "D" {
+		return "-D", fmt.Sprintf("%s:%d", bind, hostPort)
+	}
+	return "-L", fmt.Sprintf("%s:%d:%s", bind, hostPort, target)
 }
 
 // List returns the live forwards for an instance, GC-ing dead ones.
@@ -139,7 +151,7 @@ func List(instDir, group, name string) ([]Record, error) {
 		if err != nil {
 			continue
 		}
-		if !alive(r.PID) {
+		if !r.alive() {
 			_ = os.Remove(p)
 			_ = os.Remove(p + ".log")
 			continue
@@ -162,7 +174,7 @@ func Remove(instDir, group, name, target string) (int, error) {
 		if target != "all" && target != strconv.Itoa(r.HostPort) {
 			continue
 		}
-		kill(r.PID)
+		r.kill()
 		p := filepath.Join(d, strconv.Itoa(r.HostPort))
 		_ = os.Remove(p)
 		_ = os.Remove(p + ".log")
@@ -195,7 +207,7 @@ func sweepLegacy(instDir, ref string) {
 	for _, e := range entries {
 		p := filepath.Join(d, e.Name())
 		if r, err := readRecord(p); err == nil {
-			kill(r.PID)
+			r.kill()
 		}
 		_ = os.Remove(p)
 	}
@@ -206,6 +218,9 @@ func sweepLegacy(instDir, ref string) {
 func writeRecord(path string, r *Record) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "pid=%d\nkind=%s\nhostport=%d\ntarget=%s\nbind=%s\n", r.PID, r.Kind, r.HostPort, r.Target, r.Bind)
+	if r.Start != "" {
+		fmt.Fprintf(&b, "start=%s\n", r.Start)
+	}
 	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
@@ -233,21 +248,34 @@ func readRecord(path string) (Record, error) {
 			r.Target = v
 		case "bind":
 			r.Bind = v
+		case "start":
+			r.Start = v
 		}
 	}
 	return r, sc.Err()
 }
 
-func alive(pid int) bool {
-	if pid <= 0 {
+// argvMatches reports whether argv is the `ssh -N` this record started.
+func (r Record) argvMatches(argv []string) bool {
+	if len(argv) == 0 || filepath.Base(argv[0]) != "ssh" || !slices.Contains(argv, "-N") {
 		return false
 	}
-	return syscall.Kill(pid, 0) == nil
+	flag, spec := forwardSpec(r.Kind, r.HostPort, r.Target, r.Bind)
+	i := slices.Index(argv, flag)
+	return i >= 0 && i+1 < len(argv) && argv[i+1] == spec
 }
 
-func kill(pid int) {
-	if pid > 0 {
-		_ = syscall.Kill(pid, syscall.SIGTERM)
+func (r Record) ident() proc.Ident { return proc.Ident{PID: r.PID, Start: r.Start} }
+
+// alive reports whether the recorded ssh process is running. A pid that now
+// names another process is dead as far as the record is concerned.
+func (r Record) alive() bool { return proc.Alive(r.ident(), r.argvMatches) }
+
+// kill sends SIGTERM to the recorded ssh process, and to nothing else.
+func (r Record) kill() {
+	if h := proc.Find(r.ident(), r.argvMatches); h != nil {
+		_ = h.Signal(syscall.SIGTERM)
+		h.Close()
 	}
 }
 

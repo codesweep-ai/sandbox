@@ -1568,6 +1568,11 @@ device beyond `/dev/net/tun`.
 
 **R143.** `--privileged` **MUST** be opt-in.
 
+**R170.** On Linux, a process recorded by pid, a microVM's launcher or a forward's `ssh`, **MUST**
+count as running only while that pid's start time and argv match the record. Where the kernel offers
+pidfds, it **MUST** be signalled through one opened before that check. A record with no start time
+**MUST** be matched on its argv alone, and **MUST NOT** be sent SIGKILL.
+
 The engine is the trust boundary, and everything else follows from that. There is no host-root path
 absent a kernel bug: the engine and the container are bounded by your unprivileged host user through
 keep-id. The microVM engine removes the shared-kernel attack surface entirely. `--privileged` trades
@@ -1579,6 +1584,13 @@ R41a says and nothing is bound. The cost of setting it is reach: any value other
 publishes on an interface the rest of the network can route to. Key authentication still holds,
 because sshd takes no password and authorizes only the keys §4 gives it. R142 does not, so scope the
 variable to one command rather than exporting it.
+
+R170 exists because these records survive a reboot, after which the kernel hands their numbers to
+other processes of yours (SBX-002). The start time, field 22 of `/proc/<pid>/stat`, tells two holders
+of one number apart, and the pidfd keeps the check and the signal on the same process. Where pidfds
+are refused, the check runs again just before a signal by pid. A record written before start times
+were kept has only its argv to go on, so it never gets SIGKILL. A host without `/proc` has neither
+to read, and judges a record by its pid alone.
 
 A group gateway publishes nothing at all, and has no way to be asked to. It is reached the way R41a
 says, through the engine's own channel into the container, so a host carrying any number of groups

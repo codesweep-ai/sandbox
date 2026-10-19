@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
-	"strconv"
 	"testing"
 
 	"github.com/codesweep-ai/sandbox/internal/run"
@@ -137,14 +135,12 @@ func TestStatuses(t *testing.T) {
 		{Name: "vmup", Group: state.DefaultGroup, Engine: state.Firecracker},
 		{Name: "vmdown", Group: state.DefaultGroup, Engine: state.Firecracker},
 	}
-	// A microVM is "running" when its pid file names a live process.
-	if err := os.MkdirAll(state.Dir(dir, state.DefaultGroup, "vmup"), 0o700); err != nil {
+	// A microVM is "running" when its pid file names its live VMM.
+	vmup := state.Dir(dir, state.DefaultGroup, "vmup")
+	if err := os.MkdirAll(vmup, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(state.Dir(dir, state.DefaultGroup, "vmup"), "fc.pid"),
-		[]byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	recordVMM(t, vmup, fakeVMM(t, vmup))
 
 	f := run.NewFake()
 	f.On("podman ps", run.Result{Stdout: "up.default running\ndown.default exited\n"}, nil)

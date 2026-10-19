@@ -8,11 +8,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/fcconfig"
+	"github.com/codesweep-ai/sandbox/internal/proc"
 	"github.com/codesweep-ai/sandbox/internal/state"
 )
 
@@ -42,9 +42,11 @@ func launchFirecracker(idir, fcBin string) error {
 	if err := withMemoryMerge(ksmEnabled(), cmd.Start); err != nil {
 		return err
 	}
-	pid := cmd.Process.Pid
+	// Read the start time while the child is still unreaped, so it cannot be
+	// another process's.
+	id := proc.Of(cmd.Process.Pid)
 	_ = cmd.Process.Release()
-	return os.WriteFile(filepath.Join(idir, "fc.pid"), []byte(strconv.Itoa(pid)+"\n"), 0o644)
+	return proc.WriteFile(filepath.Join(idir, proc.VMMPidFile), id)
 }
 
 // cgroupWrapper returns the argv prefix that puts a microVM in its own cgroup —
@@ -119,18 +121,10 @@ func cgroupDefaultMaxMiB(idir string) int {
 	return cfg.MachineConfig.MemSizeMiB + cgroupHeadroomMiB
 }
 
-// fcRunning reports whether the instance's firecracker process is alive.
-func fcRunning(idir string) bool {
-	data, err := os.ReadFile(filepath.Join(idir, "fc.pid"))
-	if err != nil {
-		return false
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return false
-	}
-	return pid > 0 && syscall.Kill(pid, 0) == nil
-}
+// fcRunning reports whether the instance's firecracker process is alive: fc.pid
+// names a running process that is the one recorded, by start time and by an
+// argv naming this instance's config (R170).
+func fcRunning(idir string) bool { return proc.VMMRunning(idir) }
 
 // killFirecracker kills the instance's firecracker process (TERM, then KILL) and
 // reaps any survivor by config-file match.
@@ -143,31 +137,30 @@ func fcRunning(idir string) bool {
 // up. Only the config file names the process that actually has to die, and
 // Remove deletes the directory holding it moments later, so a sweep skipped
 // here is a microVM nothing can address again.
+//
+// A pid that is no longer the recorded process is never signalled. One whose
+// record predates start times is matched on its argv alone, and gets SIGTERM
+// but never SIGKILL.
 func killFirecracker(idir string) {
-	pidFile := filepath.Join(idir, "fc.pid")
 	defer func() {
-		_ = exec.Command("pkill", "-9", "-f", "config-file "+filepath.Join(idir, "run.json")).Run()
-		_ = os.Remove(pidFile)
+		_ = exec.Command("pkill", "-9", "-f", "config-file "+filepath.Join(idir, proc.VMMConfig)).Run()
+		_ = os.Remove(filepath.Join(idir, proc.VMMPidFile))
 	}()
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
+	h := proc.FindVMM(idir)
+	if h == nil {
 		return
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 {
-		return
-	}
-	if syscall.Kill(pid, 0) != nil {
-		return
-	}
-	_ = syscall.Kill(pid, syscall.SIGTERM)
+	defer h.Close()
+	_ = h.Signal(syscall.SIGTERM)
 	for range 16 {
-		if syscall.Kill(pid, 0) != nil {
+		if !h.Running() {
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	if h.Verified() {
+		_ = h.Signal(syscall.SIGKILL)
+	}
 }
 
 // removeVsock removes stale vm.vsock* sockets before (re)boot. The glob also

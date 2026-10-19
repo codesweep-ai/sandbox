@@ -6,12 +6,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/hostcfg"
 	"github.com/codesweep-ai/sandbox/internal/hostenv"
+	"github.com/codesweep-ai/sandbox/internal/proc"
 
 	"github.com/codesweep-ai/sandbox/internal/state"
 )
@@ -92,9 +95,11 @@ func TestListGCsDeadRecords(t *testing.T) {
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// A live forward — this test process is alive.
+	// A live forward.
 	livePath := filepath.Join(d, "18099")
-	if err := writeRecord(livePath, &Record{PID: os.Getpid(), Kind: "L", HostPort: 18099, Target: "localhost:80"}); err != nil {
+	live := &Record{Kind: "L", HostPort: 18099, Target: "localhost:80", Bind: "127.0.0.1"}
+	startFakeSSH(t, live)
+	if err := writeRecord(livePath, live); err != nil {
 		t.Fatal(err)
 	}
 	// A dead forward — spawn and reap a child so its PID is definitely gone.
@@ -133,13 +138,10 @@ func TestRemove(t *testing.T) {
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// A live child whose PID Remove will SIGTERM (not this test process).
-	child := exec.Command("sleep", "30")
-	if err := child.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
-	if err := writeRecord(filepath.Join(d, "18099"), &Record{PID: child.Process.Pid, Kind: "L", HostPort: 18099}); err != nil {
+	// A live forward whose ssh Remove will SIGTERM.
+	r := &Record{Kind: "L", HostPort: 18099, Target: "localhost:80", Bind: "127.0.0.1"}
+	child := startFakeSSH(t, r)
+	if err := writeRecord(filepath.Join(d, "18099"), r); err != nil {
 		t.Fatal(err)
 	}
 
@@ -156,6 +158,9 @@ func TestRemove(t *testing.T) {
 	// Nothing left to list.
 	if list, _ := List(instDir, "grp", "box"); len(list) != 0 {
 		t.Errorf("List after Remove = %+v, want empty", list)
+	}
+	if !signalled(child, syscall.SIGTERM) {
+		t.Error("Remove did not SIGTERM the forward's ssh")
 	}
 }
 
@@ -185,19 +190,12 @@ func TestKillAllSweepsPreIdentityRecords(t *testing.T) {
 	if err := os.MkdirAll(legacy, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	child := exec.Command("sleep", "30")
-	if err := child.Start(); err != nil {
-		t.Fatal(err)
-	}
-	reaped := false
-	t.Cleanup(func() {
-		if !reaped {
-			_ = child.Process.Kill()
-			_ = child.Wait()
-		}
-	})
+	// A record that old predates start times too, so it is matched on argv.
+	r := &Record{Kind: "L", HostPort: 18099, Target: "localhost:80", Bind: "127.0.0.1"}
+	child := startFakeSSH(t, r)
+	r.Start = ""
 	rec := filepath.Join(legacy, "18099")
-	if err := writeRecord(rec, &Record{PID: child.Process.Pid, Kind: "L", HostPort: 18099}); err != nil {
+	if err := writeRecord(rec, r); err != nil {
 		t.Fatal(err)
 	}
 
@@ -211,18 +209,9 @@ func TestKillAllSweepsPreIdentityRecords(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(instDir, "api.cache-redis")); !os.IsNotExist(err) {
 		t.Error("stray reference-keyed directory survived teardown")
 	}
-	// And the process it recorded is signalled, not left running. Asserted by
-	// reaping it: alive() is a kill(pid, 0) probe, which still succeeds for an
-	// unreaped zombie, so polling it here could never observe the death.
-	err := child.Wait()
-	reaped = true
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) {
-		t.Fatalf("legacy forward's process exited normally (%v); it should have been signalled", err)
-	}
-	status, ok := exit.Sys().(syscall.WaitStatus)
-	if !ok || !status.Signaled() || status.Signal() != syscall.SIGTERM {
-		t.Errorf("legacy forward's process wait status = %v, want terminated by SIGTERM", exit)
+	// And the process it recorded is signalled, not left running.
+	if !signalled(child, syscall.SIGTERM) {
+		t.Error("legacy forward's process was not terminated by SIGTERM")
 	}
 }
 
@@ -240,5 +229,103 @@ func TestKillAllSweepsBareLegacyPathForDefaultGroup(t *testing.T) {
 	KillAll(instDir, state.DefaultGroup, "api")
 	if _, err := os.Stat(filepath.Join(instDir, "api")); !os.IsNotExist(err) {
 		t.Error("bare legacy directory survived teardown for a default-group member")
+	}
+}
+
+// startFakeSSH starts a stand-in for r's ssh child and records its pid and
+// start time in r. Its argv is what identifies it: ssh, -N, and r's forward
+// spec. A shell loop rather than one sleep keeps that argv in place, as
+// startFakeVMM explains in the engine's tests.
+func startFakeSSH(t *testing.T, r *Record) *exec.Cmd {
+	t.Helper()
+	flag, spec := forwardSpec(r.Kind, r.HostPort, r.Target, r.Bind)
+	cmd := exec.Command("sh", "-c", "while :; do sleep 1; done", "ssh", "-N", flag, spec)
+	cmd.Args[0] = "ssh"
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	id := proc.Of(cmd.Process.Pid)
+	r.PID, r.Start = id.PID, id.Start
+	return cmd
+}
+
+// signalled reaps cmd and reports whether sig ended it. Reaping is what
+// observes the death: a probe of the pid would still find the zombie.
+func signalled(cmd *exec.Cmd, sig syscall.Signal) bool {
+	var exit *exec.ExitError
+	if !errors.As(cmd.Wait(), &exit) {
+		return false
+	}
+	status, ok := exit.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled() && status.Signal() == sig
+}
+
+// startBystander starts a process of this user's that is no forward, the kind
+// a pid recorded before a reboot can name afterwards. The channel closes if it
+// exits.
+func startBystander(t *testing.T) (*exec.Cmd, <-chan struct{}) {
+	t.Helper()
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	gone := make(chan struct{})
+	go func() { _, _ = cmd.Process.Wait(); close(gone) }()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-gone })
+	return cmd, gone
+}
+
+func stillRunning(t *testing.T, gone <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-gone:
+		t.Fatal("an unrelated process holding a forward's recorded pid was killed")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// writeRaw writes a record by hand, so a test can give it any start time,
+// including none, as a record from before start times were kept has.
+func writeRaw(t *testing.T, path string, pid int, start string) {
+	t.Helper()
+	rec := "pid=" + strconv.Itoa(pid) + "\nkind=L\nhostport=18099\ntarget=localhost:80\nbind=127.0.0.1\n"
+	if start != "" {
+		rec += "start=" + start + "\n"
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// SBX-002: a forward record survives a reboot, and its pid can then name any
+// process of yours. `forwards` must drop the record, and `unforward`, `rm` and
+// `destroy` must not signal the process.
+func TestAReusedForwardPidIsDeadAndNeverSignalled(t *testing.T) {
+	for _, start := range []string{"", "1"} { // no start time, and one the bystander does not have
+		instDir := t.TempDir()
+		rec := filepath.Join(dir(instDir, "grp", "box"), "18099")
+		cmd, gone := startBystander(t)
+
+		writeRaw(t, rec, cmd.Process.Pid, start)
+		if list, _ := List(instDir, "grp", "box"); len(list) != 0 {
+			t.Errorf("start=%q: List = %+v, want the stale record treated as dead", start, list)
+		}
+		if _, err := os.Stat(rec); !os.IsNotExist(err) {
+			t.Errorf("start=%q: the stale record was not collected", start)
+		}
+
+		writeRaw(t, rec, cmd.Process.Pid, start)
+		if n, _ := Remove(instDir, "grp", "box", "all"); n != 0 {
+			t.Errorf("start=%q: Remove tore down %d forwards, want 0", start, n)
+		}
+
+		writeRaw(t, rec, cmd.Process.Pid, start)
+		writeRaw(t, filepath.Join(legacyDir(instDir, "box.grp"), "18099"), cmd.Process.Pid, start)
+		KillAll(instDir, "grp", "box")
+		stillRunning(t, gone)
 	}
 }

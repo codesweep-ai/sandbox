@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -23,11 +22,10 @@ func TestFirecrackerStartLeavesARunningVMAlone(t *testing.T) {
 	if err := state.Save(dir, &state.Instance{Name: "box", Type: "agent", Engine: state.Firecracker, FCIP: "10.89.0.200"}); err != nil {
 		t.Fatal(err)
 	}
-	pidFile := filepath.Join(state.Dir(dir, state.DefaultGroup, "box"), "fc.pid")
-	live := strconv.Itoa(os.Getpid()) // a pid that is certainly alive
-	if err := os.WriteFile(pidFile, []byte(live), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	idir := state.Dir(dir, state.DefaultGroup, "box")
+	recordVMM(t, idir, fakeVMM(t, idir))
+	pidFile := filepath.Join(idir, "fc.pid")
+	live, _ := os.ReadFile(pidFile)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -37,7 +35,7 @@ func TestFirecrackerStartLeavesARunningVMAlone(t *testing.T) {
 	if len(f.Calls) != 0 {
 		t.Errorf("start on a running microVM ran %d commands, want none: %s", len(f.Calls), f)
 	}
-	if got, _ := os.ReadFile(pidFile); string(got) != live {
+	if got, _ := os.ReadFile(pidFile); string(got) != string(live) {
 		t.Errorf("start replaced the running VM's pid record: %q, want %q", got, live)
 	}
 }

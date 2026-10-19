@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/fcnet"
+	"github.com/codesweep-ai/sandbox/internal/proc"
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/state"
 )
@@ -602,11 +603,8 @@ func (h HostRoute) anyVMRunning(ctx context.Context, grp string, fab fcnet.Fabri
 		if in.Engine != state.Firecracker || group(in) != grp {
 			continue
 		}
-		pid := filepath.Join(state.Dir(h.InstDir, in.Group, in.Name), "fc.pid")
-		if data, err := os.ReadFile(pid); err == nil {
-			if p, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && alive(p) {
-				return true
-			}
+		if proc.VMMRunning(state.Dir(h.InstDir, in.Group, in.Name)) {
+			return true
 		}
 	}
 	return false
