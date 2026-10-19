@@ -1,0 +1,109 @@
+package engine
+
+import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/codesweep-ai/sandbox/internal/run"
+	"github.com/codesweep-ai/sandbox/internal/state"
+)
+
+// A boot takes a second or two, so a poll on whole seconds added up to a second
+// to every create and start. The first answer has to be seen well inside one.
+func TestPollUntilSeesReadinessPromptly(t *testing.T) {
+	ready := time.Now().Add(100 * time.Millisecond)
+	start := time.Now()
+	err := pollUntil(context.Background(), 5*time.Second, 50*time.Millisecond, 250*time.Millisecond,
+		func() (bool, error) { return time.Now().After(ready), nil })
+	if err != nil {
+		t.Fatalf("pollUntil = %v, want nil", err)
+	}
+	if took := time.Since(start); took > 600*time.Millisecond {
+		t.Errorf("pollUntil saw readiness after %s, want well under a second", took)
+	}
+}
+
+// A long wait must not keep polling at the starting rate: at a fixed 10 ms this
+// budget would make sixty calls.
+func TestPollUntilBacksOff(t *testing.T) {
+	var calls int
+	err := pollUntil(context.Background(), 600*time.Millisecond, 10*time.Millisecond, 80*time.Millisecond,
+		func() (bool, error) { calls++; return false, nil })
+	if !errors.Is(err, errPollBudget) {
+		t.Fatalf("pollUntil = %v, want errPollBudget", err)
+	}
+	if calls > 20 {
+		t.Errorf("pollUntil made %d calls in 600ms, want the interval to grow to 80ms", calls)
+	}
+}
+
+func TestPollUntilStopsOnErrorAndCancel(t *testing.T) {
+	boom := errors.New("boom")
+	if err := pollUntil(context.Background(), time.Minute, time.Millisecond, time.Millisecond,
+		func() (bool, error) { return false, boom }); !errors.Is(err, boom) {
+		t.Errorf("pollUntil = %v, want the check's own error", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := pollUntil(ctx, time.Minute, time.Second, time.Second,
+		func() (bool, error) { return false, nil }); !errors.Is(err, context.Canceled) {
+		t.Errorf("pollUntil = %v, want context.Canceled", err)
+	}
+}
+
+// fcInstance makes an instance dir whose fc.pid names pid.
+func fcInstance(t *testing.T, pid int) (*Firecracker, string) {
+	t.Helper()
+	dir := t.TempDir()
+	fe := NewFirecracker(Deps{Runner: run.NewFake(), InstDir: dir, FCCache: t.TempDir(), Network: "cs-sandbox-net", StartTimeout: 5})
+	if err := state.Save(dir, &state.Instance{Name: "box", Type: "agent", Engine: state.Firecracker, FCIP: "10.89.0.200"}); err != nil {
+		t.Fatal(err)
+	}
+	idir := fe.d.InstanceDir("box")
+	if err := os.WriteFile(filepath.Join(idir, "fc.pid"), []byte(strconv.Itoa(pid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return fe, idir
+}
+
+func TestFirecrackerWaitReadySeesTheMarkerPromptly(t *testing.T) {
+	fe, idir := fcInstance(t, os.Getpid())
+	serial := filepath.Join(idir, "serial.log")
+	if err := os.WriteFile(serial, []byte("booting\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_ = os.WriteFile(serial, []byte("booting\n##### FC-VM-READY #####\n"), 0o600)
+	}()
+	start := time.Now()
+	if err := fe.waitReady(context.Background(), "box"); err != nil {
+		t.Fatalf("waitReady = %v", err)
+	}
+	if took := time.Since(start); took > 800*time.Millisecond {
+		t.Errorf("waitReady returned %s after start for a marker written at 150ms", took)
+	}
+}
+
+func TestFirecrackerWaitReadyFailsWhenTheVMMDies(t *testing.T) {
+	fe, _ := fcInstance(t, deadPid(t))
+	if err := fe.waitReady(context.Background(), "box"); err == nil {
+		t.Fatal("waitReady passed a microVM whose VMM is gone")
+	}
+}
+
+// deadPid returns the pid of a process that has exited and been reaped.
+func deadPid(t *testing.T) int {
+	t.Helper()
+	c := exec.Command("true")
+	if err := c.Run(); err != nil {
+		t.Fatal(err)
+	}
+	return c.Process.Pid
+}

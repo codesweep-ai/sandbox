@@ -1555,6 +1555,9 @@ fragment per root, so regenerating one root's blocks cannot delete another's.
 
 **R138.** A VM that never signals readiness **MUST** be torn down, and the create **MUST** fail loudly.
 
+**R138a.** The host **MUST** poll for readiness every 50 ms at first, then back off. A microVM's check
+reads a file and backs off to 100 ms. A container's check is a `podman exec` and backs off to 1 s.
+
 **R139.** A file lock **MUST** wrap only the race-sensitive prefix of `create`, leaving the long parts
 unlocked so creates overlap.
 

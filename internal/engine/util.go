@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,6 +12,39 @@ import (
 	"github.com/codesweep-ai/sandbox/internal/run"
 	"github.com/codesweep-ai/sandbox/internal/state"
 )
+
+// errPollBudget is what pollUntil returns when its budget runs out.
+var errPollBudget = errors.New("poll budget exhausted")
+
+// pollUntil calls done until it reports true or an error, or until budget runs
+// out (errPollBudget) or ctx ends (ctx.Err()). It sleeps first between the
+// first two calls, then twice as long each time, up to most. Starting short
+// sees a sandbox that is ready within a second at once, and backing off keeps
+// a long wait cheap.
+func pollUntil(ctx context.Context, budget, first, most time.Duration, done func() (bool, error)) error {
+	deadline := time.Now().Add(budget)
+	delay := first
+	for {
+		if ok, err := done(); ok || err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return errPollBudget
+		}
+		timer := time.NewTimer(min(delay, remaining))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(2*delay, most)
+	}
+}
 
 // nowUTC renders the current time in the `created` field's format.
 func nowUTC() string { return time.Now().UTC().Format("2006-01-02T15:04:05Z") }

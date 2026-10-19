@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -613,33 +614,26 @@ func (d Deps) allocPodmanPort(ctx context.Context) (int, error) {
 	return allocPort(ports.Min, ports.Split-1, reserved)
 }
 
+// waitReady asks the container for its ready marker. Each ask is a `podman
+// exec`, which costs far more than the wait between asks, so the interval backs
+// off to a second where the microVM's stays short.
 func (d Deps) waitReady(ctx context.Context, name string) error {
 	if d.DryRun {
 		return nil
 	}
 	d.say("waiting for the sandbox to be ready…")
 	budget := time.Duration(d.StartTimeout) * time.Second
-	deadline := time.Now().Add(budget)
-	for {
-		if _, err := d.Runner.Run(ctx, run.Opts{}, "podman", "exec", obj(d.group(), name), "test", "-f", "/run/cs-sandbox-ready"); err == nil {
-			return nil
-		}
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("waiting for sandbox %q readiness: %w", name, err)
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return fmt.Errorf("sandbox %q did not become ready within %s", name, budget)
-		}
-		delay := min(time.Second, remaining)
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return fmt.Errorf("waiting for sandbox %q readiness: %w", name, ctx.Err())
-		case <-timer.C:
-		}
+	err := pollUntil(ctx, budget, 50*time.Millisecond, time.Second, func() (bool, error) {
+		_, err := d.Runner.Run(ctx, run.Opts{}, "podman", "exec", obj(d.group(), name), "test", "-f", "/run/cs-sandbox-ready")
+		return err == nil, nil
+	})
+	switch {
+	case errors.Is(err, errPollBudget):
+		return fmt.Errorf("sandbox %q did not become ready within %s", name, budget)
+	case err != nil:
+		return fmt.Errorf("waiting for sandbox %q readiness: %w", name, err)
 	}
+	return nil
 }
 
 func dnsmasqIP(gw string) string {

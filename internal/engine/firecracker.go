@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -335,7 +336,8 @@ func (fe *Firecracker) launch(ctx context.Context, name string, inst *state.Inst
 }
 
 // waitReady polls serial.log for the guest's FC-VM-READY marker, giving up if
-// firecracker dies.
+// firecracker dies. A read of the log is cheap, so the poll stays frequent: a
+// boot takes one to two seconds, and each tick of the interval adds to it.
 func (fe *Firecracker) waitReady(ctx context.Context, name string) error {
 	if fe.d.DryRun {
 		return nil
@@ -344,31 +346,22 @@ func (fe *Firecracker) waitReady(ctx context.Context, name string) error {
 	idir := fe.d.InstanceDir(name)
 	serial := filepath.Join(idir, "serial.log")
 	budget := time.Duration(fe.d.StartTimeout) * time.Second
-	deadline := time.Now().Add(budget)
-	for {
+	err := pollUntil(ctx, budget, 50*time.Millisecond, 100*time.Millisecond, func() (bool, error) {
 		if data, err := os.ReadFile(serial); err == nil && strings.Contains(string(data), "FC-VM-READY") {
-			return nil
+			return true, nil
 		}
 		if !fcRunning(idir) {
-			return fmt.Errorf("fc: microVM %q exited before becoming ready (see %s)", name, serial)
+			return false, fmt.Errorf("fc: microVM %q exited before becoming ready (see %s)", name, serial)
 		}
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("waiting for microVM %q readiness: %w", name, err)
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		delay := min(time.Second, remaining)
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return fmt.Errorf("waiting for microVM %q readiness: %w", name, ctx.Err())
-		case <-timer.C:
-		}
+		return false, nil
+	})
+	switch {
+	case errors.Is(err, errPollBudget):
+		return fmt.Errorf("fc: microVM %q failed to become ready within %s (see %s)", name, budget, serial)
+	case err != nil && errors.Is(err, ctx.Err()):
+		return fmt.Errorf("waiting for microVM %q readiness: %w", name, err)
 	}
-	return fmt.Errorf("fc: microVM %q failed to become ready within %s (see %s)", name, budget, serial)
+	return err
 }
 
 // Start re-launches a stopped microVM (launch re-asserts its dnsmasq name).
