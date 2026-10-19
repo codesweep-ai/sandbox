@@ -148,11 +148,19 @@ type containerLimits struct {
 	MemMiB int
 }
 
+// PodmanCgroupManager is the cgroup manager podman runs containers with,
+// systemd or cgroupfs, or "" when podman cannot say. Only the systemd manager
+// takes a slice as a cgroup parent; under cgroupfs podman refuses the run.
+func PodmanCgroupManager(ctx context.Context, r run.Runner) string {
+	return run.Output(ctx, r, "podman", "info", "--format", "{{.Host.CgroupManager}}")
+}
+
 // podmanLimits decides which of a create's limits this host can apply. A
 // limit whose controller is not delegated is dropped, since podman fails a run
-// asked for it, and one the caller named is said to be dropped.
-func podmanLimits(s CreateSpec, cg Cgroups) (l containerLimits, notes []string) {
-	if cg.Slice {
+// asked for it, and one the caller named is said to be dropped. The slice is
+// the cgroup parent only where podman's manager is systemd.
+func podmanLimits(s CreateSpec, cg Cgroups, manager string) (l containerLimits, notes []string) {
+	if cg.Slice && manager == "systemd" {
 		l.Parent = SliceName
 	}
 	if cg.Has("pids") {

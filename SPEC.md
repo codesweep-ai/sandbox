@@ -1633,7 +1633,8 @@ spend a loan while that sandbox exists, though it cannot learn what the loan sta
 
 **R171.** Every sandbox **MUST** run under one systemd user slice, `cs-sandbox.slice`, whose memory,
 swap, CPU and task caps `create` and `start` set before the sandbox starts. A host whose user manager
-cannot hold the slice **MUST** still create the sandbox, outside it.
+cannot hold the slice **MUST** still create the sandbox, outside it. So **MUST** a Podman engine whose
+cgroup manager is not systemd, keeping the sandbox's own limits.
 
 **R171a.** A Podman sandbox **MUST** get a process limit by default, and a CPU or memory cap only
 when `--cpus` or `--mem` names one. A limit whose cgroup controller is not delegated to the user

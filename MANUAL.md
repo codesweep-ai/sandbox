@@ -100,7 +100,8 @@ Every sandbox runs under one systemd user slice, `cs-sandbox.slice`, so the flee
 starve your desktop. The slice is capped at 75% of memory with no swap, all but an eighth of the
 cores, and a quarter of the kernel's task limit. `systemctl --user show cs-sandbox.slice` shows the
 caps, and `CS_SANDBOX_SLICE_LIMITS` changes them. A host whose systemd user manager cannot hold the
-slice runs sandboxes without it, and `doctor` says why.
+slice runs sandboxes without it, and `doctor` says why. So does a Podman configured with the
+`cgroupfs` cgroup manager, whose sandboxes keep only their own limits.
 
 `create` prints what the sandbox ended up with, borrowed or held, so neither is ever a silent
 assumption. Prefer the `--lend-…` pair: they give an agent everything it needs while your credential

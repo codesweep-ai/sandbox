@@ -123,22 +123,49 @@ func TestSliceProperties(t *testing.T) {
 func TestPodmanLimits(t *testing.T) {
 	full := Cgroups{Slice: true, Controllers: []string{"cpu", "memory", "pids"}}
 
-	l, notes := podmanLimits(CreateSpec{Pids: DefaultPids}, full)
+	l, notes := podmanLimits(CreateSpec{Pids: DefaultPids}, full, "systemd")
 	if got := strings.Join(l.args(), " "); got != "--cgroup-parent=cs-sandbox.slice --pids-limit=8192" || len(notes) > 0 {
 		t.Errorf("defaults: %q %v", got, notes)
 	}
 
-	l, _ = podmanLimits(CreateSpec{Pids: 0, CPUs: 2, MemMiB: 6144}, full)
+	l, _ = podmanLimits(CreateSpec{Pids: 0, CPUs: 2, MemMiB: 6144}, full, "systemd")
 	if got := strings.Join(l.args(), " "); got != "--cgroup-parent=cs-sandbox.slice --pids-limit=-1 --cpus=2 --memory=6144m --memory-swap=6144m" {
 		t.Errorf("caps given: %q", got)
 	}
 
-	l, notes = podmanLimits(CreateSpec{Pids: DefaultPids, CPUs: 2, MemMiB: 6144}, Cgroups{})
+	l, notes = podmanLimits(CreateSpec{Pids: DefaultPids, CPUs: 2, MemMiB: 6144}, Cgroups{}, "")
 	if got := l.args(); len(got) > 0 {
 		t.Errorf("no delegation must pass no limit: %v", got)
 	}
 	if len(notes) != 2 || !strings.Contains(notes[0], "--cpus not applied") || !strings.Contains(notes[1], "--mem not applied") {
 		t.Errorf("a cap the caller named and the host refused should be said: %v", notes)
+	}
+}
+
+// TestPodmanLimitsFollowTheCgroupManager: podman refuses a slice as the cgroup
+// parent under cgroupfs, so there the slice is skipped while the container's
+// own limits, which cgroupfs applies, are kept. A manager podman could not name
+// is treated the same way, since a failed run costs more than a missing slice.
+func TestPodmanLimitsFollowTheCgroupManager(t *testing.T) {
+	full := Cgroups{Slice: true, Controllers: []string{"cpu", "memory", "pids"}}
+	spec := CreateSpec{Pids: DefaultPids, CPUs: 2, MemMiB: 1024}
+	for _, c := range []struct{ manager, want string }{
+		{"systemd", "--cgroup-parent=cs-sandbox.slice --pids-limit=8192 --cpus=2 --memory=1024m --memory-swap=1024m"},
+		{"cgroupfs", "--pids-limit=8192 --cpus=2 --memory=1024m --memory-swap=1024m"},
+		{"", "--pids-limit=8192 --cpus=2 --memory=1024m --memory-swap=1024m"},
+	} {
+		l, _ := podmanLimits(spec, full, c.manager)
+		if got := strings.Join(l.args(), " "); got != c.want {
+			t.Errorf("manager %q: %q, want %q", c.manager, got, c.want)
+		}
+	}
+}
+
+// TestPodmanCgroupManagerAsksPodman: the answer is podman's own, trimmed.
+func TestPodmanCgroupManagerAsksPodman(t *testing.T) {
+	f := run.NewFake().OnStdout("podman info --format {{.Host.CgroupManager}}", "cgroupfs\n")
+	if got := PodmanCgroupManager(context.Background(), f); got != "cgroupfs" {
+		t.Errorf("manager = %q, want cgroupfs", got)
 	}
 }
 

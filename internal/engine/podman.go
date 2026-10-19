@@ -236,7 +236,15 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 		storePaths = append(storePaths, "/var/lib/shared/"+name)
 	}
 
-	limits, notes := podmanLimits(s, d.Cgroups)
+	// Asked only where there is a slice to join, since it costs a podman call.
+	var manager string
+	if d.Cgroups.Slice {
+		manager = PodmanCgroupManager(ctx, d.Runner)
+		if manager != "systemd" {
+			d.say("podman's cgroup manager is %q, not systemd, so this sandbox runs outside %s", manager, SliceName)
+		}
+	}
+	limits, notes := podmanLimits(s, d.Cgroups, manager)
 	for _, n := range notes {
 		d.note(n)
 	}
@@ -297,7 +305,9 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 	}
 
 	argv := buildRunArgs(params)
-	d.ensureSlice(ctx)
+	if limits.Parent != "" {
+		d.ensureSlice(ctx)
+	}
 	d.say("starting the container…")
 	reusingData := d.volumeExists(ctx, params.HomeVol)
 	if _, err = d.Runner.Run(ctx, run.Opts{}, argv...); err != nil {
