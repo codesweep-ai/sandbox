@@ -90,10 +90,17 @@ Firecracker where the host has KVM, and to Podman otherwise.
 | `-e`, `--env KEY=VALUE` | Inject an environment variable, or `KEY` alone to pass the host's value. Repeatable. |
 | `--env-file PATH` | Inject variables from a file. Repeatable. |
 | `--image-store NAME` | Mount a shared image store read-only. Repeatable. |
-| `--cpus N` | Firecracker vCPUs. Default 4. |
-| `--mem MiB` | Firecracker memory. Default 4096. |
+| `--cpus N` | Firecracker vCPUs, default 4. On Podman, a CPU cap, applied only when given. |
+| `--mem MiB` | Firecracker memory, default 4096. On Podman, a memory cap with no swap, applied only when given. |
+| `--pids N` | Podman: the container's process limit. Default 8192, and `0` for none. |
 | `--disk GiB` | Firecracker disk size, grow-only. Default: the base rootfs size, 32. |
 | `--privileged` | Podman: use `--privileged` instead of the scaled-down capability set. |
+
+Every sandbox runs under one systemd user slice, `cs-sandbox.slice`, so the fleet as a whole cannot
+starve your desktop. The slice is capped at 75% of memory with no swap, all but an eighth of the
+cores, and a quarter of the kernel's task limit. `systemctl --user show cs-sandbox.slice` shows the
+caps, and `CS_SANDBOX_SLICE_LIMITS` changes them. A host whose systemd user manager cannot hold the
+slice runs sandboxes without it, and `doctor` says why.
 
 `create` prints what the sandbox ended up with, borrowed or held, so neither is ever a silent
 assumption. Prefer the `--lend-…` pair: they give an agent everything it needs while your credential
@@ -851,6 +858,8 @@ The second group changes what gets built or run.
 | `CS_SANDBOX_DNS_SUFFIX` | `cs.sandbox` | The domain `host-route` resolves sandbox names under. |
 | `CS_SANDBOX_GROUP` | `default` | The group `create` puts a sandbox in when no `--group` is given. |
 | `CS_SANDBOX_TZ` | `America/Los_Angeles` | The timezone a sandbox boots with. |
+| `CS_SANDBOX_SLICE_LIMITS` | unset | systemd properties for `cs-sandbox.slice`, such as `MemoryMax=32G CPUQuota=800%`. Each replaces the default of the same name. |
+| `CS_SANDBOX_NO_SLICE` | unset | Set to anything to start sandboxes outside `cs-sandbox.slice`. Their own limits still apply. |
 | `CS_SANDBOX_SSH_BIND` | unset | Setting it publishes a host SSH port for each sandbox created, at this address; unset, none is published and `ssh <name>` goes through the config fragment. Any value other than `127.0.0.1` publishes beyond loopback: see [SPEC.md §13](SPEC.md#13-security-model). |
 
 The third group tunes the Firecracker engine. Leave these alone unless `doctor` or this manual sends
@@ -963,6 +972,16 @@ an arm64 image.
 A microVM is starting outside the cgroup that would cap it. The sandbox runs, but a runaway one is
 charged to the shell that launched it. Under WSL2, enable systemd as
 [INSTALL.md](INSTALL.md#windows-wsl2) describes.
+
+**`--cpus not applied: the cpu controller is not delegated to your user`**
+
+Your systemd user manager does not hold that cgroup controller, so a rootless container cannot be
+limited by it. The sandbox runs without the cap. `--mem` says the same of the memory controller.
+
+**`could not cap cs-sandbox.slice, so sandboxes share no total limit`**
+
+Your systemd user manager rejected the limits set on the slice. The sandbox runs in the slice without a total
+cap. Check the values in `CS_SANDBOX_SLICE_LIMITS`, if you set it.
 
 **`podman's rootless network still has <address>`**
 

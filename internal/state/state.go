@@ -311,8 +311,9 @@ type Instance struct {
 	Engine  Engine   `json:"engine"`
 	Port    int      `json:"port"`
 	FCIP    string   `json:"fcip,omitempty"` // firecracker VM address
-	CPUs    int      `json:"cpus,omitempty"` // firecracker
-	MemMiB  int      `json:"mem,omitempty"`  // firecracker
+	CPUs    int      `json:"cpus,omitempty"` // firecracker vCPUs, or a podman CPU cap
+	MemMiB  int      `json:"mem,omitempty"`  // firecracker memory, or a podman memory cap
+	Pids    int      `json:"pids,omitempty"` // podman process limit
 	Created string   `json:"created"`        // RFC3339 UTC
 	Yolo    bool     `json:"yolo,omitempty"`
 	Solo    bool     `json:"solo,omitempty"`

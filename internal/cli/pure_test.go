@@ -150,3 +150,34 @@ func TestAge(t *testing.T) {
 		}
 	}
 }
+
+// TestCreateSizing: --cpus and --mem size every microVM, and cap a container
+// only when given, so a podman create that names neither runs uncapped inside
+// the slice rather than inheriting a microVM's 4 GiB.
+func TestCreateSizing(t *testing.T) {
+	none := func(string) bool { return false }
+	both := func(f string) bool { return f == "cpus" || f == "mem" }
+	cases := []struct {
+		name      string
+		f         createFlags
+		given     func(string) bool
+		cpus, mem int
+		err       string
+	}{
+		{"firecracker defaults", createFlags{engine: "firecracker", cpus: 4, mem: 4096}, none, 4, 4096, ""},
+		{"podman defaults", createFlags{engine: "podman", cpus: 4, mem: 4096, pids: 8192}, none, 0, 0, ""},
+		{"podman caps", createFlags{engine: "podman", cpus: 2, mem: 2048}, both, 2, 2048, ""},
+		{"podman zero cap", createFlags{engine: "podman", cpus: 0, mem: 2048}, both, 0, 0, "--cpus"},
+		{"podman negative pids", createFlags{engine: "podman", pids: -1}, none, 0, 0, "--pids"},
+		{"firecracker zero mem", createFlags{engine: "firecracker", cpus: 4}, none, 0, 0, "--mem"},
+	}
+	for _, c := range cases {
+		cpus, mem, err := createSizing(&c.f, c.given)
+		switch {
+		case c.err != "" && (err == nil || !strings.Contains(err.Error(), c.err)):
+			t.Errorf("%s: err = %v, want one naming %s", c.name, err, c.err)
+		case c.err == "" && (err != nil || cpus != c.cpus || mem != c.mem):
+			t.Errorf("%s: = %d, %d, %v; want %d, %d", c.name, cpus, mem, err, c.cpus, c.mem)
+		}
+	}
+}

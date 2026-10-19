@@ -60,6 +60,7 @@ type runParams struct {
 	Stores    []string // container paths (/var/lib/shared/<name>) for CS_SANDBOX_IMAGE_STORES
 	StoreVols []string // "vol:/var/lib/shared/<name>:ro"
 	Mounts    []string // extra -v specs (snapshots, repos)
+	Limits    containerLimits
 }
 
 // obj is the host-global name of a sandbox's podman objects (container and
@@ -122,6 +123,7 @@ func buildRunArgs(p runParams) []string {
 			"--security-opt", "unmask=ALL",
 		)
 	}
+	a = append(a, p.Limits.args()...)
 	a = append(a,
 		"--security-opt", "label=disable",
 		"--cap-add=NET_RAW", "--cap-add=NET_BIND_SERVICE",
@@ -234,6 +236,10 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 		storePaths = append(storePaths, "/var/lib/shared/"+name)
 	}
 
+	limits, notes := podmanLimits(s, d.Cgroups)
+	for _, n := range notes {
+		d.note(n)
+	}
 	params := runParams{
 		Name: s.Name, Obj: obj(p.d.group(), s.Name), Network: d.Network,
 		Type: s.Type, Port: 0, SSHBind: d.SSHBind, IntPort: 22,
@@ -243,9 +249,11 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 		HomeVol: "cs-sandbox-home-" + obj(p.d.group(), s.Name), ContVol: "cs-sandbox-containers-" + obj(p.d.group(), s.Name),
 		SeedDir: seedDir, Image: d.Image,
 		EnvFile: envFilePath(seedDir, s.InjectedEnv), Stores: storePaths, StoreVols: storeVols, Mounts: mounts,
+		Limits: limits,
 	}
 	inst = &state.Instance{
 		Name: s.Name, Group: p.d.group(), Type: s.Type, Engine: state.Podman, Yolo: s.Yolo, Solo: s.Solo,
+		CPUs: limits.CPUs, MemMiB: limits.MemMiB, Pids: max(limits.Pids, 0),
 		Shared: s.ImageStores, AgentLogins: agentLogins, HeldKeys: s.InheritAPIKey,
 		EnvCredentials: s.EnvCredentials, Created: nowUTC(),
 	}
@@ -289,6 +297,7 @@ func (p *Podman) Create(ctx context.Context, s CreateSpec) (inst *state.Instance
 	}
 
 	argv := buildRunArgs(params)
+	d.ensureSlice(ctx)
 	d.say("starting the container…")
 	reusingData := d.volumeExists(ctx, params.HomeVol)
 	if _, err = d.Runner.Run(ctx, run.Opts{}, argv...); err != nil {
@@ -503,6 +512,9 @@ func (p *Podman) Start(ctx context.Context, name string) error {
 	if err := p.d.EnsureNetwork(ctx); err != nil {
 		return err
 	}
+	// The container keeps its own limits, but the slice's are runtime
+	// properties that a reboot clears.
+	p.d.ensureSlice(ctx)
 	if _, err := p.d.Runner.Run(ctx, run.Opts{}, "podman", "start", obj(p.d.group(), name)); err != nil {
 		return err
 	}

@@ -287,6 +287,8 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		r.addGroup(memoryGroup())
 	}
 
+	r.addGroup(limitsGroup(d))
+
 	// agent tools (optional). cs-sandbox ships them and never runs them, so a
 	// host without them is complete; cs-campaign's doctor prints this group in
 	// the same words and marks it required, because cs-campaign does run them.

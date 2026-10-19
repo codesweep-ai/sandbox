@@ -24,8 +24,9 @@ type CreateSpec struct {
 	Yolo              bool
 	Solo              bool
 	Privileged        bool // podman: use --privileged instead of the scaled-down cap set
-	CPUs              int  // firecracker
-	MemMiB            int  // firecracker
+	CPUs              int  // firecracker: vCPUs; podman: a CPU cap, 0 for none
+	MemMiB            int  // firecracker: guest memory; podman: a memory cap, 0 for none
+	Pids              int  // podman: the container's process limit, 0 for none
 	DiskGB            int  // firecracker: grow the instance disk to this size (0 = the base rootfs size)
 	Snapshots         []spec.Snapshot
 	RepoClones        []spec.RepoClone
@@ -105,6 +106,9 @@ type Deps struct {
 	// record for a sandbox that does not exist, and block until the readiness
 	// budget ran out.
 	DryRun bool
+	// Cgroups is what this host lets a sandbox be limited by (HostCgroups).
+	// The zero value applies no limit and uses no slice.
+	Cgroups Cgroups
 }
 
 // say emits a progress line, or nothing when no reporter is wired (e.g. tests).

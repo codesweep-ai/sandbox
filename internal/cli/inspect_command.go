@@ -39,10 +39,12 @@ type inspectItem struct {
 	Solo    bool         `json:"solo"`
 	// Port is the host loopback port publishing this sandbox's sshd.
 	Port int `json:"port,omitempty"`
-	// IP, CPUs and MemMiB are firecracker-only and omitted for podman.
+	// IP is firecracker-only. CPUs and MemMiB are a microVM's size, or the
+	// caps a podman sandbox was given, and Pids is podman's process limit.
 	IP     string `json:"ip,omitempty"`
 	CPUs   int    `json:"cpus,omitempty"`
 	MemMiB int    `json:"mem,omitempty"`
+	Pids   int    `json:"pids,omitempty"`
 	// AgentLogins are the agents whose host login was inherited at create, and
 	// HeldKeys the providers whose key was. EnvCredentials are the credential
 	// variables handed in with --env: the same posture arrived at by the weakest
@@ -102,7 +104,7 @@ func (a *App) inspectOne(ctx context.Context, in *state.Instance) inspectItem {
 		Status: status[engine.Qualify(in)], Type: in.Type, Engine: in.Engine,
 		Network: state.NetworkName(in.Group), Created: in.Created,
 		Yolo: in.Yolo, Solo: in.Solo, Port: in.Port,
-		IP: in.FCIP, CPUs: in.CPUs, MemMiB: in.MemMiB,
+		IP: in.FCIP, CPUs: in.CPUs, MemMiB: in.MemMiB, Pids: in.Pids,
 		AgentLogins: in.AgentLogins, HeldKeys: in.HeldKeys, EnvCredentials: in.EnvCredentials,
 		Snapshots:   in.Snapshots,
 		ImageStores: in.Shared, Loans: loanSlots(a.InstDir, in.Group, in.Name),
@@ -133,6 +135,9 @@ func writeInspectTable(out io.Writer, item inspectItem) error {
 	}
 	if item.MemMiB != 0 {
 		row("MEM MIB", item.MemMiB)
+	}
+	if item.Pids != 0 {
+		row("PIDS", item.Pids)
 	}
 	row("YOLO", yn(item.Yolo))
 	row("SOLO", yn(item.Solo))

@@ -173,7 +173,8 @@ git push worker:api HEAD:cs-sandbox/worker # the other direction
 - **`destroy` is irreversible** (it deletes the home volume / rootfs). Confirm before running it,
   and prefer `rm` when the data might still be wanted — recreating with the same name reuses it.
 - Firecracker needs Linux, `/dev/kvm` and x86_64; on macOS or a non-KVM host sandboxes use Podman
-  automatically. `--cpus` (default 4) and `--mem` MiB (default 4096) apply to Firecracker only.
+  automatically. `--cpus` (default 4) and `--mem` MiB (default 4096) size a microVM, and cap a
+  Podman sandbox only when given. `--pids` (default 8192) is a Podman sandbox's process limit.
 - On macOS everything runs in one podman-machine VM, and `--repo` / `--snapshot` sources must live
   under `$HOME` — `create` rejects paths outside it.
 - The agent login is **not** inherited by default — a sandbox starts with none. The usual choice is

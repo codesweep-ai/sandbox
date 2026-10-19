@@ -49,6 +49,7 @@ type createFlags struct {
 	blockSideCalls    bool
 	gitIdentity       string
 	cpus, mem, disk   int
+	pids              int
 	repos             []string
 	snapshots         []string
 	envs              []string
@@ -92,8 +93,9 @@ func newCreateCmd(app *App) *cobra.Command {
 		"refuse the sandbox a direct route to the hosts the lender fronts, so an agent cannot reach one around its loan")
 	fl.StringVar(&f.gitIdentity, "git-identity", "host",
 		"whose name and address the sandbox commits as: host (your own git identity) | none | \"Name <address>\"")
-	fl.IntVar(&f.cpus, "cpus", 4, "firecracker: vCPUs")
-	fl.IntVar(&f.mem, "mem", 4096, "firecracker: memory (MiB)")
+	fl.IntVar(&f.cpus, "cpus", 4, "firecracker: vCPUs; podman: a CPU cap, applied only when given")
+	fl.IntVar(&f.mem, "mem", 4096, "firecracker: memory (MiB); podman: a memory cap, applied only when given")
+	fl.IntVar(&f.pids, "pids", engine.DefaultPids, "podman: the container's process limit; 0 for none")
 	fl.IntVar(&f.disk, "disk", 0, "firecracker: disk size (GiB); grow-only, default: the base rootfs size (32)")
 	fl.StringArrayVar(&f.repos, "repo", nil, "share a git repo: PATH[@REF][:NAME] (repeatable)")
 	fl.StringArrayVar(&f.snapshots, "snapshot", nil, "share a frozen dir copy: PATH[:NAME] (repeatable)")
@@ -116,6 +118,44 @@ func newCreateCmd(app *App) *cobra.Command {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	return cmd
+}
+
+// createSizing checks the sizing flags against the engine and returns the
+// vCPUs and memory to create with. A microVM needs a size, so --cpus and --mem
+// always apply to one. A container needs none, so on podman they are caps,
+// and zero when not given.
+func createSizing(f *createFlags, given func(flag string) bool) (cpus, mem int, err error) {
+	switch f.engine {
+	case "podman":
+		if given("cpus") && f.cpus <= 0 {
+			return 0, 0, errors.New("--cpus must be greater than zero")
+		}
+		if given("mem") && f.mem <= 0 {
+			return 0, 0, errors.New("--mem must be greater than zero")
+		}
+		if f.pids < 0 {
+			return 0, 0, errors.New("--pids must not be negative")
+		}
+		if given("cpus") {
+			cpus = f.cpus
+		}
+		if given("mem") {
+			mem = f.mem
+		}
+		return cpus, mem, nil
+	case "firecracker":
+		if f.cpus <= 0 {
+			return 0, 0, errors.New("--cpus must be greater than zero")
+		}
+		if f.mem <= 0 {
+			return 0, 0, errors.New("--mem must be greater than zero")
+		}
+		if f.disk < 0 {
+			return 0, 0, errors.New("--disk must not be negative")
+		}
+		return f.cpus, f.mem, nil
+	}
+	return 0, 0, fmt.Errorf("--engine must be podman or firecracker, got %q", f.engine)
 }
 
 func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *cobra.Command) (err error) {
@@ -263,20 +303,9 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		return err
 	}
 	d := app.engineDepsFor(f.group)
-	switch f.engine {
-	case "podman":
-	case "firecracker":
-		if f.cpus <= 0 {
-			return errors.New("--cpus must be greater than zero")
-		}
-		if f.mem <= 0 {
-			return errors.New("--mem must be greater than zero")
-		}
-		if f.disk < 0 {
-			return errors.New("--disk must not be negative")
-		}
-	default:
-		return fmt.Errorf("--engine must be podman or firecracker, got %q", f.engine)
+	cpus, mem, err := createSizing(f, cmd.Flags().Changed)
+	if err != nil {
+		return err
 	}
 	// Read before anything is provisioned, like every other flag that can be wrong.
 	gitID, err := spec.ParseIdentity(f.gitIdentity)
@@ -305,7 +334,7 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 
 	cs := engine.CreateSpec{
 		Name: name, Group: f.group, Type: f.typ, Yolo: f.yolo, Solo: f.solo, Privileged: f.privileged,
-		CPUs: f.cpus, MemMiB: f.mem, DiskGB: f.disk, Snapshots: snaps, RepoClones: repos, GitIdentity: gitID,
+		CPUs: cpus, MemMiB: mem, Pids: f.pids, DiskGB: f.disk, Snapshots: snaps, RepoClones: repos, GitIdentity: gitID,
 		ImageStores: f.imageStores, InjectedEnv: injected, InheritAgentLogin: f.inheritAgentLogin,
 		InheritAPIKey: f.inheritAPIKey, EnvCredentials: envCreds,
 		LentCredentials: plan.seeded,

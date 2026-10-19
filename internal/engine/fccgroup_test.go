@@ -46,7 +46,7 @@ func TestCgroupWrapperDerivesCeiling(t *testing.T) {
 	t.Setenv("CS_SANDBOX_FC_MEMORY_MAX", "")
 	t.Setenv("CS_SANDBOX_FC_MEMORY_SWAP_MAX", "")
 
-	argv := cgroupWrapper(dir, &bytes.Buffer{})
+	argv := cgroupWrapper(dir, Cgroups{}, &bytes.Buffer{})
 	if len(argv) == 0 {
 		t.Skip("systemd-run not present on this host")
 	}
@@ -75,7 +75,7 @@ func TestCgroupWrapperExplicitOverride(t *testing.T) {
 	t.Setenv("CS_SANDBOX_FC_MEMORY_MAX", "1500M")
 	t.Setenv("CS_SANDBOX_FC_MEMORY_SWAP_MAX", "2G")
 
-	argv := cgroupWrapper(dir, &bytes.Buffer{})
+	argv := cgroupWrapper(dir, Cgroups{}, &bytes.Buffer{})
 	if len(argv) == 0 {
 		t.Skip("systemd-run not present on this host")
 	}
@@ -91,7 +91,7 @@ func TestCgroupWrapperKillSwitch(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 	t.Setenv("CS_SANDBOX_FC_NO_CGROUP", "1")
 
-	if argv := cgroupWrapper(dir, &bytes.Buffer{}); argv != nil {
+	if argv := cgroupWrapper(dir, Cgroups{}, &bytes.Buffer{}); argv != nil {
 		t.Errorf("CS_SANDBOX_FC_NO_CGROUP should disable wrapping, got %v", argv)
 	}
 }
@@ -105,7 +105,7 @@ func TestCgroupWrapperDegradesWithoutSession(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
 
 	var warn bytes.Buffer
-	if argv := cgroupWrapper(dir, &warn); argv != nil {
+	if argv := cgroupWrapper(dir, Cgroups{}, &warn); argv != nil {
 		t.Errorf("expected no wrapper without a user session, got %v", argv)
 	}
 	if !strings.Contains(warn.String(), "without a memory cgroup") {
@@ -121,7 +121,7 @@ func TestCgroupWrapperUnreadableConfig(t *testing.T) {
 	t.Setenv("CS_SANDBOX_FC_NO_CGROUP", "")
 	t.Setenv("CS_SANDBOX_FC_MEMORY_MAX", "")
 
-	if argv := cgroupWrapper(dir, &bytes.Buffer{}); argv != nil {
+	if argv := cgroupWrapper(dir, Cgroups{}, &bytes.Buffer{}); argv != nil {
 		t.Errorf("expected no wrapper when mem sizing is unknown, got %v", argv)
 	}
 }
@@ -137,7 +137,7 @@ func TestCgroupWrapperUnitNamesAreUnique(t *testing.T) {
 	t.Setenv("CS_SANDBOX_FC_MEMORY_MAX", "")
 
 	unit := func() string {
-		for _, a := range cgroupWrapper(dir, &bytes.Buffer{}) {
+		for _, a := range cgroupWrapper(dir, Cgroups{}, &bytes.Buffer{}) {
 			if strings.HasPrefix(a, "--unit=") {
 				return a
 			}

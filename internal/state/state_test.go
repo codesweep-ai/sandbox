@@ -52,6 +52,23 @@ func TestSaveLoad(t *testing.T) {
 	}
 }
 
+// TestSaveLoadKeepsLimits: inspect reports a sandbox's limits from its record,
+// and a microVM's start sizes its scope from the same numbers.
+func TestSaveLoadKeepsLimits(t *testing.T) {
+	dir := t.TempDir()
+	in := &Instance{Name: "s1", Type: "agent", Engine: Podman, CPUs: 2, MemMiB: 6144, Pids: 8192, Created: "t"}
+	if err := Save(dir, in); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir, DefaultGroup, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CPUs != 2 || got.MemMiB != 6144 || got.Pids != 8192 {
+		t.Errorf("round trip lost the limits: %+v", got)
+	}
+}
+
 func TestSaveLoadRejectInvalidNames(t *testing.T) {
 	dir := t.TempDir()
 	if err := Save(dir, nil); err == nil {

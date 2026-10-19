@@ -25,13 +25,13 @@ func errMissingTool(tool string) error {
 // launchFirecracker boots firecracker for an instance inside podman's rootless
 // netns as a detached, pid-tracked child (NOT via the capturing Runner — this is
 // a long-lived process).
-func launchFirecracker(idir, fcBin string) error {
+func launchFirecracker(idir, fcBin string, cg Cgroups) error {
 	serial, err := os.Create(filepath.Join(idir, "serial.log"))
 	if err != nil {
 		return err
 	}
 	defer serial.Close()
-	argv := append(cgroupWrapper(idir, serial),
+	argv := append(cgroupWrapper(idir, cg, serial),
 		"podman", "unshare", "--rootless-netns",
 		fcBin, "--no-api", "--config-file", filepath.Join(idir, "run.json"))
 	cmd := exec.Command(argv[0], argv[1:]...)
@@ -68,7 +68,10 @@ func launchFirecracker(idir, fcBin string) error {
 // throttle but a cliff: once the cgroup can no longer reclaim, the VM makes no
 // progress at ~97% pressure stall while staying alive, with no OOM and no error
 // for a supervisor to notice. A hard `MemoryMax` fails loudly instead.
-func cgroupWrapper(idir string, warnTo io.Writer) []string {
+//
+// The scope goes under SliceName where the host has one (R171), and gets a CPU
+// and a task cap beside the memory one (scopeCaps).
+func cgroupWrapper(idir string, cg Cgroups, warnTo io.Writer) []string {
 	if os.Getenv("CS_SANDBOX_FC_NO_CGROUP") != "" {
 		return nil
 	}
@@ -79,13 +82,13 @@ func cgroupWrapper(idir string, warnTo io.Writer) []string {
 		return nil
 	}
 
+	cfg, err := fcconfig.ReadFile(filepath.Join(idir, "run.json"))
+	if err != nil || cfg.MachineConfig.MemSizeMiB <= 0 {
+		return nil // unknown sizing — better unwrapped than wrongly capped
+	}
 	max := os.Getenv("CS_SANDBOX_FC_MEMORY_MAX")
 	if max == "" {
-		mem := cgroupDefaultMaxMiB(idir)
-		if mem <= 0 {
-			return nil // unknown sizing — better unwrapped than wrongly capped
-		}
-		max = strconv.Itoa(mem) + "M"
+		max = strconv.Itoa(cfg.MachineConfig.MemSizeMiB+cgroupHeadroomMiB) + "M"
 	}
 
 	// The unit name must be unique per launch: a scope whose process is
@@ -103,23 +106,35 @@ func cgroupWrapper(idir string, warnTo io.Writer) []string {
 		swap = "0"
 	}
 	argv = append(argv, "-p", "MemorySwapMax="+swap)
+	argv = append(argv, scopeCaps(cfg.MachineConfig.VCPUCount)...)
+	if cg.Slice {
+		argv = append(argv, "--slice="+SliceName)
+	}
 	return argv
+}
+
+// vmmTasksMax caps the tasks of a microVM's scope. The guest's processes live
+// in its own kernel and are not host tasks; what the scope holds is the VMM's
+// threads, its io_uring workers and the podman unshare around it: fifteen at
+// peak under eight parallel disk writers. The cap is a backstop against a VMM
+// that leaks threads.
+const vmmTasksMax = 1024
+
+// scopeCaps are the CPU and task caps of a microVM's scope. The CPU cap is
+// one core per vCPU plus one for the VMM's own device emulation, so it bounds
+// what a guest takes without starving its disk and network.
+func scopeCaps(vcpus int) []string {
+	var a []string
+	if vcpus > 0 {
+		a = append(a, "-p", "CPUQuota="+strconv.Itoa((vcpus+1)*100)+"%")
+	}
+	return append(a, "-p", "TasksMax="+strconv.Itoa(vmmTasksMax))
 }
 
 // cgroupHeadroomMiB is what the default MemoryMax adds on top of the guest's
 // configured RAM to cover the VMM itself (~5–20 MiB measured), its page tables
 // and the virtio queues.
 const cgroupHeadroomMiB = 256
-
-// cgroupDefaultMaxMiB derives the default ceiling from what the instance is
-// actually configured to boot with. Returns 0 when run.json cannot be read.
-func cgroupDefaultMaxMiB(idir string) int {
-	cfg, err := fcconfig.ReadFile(filepath.Join(idir, "run.json"))
-	if err != nil || cfg.MachineConfig.MemSizeMiB <= 0 {
-		return 0
-	}
-	return cfg.MachineConfig.MemSizeMiB + cgroupHeadroomMiB
-}
 
 // fcRunning reports whether the instance's firecracker process is alive: fc.pid
 // names a running process that is the one recorded, by start time and by an

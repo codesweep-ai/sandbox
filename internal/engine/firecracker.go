@@ -330,7 +330,8 @@ func (fe *Firecracker) launch(ctx context.Context, name string, inst *state.Inst
 		return err
 	}
 	// Firecracker runs INSIDE podman's rootless netns (it has /dev/kvm + the tap).
-	return launchFirecracker(idir, fe.cache().FirecrackerBin())
+	d.ensureSlice(ctx)
+	return launchFirecracker(idir, fe.cache().FirecrackerBin(), d.Cgroups)
 }
 
 // waitReady polls serial.log for the guest's FC-VM-READY marker, giving up if

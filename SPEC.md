@@ -1458,6 +1458,13 @@ systemd user session gets no cgroup, and `cs-sandbox` says so on the way past.
 longer reclaim under `memory.high` leaves the VM alive and making no progress, with no OOM and no
 error for a supervisor to notice. The hard `memory.max` ceiling fails loudly instead.
 
+**R130a.** That cgroup **MUST** also cap CPU at one core more than the microVM's vCPUs, and **MUST** cap
+its tasks.
+
+The extra core is for the VMM's own device emulation, so a guest that saturates its vCPUs still gets
+its disk and network served. The guest's processes live in its own kernel and are not host tasks, so
+the task cap bounds only the VMM's threads, which number about fifteen under load.
+
 ### 12.5 The guest init
 
 **R131.** `/fc-init` **MUST** run as PID 1 and **MUST**, in this order:
@@ -1621,6 +1628,28 @@ credential that pays for the model. The sandbox spends it and never holds it. Bo
 rather than a copy. Anything running as you in the sandbox can use an agent-forwarding socket while
 you are connected, though it cannot copy the key out, so scope what you load. Anything in a sandbox can
 spend a loan while that sandbox exists, though it cannot learn what the loan stands for.
+
+### 13.1 Resource limits
+
+**R171.** Every sandbox **MUST** run under one systemd user slice, `cs-sandbox.slice`, whose memory,
+swap, CPU and task caps `create` and `start` set before the sandbox starts. A host whose user manager
+cannot hold the slice **MUST** still create the sandbox, outside it.
+
+**R171a.** A Podman sandbox **MUST** get a process limit by default, and a CPU or memory cap only
+when `--cpus` or `--mem` names one. A limit whose cgroup controller is not delegated to the user
+**MUST** be dropped, with a note when the caller named it, rather than fail the create.
+
+The slice is what lets ten agent sandboxes share a desktop. Its defaults keep a quarter of memory
+and an eighth of the cores for the desktop. They hold the fleet to a quarter of the kernel's task
+limit, below the third systemd gives each user. Swap is capped at none, because on a zram host swap
+is memory the cap does not count. The caps are runtime properties, so nothing is written under your
+home, and setting them on every start brings them back after a reboot.
+
+A microVM is sized by `--cpus` and `--mem` and cannot outgrow them, so those caps fall out of R130.
+A container has no size, so it is uncapped within the slice unless asked. Its process limit is on
+regardless, because a fork bomb in one container would otherwise spend the task budget of every
+sandbox. The default of 8192 is four times Podman's own, which a parallel build with a nested engine
+comes close to.
 
 ## 14. Limitations
 

@@ -244,6 +244,7 @@ func (a *App) engineDepsBase() engine.Deps {
 		Note:         a.note,
 		Bars:         a.bars(),
 		DryRun:       a.Exec != nil && a.Exec.DryRun,
+		Cgroups:      engine.HostCgroups(a.Host),
 	}
 }
 
