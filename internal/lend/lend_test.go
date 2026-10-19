@@ -23,6 +23,7 @@ type upstream struct {
 	*httptest.Server
 	gotHeader http.Header
 	gotPath   string
+	gotURI    string // as sent, before the upstream decodes it
 	gotHost   string
 	calls     int
 	body      string
@@ -36,6 +37,7 @@ func newUpstream(t *testing.T) *upstream {
 		u.calls++
 		u.gotHeader = r.Header.Clone()
 		u.gotPath = r.URL.Path
+		u.gotURI = r.RequestURI
 		u.gotHost = r.Host
 		if u.sse {
 			w.Header().Set("Content-Type", "text/event-stream")

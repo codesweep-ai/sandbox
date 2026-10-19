@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Config is everything the lender needs. Every path arrives from the caller, so
@@ -152,6 +154,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Before anything reads the path. Every decision below, and the upstream,
+	// has to read the same path, and only a clean one reads the same at every
+	// hop (R146b).
+	if why := uncleanPath(r.URL); why != "" {
+		s.count(func(st *Stats) { st.Requests++; st.Refused++ })
+		s.cfg.Log.Warn("refused: the path is not clean", slog.String("why", why),
+			slog.String("path", r.URL.EscapedPath()), slog.String("remote", r.RemoteAddr))
+		writeError(w, http.StatusBadRequest, "unclean_path",
+			"cs-sandbox lends a credential only to a clean path, and this one holds "+why)
+		return
+	}
+
 	// A health check needs no loan: it is how `create` and `doctor` tell a
 	// listening lender from a port that merely answers.
 	if r.URL.Path == "/healthz" {
@@ -264,7 +278,9 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, loan Loan, slot
 			pr.Out.Host = base.Host
 			// The version segment, exactly once, whichever of the two
 			// conventions the client follows. Everything else about the path
-			// is the client's and is passed through untouched.
+			// is the client's and is passed through untouched. Dropping RawPath
+			// re-escapes the decoded path, which changes no segment because an
+			// encoded slash was refused on the way in.
 			pr.Out.URL.Path = joinPath(base.Path, ensureVersion(slot.Version, pr.In.URL.Path))
 			pr.Out.URL.RawPath = ""
 
@@ -401,9 +417,61 @@ func (s *Server) trouble(slot, class string, detail ...any) {
 		slog.String("slot", slot), slog.Int("answers", n)}, detail...)...)
 }
 
-// ensureVersion returns p with the provider's version segment present exactly
-// once. An empty version leaves the path alone.
+// uncleanPath says what makes a request's path unsafe to lend to, or "" when
+// nothing does.
+//
+// Clean means each segment is read the same way at every hop. A dot segment,
+// in any spelling, climbs out of the slot's origin at whichever hop resolves
+// it. So can a backslash, which some servers read as a slash, a ";" suffix,
+// which some strip from a segment, and an escape left after decoding, which a
+// hop that decodes twice resolves. An encoded slash is a segment boundary to
+// one hop and not to the next, and some merge an empty segment away. No client
+// these slots serve sends any of them.
+func uncleanPath(u *url.URL) string {
+	p := u.Path
+	switch {
+	case !strings.HasPrefix(p, "/"):
+		return "no leading slash"
+	case strings.Contains(strings.ToLower(u.RawPath), "%2f"):
+		return "an encoded slash"
+	case strings.Contains(p, "\\"):
+		return "a backslash"
+	case strings.Contains(p, "%"):
+		return "an escape left after decoding"
+	case !utf8.ValidString(p):
+		return "bytes that are not UTF-8"
+	}
+	segs := strings.Split(p[1:], "/")
+	for i, seg := range segs {
+		name, _, _ := strings.Cut(seg, ";")
+		switch {
+		case name == "." || name == "..":
+			return "a dot segment"
+		case seg == "" && i < len(segs)-1:
+			return "an empty segment"
+		}
+	}
+	return ""
+}
+
+// cleanPath is p with its dot and empty segments resolved, keeping a trailing
+// slash.
+func cleanPath(p string) string {
+	c := path.Clean("/" + p)
+	if strings.HasSuffix(p, "/") && c != "/" {
+		c += "/"
+	}
+	return c
+}
+
+// ensureVersion returns p, cleaned, with the provider's version segment present
+// exactly once. An empty version adds none.
+//
+// The lender refuses a path cleaning would change, so the cleaning here matters
+// only if that refusal is ever bypassed: what goes upstream still cannot climb
+// out of the version, or out of the origin's own prefix.
 func ensureVersion(version, p string) string {
+	p = cleanPath(p)
 	if version == "" || p == version || strings.HasPrefix(p, version+"/") {
 		return p
 	}

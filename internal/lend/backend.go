@@ -79,9 +79,11 @@ func codexBackend(loan Loan, r *http.Request) (any, error) {
 	}, nil
 }
 
-// underBackend reports whether a path is a call to a vendor's backend.
-func underBackend(path string) bool {
-	return path == backendPrefix || strings.HasPrefix(path, backendPrefix+"/")
+// underBackend reports whether a path is a call to a vendor's backend, judged by
+// the path it resolves to.
+func underBackend(p string) bool {
+	p = cleanPath(p)
+	return p == backendPrefix || strings.HasPrefix(p, backendPrefix+"/")
 }
 
 // serveBackend answers a backend call from the slot's own table, or refuses

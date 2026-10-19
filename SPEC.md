@@ -846,6 +846,12 @@ start on a ChatGPT login until that call succeeds with the token they hold, and 
 nowhere but here. Codex requires the origin in the answer to be HTTPS. It also moves a model provider on
 the backend's own origin onto that one, which is past the lender, so the backend needs a second origin.*
 
+**R146b.** The lender **MUST** refuse a request whose path a later hop could read differently, before
+anything reads that path. That covers a dot segment in any spelling, an empty segment, a backslash, an
+encoded slash and an escape left after decoding. *The checks R146a and R147 rest on read the path, and
+the upstream reads it again with the real credential attached. A hop that resolves `/../` after the
+lender delivers the credential to a path none of them checked.*
+
 **R147.** The upstream **MUST** be a property of the slot or of the loan. No part of a request **MUST**
 select or change it: not the host, not the path, not the query, not a header.
 
@@ -966,7 +972,8 @@ headers an API key does not. A sandbox holding a token cannot know which it stan
 
 R147 keeps this from becoming a way to steal a credential. A caller that could name its own upstream
 could aim the host's real credential at a machine of its choosing. It also keeps the lender free of
-any model of a provider's API. The lender joins an origin it was given to a path it did not read.
+any model of a provider's API. The lender joins an origin it was given to a path it reads only to
+check that it is clean (R146b).
 Three places may name that origin, most specific first: the loan, the lender's own `--origin`, and
 the slot. A request is none of them.
 
