@@ -913,9 +913,9 @@ dnf install -y --setopt=install_weak_deps=False "$FC_SPEC" >/dev/null \
 	// scriptlets, so the unpacked tree carries every .ko and none of the
 	// modules.dep/.alias indexes modprobe resolves through. A guest booted on that
 	// tree looks healthy right up to the first modprobe, which silently matches
-	// nothing: vsock never loads, /dev/vsock never appears, and the socat that is
-	// PID 1 exits into "Attempted to kill init!". Checking for modules.dep.bin
-	// keeps that failure here rather than in a guest panic three steps later.
+	// nothing: vsock never loads, /dev/vsock never appears, and the vsock bridge
+	// exits as often as its supervisor starts it. Checking for modules.dep.bin
+	// keeps that failure here rather than in a guest booted without its drivers.
 	arch, err := fcArch()
 	if err != nil {
 		return "", nil, err

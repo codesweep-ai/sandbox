@@ -636,9 +636,9 @@ func vmPostMortem(t *testing.T, host hostenv.Host, name string) {
 	//
 	// serial.log is the guest's console, written by firecracker on THIS side of
 	// the boundary, so it answers when nothing in the guest will. An OOM kill, a
-	// kernel panic, or PID 1 dying ("Attempted to kill init!", which is what
-	// happens when the socat that bridges vsock to sshd goes away) all land there
-	// and nowhere else. Its mtime is half the evidence: a console that stopped
+	// kernel panic, PID 1 dying ("Attempted to kill init!"), and sshd or the
+	// vsock bridge being restarted by its supervisor all land there and nowhere
+	// else. Its mtime is half the evidence: a console that stopped
 	// writing minutes ago dates the death.
 	serial := filepath.Join(state.Dir(paths.Instances(), testGroup(), name), "serial.log")
 	if fi, err := os.Stat(serial); err != nil {

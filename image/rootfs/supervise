@@ -1,0 +1,35 @@
+#!/bin/bash
+# supervise — run a command and start it again whenever it exits. Both entry paths keep
+# sshd up with it, and the microVM's guest init its vsock bridge too (SPEC.md R99a, R131a).
+#
+# The delay before a restart starts at 0.1 s and doubles, up to 10 s, while the command
+# keeps exiting within 10 s of its start. A crash loop therefore costs one start every
+# 10 s rather than a spinning CPU. A command that stayed up longer is back on the 0.1 s
+# delay.
+#
+# TERM or INT stops the command and then this loop. The command runs in the background
+# and is waited for, because bash defers a trap until a foreground child has exited.
+#
+# Usage: supervise <name> <command> [args...]
+set -u
+name=${1:?name}; shift
+[ $# -gt 0 ] || { echo "usage: supervise <name> <command> [args...]" >&2; exit 2; }
+
+child=""
+trap '[ -n "$child" ] && kill -TERM "$child" 2>/dev/null; exit 0' TERM INT
+
+delay=100   # milliseconds
+while :; do
+  started=$SECONDS
+  "$@" &
+  child=$!
+  wait "$child"
+  rc=$?
+  if (( SECONDS - started >= 10 )); then delay=100; fi
+  printf -v secs '%d.%03d' $((delay / 1000)) $((delay % 1000))
+  echo "supervise: $name exited with status $rc; restarting in ${secs}s" >&2
+  sleep "$secs" &
+  child=$!
+  wait "$child"
+  (( delay = delay * 2 > 10000 ? 10000 : delay * 2 ))
+done

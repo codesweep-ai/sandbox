@@ -59,7 +59,7 @@ func isExec(rel string) bool {
 		return true
 	}
 	switch rel {
-	case "guest/init", "guest/vsock-connect", "rootfs/entrypoint", "rootfs/nested-rootless":
+	case "guest/init", "guest/vsock-connect", "rootfs/entrypoint", "rootfs/nested-rootless", "rootfs/supervise":
 		return true
 	}
 	return false

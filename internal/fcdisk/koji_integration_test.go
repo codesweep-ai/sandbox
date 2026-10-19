@@ -87,8 +87,8 @@ func TestKojiKernelBuildLive(t *testing.T) {
 	}
 
 	names := tarNames(t, filepath.Join(c.Dir, "modules.tar"))
-	// Without the depmod indexes the guest boots, reaches FC-VM-READY, and then
-	// panics when socat — PID 1 — finds no /dev/vsock to open. rpm2cpio runs no
+	// Without the depmod indexes the guest boots and reaches FC-VM-READY with
+	// none of the modules it asked for, /dev/vsock among them. rpm2cpio runs no
 	// scriptlets, so nothing but our own depmod call puts these here.
 	if !containsSubstring(names, "modules.dep.bin") {
 		t.Error("modules.tar has no modules.dep.bin — modprobe would resolve nothing in the guest")

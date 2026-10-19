@@ -3,8 +3,8 @@
 # A microVM is real root on a real kernel, so there's none of the keep-id/--privileged
 # dance: set up the developer user from the RO seed disk (/dev/vdb), bring up eth0 on the
 # shared cs-sandbox bridge (outbound NAT + VM<->VM by name), alternates-clone the --repo objects
-# from the RO repo disks (/dev/vdc…), start sshd, and expose it over VSOCK (port 22) so the
-# host reaches it with no IP networking at all. See SPEC.md §12.
+# from the RO repo disks (/dev/vdc…), start sshd and a VSOCK (port 22) bridge to it, and stay
+# up as their supervisor. See SPEC.md §12.
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 # As kernel-launched PID1 our umask is 0000, so any file created by a shell redirect (e.g.
 # ~/.ssh/config below, /etc/resolv.conf) would be world-writable — and ssh then rejects its
@@ -354,9 +354,30 @@ if [ -f "$SEED/imagestores" ]; then
   fi
 fi
 
+# --- sshd and the vsock bridge, kept running by this PID 1 (SPEC.md R131a) ---
 # sshd on the standard port 22 so VM<->VM ssh by bare name works on the default port; the
-# host reaches it over vsock (vsock port 22 -> guest 22).
-/usr/sbin/sshd -p 22 -o PasswordAuthentication=no -o PermitUserEnvironment=yes
+# host reaches it over the tap, and vsock port 22 bridges to it as a standby. Each runs
+# under /sandbox/supervise, which restarts it with a backoff when it exits.
+# A TERM or INT ends the VM the way `cs-sandbox stop` does.
+trap 'echo "cs-sandbox-init: shutting down"; sync; reboot -f' TERM INT
+declare -A _sv_pid
+_sv_start() {
+  case $1 in
+    sshd)  /sandbox/supervise sshd /usr/sbin/sshd -D -p 22 -o PasswordAuthentication=no -o PermitUserEnvironment=yes & ;;
+    vsock) /sandbox/supervise vsock-bridge socat VSOCK-LISTEN:22,reuseaddr,fork TCP4:127.0.0.1:22 & ;;
+  esac
+  _sv_pid[$1]=$!
+}
+_sv_start vsock
+_sv_start sshd
+# sshd -D does not daemonize, so ready waits until it listens.
+for _ in $(seq 500); do grep -q ':0016 00000000:0000 0A' /proc/net/tcp && break; sleep 0.01; done
 echo "##### FC-VM-READY #####"
-# PID1 = the vsock<->sshd bridge (reaps its own forked relays)
-exec socat VSOCK-LISTEN:22,reuseaddr,fork TCP4:127.0.0.1:22
+# Wait on the supervisors, and start one again if it is killed. Waiting is also what
+# reaps the orphans the kernel reparents to PID 1.
+while :; do
+  wait -n -p _gone; [ $? -eq 127 ] && sleep 1
+  for _s in "${!_sv_pid[@]}"; do
+    [ "${_sv_pid[$_s]}" = "${_gone:-}" ] && { sleep 1; _sv_start "$_s"; }
+  done
+done

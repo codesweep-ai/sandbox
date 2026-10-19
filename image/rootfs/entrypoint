@@ -390,7 +390,11 @@ if command -v /usr/bin/podman >/dev/null 2>&1; then
 fi
 
 # --- start sshd and signal readiness --------------------------------------------
-/usr/sbin/sshd -D -p "$PORT" -oUsePAM=no -oPermitUserEnvironment=yes &
+# Under /sandbox/supervise, which restarts it with a backoff when it exits (SPEC.md R99a).
+# Ready waits until it listens, since sshd -D starts in the background.
+/sandbox/supervise sshd /usr/sbin/sshd -D -p "$PORT" -oUsePAM=no -oPermitUserEnvironment=yes &
+_port_hex=$(printf '%04X' "$PORT")
+for _ in $(seq 500); do grep -q ":$_port_hex 00000000:0000 0A" /proc/net/tcp && break; sleep 0.01; done
 
 touch /run/cs-sandbox-ready 2>/dev/null && chmod 644 /run/cs-sandbox-ready 2>/dev/null || true
 

@@ -24,7 +24,7 @@ func TestImageDirFromEmbed(t *testing.T) {
 	// dot-prefixed profile skeleton is listed too: `//go:embed all:image` is what pulls
 	// those in, and dropping the `all:` would silently ship an image without them.
 	for _, f := range []string{
-		"Containerfile", "rootfs/entrypoint", "rootfs/nested-rootless", "guest/init",
+		"Containerfile", "rootfs/entrypoint", "rootfs/nested-rootless", "rootfs/supervise", "guest/init",
 		// `cs-sandbox build --slim` shells out to this one, from the extracted
 		// tree, so a downloaded binary can derive the CI image with no checkout.
 		"ci-slim.sh",
@@ -47,10 +47,13 @@ func TestImageDirFromEmbed(t *testing.T) {
 	if m := mode(t, dir, "guest/init"); m != 0o755 {
 		t.Errorf("guest/init mode = %o, want 755", m)
 	}
-	// Both entry paths exec it directly, so a 0644 extraction would break nested
-	// podman on both engines.
+	// Both entry paths exec these directly, so a 0644 extraction would break
+	// nested podman, or sshd, on both engines.
 	if m := mode(t, dir, "rootfs/nested-rootless"); m != 0o755 {
 		t.Errorf("nested-rootless mode = %o, want 755", m)
+	}
+	if m := mode(t, dir, "rootfs/supervise"); m != 0o755 {
+		t.Errorf("supervise mode = %o, want 755", m)
 	}
 	for _, w := range []string{"cs-claude", "cs-codex", "cs-opencode"} {
 		if m := mode(t, dir, "rootfs/home/.local/bin/"+w); m != 0o755 {

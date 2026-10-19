@@ -1125,10 +1125,17 @@ which keep-id maps to the caller's host uid.
 
 1. create the group and user, and grant NOPASSWD sudo;
 2. run the §11.2 bootstrap that nested rootless Podman needs;
-3. seed and chown the home, install the seed's SSH material and agent credentials, and start sshd;
+3. seed and chown the home, install the seed's SSH material and agent credentials, and start sshd
+   under the supervisor R99a describes;
 4. hand off to that user, with `runuser`, for the main process.
 
-Because keep-id maps the created uid to your host uid, ownership stays correct on both sides.
+**R99a.** The supervisor **MUST** start sshd again whenever it exits. It waits 0.1 s before a restart
+and doubles the wait, up to 10 s, while sshd keeps exiting within 10 s of starting. Readiness
+**MUST** wait until sshd listens.
+
+Because keep-id maps the created uid to your host uid, ownership stays correct on both sides. R99a
+exists because nothing else restarts a dead sshd, which leaves the sandbox unreachable over ssh. The
+backoff stops an sshd that cannot start from spinning a CPU.
 
 **R100.** The home **MUST** be a named volume mounted at the user's home directory, and **MUST** persist across
 stop and start. `destroy` **MUST** remove it.
@@ -1340,9 +1347,9 @@ substitution.
 What that costs is the package manager's bookkeeping, and one piece of it is load-bearing. Installing
 the kernel runs `depmod` from a scriptlet; unpacking the RPM directly runs no scriptlets, so the tree
 has every module and none of the indexes `modprobe` resolves through. A guest booted on that tree
-reaches its ready marker, then panics on its first `modprobe`. The socat serving the vsock bridge is
-PID 1, and it exits when `/dev/vsock` never appears. Hence "**MUST** rebuild the module
-indexes": the step runs `depmod` and fails if it produced no `modules.dep.bin`.
+reaches its ready marker with none of the modules it asked for, so it has no `/dev/vsock` and its
+vsock bridge never stays up. Hence "**MUST** rebuild the module indexes": the step runs `depmod` and
+fails if it produced no `modules.dep.bin`.
 
 R120a is about what a kernel build is allowed to depend on. This step's output IS the artifact. A
 decompressor that succeeds at the wrong offset, or one that writes a diagnostic to stdout, would put
@@ -1479,11 +1486,18 @@ the task cap bounds only the VMM's threads, which number about fifteen under loa
 7. seed or refresh the home as §3.3 describes, and install the agent credentials;
 8. run the `--repo` clones, mount the read-only disks with the device-letter cursor, and register the
    image stores among them per R85b;
-9. start sshd, signal readiness, and hand off to the vsock listener.
+9. start sshd and the vsock bridge, signal readiness once sshd listens, and supervise both.
+
+**R131a.** `/fc-init` **MUST** remain PID 1 for the life of the VM. It **MUST** restart sshd and the
+vsock bridge whenever either exits, with R99a's backoff, and **MUST** reap every orphan. A SIGTERM or
+SIGINT **MUST** sync and reboot the guest, which ends the VM.
 
 A kernel boots an init rather than an entrypoint, which is why this replaces the container
 `ENTRYPOINT`. It skips the keep-id dance entirely, the VM being genuinely root with its own uids.
 Boot to ready is one to two seconds.
+
+R131a keeps a VM reachable when sshd dies, and keeps the vsock standby up. A PID 1 that exits panics
+the kernel, so the init itself stays and waits on the supervisors.
 
 ### 12.6 The fabric
 
