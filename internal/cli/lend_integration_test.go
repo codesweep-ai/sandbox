@@ -183,6 +183,37 @@ func TestCLILendKeyLive(t *testing.T) {
 	}
 }
 
+// TestCLILendBoundToItsSandboxLive: a peer that copies another member's loan
+// cannot spend it (R152a). Live, because what the lender compares is the address
+// the bridge delivers and the one the group's DNS gives for the loan's sandbox.
+func TestCLILendBoundToItsSandboxLive(t *testing.T) {
+	r, host := liveSetup(t)
+	lendingHost(t, host)
+	upstream, seen := standInProvider(t)
+
+	owner, peer := boxName("lendowner"), boxName("lendpeer")
+	for _, n := range []string{owner, peer} {
+		t.Cleanup(func() { _, _ = destroyBox(t, n) })
+		createBox(t, r, n, append([]string{"--lend-api-key", "anthropic"}, lendUpstream(upstream)...)...)
+	}
+	ctx := context.Background()
+	token := strings.TrimSpace(inBox(ctx, r, host, owner, `printf '%s' "$ANTHROPIC_API_KEY"`))
+	if !strings.HasPrefix(token, lend.TokenPrefix) {
+		t.Fatalf("no loan token in %s: %q", owner, token)
+	}
+	spend := `curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST "$ANTHROPIC_BASE_URL/v1/messages" ` +
+		`-H "x-api-key: ` + token + `" -d '{}'`
+	if code := strings.TrimSpace(inBox(ctx, r, host, peer, spend)); code != "403" {
+		t.Errorf("the peer spent the owner's loan: HTTP %s, want 403", code)
+	}
+	if _, _, calls := seen.snapshot(); calls != 0 {
+		t.Errorf("a loan spent from the wrong sandbox reached the provider %d times", calls)
+	}
+	if code := strings.TrimSpace(inBox(ctx, r, host, owner, spend)); code != "200" {
+		t.Errorf("the owner could not spend its own loan: HTTP %s, want 200", code)
+	}
+}
+
 // TestCLILendKeyFirecrackerLive: the same loan, spent from a microVM.
 //
 // Worth its own member because the two engines reach the host by different

@@ -915,6 +915,17 @@ when that directory is removed, and there **MUST** be no other revocation.
 its own boundary. That boundary is this host's addresses for a lender run on the host. It is the
 networks it is attached to for one on a group's network (R52b).
 
+**R152a.** A lender on a group's network **MUST** honour a loan only from the sandbox it was minted
+for. It **MUST** find that sandbox's address by name on the group's DNS, and **MUST** refuse a loan
+of another group. A refusal **MUST** come before the credential is read, and **MUST** be logged with
+the loan's name and the caller's address. A lender container started without its group **MUST** be
+replaced rather than adopted (R150f). *A loan token is a bearer value that leaks the ordinary
+ways, through a readable file, a log or a shared repository. Unbound, any peer that finds one spends
+it, and the log names the wrong sandbox. The name is looked up rather than an address recorded,
+because a container's address changes when it restarts. A source address on a bridge is not proof
+of identity, so a member that forges one, or poisons the lender's ARP, passes as another. A lender
+run on the host sees every sandbox as the host itself, so it binds nothing.*
+
 **R153.** The lender **MUST** answer `CONNECT`. It **MUST** refuse the hosts it is itself the front for and
 the hosts these agents contact on their own, and **MUST** tunnel every other host. `create` **MUST** report
 which hosts it refused.

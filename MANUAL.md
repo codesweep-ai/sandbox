@@ -560,7 +560,8 @@ counterpart of `--inherit-agent-login`, and the opposite trade: convenience insi
 you have to assume is spent if the sandbox leaks.
 
 **What a lent sandbox cannot do.** It cannot read the credential, because the credential is never
-there, and it cannot keep spending one after the sandbox is destroyed.
+there, and it cannot keep spending one after the sandbox is destroyed. Nor can a peer spend its
+loan: the group's lender honours a loan only from the address of the sandbox it was minted for.
 
 **Side calls.** Agents sometimes call their provider directly, outside the base URL: analytics, news
 about what the agent can do, and whatever else a vendor adds. A lent sandbox holds no credential for
@@ -666,6 +667,7 @@ when you want to watch what it is doing.
 |---|---|
 | `--addr ADDR` | Listen address. Default `0.0.0.0:2500`. It must not be loopback: a caller arrives on the ordinary side of wherever this is running, where a loopback socket refuses the connection. |
 | `--callers host\|network` | Which peers to answer. `host` (the default) accepts this machine's own addresses, for a lender run on the host. `network` accepts the subnets the lender is attached to, which is what the group's own lender container uses. |
+| `--group GROUP` | The group whose network the lender is on. Required with `--callers network`, where a loan is honoured only from its own sandbox's address in that group. |
 | `--origin SLOT=URL` | Send one slot's traffic somewhere else, such as a gateway or a recorder in front of the provider. Repeatable. |
 
 Run this way the port is open to the network the host is on, and the lender refuses every caller that
@@ -937,6 +939,12 @@ When `cs-sandbox` removes a lender it first copies the log to
 The lender does not recognize what the sandbox presented. Its sandbox was destroyed, or the loan
 came from a different host. Recreate the sandbox to mint a new one. The lender never prints the
 value it refused, so look in the sandbox rather than in the lender's log.
+
+**`this loan was minted for another sandbox`**
+
+A sandbox presented a loan that belongs to a different member of its group, so the lender refused it
+with a 403 `wrong_sandbox`. The lender log names the loan's sandbox and the caller's address. A loan
+works only from its own sandbox, so spend it there, or lend the credential to this sandbox too.
 
 **`no anthropic key to lend`**
 

@@ -1,6 +1,7 @@
 package lend
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +31,15 @@ type Config struct {
 	// Callers says which peers may be answered. The zero value is the strict
 	// one, CallersHost, so a Config that forgets the field is not open.
 	Callers Callers
+
+	// Group is the group whose network a CallersNetwork lender is on. Such a
+	// lender honours a loan only for a member of this group, presented from that
+	// member's own address (R152a): see bind.go.
+	Group string
+
+	// Addrs finds a member of that network by name. Nil asks the fabric's DNS,
+	// as the member's peers do.
+	Addrs func(ctx context.Context, name string) ([]net.IP, error)
 
 	// Origins points a slot at a different upstream, by slot id. It is how a
 	// host puts something of its own in front of a provider — a gateway, or a
@@ -85,6 +95,11 @@ type Server struct {
 	localMu   sync.Mutex
 	localNets []*net.IPNet
 	localAt   time.Time
+
+	// found is where each member of this lender's network was last found, by
+	// name, for binding a loan to its sandbox.
+	bindMu sync.Mutex
+	found  map[string]*whereabouts
 
 	// warned is when a slot's trouble was last said out loud, by slot and class,
 	// and how many answers of that class have gone unsaid since.
@@ -204,6 +219,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// make this an open relay for anything that can reach the port.
 		writeError(w, http.StatusUnauthorized, "unknown_loan",
 			"no loan matches the credential this request carried: it was revoked with its sandbox, or it was never minted here")
+		return
+	}
+	// A loan is spent only from the sandbox it was minted for, and before
+	// anything else reads it: no backend answer, no fault, no credential.
+	if !s.fromItsSandbox(r.Context(), loan, r.RemoteAddr) {
+		s.count(func(st *Stats) { st.Refused++ })
+		s.cfg.Log.Warn("refused: a loan presented from outside its sandbox",
+			slog.String("sandbox", loan.Name), slog.String("group", loan.Group),
+			slog.String("loan", loan.logName()), slog.String("remote", r.RemoteAddr))
+		writeError(w, http.StatusForbidden, "wrong_sandbox",
+			"this loan was minted for another sandbox, and the lender honours it only from that sandbox's own address")
 		return
 	}
 	slot, ok := SlotByID(loan.Slot)

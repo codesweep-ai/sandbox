@@ -25,6 +25,7 @@ import (
 func TestLenderBoxJoinsOneNetworkAndNothingElse(t *testing.T) {
 	argv := lenderBoxArgv("cs-sandbox-net-lender", lenderBoxSpec{
 		Network:  "cs-sandbox-net",
+		Group:    "default",
 		Image:    "localhost/sandbox:test",
 		Home:     "/home/dev",
 		InstDir:  "/home/dev/.local/share/cs-sandbox/instances",
@@ -42,6 +43,8 @@ func TestLenderBoxJoinsOneNetworkAndNothingElse(t *testing.T) {
 		"--label cs-sandbox.lender=1",
 		"--entrypoint cs-sandbox",
 		"lender --addr " + lend.DefaultBind + " --callers network",
+		// The group whose loans it binds to their sandboxes (R152a).
+		"--callers network --group default",
 		// The lender resolves its paths from these, and neither is mounted.
 		"-e HOME=/home/dev",
 		"-e CS_SANDBOX_INSTANCES_DIR=/home/dev/.local/share/cs-sandbox/instances",
@@ -59,6 +62,15 @@ func TestLenderBoxJoinsOneNetworkAndNothingElse(t *testing.T) {
 	// host's port space, which is the whole thing this design removes.
 	if slices.Contains(argv, "-p") || slices.Contains(argv, "--publish") {
 		t.Errorf("the lender publishes a host port:\n%s", line)
+	}
+}
+
+// A lender on a group's network without its group could not bind a loan to
+// its sandbox, so it does not start.
+func TestAFabricLenderNeedsItsGroup(t *testing.T) {
+	_, err := runRoot(t, lendApp(t, t.TempDir()), "lender", "--callers", "network")
+	if err == nil || !strings.Contains(err.Error(), "--group") {
+		t.Errorf("lender --callers network with no --group: %v, want an error naming --group", err)
 	}
 }
 

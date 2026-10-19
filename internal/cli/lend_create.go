@@ -373,6 +373,7 @@ func (app *App) lenderBox(group string) lenderBox {
 	home := paths.AgentLoginHome(app.Host.Home)
 	return lenderBox{Runner: app.Runner, Spec: lenderBoxSpec{
 		Network:  state.NetworkName(group),
+		Group:    group,
 		Image:    app.Image,
 		Home:     home,
 		InstDir:  app.InstDir,

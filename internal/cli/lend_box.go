@@ -56,6 +56,7 @@ type lenderBox struct {
 // mounted whole (R150f). Reads and GroupDir are the parts of them it reads.
 type lenderBoxSpec struct {
 	Network string // the group's podman network
+	Group   string // the group it serves, whose loans it binds to their sandboxes
 	Image   string // the sandbox image, which every group already has
 	Home    string // the host home holding the ~/.cs-<agent> profiles and .cs-keys
 	InstDir string // the instances root
@@ -140,7 +141,7 @@ func lenderBoxArgv(name string, s lenderBoxSpec) []string {
 		entry = s.Stage
 	}
 	return append(a, "--entrypoint", entry, s.Image,
-		"lender", "--addr", lend.DefaultBind, "--callers", string(lend.CallersNetwork))
+		"lender", "--addr", lend.DefaultBind, "--callers", string(lend.CallersNetwork), "--group", s.Group)
 }
 
 // canRead reports whether the running lender can read a path, asked from inside
@@ -245,9 +246,10 @@ func (b lenderBox) ensure(ctx context.Context) (string, error) {
 }
 
 // lenderLayout names the set of mounts lenderBoxArgv gives a box, and the label
-// carries it on the container. Bump it whenever that set changes, so ensure
-// replaces a box that would otherwise keep the old mounts for as long as its
-// group lives: adoption never looks at what a box mounts.
+// carries it on the container. Bump it whenever that set changes, or the
+// lender's arguments change in a way an old box would miss, so ensure replaces
+// a box that would otherwise keep them for as long as its group lives: adoption
+// never looks at how a box was made.
 //
 // A version rather than a hash of the mounts. The mount paths come from the
 // caller's environment, so two creates in one group with different agent homes
@@ -255,7 +257,7 @@ func (b lenderBox) ensure(ctx context.Context) (string, error) {
 // sandbox in it.
 const (
 	lenderLayoutLabel = "cs-sandbox.lender-mounts"
-	lenderLayout      = "2" // the credential directories and the group's, R150f
+	lenderLayout      = "2" // the credential and group mounts (R150f), and --group (R152a)
 )
 
 // layout is the mount layout an existing box was created with, "" for one that

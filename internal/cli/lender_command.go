@@ -28,6 +28,7 @@ import (
 func newLenderCmd(app *App) *cobra.Command {
 	var addr string
 	var callers string
+	var group string
 	var origins []string
 	cmd := &cobra.Command{
 		Use:   "lender",
@@ -42,7 +43,11 @@ func newLenderCmd(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runLender(cmd, app, addr, c, o)
+			if c == lend.CallersNetwork && group == "" {
+				return errors.New("--callers network needs --group: the lender honours a loan only from its " +
+					"sandbox's own address, and finds that address by name on the group's network")
+			}
+			return runLender(cmd, app, addr, c, group, o)
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", envOr("CS_SANDBOX_LEND_ADDR", lend.DefaultBind),
@@ -51,6 +56,8 @@ func newLenderCmd(app *App) *cobra.Command {
 	cmd.Flags().StringVar(&callers, "callers", "host",
 		"which peers to answer: host (this machine's own addresses, for a lender run on the host) "+
 			"or network (the subnets this lender is attached to, for one on a group's own network)")
+	cmd.Flags().StringVar(&group, "group", "",
+		"the group whose network this lender is on, for --callers network: a loan is honoured only from its own sandbox in it")
 	cmd.Flags().StringArrayVar(&origins, "origin", nil,
 		"send one slot's traffic somewhere else: SLOT=URL, for a gateway or a recorder in front of the provider (repeatable)")
 	cmd.AddCommand(newLenderFaultCmd(app))
@@ -80,7 +87,7 @@ func parseOrigins(args []string) (map[string]string, error) {
 	return out, nil
 }
 
-func runLender(cmd *cobra.Command, app *App, addr string, callers lend.Callers, origins map[string]string) error {
+func runLender(cmd *cobra.Command, app *App, addr string, callers lend.Callers, group string, origins map[string]string) error {
 	level := slog.LevelInfo
 	if app.Verbose {
 		level = slog.LevelDebug
@@ -94,6 +101,7 @@ func runLender(cmd *cobra.Command, app *App, addr string, callers lend.Callers, 
 		Faults:  lend.NewFileFaults(app.InstDir),
 		Log:     log,
 		Callers: callers,
+		Group:   group,
 		Origins: origins,
 	})
 
