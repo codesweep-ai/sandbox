@@ -1,0 +1,25 @@
+{
+  "id": "SBX-096",
+  "title": "The lender container mounts the whole host home and every group's instances",
+  "type": "defect",
+  "severity": "high",
+  "status": "closed",
+  "foundBy": "session agent, comparing the lender with another credential gateway",
+  "opened": "2026-10-18",
+  "resolved": "2026-10-18",
+  "stint": "lender-fixes",
+  "evidence": {
+    "commits": [
+      "4726d1b",
+      "2df7853"
+    ],
+    "integrated": [],
+    "verified": "go test ./internal/cli/ -count=1: TestTheLenderMountsOnlyWhatItReads and TestEnsureReplacesALenderWithOlderMounts PASS. With the narrowed mounts, `make test-agents-lent` on podman 5.8.7 ran 7 of 7 cells green. The full `make ci` gate on the four lender commits together exited 0, with 14 of 14 agent replay cells passing on podman. Unit tests alone cover the replacement of a box with the old mounts."
+  },
+  "resolution": "The lender mounts read-only just the directory each slot's credential lives in, plus its own group's directory. A directory is mounted rather than a file, because a credential is replaced by a rename. A lender created with the old mounts is replaced on the next create or start in its group (R150f).",
+  "details": "The lender box bind-mounts the agent login home, `$HOME` by default, and the whole instances root, both read-only. The lender reads only the credential files and its group's loans. Any bug that lets a sandbox read a file through the lender therefore exposes `~/.ssh`, the tier keys, and every group's loans and keys.\n\nTo see it, run `podman inspect cs-sandbox-net-lender --format '{{json .Mounts}}'` on a host with a lent sandbox.",
+  "notes": [],
+  "links": [
+    "SBX-095"
+  ]
+}

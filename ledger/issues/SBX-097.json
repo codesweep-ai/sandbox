@@ -1,0 +1,24 @@
+{
+  "id": "SBX-097",
+  "title": "A loan token works from any sandbox that reads it, not only its own",
+  "type": "defect",
+  "severity": "med",
+  "status": "closed",
+  "foundBy": "session agent, comparing the lender with another credential gateway",
+  "opened": "2026-10-18",
+  "resolved": "2026-10-18",
+  "stint": "lender-fixes",
+  "evidence": {
+    "commits": [
+      "041be58"
+    ],
+    "integrated": [],
+    "verified": "go test ./internal/lend/ -count=1: the refusal tests in bind_test.go PASS, and 4 of them fail with status 200 when the binding check is removed. In TestCLILendBoundToItsSandboxLive on podman, a peer holding the owner's token gets 403 `wrong_sandbox` with 0 provider calls. The owner gets 200. The lent replay matrix ran 7 of 7 green on podman and on firecracker. On firecracker, codex-openai-lent needed one rerun, because Codex stopped on its upgrade screen before reaching the lender. The full `make ci` gate on the four lender commits together exited 0, with 14 of 14 agent replay cells passing on podman."
+  },
+  "resolution": "A lender honours a loan only from the address its sandbox's name resolves to on the group's DNS. It also refuses a loan minted in another group (R152a). It does not stop a member that forges its source address or poisons the lender's ARP.",
+  "details": "The lender accepts a loan token from any caller inside the boundary. A token is a bearer value that leaks through a readable credential file, an environment, a log or a shared repository. Any group member that finds one can spend the host's credential with it, and the lender's log then attributes the spend to the wrong sandbox.\n\nTo reproduce, copy the seeded credential from one lent sandbox into another in the same group and make a model call. The lender serves it.",
+  "notes": [],
+  "links": [
+    "SBX-095"
+  ]
+}

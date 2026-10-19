@@ -1,0 +1,24 @@
+{
+  "id": "SBX-095",
+  "title": "The lender forwards a dot-segment path upstream with the real credential",
+  "type": "defect",
+  "severity": "high",
+  "status": "closed",
+  "foundBy": "session agent, comparing the lender with another credential gateway",
+  "opened": "2026-10-18",
+  "resolved": "2026-10-18",
+  "stint": "lender-fixes",
+  "evidence": {
+    "commits": [
+      "657bf89"
+    ],
+    "integrated": [],
+    "verified": "go test ./internal/lend/ -count=1: TestAnUncleanPathIsRefusedAndNeverForwarded PASS with 21 cases over the five slots, 0 upstream calls and 0 credential reads. With the guard removed, all 21 cases fail and the upstream is called 20 times. The full `make ci` gate on the four lender commits together exited 0, with 14 of 14 agent replay cells passing on podman."
+  },
+  "resolution": "The lender refuses, with 400 `unclean_path`, any path holding a dot segment in any spelling, an empty segment, a backslash, an encoded slash or an escape left after decoding. It does so before anything reads the path (R146b).",
+  "details": "The lender joins the inbound path into the slot's origin unchanged, and the backend check reads the raw prefix. A sandbox that sends `/../wham/accounts/check` to the Codex slot reaches the upstream as `/backend-api/codex/../wham/accounts/check`, with the host's real ChatGPT token attached. Sending `%2e%2e` instead has the same effect.\n\nIf the provider or its CDN resolves dot segments, that reaches the backend endpoints R146a refuses, with the user's credential. The same applies to `/v1/../` on every other slot.\n\nTo reproduce, send a raw request line with `..` in the path to the lender with a valid loan, and read the path the upstream receives. A client like curl may resolve the segment before sending it.",
+  "notes": [],
+  "links": [
+    "SBX-097"
+  ]
+}
