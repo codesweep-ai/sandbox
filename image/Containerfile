@@ -58,8 +58,10 @@ RUN for py in /opt/pyenv/versions/*/bin/python /opt/py-tools/bin/python3; do \
 
 # The agents tier's build ran its CLIs as root and left their temp directories in /tmp, which the member (uid 1000)
 # cannot write (opencode's /tmp/opencode: a modeller lost its scratch there, 2026-10-19). Belongs in
-# Containerfile.agents after the opencode stanza; here until AGENTS_REF next moves.
-RUN find /tmp -mindepth 1 -delete
+# Containerfile.agents after the opencode stanza; here until AGENTS_REF next moves. A local
+# build bind-mounts its module proxies read-only under /tmp (localmodules.go), and deleting
+# into those fails the step, so they are left alone.
+RUN find /tmp -mindepth 1 -not -path '/tmp/cs-goproxy*' -delete
 
 # The other half of the guard written in Containerfile.base. Fail loudly rather than ship a
 # Neovim config whose plugins were pre-built from a different one.
