@@ -1,0 +1,29 @@
+{
+  "id": "SBX-102",
+  "title": "The pid-identity tests fail on macOS, where no start time or argv can be read",
+  "type": "defect",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "ci run 39376571877, on both macOS legs of build-test",
+  "opened": "2026-10-20",
+  "resolved": null,
+  "stint": "ci failures, 2026-10-20",
+  "evidence": {
+    "commits": [
+      "b724833"
+    ],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "Six tests added in f5ada08 expect a recorded process to be told apart by its start time and argv. On macOS `internal/proc` has no `/proc` to read them from, so it judges a record by its pid alone, which R170 allows. The tests fail there: `TestFindTheRecordedProcess`, `TestFindRefusesAnotherProcess` and `TestSignalWithoutAPidfdRechecksTheIdentity` in `internal/proc`, `TestAReusedForwardPidIsDeadAndNeverSignalled` in `internal/forward`, and `TestAReusedVMMPidIsNotTheMicroVM` and `TestAVMMWithAnotherStartTimeIsNotTheRecordedOne` in `internal/engine`. Every push to main fails `ci` until they are fixed.",
+  "notes": [
+    {
+      "date": "2026-10-20",
+      "text": "b724833 skips the six tests where /proc is absent. On Linux they still run and pass, and the three packages compile for darwin. The macOS legs of `ci` have not run it yet, so the record stays open until they pass."
+    }
+  ],
+  "links": [
+    "SBX-002"
+  ]
+}

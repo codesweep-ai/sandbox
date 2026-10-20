@@ -1,0 +1,25 @@
+{
+  "id": "SBX-103",
+  "title": "cs-codex-turn can take Codex's newer-model offer for a screen it does not know, and fail the turn",
+  "type": "defect",
+  "severity": "med",
+  "status": "closed",
+  "foundBy": "base-images runs 38198858723 and 39192761879, in the amd64 smoke of the candidate",
+  "opened": "2026-10-20",
+  "resolved": "2026-10-20",
+  "stint": "ci failures, 2026-10-20",
+  "evidence": {
+    "commits": [
+      "b99d37f"
+    ],
+    "integrated": [],
+    "verified": "`go test ./internal/cli/ -run 'TestCodexTurnAnswersADialogOrSaysWhoMust|TestClaudeTurnAnswersADialogOrSaysWhoMust' -count=1` passes on b99d37f. Its new cases show a loading screen for two captures before the dialog. On the drivers before b99d37f they fail with `needs a person`, as the base-images runs did. The full `make ci` gate exited 0, with 14 of 14 agent replay cells passing on podman."
+  },
+  "resolution": "Both turn drivers capture the screen once per look and make every judgement about that one capture. A dialog that opens between two looks is seen whole on the next one. cs-claude-turn had the same shape and gets the same change.",
+  "details": "Codex draws its main screen first and opens the `Meet GPT-6 Sol` offer once its model catalog loads. `detect_state` captured the pane once to look for a known dialog and again to look for an unknown one. When the offer appeared between the two captures, the second saw its `enter/esc confirm ·` footer and the driver failed the turn with `remote codex is on a screen that needs a person`, without answering. The codex-openai-shared replay failed this way in two weekly base-images runs. A loaded host widens the gap between captures, so it shows up in the smoke run, where four agent sandboxes share one runner. In a container limited to two CPUs with two busy loops, the race reproduced on the first launch.",
+  "notes": [],
+  "links": [
+    "SBX-085",
+    "SBX-090"
+  ]
+}
