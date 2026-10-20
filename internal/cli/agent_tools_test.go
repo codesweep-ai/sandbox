@@ -1255,12 +1255,15 @@ func TestClaudeTurnReadyStates(t *testing.T) {
 }
 
 // claudeDialogTmux is a tmux whose pane shows dialog.txt until the driver sends Escape, then
-// the ready composer. The Enter that submits the prompt ends the turn with STUB ANSWER.
+// the ready composer. The first $STUB_DIR/loading captures show Claude still starting. The
+// Enter that submits the prompt ends the turn with STUB ANSWER.
 const claudeDialogTmux = `#!/bin/sh
 echo "$*" >> "$STUB_DIR/calls"
 case "$1" in
   has-session) exit 0 ;;
   capture-pane)
+    n=$(cat "$STUB_DIR/loading" 2>/dev/null || echo 0)
+    if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$STUB_DIR/loading"; printf ' ✻ Welcome to Claude Code\n'; exit 0; fi
     if [ -f "$STUB_DIR/.dismissed" ]; then printf '❯ \n  bypass permissions on\n'; else cat "$STUB_DIR/dialog.txt"; fi
     exit 0 ;;
   send-keys)
@@ -1289,23 +1292,28 @@ exit 0
 func TestClaudeTurnAnswersADialogOrSaysWhoMust(t *testing.T) {
 	skipUnlessLinux(t)
 	for _, tc := range []struct {
-		name, dialog   string
-		wantExit       int
-		wantIn, reason string
-		wantEscape     bool
-		ignore         int
+		name, dialog    string
+		wantExit        int
+		wantIn, reason  string
+		wantEscape      bool
+		ignore, loading int
 	}{
 		{"the fullscreen renderer offer is refused",
 			"Try the new fullscreen renderer? It redraws the whole screen.\n❯ 1. Yes, try it\n  2. Not now\nEnter to confirm · Esc to cancel\n",
-			0, "STUB ANSWER", "dismissed a dialog: Try the new fullscreen renderer?", true, 0},
+			0, "STUB ANSWER", "dismissed a dialog: Try the new fullscreen renderer?", true, 0, 0},
 		// A busy host: Claude takes keys only seconds after it draws the dialog (SBX-090).
 		{"the offer is refused once Claude takes keys",
 			"Try the new fullscreen renderer? It redraws the whole screen.\n❯ 1. Yes, try it\n  2. Not now\nEnter to confirm · Esc to cancel\n",
-			0, "STUB ANSWER", "dismissed a dialog: Try the new fullscreen renderer?", true, 4},
+			0, "STUB ANSWER", "dismissed a dialog: Try the new fullscreen renderer?", true, 4, 0},
+		// The dialog opens between the driver's looks at one screen. Each look has to be
+		// at the same capture, or the second sees a choice the first did not know (SBX-103).
+		{"an offer that opens while the driver reads the screen is refused",
+			"Try the new fullscreen renderer? It redraws the whole screen.\n❯ 1. Yes, try it\n  2. Not now\nEnter to confirm · Esc to cancel\n",
+			0, "STUB ANSWER", "dismissed a dialog: Try the new fullscreen renderer?", true, 0, 2},
 		{"a dialog nobody has seen needs a person",
 			"Share usage data to help improve Claude Code?\n❯ 1. Yes\n  2. No\nEnter to confirm · Esc to cancel\n",
 			3, "needs a person: Share usage data to help improve Claude Code? | ❯ 1. Yes | 2. No",
-			"needs a person: Share usage data", false, 0},
+			"needs a person: Share usage data", false, 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, bin := agentHome(t, ".cs-claude-remote")
@@ -1330,6 +1338,9 @@ func TestClaudeTurnAnswersADialogOrSaysWhoMust(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(stubDir, "ignore"), []byte(strconv.Itoa(tc.ignore)), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.WriteFile(filepath.Join(stubDir, "loading"), []byte(strconv.Itoa(tc.loading)), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			start := time.Now()
 			out, exit := runScriptStdin(t, home, bin,
 				[]string{"STUB_DIR=" + stubDir, "CS_CLAUDE_STALL_SECS=0"}, "do the thing\n",
@@ -1352,7 +1363,8 @@ func TestClaudeTurnAnswersADialogOrSaysWhoMust(t *testing.T) {
 }
 
 // codexDialogTmux is a tmux whose pane shows dialog.txt until the driver sends "2", then the
-// ready composer. The Enter that submits the prompt ends the turn with STUB ANSWER.
+// ready composer. The first $STUB_DIR/loading captures show Codex still loading its model
+// catalog. The Enter that submits the prompt ends the turn with STUB ANSWER.
 const codexDialogTmux = `#!/bin/sh
 echo "$*" >> "$STUB_DIR/calls"
 case "$1" in
@@ -1362,6 +1374,8 @@ case "$1" in
     : > "$FRESH_ROLLOUT"
     exit 0 ;;
   capture-pane)
+    n=$(cat "$STUB_DIR/loading" 2>/dev/null || echo 0)
+    if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$STUB_DIR/loading"; printf '  model: loading\n  › Ask Codex to do anything\n  ? for shortcuts\n'; exit 0; fi
     if [ -f "$STUB_DIR/.dismissed" ]; then printf '  › Ask Codex to do anything\n  gpt-5.6-sol medium · /work\n'; else cat "$STUB_DIR/dialog.txt"; fi
     exit 0 ;;
   send-keys)
@@ -1390,23 +1404,29 @@ exit 0
 func TestCodexTurnAnswersADialogOrSaysWhoMust(t *testing.T) {
 	skipUnlessLinux(t)
 	for _, tc := range []struct {
-		name, dialog   string
-		wantExit       int
-		wantIn, reason string
-		wantAnswer     bool
-		ignore         int
+		name, dialog    string
+		wantExit        int
+		wantIn, reason  string
+		wantAnswer      bool
+		ignore, loading int
 	}{
 		{"a newer model is declined",
 			"  Meet GPT-6 Sol\n\n  Codex just got an upgrade.\n\n  › 1. Try new model\n    2. Use existing model\n\n  enter/esc confirm · ctrl + c quit\n",
-			0, "STUB ANSWER", "answered a dialog: Use existing model", true, 0},
+			0, "STUB ANSWER", "answered a dialog: Use existing model", true, 0, 0},
 		// A busy host: Codex takes keys only seconds after it draws the dialog (SBX-090).
 		{"a newer model is declined once Codex takes keys",
 			"  Meet GPT-6 Sol\n\n  Codex just got an upgrade.\n\n  › 1. Try new model\n    2. Use existing model\n\n  enter/esc confirm · ctrl + c quit\n",
-			0, "STUB ANSWER", "answered a dialog: Use existing model", true, 4},
+			0, "STUB ANSWER", "answered a dialog: Use existing model", true, 4, 0},
+		// Codex draws its main screen first and opens the offer once its model catalog loads,
+		// which can be between the driver's looks at one screen. Each look has to be at the
+		// same capture, or the second sees a choice the first did not know (SBX-103).
+		{"a newer model offered while the driver reads the screen is declined",
+			"  Meet GPT-6 Sol\n\n  Codex just got an upgrade.\n\n  › 1. Try new model\n    2. Use existing model\n\n  enter/esc confirm · ctrl + c quit\n",
+			0, "STUB ANSWER", "answered a dialog: Use existing model", true, 0, 2},
 		{"a migration that cannot be declined needs a person",
 			"  GPT-5.4 Mini is no longer available\n\n  Codex now uses GPT-6 Luna in place of GPT-5.4 Mini.\n\n  enter/esc continue · ctrl + c quit\n",
 			3, "needs a person: GPT-5.4 Mini is no longer available",
-			"needs a person: GPT-5.4 Mini is no longer available", false, 0},
+			"needs a person: GPT-5.4 Mini is no longer available", false, 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, bin := agentHome(t, ".cs-codex-remote")
@@ -1423,6 +1443,9 @@ func TestCodexTurnAnswersADialogOrSaysWhoMust(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(stubDir, "ignore"), []byte(strconv.Itoa(tc.ignore)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(stubDir, "loading"), []byte(strconv.Itoa(tc.loading)), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			start := time.Now()
