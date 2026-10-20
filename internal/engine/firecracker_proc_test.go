@@ -127,6 +127,16 @@ func writePid(t *testing.T, idir string, pid int, start string) {
 	}
 }
 
+// needProc skips a test of telling two holders of one pid apart. Without /proc
+// there is no start time or argv to tell them by, and R170 judges a record by
+// its pid alone.
+func needProc(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("no /proc here: a record is judged by its pid alone")
+	}
+}
+
 // recordVMM writes fc.pid for cmd as launchFirecracker does.
 func recordVMM(t *testing.T, idir string, cmd *exec.Cmd) {
 	t.Helper()
@@ -148,6 +158,7 @@ func startTime(t *testing.T, pid int) string {
 // any process of yours. That process is not the microVM: `ls` must not call
 // the sandbox running, `start` must not refuse it, and `stop` must not kill it.
 func TestAReusedVMMPidIsNotTheMicroVM(t *testing.T) {
+	needProc(t)
 	for _, tc := range []struct {
 		name   string
 		legacy bool
@@ -202,6 +213,7 @@ func TestTheRecordedVMMIsRunningAndStopEndsIt(t *testing.T) {
 // A process whose argv names this instance's config but whose start time is
 // not the recorded one is a later launch, or a reused pid: not this record's.
 func TestAVMMWithAnotherStartTimeIsNotTheRecordedOne(t *testing.T) {
+	needProc(t)
 	idir := t.TempDir()
 	cmd := startFakeVMM(t, idir)
 	writePid(t, idir, cmd.Process.Pid, "1")

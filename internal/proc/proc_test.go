@@ -37,9 +37,20 @@ func start(t *testing.T, argv ...string) *exec.Cmd {
 	return cmd
 }
 
+// needProc skips a test of telling two holders of one pid apart. Without /proc
+// there is no start time or argv to tell them by, and R170 judges a record by
+// its pid alone.
+func needProc(t *testing.T) {
+	t.Helper()
+	if !hasProc() {
+		t.Skip("no /proc here: a record is judged by its pid alone")
+	}
+}
+
 func isSleep(argv []string) bool { return len(argv) > 0 && filepath.Base(argv[0]) == "sleep" }
 
 func TestFindTheRecordedProcess(t *testing.T) {
+	needProc(t)
 	cmd := start(t, "sleep", "60")
 	id := Of(cmd.Process.Pid)
 	if id.Start == "" {
@@ -71,6 +82,7 @@ func TestFindTheRecordedProcess(t *testing.T) {
 
 // What a stale record meets: the pid is held, but not by the process recorded.
 func TestFindRefusesAnotherProcess(t *testing.T) {
+	needProc(t)
 	cmd := start(t, "sleep", "60")
 	pid := cmd.Process.Pid
 	for name, tc := range map[string]struct {
@@ -155,6 +167,7 @@ func TestVMMArgvMatchesTheInstanceConfig(t *testing.T) {
 // Where pidfds are refused, the identity is checked again right before the
 // signal goes by pid.
 func TestSignalWithoutAPidfdRechecksTheIdentity(t *testing.T) {
+	needProc(t)
 	cmd := start(t, "sleep", "60")
 	stale := &Handle{id: Ident{PID: cmd.Process.Pid, Start: "1"}, match: isSleep, fd: -1}
 	if err := stale.Signal(syscall.SIGTERM); err != syscall.ESRCH {

@@ -261,6 +261,16 @@ func signalled(cmd *exec.Cmd, sig syscall.Signal) bool {
 	return ok && status.Signaled() && status.Signal() == sig
 }
 
+// needProc skips a test of telling two holders of one pid apart. Without /proc
+// there is no start time or argv to tell them by, and R170 judges a record by
+// its pid alone.
+func needProc(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("no /proc here: a record is judged by its pid alone")
+	}
+}
+
 // startBystander starts a process of this user's that is no forward, the kind
 // a pid recorded before a reboot can name afterwards. The channel closes if it
 // exits.
@@ -305,6 +315,7 @@ func writeRaw(t *testing.T, path string, pid int, start string) {
 // process of yours. `forwards` must drop the record, and `unforward`, `rm` and
 // `destroy` must not signal the process.
 func TestAReusedForwardPidIsDeadAndNeverSignalled(t *testing.T) {
+	needProc(t)
 	for _, start := range []string{"", "1"} { // no start time, and one the bystander does not have
 		instDir := t.TempDir()
 		rec := filepath.Join(dir(instDir, "grp", "box"), "18099")
