@@ -3,19 +3,19 @@
   "title": "The pid-identity tests fail on macOS, where no start time or argv can be read",
   "type": "defect",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "ci run 39376571877, on both macOS legs of build-test",
   "opened": "2026-10-20",
-  "resolved": null,
+  "resolved": "2026-10-20",
   "stint": "ci failures, 2026-10-20",
   "evidence": {
     "commits": [
       "b724833"
     ],
     "integrated": [],
-    "verified": null
+    "verified": "ci run 39492286708 on 7f5a40a passed, with build-test green on macos-15-intel and on the self-hosted macOS arm64 runner. Both legs had failed these six tests in run 39376571877. On Linux, `go test ./internal/proc ./internal/forward ./internal/engine -count=1` still runs and passes them."
   },
-  "resolution": null,
+  "resolution": "The six tests skip where /proc is absent. On macOS a record is judged by its pid alone, as R170 allows, so they have nothing to check there. They still run on Linux.",
   "details": "Six tests added in f5ada08 expect a recorded process to be told apart by its start time and argv. On macOS `internal/proc` has no `/proc` to read them from, so it judges a record by its pid alone, which R170 allows. The tests fail there: `TestFindTheRecordedProcess`, `TestFindRefusesAnotherProcess` and `TestSignalWithoutAPidfdRechecksTheIdentity` in `internal/proc`, `TestAReusedForwardPidIsDeadAndNeverSignalled` in `internal/forward`, and `TestAReusedVMMPidIsNotTheMicroVM` and `TestAVMMWithAnotherStartTimeIsNotTheRecordedOne` in `internal/engine`. Every push to main fails `ci` until they are fixed.",
   "notes": [
     {
