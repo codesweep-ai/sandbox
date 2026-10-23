@@ -970,6 +970,25 @@ func baseRootfsStamp(imgid, kver, kernelMode, inithash string, gb int) string {
 	return fmt.Sprintf("%s|%s|%s|%s|%dG", imgid, kver, kernelMode, inithash, gb)
 }
 
+// inspectImage asks podman for an image's id and size in one inspect. Either
+// comes back zero when podman cannot say.
+func inspectImage(ctx context.Context, r run.Runner, image string) (id string, size int64) {
+	fields := strings.Fields(run.Output(ctx, r, "podman", "image", "inspect", image, "--format", "{{.Id}} {{.Size}}"))
+	if len(fields) > 0 {
+		id = fields[0]
+	}
+	if len(fields) > 1 {
+		size, _ = strconv.ParseInt(fields[1], 10, 64)
+	}
+	return id, size
+}
+
+// ImageID is the id podman holds for image, or "" when it cannot say.
+func ImageID(ctx context.Context, r run.Runner, image string) string {
+	id, _ := inspectImage(ctx, r, image)
+	return id
+}
+
 // legacyBaseRootfsStamp vouched for the single unkeyed rootfs. Read only where
 // that file is being adopted; nothing writes it any more.
 const legacyBaseRootfsStamp = "base-rootfs.stamp"
@@ -1000,13 +1019,7 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 		// occupies is what the ext4 is about to. It is an estimate — ext4 rounds
 		// every one of 145k files up to a block, so the real disk runs a few
 		// percent over — and the bar treats it as one.
-		fields := strings.Fields(run.Output(ctx, r, "podman", "image", "inspect", bc.Image, "--format", "{{.Id}} {{.Size}}"))
-		if len(fields) > 0 {
-			imgid = fields[0]
-		}
-		if len(fields) > 1 {
-			imgsize, _ = strconv.ParseInt(fields[1], 10, 64)
-		}
+		imgid, imgsize = inspectImage(ctx, r, bc.Image)
 	}
 	inithash := ""
 	if bc.InitPath != "" {

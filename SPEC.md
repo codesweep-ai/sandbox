@@ -650,10 +650,17 @@ status `removed`.
 
 **R75.** Recreating with the same name **MUST** reuse kept data.
 
+**R75a.** Before it boots a kept microVM disk, `create` **MUST** name the image the disk was made
+from. It **MUST** refuse a disk made from another image unless `--reuse-kept-disk` is given.
+
 **R76.** `destroy` **MUST** drop the home, and **MUST** accept a name whose sandbox `rm` already removed.
 
 Fetch before you destroy. R76 is what makes `rm` safe to reach for, and R74 is what stops kept data
 sitting on disk unnoticed.
+
+A kept microVM disk is the whole root filesystem rather than only the home. Booted under a newer
+image, it still runs the tools of the image that made it. R75a is what makes that visible, because
+the image name `create` was given says nothing about the disk.
 
 Do not run `git gc --prune` on the source while a Podman sandbox has it borrowed, because the source
 is bind-mounted live into the container. A Firecracker sandbox is immune, its disk being a copy.

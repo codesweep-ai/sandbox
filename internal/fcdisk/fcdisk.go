@@ -136,14 +136,22 @@ func imageSlot(image string) string {
 	return slot
 }
 
+// RootfsImage is the file beside an instance's rootfs that records the id of
+// the image the disk was copied from. `rm` keeps it with the disk, so a later
+// create can say which image a kept disk carries.
+const RootfsImage = "rootfs.image"
+
 // ReflinkRootfs makes the per-instance writable rootfs as a CoW copy of the base
 // built from image (cp --reflink=auto -f base-rootfs-<image>.ext4
-// <idir>/rootfs.ext4). It takes the artifact lock: a build rewriting the base in
-// place while this copy runs would hand the new instance a torn disk.
+// <idir>/rootfs.ext4), and records the image's id beside it in RootfsImage. It
+// takes the artifact lock: a build rewriting the base in place while this copy
+// runs would hand the new instance a torn disk.
 func (c Cache) ReflinkRootfs(ctx context.Context, r run.Runner, image, dst string) error {
 	return c.withArtifactLock(func() error {
-		_, err := r.Run(ctx, run.Opts{}, "cp", "--reflink=auto", "-f", c.BaseRootfs(image), dst)
-		return err
+		if _, err := r.Run(ctx, run.Opts{}, "cp", "--reflink=auto", "-f", c.BaseRootfs(image), dst); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(filepath.Dir(dst), RootfsImage), []byte(ImageID(ctx, r, image)+"\n"), 0o600)
 	})
 }
 

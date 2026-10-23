@@ -47,7 +47,9 @@ cs-sandbox destroy feature -f   # delete the sandbox AND its data (-f confirms; 
 ```
 
 Data kept by `rm` stays listed by `ls` with STATUS `removed`, so it can't sit on disk unnoticed:
-`create` with the same name reuses it, `destroy <name> -f` deletes it.
+`create` with the same name reuses it, `destroy <name> -f` deletes it. On Firecracker the kept data
+is the whole root disk, and `create` refuses one made from another image unless given
+`--reuse-kept-disk`.
 
 Names must be a single DNS-style label: letters, digits and dashes, starting and ending
 alphanumeric, 63 characters max. A name itself never contains a dot; the dot in a reference

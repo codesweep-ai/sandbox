@@ -126,6 +126,11 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	rootfs := filepath.Join(idir, "rootfs.ext4")
 	_, statErr := os.Stat(rootfs)
 	reuseRootfs := statErr == nil
+	if reuseRootfs {
+		if err := fe.checkKeptDisk(ctx, s, idir); err != nil {
+			return nil, err
+		}
+	}
 
 	if err := fe.preflight(); err != nil {
 		return nil, err
@@ -305,6 +310,40 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	return inst, nil
 }
 
+// checkKeptDisk says which image made the disk `rm` kept, before create boots
+// it. The whole root filesystem is on that disk, so one made from another image
+// runs that image's tools whatever this create names: that is refused unless
+// s.ReuseKeptDisk asks for it. A disk kept before the image was recorded reads
+// as unknown and is booted.
+func (fe *Firecracker) checkKeptDisk(ctx context.Context, s CreateSpec, idir string) error {
+	data, _ := os.ReadFile(filepath.Join(idir, fcdisk.RootfsImage))
+	kept := strings.TrimSpace(string(data))
+	named := fcdisk.ImageID(ctx, fe.d.Runner, fe.d.Image)
+	line := fmt.Sprintf("reusing the kept disk of %s from image %s", s.Name, shortImageID(kept))
+	if kept != "" && named != "" && kept != named {
+		if !s.ReuseKeptDisk {
+			return fmt.Errorf("fc: the disk rm kept for %s was made from image %s, not from %s (%s) — "+
+				"run 'cs-sandbox destroy %s -f' to start fresh, or create with --reuse-kept-disk to boot the old disk",
+				s.Name, shortImageID(kept), fe.d.Image, shortImageID(named), state.ObjectName(fe.d.group(), s.Name))
+		}
+		line += fmt.Sprintf(", not from %s (%s)", fe.d.Image, shortImageID(named))
+	}
+	fe.d.note(line)
+	return nil
+}
+
+// shortImageID is an image id as `podman images` prints it, or "unknown".
+func shortImageID(id string) string {
+	id = strings.TrimPrefix(id, "sha256:")
+	switch {
+	case id == "":
+		return "unknown"
+	case len(id) > 12:
+		return id[:12]
+	}
+	return id
+}
+
 // launch brings up this VM's tap + host→VM forwarder, then boots firecracker.
 func (fe *Firecracker) launch(ctx context.Context, name string, inst *state.Instance) error {
 	d := fe.d
@@ -408,11 +447,12 @@ func (fe *Firecracker) Remove(ctx context.Context, name string, purge bool) erro
 		// destroy: remove everything, including the home disk (rootfs.ext4).
 		_ = os.RemoveAll(idir)
 	} else {
-		// rm: keep the home disk (rootfs.ext4) so `create <name>` can reuse it;
-		// drop the ephemeral disks, boot files, seed, and the instance state.
+		// rm: keep the home disk (rootfs.ext4), and the record of the image it
+		// came from, so `create <name>` can reuse it; drop the ephemeral disks,
+		// boot files, seed, and the instance state.
 		if entries, err := os.ReadDir(idir); err == nil {
 			for _, e := range entries {
-				if e.Name() == "rootfs.ext4" {
+				if e.Name() == "rootfs.ext4" || e.Name() == fcdisk.RootfsImage {
 					continue
 				}
 				_ = os.RemoveAll(filepath.Join(idir, e.Name()))

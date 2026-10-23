@@ -94,6 +94,7 @@ Firecracker where the host has KVM, and to Podman otherwise.
 | `--mem MiB` | Firecracker memory, default 4096. On Podman, a memory cap with no swap, applied only when given. |
 | `--pids N` | Podman: the container's process limit. Default 8192, and `0` for none. |
 | `--disk GiB` | Firecracker disk size, grow-only. Default: the base rootfs size, 32. |
+| `--reuse-kept-disk` | Firecracker: boot the disk `rm` kept for this name even when another image made it. |
 | `--privileged` | Podman: use `--privileged` instead of the scaled-down capability set. |
 
 Every sandbox runs under one systemd user slice, `cs-sandbox.slice`, so the fleet as a whole cannot
@@ -120,7 +121,10 @@ whoever owns it on the host. The host source keeps the ownership it has.
 `create` also carries your Claude Code theme in, so `cs-claude` opens looking the way claude does on
 your host. Pick a different theme inside the sandbox and that choice wins from then on.
 
-Recreating with the name of a sandbox that `rm` kept data for reuses that data.
+Recreating with the name of a sandbox that `rm` kept data for reuses that data. On Firecracker that
+data is the whole root disk, so it carries the tools of the image it was made from. `create` prints
+which image that was. It refuses a disk from another image unless given `--reuse-kept-disk`, and
+`destroy` deletes the disk so the name starts fresh. A disk that records no image is reused.
 
 ### Working in a sandbox
 

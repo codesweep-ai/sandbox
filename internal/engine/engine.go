@@ -28,6 +28,7 @@ type CreateSpec struct {
 	MemMiB            int  // firecracker: guest memory; podman: a memory cap, 0 for none
 	Pids              int  // podman: the container's process limit, 0 for none
 	DiskGB            int  // firecracker: grow the instance disk to this size (0 = the base rootfs size)
+	ReuseKeptDisk     bool // firecracker: boot the disk `rm` kept even when another image made it
 	Snapshots         []spec.Snapshot
 	RepoClones        []spec.RepoClone
 	GitIdentity       spec.Identity // whose name and address the sandbox commits as

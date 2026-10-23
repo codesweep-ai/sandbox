@@ -26,6 +26,28 @@ func sparseImg(t *testing.T, gb int64) string {
 	return p
 }
 
+// TestReflinkRootfsRecordsTheImage: the copy leaves the id of the image it came
+// from beside the disk, which is what lets a later create tell that a disk `rm`
+// kept was made from another image.
+func TestReflinkRootfsRecordsTheImage(t *testing.T) {
+	c := Cache{Dir: t.TempDir()}
+	dst := filepath.Join(t.TempDir(), "rootfs.ext4")
+	f := run.NewFake().OnStdout("podman image inspect sandbox:v1", "sha256:cafe 123\n")
+	if err := c.ReflinkRootfs(context.Background(), f, "sandbox:v1", dst); err != nil {
+		t.Fatalf("ReflinkRootfs: %v", err)
+	}
+	if !f.Contains("cp --reflink=auto -f " + c.BaseRootfs("sandbox:v1") + " " + dst) {
+		t.Errorf("no copy of the base rootfs; calls: %s", f)
+	}
+	got, err := os.ReadFile(filepath.Join(filepath.Dir(dst), RootfsImage))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "sha256:cafe\n" {
+		t.Errorf("%s = %q, want the image id", RootfsImage, got)
+	}
+}
+
 // TestGrowRootfsGrows: the three steps, in order, against the image — extend the
 // file, check the filesystem (resize2fs refuses an unchecked one), extend it.
 func TestGrowRootfsGrows(t *testing.T) {

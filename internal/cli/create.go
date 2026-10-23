@@ -50,6 +50,7 @@ type createFlags struct {
 	gitIdentity       string
 	cpus, mem, disk   int
 	pids              int
+	reuseKeptDisk     bool
 	repos             []string
 	snapshots         []string
 	envs              []string
@@ -97,6 +98,7 @@ func newCreateCmd(app *App) *cobra.Command {
 	fl.IntVar(&f.mem, "mem", 4096, "firecracker: memory (MiB); podman: a memory cap, applied only when given")
 	fl.IntVar(&f.pids, "pids", engine.DefaultPids, "podman: the container's process limit; 0 for none")
 	fl.IntVar(&f.disk, "disk", 0, "firecracker: disk size (GiB); grow-only, default: the base rootfs size (32)")
+	fl.BoolVar(&f.reuseKeptDisk, "reuse-kept-disk", false, "firecracker: boot the disk rm kept for this name even when another image made it")
 	fl.StringArrayVar(&f.repos, "repo", nil, "share a git repo: PATH[@REF][:NAME] (repeatable)")
 	fl.StringArrayVar(&f.snapshots, "snapshot", nil, "share a frozen dir copy: PATH[:NAME] (repeatable)")
 	fl.StringArrayVarP(&f.envs, "env", "e", nil, "inject env var: KEY=VALUE or KEY (repeatable)")
@@ -334,7 +336,8 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 
 	cs := engine.CreateSpec{
 		Name: name, Group: f.group, Type: f.typ, Yolo: f.yolo, Solo: f.solo, Privileged: f.privileged,
-		CPUs: cpus, MemMiB: mem, Pids: f.pids, DiskGB: f.disk, Snapshots: snaps, RepoClones: repos, GitIdentity: gitID,
+		CPUs: cpus, MemMiB: mem, Pids: f.pids, DiskGB: f.disk, ReuseKeptDisk: f.reuseKeptDisk,
+		Snapshots: snaps, RepoClones: repos, GitIdentity: gitID,
 		ImageStores: f.imageStores, InjectedEnv: injected, InheritAgentLogin: f.inheritAgentLogin,
 		InheritAPIKey: f.inheritAPIKey, EnvCredentials: envCreds,
 		LentCredentials: plan.seeded,
