@@ -3,17 +3,19 @@
   "title": "create boots a disk that rm kept, whatever image it names, and does not say so",
   "type": "defect",
   "severity": "med",
-  "status": "open",
+  "status": "closed",
   "foundBy": "session agent, comparing tool checksums inside a sandbox recreated after an image rebuild",
   "opened": "2026-10-23",
-  "resolved": null,
-  "stint": null,
+  "resolved": "2026-10-23",
+  "stint": "kept-disk fix, 2026-10-23",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "53a42be"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "On real microVMs, a sandbox was made from one image, given a marker file, and removed with `rm`. A create under a second image was refused, and the message named both image ids. A create under the first image printed the image the kept disk came from, and the marker was still there. With `--reuse-kept-disk`, a create under the second image booted the kept disk and printed both images. After `destroy`, a create gave a fresh disk with no marker. `make check` on the fix passed, with every package `ok` and 14 cassettes replaying."
   },
-  "resolution": null,
+  "resolution": "The copy that makes a microVM's root disk records the image id in `rootfs.image` beside it, and `rm` keeps that file with the disk. Before it boots a kept disk, `create` prints which image made it. It refuses a disk from another image unless given `--reuse-kept-disk` (R75a). A disk kept before this change records no image, reads as unknown, and is reused as before.",
   "details": "`cs-sandbox rm <name>` keeps a microVM's root disk, `rootfs.ext4`, so that a later `create <name>` brings the sandbox back with its data. In `internal/engine/firecracker.go`, `Create` sets `reuseRootfs` when that file exists and then skips `ReflinkRootfs`. The kept disk boots whatever image `--image` or `CS_SANDBOX_IMAGE` names now.\n\nOn the microVM engine that disk is the whole root filesystem, not only the home directory. A sandbox recreated after a new image was built therefore runs the old image's agent tools and hooks. Nothing in create's output says it reused a kept disk. Nothing records which image the disk came from either, because `rm` deletes `state.json` and keeps only `rootfs.ext4`. So the mismatch can be neither noticed nor refused.\n\nTo reproduce it, create `<name>` under one image and `rm <name>`. Build or select a different image, then run `create <name>` again. The agent tools inside the sandbox carry the first image's file dates and checksums. Comparing checksums inside the sandbox was the only way it showed.\n\nRebuilding the image is how a host takes new tool versions, and a recreate silently undoes that. Create should say when it reuses a kept disk and name the image the disk was made from. When that image differs from the one named now, it should refuse unless told to reuse anyway, or at least warn. The podman engine keeps only the home volume and takes the rest from the image named now, so this record concerns the microVM engine.",
   "notes": [],
   "links": [
