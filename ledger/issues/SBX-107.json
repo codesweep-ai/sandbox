@@ -1,0 +1,22 @@
+{
+  "id": "SBX-107",
+  "title": "doctor has no probe that starts an agent cold from the image, so a first-start stall reaches CI and campaigns first",
+  "type": "improvement",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "repository owner, after SBX-106: \"it would have caught the plugin-install stall before any campaign or CI run\"",
+  "opened": "2026-10-25",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "SBX-106 was a first start that never answered for a session, and nothing on the host could have said so before a campaign or CI run did. `cs-sandbox doctor` checks the host and the bundled tools, and boots nothing.\n\nWanted: a doctor probe that boots one sandbox from the image, cold, with a lined OpenCode profile, so the plugin is present. It asks the turn driver for a first session. If the session is not created within the driver's wait, the probe refuses by name. The probe should also run the same start with no line, because that is the start CI replays.\n\nOpen questions for whoever takes it. The probe needs an engine and the image, so it is slower than the rest of doctor and should be asked for, as a flag or a separate verb. The lined start needs the network once, for OpenCode's plugin SDK install, so a host with none would fail the lined half for the wrong reason. The driver's wait is two minutes, which sets the probe's floor.",
+  "notes": [],
+  "links": [
+    "SBX-106"
+  ]
+}
