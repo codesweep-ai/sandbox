@@ -336,6 +336,16 @@ store_uuid() {
     [[ "$cap" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] && echo "$cap" > "$UUID_FILE" || true
 }
 
+# The driver runs over ssh, where it cannot see the tmux pane this tool was run from. Run from a
+# pane, this names the pane's session to the driver, which is how a driver the agent starts from
+# inside the driven session knows it is nested. Run from no pane, it adds nothing.
+parent_session_env() {
+    local s="" q="'\''"
+    [[ -n "${TMUX_PANE:-}" ]] && s="$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null)" || s=""
+    [[ -n "$s" ]] && printf "CS_PARENT_TMUX_SESSION='%s' " "${s//\'/$q}"
+    return 0
+}
+
 # Run one turn under the per-session lock (serializes turns to the same warm session).
 ssh_turn() {
     if ! lock_acquire; then
@@ -352,7 +362,7 @@ ssh_turn() {
     # still finishing. Reading at startup meant it read the id before the first turn had
     # learned one, and a turn with no id mints a NEW session on the remote.
     UUID="$(cat "$UUID_FILE" 2>/dev/null || true)"
-    cmd="$REMOTE_CMD"
+    cmd="$(parent_session_env)$REMOTE_CMD"
     [[ -n "$UUID" ]] && cmd="$cmd --uuid $UUID"
     echo "$PROMPT" | ssh "$REMOTE_HOST" "$cmd" | filter_sentinel
     rc=${PIPESTATUS[1]}

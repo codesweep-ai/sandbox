@@ -35,5 +35,29 @@
   "skipAutoPermissionPrompt": true,
   "skipDangerousModePermissionPrompt": true,
   "editorMode": "vim",
-  "remoteControlAtStartup": true
+  "remoteControlAtStartup": true,
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cs-context-hook claude"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cs-context-hook claude"
+          }
+        ]
+      }
+    ]
+  }
 }

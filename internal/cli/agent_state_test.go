@@ -75,6 +75,10 @@ func TestTurnDriversSayWhetherAnAgentIsInATurn(t *testing.T) {
 		// No "esc to interrupt" on this one, which is how it was once read as idle.
 		{"claude waiting out a provider error", "cs-claude-turn", "cs-claude-a",
 			"✻ 429 rate limited · Retrying in 14s · attempt 3/10\n" + claudeReady, "busy retrying"},
+		// Nor on this one: sub-agents working in the foreground, while the main record is still.
+		{"claude waiting on its sub-agents", "cs-claude-turn", "cs-claude-a",
+			"  Running 2 agents… (ctrl+o to expand)\n   ├ Survey f01-f03 · 2 tool uses · 21.9k tokens\n" +
+				"* Transmuting… (43s · ↓ 316 tokens)\n❯ \n" + claudeReady, "busy"},
 		{"claude idle", "cs-claude-turn", "cs-claude-a", "❯ \n" + claudeReady, "idle"},
 		{"claude at sign-in", "cs-claude-turn", "cs-claude-a", "Login expired · Please run /login\n", "blocked"},
 		{"claude at a tool approval", "cs-claude-turn", "cs-claude-a", "Do you want to proceed?\n" + claudeReady, "blocked"},

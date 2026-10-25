@@ -127,6 +127,8 @@ These tune the remote-delegation path; all are optional with sensible defaults:
   driver beside `cs-claude-remote` itself, so a tool and its driver are always one version, and
   `~/.local/bin` only when there is none beside it.
 - `CS_CLAUDE_REMOTE_HOST` — default SSH target host when neither `--host` nor a per-session stored host applies (see "Target SSH host"). Falls back to `hostname -s`.
+- `CS_HANDOFF_TOKENS`, `CS_HANDOFF_FILE`, `CS_HANDOFF_ASK` — a context line the agent hands off
+  at, on the agent's machine. See "Handing off at a context line".
 
 ## Is the agent in a turn
 
@@ -155,6 +157,88 @@ only if all are. `--uuid <uuid>` narrows it to one. It starts nothing, wakes not
 so it is safe to run every few seconds. It is the same judgement the driver waits on while it runs
 a turn, so the two cannot disagree.
 
+## How full the context is
+
+Run this on the machine the agent runs on:
+
+```bash
+cs-claude-turn --context
+```
+
+It reads the agent's own record and prints one line, and it always exits 0:
+
+```
+tokens=<n or -> window=<n or -> compactions=<n> compacted=<epoch or -> model=<id or ->
+```
+
+`tokens` is the context the latest model call carried. `compactions` counts the times Claude Code
+has compacted this conversation, and `compacted` is when it last did. The line reads `absent` when
+there is no record, and `unknown` when the record cannot be read. Claude Code does not record its window, so `window` is always `-`. The reading after a compaction is the size of the summary, until the next model call replaces it.
+
+With no handle it answers for the newest record, and `--uuid <uuid>` names one. Like `--state` it starts
+nothing and writes nothing, so it is safe to run every few seconds. A caller that wants a member to
+hand off its work before Claude Code compacts reads `tokens` here, against a line it sets itself.
+
+With a hand-off line set (below), a reading carries two more fields: `handoff=<n>`, the line, and
+`floor=<n or ->`, the session's first reading when that was already over the line.
+
+## Handing off at a context line
+
+A long turn fills the context, and then Claude Code compacts the conversation on its own. A
+caller that would rather have the agent stop and write a handoff sets a line, in tokens, on the
+agent's machine:
+
+- `CS_HANDOFF_TOKENS` — the line. Unset or `0`, nothing below happens, and the agent runs as it
+  always has.
+- `CS_HANDOFF_FILE` — the file the agent writes its handoff to (default `~/.cs-turns/handoff.md`).
+- `CS_HANDOFF_ASK` — the sentence the agent reads when it crosses the line; `{tokens}` and `{h}`
+  are filled in. The default says to hand off as the agent's instructions describe, then end the
+  turn. It names no task: what a handoff holds is the caller's business, and the agent's
+  instructions say it.
+
+In a sandbox, `cs-sandbox create --env` sets them, and they reach the CLI and its hooks.
+
+Over the line, `cs-context-hook` appends the ask to every tool result until the handoff file is
+newer than the first ask. Then it tells the agent once more to end its turn, and after two more
+tool calls it ends the turn itself. The agent writes the handoff with its own tools, so it can
+check its own state first. The hook skips a sub-agent's tool calls, and any Claude Code session
+other than the one this driver drives, so a session the agent starts itself is never asked.
+
+The hook's reading is the context the next model call will carry. It starts from the latest model
+call in Claude Code's record, read as `--context` reads it, and adds an estimate of what came after.
+That is the tool results the record holds, the tool calls Claude Code has not written to it yet, and
+the result about to be added. Claude Code writes a model call to its record only once the call's
+whole response has ended. So when a tool returns, the record often lacks the call that asked for
+it. The estimate counts 2.4 characters of JSON as one token. Of an output Claude Code saved to a
+file, it counts only the preview the model sees.
+
+A turn driver the agent starts from inside the driven session runs with no line, and says so on
+stderr. With the line, it would name its own session as the driven one, and the hook would skip this
+one. `cs-claude-remote` run from a tmux pane passes that pane's session to the driver it starts over
+ssh, as `CS_PARENT_TMUX_SESSION`, so a driver started that way is seen as nested too. A driver that
+finds the driven session still alive under another name is nested too, because the harness ends a
+session before it starts the next. A caller that starts a session while the last one it drove is
+still alive therefore gets turns with no line. A nested driver writes its turn-log line to
+`~/.cs-turns/claude-nested.log` rather than `claude.log`, so the last line of `claude.log` is the
+driven session's.
+
+A session whose first reading is already over the line is never asked. The line is below what a
+fresh session costs, and asking would hand off forever. `--context` then reports `floor=<tokens>`.
+
+A turn that ended this way is a hand-off, and the driver says so: exit `0`, one line on stderr
+(`cs-claude-turn: handoff at <tokens> tokens, over the line of <n>`), and class `handoff` in the
+turn log. A turn is read as one only when the hook asked in this session, during this turn, and
+the handoff file is newer than the ask. A turn that ends any other way is what it was, with or
+without a handoff file on disk, and a turn the provider refused is never a hand-off. A caller
+that reads `handoff` can start the agent fresh and point it at the file.
+
+A caller can instead keep a session that handed off, for example to have it commit its work first.
+The hook asks again in a later turn while the session is still over the line, because the driver
+counts only an ask made in its own turn.
+
+Compaction stays on as a safety net. After one, the hook tells the agent to read its handoff
+file, if there is one, before carrying on.
+
 ## How the last turn ended
 
 Every turn end appends one line to `~/.cs-turns/claude.log`, on the machine the agent runs on:
@@ -163,6 +247,7 @@ Every turn end appends one line to `~/.cs-turns/claude.log`, on the machine the 
 <epoch seconds> <exit code> <class or -> <retry_after or -> <first line of the reason, or ->
 1789000000 5 throttled 12.5 turn failed: Rate limit reached. Please try again in 12.5s.
 1789000420 0 - - -
+1789000900 0 handoff - handoff at 61240 tokens, over the line of 60000
 ```
 
 The class and the wait are the ones on the `failure class=` line. That line goes to whoever
@@ -171,7 +256,8 @@ own machine, as `--state` is. Read the last line: a turn that ended well is reco
 older failure is known to be over. `--state`, `--help` and a usage error are not turns and write
 nothing. A driver that was killed writes nothing, so a missing line means the ending is not known.
 A turn that ended well has `-` for its reason, or `dismissed a dialog: <its text>` when the driver
-refused a one-time dialog on the way.
+refused a one-time dialog on the way. A turn the agent ended by handing off has class `handoff`
+on an exit-0 line ("Handing off at a context line").
 The file keeps between 200 and 400 lines. `CS_TURN_LOG` names another path.
 
 ## Exit codes

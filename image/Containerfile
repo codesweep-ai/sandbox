@@ -75,6 +75,11 @@ RUN want=$(cat /opt/nvim/.config-hash) \
 # The guest environment declaration, at a path both entry paths read. Installed
 # rather than referenced under /sandbox so it looks like the config it is.
 RUN install -Dm0644 /sandbox/etc/cs-sandbox/env /etc/cs-sandbox/env
+# Codex's hooks go in its managed system layer. A hook in the user layer stops the TUI at a
+# "Hooks need review" screen until a person trusts it, which no turn driver can answer; the
+# system layer is read as managed and skips the review. The hook itself does nothing unless
+# CS_HANDOFF_TOKENS is set (cs-context-hook).
+RUN install -Dm0644 /sandbox/etc/codex/hooks.json /etc/codex/hooks.json
 
 # The codesweep tools. cs-sandbox is here because a sandbox is a place to work FROM, and some of
 # that work is driving another sandbox: create a peer for a second experiment, `ls` what is running,

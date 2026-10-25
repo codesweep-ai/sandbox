@@ -1,0 +1,311 @@
+#!/usr/bin/env bash
+# cs-context-hook — ask an agent to hand off when its context crosses a line.
+#
+# usage: cs-context-hook <claude|codex>     (stdin: the CLI's hook event, as JSON)
+#
+# Wired as a post-tool and a session-start hook in the image's Claude Code settings and in
+# Codex's managed hooks file. It does nothing unless CS_HANDOFF_TOKENS is set, and that test
+# runs here in the shell, before any interpreter starts, so a member with no line set pays
+# nothing per tool call. OpenCode has the same behaviour as a plugin, cs-context-hook.ts.
+#
+# Environment:
+#   CS_HANDOFF_TOKENS  the line, in tokens of context. Unset or 0: off.
+#   CS_HANDOFF_FILE    the file the agent writes its handoff to
+#                      (default ~/.cs-turns/handoff.md).
+#   CS_HANDOFF_ASK     the sentence appended to a tool result over the line; {tokens} and {h}
+#                      are filled in. The default names no task and no file: what a handoff
+#                      holds is the agent's instructions' business, not this hook's.
+#
+# What it does, on the main agent's post-tool event:
+#   - reads the context the next model call will carry: the latest call's, plus an estimate
+#     of what follows it (below);
+#   - over the line, appends the ask to the tool result on every call until the handoff file
+#     is newer than the first ask; then tells the agent once more to end its turn, and after
+#     two more tool calls ends the turn itself;
+#   - asks again in a later turn of the same session, while it is still over the line: the
+#     harness kept the session, as when it found the work not committed, and the turn driver
+#     counts only an ask made in its own turn;
+#   - records the ask in ~/.cs-turns/handoff-ask, which the turn driver reads at the end of
+#     the turn to report the turn as a hand-off (class `handoff` in the turn log).
+# A session whose FIRST reading is already over the line is never asked: the line is below
+# what a fresh session costs, and asking would hand off forever. That is recorded in
+# ~/.cs-turns/handoff-floor, and `--context` reports it as floor=<tokens>.
+#
+# The reading. Codex's comes from its turn driver (`cs-codex-turn --context`), plus the tool
+# result about to be added. Claude Code's comes from the record the event names
+# (transcript_path), read once by the rule `cs-claude-turn --context` uses, and the hook adds
+# what the record holds after that call. Claude Code writes a model call to its record only
+# once the call's whole response has ended, and a post-tool hook often runs before then. So
+# the hook also adds the call's tool inputs and results it has seen that are not in the
+# record yet, and keeps them in its state until they are.
+#
+# It skips a sub-agent's events (agent_id on both families), and any session other than the
+# one the turn driver is driving (~/.cs-turns/driven names it, by tmux session), so a CLI the
+# agent started itself is never asked to hand off over the agent's own file.
+#
+# After a compaction (session-start with source "compact") it tells the agent to read its
+# handoff file, if there is one, before carrying on.
+
+[[ -n "${CS_HANDOFF_TOKENS:-}" && "${CS_HANDOFF_TOKENS}" != 0 ]] || exit 0
+[[ "${1:-}" == claude || "${1:-}" == codex ]] || { echo "cs-context-hook: usage: cs-context-hook <claude|codex>" >&2; exit 0; }
+
+# The event arrives on stdin, so the program goes in as an argument rather than a heredoc.
+script="$(cat <<'PY'
+import fcntl, json, os, subprocess, sys, time
+
+fam = sys.argv[1]
+home = os.path.expanduser("~")
+turns = os.path.join(home, ".cs-turns")
+state_path = os.path.join(turns, "handoff-state.json")
+lock_path = os.path.join(turns, "handoff-state.lock")
+ask_path = os.path.join(turns, "handoff-ask")
+floor_path = os.path.join(turns, "handoff-floor")
+driven_path = os.path.join(turns, "driven")
+handoff = os.path.expanduser(os.environ.get("CS_HANDOFF_FILE") or os.path.join(turns, "handoff.md"))
+try:
+    H = int(os.environ["CS_HANDOFF_TOKENS"])
+except ValueError:
+    sys.exit(0)
+HARDSTOP_AFTER = 2
+# Characters of JSON per token, for what the hook estimates rather than reads. Fitted on
+# Claude Code 2.1.283 records of claude-opus-5-5: 2.35 over every tool result between two
+# model calls, 2.57 over those that were not synthetic data. Codex keeps 4.
+CHARS_PER_TOKEN = 2.4 if fam == "claude" else 4.0
+# Claude Code saves a Bash output over its limit to a file and shows the model a preview of
+# this many characters, while the event still carries the whole output.
+PREVIEW_CHARS = 2048
+# A tool call that never reaches Claude Code's record, as in a turn cut short, stops counting
+# after this many seconds.
+PENDING_SECS = 600
+ASK = os.environ.get("CS_HANDOFF_ASK") or (
+    "[context] Your context is at {tokens} tokens, over the hand-off line of {h}. "
+    "Hand off now, as your instructions describe, then end your turn.")
+NUDGE = "[context] Your handoff is written. End your turn now."
+REREAD = ("[context] Your context was just compacted. If " + handoff +
+          " exists, read it before carrying on.")
+
+def emit(event, text):
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}))
+
+def stop(reason):
+    print(json.dumps({"continue": False, "stopReason": reason}))
+
+def turn_started():
+    """When the driven turn began: every driver rewrites the driven file as it starts one."""
+    try:
+        return os.path.getmtime(driven_path)
+    except OSError:
+        return None
+
+def driven_here():
+    """True unless the driver named the tmux session it drives and this hook runs in another."""
+    try:
+        want = open(driven_path).read().strip()
+    except OSError:
+        return True
+    pane = os.environ.get("TMUX_PANE")
+    if not want or not pane:
+        return True
+    try:
+        got = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#S"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return got == want
+
+def size(value):
+    """Tokens of a JSON value the hook estimates rather than reads."""
+    return int(len(json.dumps(value)) / CHARS_PER_TOKEN)
+
+def result_size(resp):
+    """Tokens of a tool result, as much of it as the model sees."""
+    if isinstance(resp, dict) and resp.get("persistedOutputPath") and isinstance(resp.get("stdout"), str):
+        resp = dict(resp, stdout=resp["stdout"][:PREVIEW_CHARS])
+    return size(resp)
+
+def driver_reading(sid):
+    """The context the latest model call carried, from the family's own driver, or None."""
+    driver = os.path.join(home, ".local", "bin", "cs-%s-turn" % fam)
+    if not os.path.exists(driver):
+        driver = "cs-%s-turn" % fam
+    try:
+        out = subprocess.run([driver, "--context", "--uuid", sid], capture_output=True,
+                             text=True, timeout=20, env=dict(os.environ, CS_TURN_LOG="")).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for word in out.split():
+        k, _, v = word.partition("=")
+        if k == "tokens":
+            return int(v) if v.isdigit() else None
+    return None
+
+def claude_record(path, ids):
+    """One read of Claude Code's record, by the rule `cs-claude-turn --context` uses: the
+    context the newest main-thread model call carried, or a compaction's summary until a call
+    follows it. Also the characters of the user records after that call, which the next call
+    carries, and which of ids have their tool call, and their result, in the record."""
+    tokens, after, msg, calls, results = None, 0, None, set(), set()
+    try:
+        f = open(path, errors="replace")
+    except (OSError, TypeError, ValueError):
+        return None
+    with f:
+        for line in f:
+            if '"usage"' not in line and '"compact_boundary"' not in line and '"user"' not in line:
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(r, dict) or r.get("isSidechain"):
+                continue
+            m = r.get("message") if isinstance(r.get("message"), dict) else {}
+            content = m.get("content")
+            blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+            if r.get("type") == "system" and r.get("subtype") == "compact_boundary":
+                tokens, after, msg = (r.get("compactMetadata") or {}).get("postTokens"), 0, None
+            elif r.get("type") == "assistant":
+                u = m.get("usage") or {}
+                if u:
+                    tokens = sum(u.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens",
+                                                         "cache_read_input_tokens", "output_tokens"))
+                    # Each block of a call is a record with the call's whole usage, and a
+                    # block's result can come before the next block. That result follows the
+                    # call, so only a new call starts the count again.
+                    if m.get("id") is None or m.get("id") != msg:
+                        after, msg = 0, m.get("id")
+                calls.update(b.get("id") for b in blocks if b.get("type") == "tool_use" and b.get("id") in ids)
+            elif r.get("type") == "user" and not r.get("isCompactSummary"):
+                after += len(json.dumps(content if content is not None else ""))
+                results.update(b.get("tool_use_id") for b in blocks
+                               if b.get("type") == "tool_result" and b.get("tool_use_id") in ids)
+    return tokens, after, calls, results
+
+def claude_reading(inp, st):
+    """The context Claude Code's next model call will carry, or None. The record gives the
+    latest call and what follows it. This call, and calls this hook saw earlier, add whatever
+    of them the record does not hold yet: the input of a call not in it, and a result not in
+    it. st["pending"] keeps those calls until their results are in the record."""
+    tid = inp.get("tool_use_id") or ""
+    pending = {i: v for i, v in (st.get("pending") or {}).items()
+               if isinstance(v, list) and len(v) == 3}
+    rec = claude_record(inp.get("transcript_path"), set(pending) | {tid})
+    if rec is None or rec[0] is None:
+        return None
+    tokens, after, calls, results = rec
+    tokens += int(after / CHARS_PER_TOKEN)
+    for i, (n_in, n_out, _) in pending.items():
+        if i != tid and i not in results:
+            tokens += n_out if i in calls else n_in + n_out
+    n_in, n_out = size(inp.get("tool_input") or {}), result_size(inp.get("tool_response") or "")
+    tokens += n_out if tid in calls else n_in + n_out
+    now = time.time()
+    keep = {i: v for i, v in pending.items() if i not in results and now - v[2] < PENDING_SECS}
+    if tid:
+        keep[tid] = [n_in, n_out, now]
+    st["pending"] = dict(list(keep.items())[-50:])
+    return tokens
+
+def load_state():
+    try:
+        with open(state_path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+def save_json(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+def main():
+    try:
+        inp = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        return
+    ev = inp.get("hook_event_name")
+    sid = inp.get("session_id") or ""
+    if ev == "SessionStart":
+        if inp.get("source") == "compact":
+            emit(ev, REREAD)
+        return
+    if ev != "PostToolUse" or not sid:
+        return
+    if inp.get("agent_id") or inp.get("agent_type"):
+        return
+    if not driven_here():
+        return
+    os.makedirs(turns, exist_ok=True)
+    # Claude Code runs a response's tool calls side by side, and their hooks with them. Each
+    # one reads and writes the state, so they take turns.
+    with open(lock_path, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        out = decide(inp, sid)
+    if out and out[0] == "ctx":
+        emit(ev, out[1])
+    elif out:
+        stop(out[1])
+
+def decide(inp, sid):
+    """Takes the reading and keeps the state. Returns what to tell the agent, or None."""
+    state = load_state()
+    st = state.setdefault(sid, {})
+    if fam == "claude" and inp.get("transcript_path"):
+        tokens = claude_reading(inp, st)
+    else:
+        tokens = driver_reading(sid)
+        if tokens is not None:
+            tokens += result_size(inp.get("tool_response") or "")
+    if tokens is None:
+        return None
+    turn = turn_started()
+    if st.get("asked_at") is not None and turn is not None and turn > st["asked_at"]:
+        st.pop("asked_at", None)
+        st.pop("after_fresh", None)
+    if "first" not in st:
+        st["first"] = tokens
+        if tokens >= H:
+            st["floor"] = tokens
+            save_json(floor_path, {"session": sid, "tokens": tokens, "h": H, "at": time.time()})
+    out = None
+    if "floor" not in st and tokens >= H:
+        asked = st.get("asked_at")
+        try:
+            fresh = asked is not None and os.path.getmtime(handoff) >= asked
+        except OSError:
+            fresh = False
+        if not fresh:
+            if asked is None:
+                st["asked_at"] = time.time()
+                try:
+                    session = open(driven_path).read().strip()
+                except OSError:
+                    session = ""
+                save_json(ask_path, {"session": session, "sid": sid, "tokens": tokens,
+                                     "h": H, "at": st["asked_at"]})
+            out = ("ctx", ASK.replace("{tokens}", str(tokens)).replace("{h}", str(H)))
+        else:
+            st["after_fresh"] = st.get("after_fresh", 0) + 1
+            if st["after_fresh"] > HARDSTOP_AFTER:
+                # Codex does not end the turn on this: it reads continue: false as advice and
+                # works on to a normal task_complete (probe finding 50). It has ended its turn
+                # on the nudge in every asked session (finding 43), so on Codex the hand-off
+                # rests on the ask and the nudge, not on this stop.
+                out = ("stop", "the handoff is written, so the turn ends here")
+            else:
+                out = ("ctx", NUDGE)
+    # Sessions come and go; keep the state small.
+    if len(state) > 50:
+        for old in list(state)[:-50]:
+            del state[old]
+    save_json(state_path, state)
+    return out
+
+try:
+    main()
+except Exception as e:  # a hook that fails must not fail the tool call
+    print("cs-context-hook: %s" % e, file=sys.stderr)
+PY
+)"
+exec python3 -c "$script" "$1"

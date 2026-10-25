@@ -22,6 +22,7 @@
 # Usage: echo "prompt" | cs-codex-turn --tmux <token> [--uuid <uuid>] [--workdir <dir>] \
 #            [--format text|json] [--timeout <secs>] [--name <label>]
 #        cs-codex-turn --state [--tmux <token>]
+#        cs-codex-turn --context [--uuid <uuid>]
 #
 # --state says whether codex is in a turn right now, whoever started the turn, and starts or
 # wakes nothing. It prints one line and exits 0: busy, idle, blocked (a screen that needs a
@@ -29,6 +30,12 @@
 # be followed by a second word, "busy retrying", while codex waits out a provider error. With
 # no --tmux it answers for every codex session here: busy if any is, idle only if all are.
 # It is the judgement the driver itself waits on, so the two cannot disagree.
+#
+# --context reads the session rollout and says how full the conversation is. It prints one line
+# and exits 0: "tokens=<n|-> window=<n|-> compactions=<n> compacted=<epoch|-> model=<id|->", or
+# "absent" when there is no rollout, or "unknown" when it cannot be read. tokens is the context the
+# latest model call carried, and window is the usable window codex records, which is below the
+# model's full window. With no --uuid it answers for the newest rollout. It starts nothing.
 # Exit codes: 0 ok, 2 turn timed out/stalled, 3 launch/setup failure (e.g. needs sign-in), 5 turn
 # failed (the provider ended it with an error), 1 usage. 5 matches cs-opencode-turn, and stays
 # clear of cs-codex-remote's 4 (session busy).
@@ -39,6 +46,7 @@
 set -uo pipefail
 
 STATE_ONLY=false
+CONTEXT_ONLY=false
 TOKEN=""; UUID=""; WORKDIR=""; FORMAT="text"; TIMEOUT="${CS_CODEX_TIMEOUT:-1800}"; LABEL=""
 # Stall watchdog: bail early if the JSONL stops growing AND the TUI is no longer working before
 # a task_complete appears. 0 disables. Env-overridable.
@@ -81,6 +89,47 @@ record_turn_end() {
 }
 trap 'record_turn_end "$?"' EXIT
 
+# The context hook (cs-context-hook) records in ~/.cs-turns when it asked the agent to hand
+# off, and reads there which tmux session this driver drives. Both are read and written here
+# and nowhere else in this driver.
+HANDOFF_DIR="$HOME/.cs-turns"
+TURN_START=0
+# handoff_end prints the tokens at the ask when THIS turn ended because the agent handed off:
+# the hook asked in the session this driver drives, during this turn, and the handoff file is
+# newer than the ask. Anything else fails, and the turn is reported as whatever it was.
+handoff_end() {
+    [[ -n "${CS_HANDOFF_TOKENS:-}" && "${CS_HANDOFF_TOKENS}" != 0 && -f "$HANDOFF_DIR/handoff-ask" ]] || return 1
+    python3 - "$HANDOFF_DIR/handoff-ask" "$TMUX_SESSION" "$TURN_START" "${CS_HANDOFF_FILE:-$HANDOFF_DIR/handoff.md}" <<'PY'
+import json, os, sys
+try:
+    ask = json.load(open(sys.argv[1]))
+    at = float(ask.get("at") or 0)
+    if ask.get("session") == sys.argv[2] and at >= float(sys.argv[3]) \
+            and os.path.getmtime(os.path.expanduser(sys.argv[4])) >= at:
+        print(ask.get("tokens", "-")); sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+PY
+}
+# handoff_fields is what --context adds to a reading when a line is set: the line, and
+# floor=<tokens> when the hook found this session over the line on its first reading and so
+# never asked (the line is below what a fresh session costs). Nothing when no line is set.
+handoff_fields() {
+    local h="${CS_HANDOFF_TOKENS:-}" floor="-"
+    [[ -n "$h" && "$h" != 0 ]] || return 0
+    if [[ -f "$HANDOFF_DIR/handoff-floor" ]]; then
+        floor="$(python3 - "$HANDOFF_DIR/handoff-floor" "$UUID" <<'PY' 2>/dev/null
+import json, sys
+f = json.load(open(sys.argv[1]))
+print(f.get("tokens", "-") if not sys.argv[2] or f.get("session") == sys.argv[2] else "-")
+PY
+)" || floor="-"
+        [[ -n "$floor" ]] || floor="-"
+    fi
+    printf ' handoff=%s floor=%s' "$h" "$floor"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --tmux)    TOKEN="$2"; shift 2 ;;
@@ -90,7 +139,9 @@ while [[ $# -gt 0 ]]; do
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --name)    LABEL="$2"; shift 2 ;;
         --state)   STATE_ONLY=true; shift ;;
-        -h|--help) trap - EXIT; sed -n '2,37p' "$0"; exit 0 ;;
+        # --context is a question, not a turn, so it takes the same no-turn path as --state.
+        --context) STATE_ONLY=true; CONTEXT_ONLY=true; shift ;;
+        -h|--help) trap - EXIT; sed -n '2,44p' "$0"; exit 0 ;;
         *) err "unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -311,6 +362,46 @@ state_word() {
 # must respect most: a turn anywhere is busy, and idle only when every session is.
 state_rank() { case "${1%% *}" in busy) echo 4 ;; blocked) echo 3 ;; unknown) echo 2 ;; idle) echo 1 ;; *) echo 0 ;; esac; }
 
+if $CONTEXT_ONLY; then
+    rec="$(find "$SESS" -type f -name "rollout-*${UUID}.jsonl" -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -n 1 | cut -d' ' -f2-)"
+    [[ -n "$rec" ]] || { echo absent; exit 0; }
+    # A compaction writes a "compacted" line and replaces the history, so the reading is the
+    # newest token_count after the newest compaction, and unknown until the first one.
+    line="$(python3 - "$rec" <<'PY' 2>/dev/null
+import json, sys
+from datetime import datetime
+tokens, window, comps, last, model = None, None, 0, None, None
+for line in open(sys.argv[1], errors="replace"):
+    if '"compacted"' not in line and '"token_count"' not in line and '"turn_context"' not in line:
+        continue
+    try:
+        r = json.loads(line)
+    except ValueError:
+        continue
+    t, p = r.get("type"), r.get("payload") or {}
+    if t == "compacted":
+        comps += 1
+        last = r.get("timestamp")
+        tokens = None
+    elif t == "turn_context":
+        model = p.get("model") or model
+    elif t == "event_msg" and p.get("type") == "token_count" and p.get("info"):
+        u = p["info"].get("last_token_usage") or {}
+        tokens = (u.get("input_tokens") or 0) + (u.get("output_tokens") or 0)
+        window = p["info"].get("model_context_window") or window
+epoch = "-"
+if last:
+    epoch = str(int(datetime.fromisoformat(last.replace("Z", "+00:00")).timestamp()))
+dash = lambda v: "-" if v is None else v
+print(f"tokens={dash(tokens)} window={dash(window)} compactions={comps} compacted={epoch} model={model or '-'}")
+PY
+)" || line=unknown
+    [[ -n "$line" ]] || line=unknown
+    [[ "$line" == tokens=* ]] && line="$line$(handoff_fields)"
+    echo "$line"
+    exit 0
+fi
+
 if $STATE_ONLY; then
     names="cs-codex-$TOKEN"
     [[ -n "$TOKEN" ]] || names="$(tmux ls -F '#{session_name}' 2>/dev/null | grep '^cs-codex-' || true)"
@@ -325,6 +416,40 @@ fi
 
 # --- run one turn ---------------------------------------------------------
 
+# A driver the agent starts from inside the driven session runs with no line. Left on, it would
+# name its own session in ~/.cs-turns/driven, and the hook would then skip the one driven here.
+# A TMUX_PANE in some other session changes nothing: a shell can carry one from elsewhere. A
+# driver started over ssh has no pane, so cs-codex-remote passes the session it was run from as
+# CS_PARENT_TMUX_SESSION.
+# A nested driver writes its turn-log line to a log of its own, because the harness reads the
+# last lines of the main log as the driven session's turns. The path is set before any turn
+# could end, so even a failed start lands there.
+if [[ -n "${CS_HANDOFF_TOKENS:-}" && "${CS_HANDOFF_TOKENS}" != 0 && -f "$HANDOFF_DIR/driven" ]]; then
+    driven_session=""; read -r driven_session < "$HANDOFF_DIR/driven" 2>/dev/null || true
+    nested_in=""
+    if [[ -n "${TMUX_PANE:-}" ]]; then
+        pane_session="$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null)" || pane_session=""
+        [[ -n "$pane_session" && "$pane_session" == "$driven_session" ]] && nested_in="$pane_session"
+    fi
+    if [[ -z "$nested_in" && -n "${CS_PARENT_TMUX_SESSION:-}" && "$CS_PARENT_TMUX_SESSION" == "$driven_session" ]]; then
+        nested_in="$CS_PARENT_TMUX_SESSION"
+    fi
+    # Any wrapper breaks that lineage, such as a tmux session the agent starts for a batch, so
+    # ownership counts too. The harness drives one session per machine, and ends the old one
+    # before it starts the next. So while the session driven names is alive under another name,
+    # this driver is one its agent started. A dead claim is a fresh start, and a resume has the
+    # same name. The = makes tmux match that exact name, not a longer one that begins with it.
+    if [[ -z "$nested_in" && -n "$driven_session" && "$driven_session" != "$TMUX_SESSION" ]] &&
+        tmux has-session -t "=$driven_session" 2>/dev/null; then
+        nested_in="$driven_session"
+    fi
+    if [[ -n "$nested_in" ]]; then
+        err "started inside the driven session $nested_in: this one has no hand-off line"
+        unset CS_HANDOFF_TOKENS CS_HANDOFF_FILE CS_HANDOFF_ASK
+        [[ -n "${CS_TURN_LOG:-}" ]] || TURN_LOG="$HOME/.cs-turns/codex-nested.log"
+    fi
+fi
+
 # Snapshot rollouts before launching a missing TUI. The ready screen can appear
 # a fraction before Codex creates its rollout, so selecting the globally newest
 # file after startup can accidentally bind this turn to a previous session.
@@ -332,6 +457,13 @@ BEFORE_LAUNCH="$(find "$SESS" -type f -name '*.jsonl' 2>/dev/null | sort)"
 WAS_ALIVE=false; session_alive && WAS_ALIVE=true
 ensure_session || exit $?
 wait_ready || exit $?
+
+# Name the session this turn drives, for the context hook: a CLI session the agent starts
+# itself is another one, and is never asked to hand off over this agent's file.
+TURN_START="$(date +%s)"
+if [[ -n "${CS_HANDOFF_TOKENS:-}" ]]; then
+    { mkdir -p "$HANDOFF_DIR" && printf '%s\n' "$TMUX_SESSION" > "$HANDOFF_DIR/driven"; } 2>/dev/null || true
+fi
 
 # Snapshot which rollout files exist before submission. Older Codex versions
 # create the file only after the first prompt, so the post-submit fallback below
@@ -487,6 +619,13 @@ if [[ -n "$FAILURE" ]]; then
     # The session id still goes out: the TUI is alive, and the next turn resumes this session.
     [[ -n "$OUT_UUID" ]] && printf '\n__CS_CODEX_SESSION_ID__ %s\n' "$OUT_UUID"
     exit 5
+fi
+
+# A turn the agent ended by handing off, as the context hook asked it to in this session and
+# this turn, is reported as one: exit 0, class handoff. A refused turn never reaches here.
+if t="$(handoff_end)"; then
+    TURN_CLASS="handoff"
+    err "handoff at $t tokens, over the line of $CS_HANDOFF_TOKENS"
 fi
 
 # Emit this turn's new content from the JSONL (lines appended after PRE_LINES).

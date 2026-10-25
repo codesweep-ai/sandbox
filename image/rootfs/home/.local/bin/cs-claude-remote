@@ -422,6 +422,16 @@ rotate_log() {
     fi
 }
 
+# The driver runs over ssh, where it cannot see the tmux pane this tool was run from. Run from a
+# pane, this names the pane's session to the driver, which is how a driver the agent starts from
+# inside the driven session knows it is nested. Run from no pane, it adds nothing.
+parent_session_env() {
+    local s="" q="'\''"
+    [[ -n "${TMUX_PANE:-}" ]] && s="$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null)" || s=""
+    [[ -n "$s" ]] && printf "CS_PARENT_TMUX_SESSION='%s' " "${s//\'/$q}"
+    return 0
+}
+
 # Run one turn: pipe the prompt to the remote command, holding the session lock so
 # two callers cannot interleave keystrokes. The wait is bounded by LOCK_WAIT, so a
 # session whose turn has genuinely wedged answers "busy" rather than hanging its
@@ -435,7 +445,7 @@ ssh_turn() {
         return 4
     fi
     local rc
-    if echo "$PROMPT" | ssh "$REMOTE_HOST" "$REMOTE_CMD"; then rc=0; else rc=$?; fi
+    if echo "$PROMPT" | ssh "$REMOTE_HOST" "$(parent_session_env)$REMOTE_CMD"; then rc=0; else rc=$?; fi
     lock_release
     return $rc
 }
