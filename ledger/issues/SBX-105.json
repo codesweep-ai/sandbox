@@ -1,0 +1,20 @@
+{
+  "id": "SBX-105",
+  "title": "An agent compacts a long conversation on its own, and its caller cannot hand it off first",
+  "type": "improvement",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "repository owner, asking for a way to manage context in long-running campaign members",
+  "opened": "2026-10-25",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "An agent in a sandbox runs one CLI session across many turns, and its context grows with every tool result. When the context nears the model's window, the CLI compacts the conversation by itself. The summary keeps what the CLI chose to keep, and the agent carries on from it, re-orienting by guesswork. A caller that drives long work through the turn drivers has no way to see that coming, and no way to have the agent write down what it needs first.\n\nWanted: a line, in tokens of context, that a caller sets per sandbox. Past it, something on the agent's own machine asks the agent to write a handoff with its own tools and end its turn. The turn driver reports that ending as a hand-off. The caller can then start the agent fresh and point the new session at the handoff. The sandbox should hold no words of the caller's: the line, the handoff's path and the sentence the agent is asked with come from the caller. A line below what a fresh session costs would hand off forever, so a session that starts over its line must not be asked. Sub-agents and CLI sessions the agent starts itself must not be asked over the agent's own file. Every CLI's own compaction stays on as a safety net.",
+  "notes": [],
+  "links": []
+}
