@@ -1,0 +1,27 @@
+{
+  "id": "SBX-106",
+  "title": "Shipping the OpenCode context hook in the profile makes every OpenCode first start install the plugin SDK, and fails it with no network",
+  "type": "defect",
+  "severity": "high",
+  "status": "in-progress",
+  "foundBy": "sandbox CI on 7ea098e: every OpenCode agent-replay job failed on its first turn, on podman, Firecracker and macOS alike",
+  "opened": "2026-10-25",
+  "resolved": null,
+  "stint": "context hand-off, 2026-10-17 to 2026-10-25",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "The context hook for OpenCode is a plugin, and 143ac79 shipped it in the profile's plugins directory, `~/.cs-opencode/plugins/`, for every member. OpenCode installs its plugin SDK, `@opencode-ai/plugin`, from npm on every start, into each config directory it reads. When a config directory holds a plugin, it holds the first session until that install is done. In a CI replay the network is a recorder that answers no npm request, so the install hung. The turn driver asks for a session once, for ten seconds, and the ask came back empty: `cs-opencode-turn: could not create an opencode session (got '')`, exit 3. That was 15 of 15 OpenCode cells. The same first-start failure had been seen on every OpenCode member of two live campaigns and taken for a flake. With the network the install finishes within a minute, and the next turn found the session.\n\nReproduced in a sandbox from the same image with `HTTP_PROXY` pointed at a closed port, as the replay sets it: the first turn fails at 11 seconds. The same turn on a machine whose profile already holds the SDK succeeds. A fresh machine with the SDK copied into the profile alone still fails, because OpenCode runs the install for its other config directory too.\n\nA member with no hand-off line has no use for the plugin and must start exactly as before this feature. A member with a line needs the install once per machine, with the network, and its first start has to be given the time.",
+  "notes": [
+    {
+      "date": "2026-10-25",
+      "text": "Baking the SDK into the image was tried and set aside: OpenCode installs it per config directory, and making that reliable would depend on its installer's internals. It stays an option if the one-time install on a lined machine proves slow."
+    }
+  ],
+  "links": [
+    "SBX-105"
+  ]
+}
