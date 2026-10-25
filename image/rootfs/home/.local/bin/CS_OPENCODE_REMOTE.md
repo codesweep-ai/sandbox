@@ -200,8 +200,13 @@ machine:
   instructions say it.
 
 In a sandbox, `cs-sandbox create --env` sets them, and they reach OpenCode and its plugins. The
-hook is a plugin here, `~/.cs-opencode/plugins/cs-context-hook.ts`, because OpenCode has no
-command hooks; it registers nothing unless the line is set.
+hook is a plugin here, because OpenCode has no command hooks. It ships at
+`~/.local/share/cs-opencode/plugins/cs-context-hook.ts`, and `cs-opencode` links it into
+`~/.cs-opencode/plugins/` when it starts OpenCode with a line set. With no line the profile holds
+no plugin, because OpenCode installs its plugin SDK from npm on the first start that finds one,
+and holds that start's first session until the install is done. With a line, that install
+happens once per machine, on the first start, and needs the network; the turn driver waits up to
+two minutes for the first session then, where it otherwise waits ten seconds.
 
 Over the line, the plugin appends the ask to every tool result until the handoff file is newer
 than the first ask. Then it tells the agent once more to end its turn, and after two more tool

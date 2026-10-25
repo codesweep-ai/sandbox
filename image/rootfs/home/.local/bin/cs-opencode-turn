@@ -363,9 +363,23 @@ ensure_session() {
     if [[ -z "$SES_ID" ]]; then
         # The session is bound to the directory named here rather than to the server's cwd, so the
         # turn runs where the caller asked even if the TUI was started somewhere else.
-        SES_ID="$(curl -fsS -m 10 -X POST "$BASE/session?directory=${WORKDIR:-$PWD}" \
-            -H 'content-type: application/json' -d '{}' 2>/dev/null \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null)"
+        # With a hand-off line the context hook is a plugin, and the first start of a machine
+        # that finds one installs OpenCode's plugin SDK from npm before it answers for a
+        # session. The server is healthy all the while, so this is the one call that waits.
+        # Up to two minutes, in asks of ten seconds, while the ask comes back empty; the
+        # install needs the network, and a machine without it fails here as it always did.
+        local create_tries=1
+        [[ -n "${CS_HANDOFF_TOKENS:-}" && "${CS_HANDOFF_TOKENS}" != 0 ]] && create_tries=12
+        local try
+        for (( try = 1; try <= create_tries; try++ )); do
+            SES_ID="$(curl -fsS -m 10 -X POST "$BASE/session?directory=${WORKDIR:-$PWD}" \
+                -H 'content-type: application/json' -d '{}' 2>/dev/null \
+                | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null)"
+            [[ "$SES_ID" =~ ^ses_[A-Za-z0-9]{20,40}$ ]] && break
+            (( try < create_tries )) || break
+            (( try == 1 )) && err "the server answers but gave no session yet; waiting for its first start to finish"
+            sleep 1
+        done
         [[ "$SES_ID" =~ ^ses_[A-Za-z0-9]{20,40}$ ]] || { err "could not create an opencode session (got '$SES_ID')"; return 3; }
         # Navigate the TUI to it, so a human attaching sees the driven turn rather than the home
         # screen. The turn itself is driven over the API and does not depend on this.

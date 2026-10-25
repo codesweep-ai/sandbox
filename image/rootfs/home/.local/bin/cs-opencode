@@ -69,6 +69,24 @@ if [ -n "${OPENCODE_BASE_URL:-}" ] && [ -z "${OPENCODE_CONFIG_CONTENT:-}" ]; the
   fi
 fi
 
+# The context hook is an OpenCode plugin, and OpenCode installs its plugin SDK from npm on the
+# first start that finds any plugin, blocking that start's first session until the install is
+# done. A member with no hand-off line has no use for the plugin, so it is kept out of the
+# profile's plugins directory and linked in here only when CS_HANDOFF_TOKENS names a line. The
+# link stays once made: the plugin registers nothing without the line, and a start with no line
+# after one with it costs nothing new. A missing source is reported, not fatal: the agent still
+# runs, without the hook.
+if [ -n "${CS_HANDOFF_TOKENS:-}" ] && [ "${CS_HANDOFF_TOKENS}" != 0 ]; then
+  _hook="$HOME/.local/share/cs-opencode/plugins/cs-context-hook.ts"
+  if [ -f "$_hook" ]; then
+    mkdir -p "$OC_DIR/plugins" 2>/dev/null && ln -sfn "$_hook" "$OC_DIR/plugins/cs-context-hook.ts" 2>/dev/null \
+      || echo "cs-opencode: could not link the context hook into $OC_DIR/plugins; the hand-off line will not be asked" >&2
+  else
+    echo "cs-opencode: no context hook at $_hook; the hand-off line will not be asked" >&2
+  fi
+  unset _hook
+fi
+
 if [ -n "${CS_OPENCODE_YOLO:-}" ] || [ -f "$OC_DIR/.yolo" ]; then
   # --auto exists on the TUI (default command) and `run` only; injecting it into other
   # subcommands (serve, export, session, db, ...) would be an unknown-flag error.

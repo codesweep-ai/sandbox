@@ -1,9 +1,11 @@
 // cs-context-hook for OpenCode: ask the agent to hand off when its context crosses a line.
 //
 // The same behaviour as the cs-context-hook script Claude Code and Codex run, as an OpenCode
-// plugin, because OpenCode has no command hooks. It is loaded from this profile's plugins
-// directory on every start, and registers nothing unless CS_HANDOFF_TOKENS is set, so a
-// member with no line set runs exactly as before.
+// plugin, because OpenCode has no command hooks. It lives here, outside the profile, and the
+// cs-opencode wrapper links it into the profile's plugins directory only when CS_HANDOFF_TOKENS
+// is set: OpenCode installs its plugin SDK from npm on the first start that finds any plugin,
+// and a member with no line set must start exactly as before. Linked in, it registers nothing
+// unless the line is set.
 //
 // Environment: CS_HANDOFF_TOKENS (the line; unset or 0 is off), CS_HANDOFF_FILE (default
 // ~/.cs-turns/handoff.md), CS_HANDOFF_ASK (the sentence, with {tokens} and {h}).
