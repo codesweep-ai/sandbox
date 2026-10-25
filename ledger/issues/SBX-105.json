@@ -3,17 +3,19 @@
   "title": "An agent compacts a long conversation on its own, and its caller cannot hand it off first",
   "type": "improvement",
   "severity": "med",
-  "status": "open",
+  "status": "closed",
   "foundBy": "repository owner, asking for a way to manage context in long-running campaign members",
   "opened": "2026-10-25",
-  "resolved": null,
-  "stint": null,
+  "resolved": "2026-10-25",
+  "stint": "context hand-off, 2026-10-17 to 2026-10-25",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "143ac79"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "Probes on real microVMs, on each of Claude Code, Codex and OpenCode. A task needing more context than its line answered all 14 of its items once across 3 to 4 hand-offs per CLI, with no item done twice. A session that kept calling tools after writing its handoff was ended by the hook on Claude Code (4 of 4) and OpenCode (5 of 5). Codex ended its turn on the nudge in every asked session. On Claude Code and OpenCode a batch of four sub-agents finished inside the turn before its hand-off, and only the main session was asked. Replayed Claude Code records put each ask 227 to 720 tokens under the next call. In a real campaign the harness kept a session that handed off, and that session's next turn was asked again and ended as class `handoff`. In the same campaign a Claude Code member handed off 7 times with no compaction. In a second campaign OpenCode members handed off 4 times, each reported as class `handoff`. `TestTheContextHookAsksForAHandoffAgainInALaterTurn` and `TestALaterTurnThatRewritesItsHandoffIsAHandOff` fail with the re-ask removed. `make check` passed on the feature commit, with every package `ok`."
   },
-  "resolution": null,
+  "resolution": "A sandbox may carry a line, `CS_HANDOFF_TOKENS`, with the handoff's path and the sentence to ask with (`CS_HANDOFF_FILE`, `CS_HANDOFF_ASK`). A hook for Claude Code and Codex, and a plugin for OpenCode, read the context the next model call will carry. Past the line they append the ask to each tool result until the handoff file is newer than the ask, then nudge once, then end the turn. A later turn of a session still over its line is asked again. The turn drivers report such a turn end as class `handoff`, exit 0, and `--context` reports the line and a floor. A session whose first reading is over its line is never asked. Sub-agents, child sessions and a CLI the agent starts itself are never asked over the agent's own file. Nothing runs unless the line is set.",
   "details": "An agent in a sandbox runs one CLI session across many turns, and its context grows with every tool result. When the context nears the model's window, the CLI compacts the conversation by itself. The summary keeps what the CLI chose to keep, and the agent carries on from it, re-orienting by guesswork. A caller that drives long work through the turn drivers has no way to see that coming, and no way to have the agent write down what it needs first.\n\nWanted: a line, in tokens of context, that a caller sets per sandbox. Past it, something on the agent's own machine asks the agent to write a handoff with its own tools and end its turn. The turn driver reports that ending as a hand-off. The caller can then start the agent fresh and point the new session at the handoff. The sandbox should hold no words of the caller's: the line, the handoff's path and the sentence the agent is asked with come from the caller. A line below what a fresh session costs would hand off forever, so a session that starts over its line must not be asked. Sub-agents and CLI sessions the agent starts itself must not be asked over the agent's own file. Every CLI's own compaction stays on as a safety net.",
   "notes": [],
   "links": []
