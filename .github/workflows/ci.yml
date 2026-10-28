@@ -531,7 +531,7 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: cs-sandbox-ci-image
           path: bin
@@ -646,12 +646,12 @@ jobs:
           podman --version
 
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: cs-sandbox-ci-image
           path: bin
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: cs-sandbox-fc-artifacts
           path: bin
@@ -754,7 +754,7 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: cs-sandbox-ci-image
           path: bin
@@ -869,12 +869,12 @@ jobs:
           podman --version
 
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: cs-sandbox-ci-image
           path: bin
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: cs-sandbox-fc-artifacts
           path: bin
@@ -957,7 +957,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: cs-sandbox-ci-image
           path: bin
@@ -1175,7 +1175,7 @@ jobs:
           check-latest: true
           cache: false
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: cs-sandbox-ci-image
           path: bin
@@ -1523,7 +1523,7 @@ jobs:
           cache: true
 
       - name: collect every tier
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: coverage-*
           path: .coverage-artifacts
