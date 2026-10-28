@@ -51,6 +51,9 @@ jobs:
     name: open-source readiness
     runs-on: ubuntu-26.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # gh finds the last commit ci passed on
     steps:
       - uses: actions/checkout@v7
         with:
@@ -58,7 +61,13 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: make oss
+      # The history scan reads the commits the last green ci run on main did
+      # not, and the last ten days before there is one.
+      - run: >-
+          make oss OSS_SINCE="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml
+          --branch main --status success --limit 1 --json headSha --jq '.[0].headSha // ""')"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   check:
     name: ledger check

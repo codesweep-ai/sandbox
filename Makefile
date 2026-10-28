@@ -794,8 +794,9 @@ refs:
 	$(CS_LINT) refs
 
 ## oss: the rules this repo has to satisfy as a published project
+## OSS_SINCE=<commit> reads only the history after it, as CI passes it.
 oss:
-	$(CS_LINT) oss
+	$(CS_LINT) oss $(if $(OSS_SINCE),--since $(OSS_SINCE))
 
 ## surface: check the docs against the binary, the code and the build
 surface: build
