@@ -2,6 +2,7 @@ package lend
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -199,5 +200,63 @@ func TestFabricLookupStaysOnTheBridge(t *testing.T) {
 	got := onNets([]net.IP{net.ParseIP("192.168.1.5"), net.ParseIP("10.89.1.7")}, nets)
 	if len(got) != 1 || !got[0].Equal(net.ParseIP("10.89.1.7")) {
 		t.Errorf("onNets kept %v, want only 10.89.1.7", got)
+	}
+}
+
+// fakeFabricDNS is the fabric's dnsmasq as a lookup of a member's bare name
+// meets it: the A record from its hostsdir at once, and the AAAA forwarded to
+// aardvark and never answered. It returns the address to dial.
+func fakeFabricDNS(t *testing.T, ip string) string {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, from, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			q := buf[:n]
+			// The question is a name, then its type and class.
+			end := 12
+			for end < n && q[end] != 0 {
+				end += int(q[end]) + 1
+			}
+			if end+5 > n || binary.BigEndian.Uint16(q[end+1:end+3]) != 1 {
+				continue
+			}
+			resp := append([]byte{q[0], q[1], 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0}, q[12:end+5]...)
+			resp = append(resp, 0xC0, 12, 0, 1, 0, 1, 0, 0, 0, 0, 0, 4)
+			resp = append(resp, net.ParseIP(ip).To4()...)
+			_, _ = pc.WriteTo(resp, from)
+		}
+	}()
+	return pc.LocalAddr().String()
+}
+
+// R152a: a member is found by its A record alone. The fabric's dnsmasq forwards
+// the AAAA for a bare name to aardvark, which often never answers, and a lookup
+// that asked for both waited out its deadline and returned neither: the member
+// was refused its own loan, at random.
+func TestAMemberIsFoundWithoutItsAAAA(t *testing.T) {
+	bridge(t)
+	addr := fakeFabricDNS(t, "10.89.1.7")
+	restore := fabricDNSAddr
+	fabricDNSAddr = func([]*net.IPNet) string { return addr }
+	t.Cleanup(func() { fabricDNSAddr = restore })
+
+	ctx, cancel := context.WithTimeout(context.Background(), bindLookup)
+	defer cancel()
+	start := time.Now()
+	ips, err := fabricAddrs(ctx, "box")
+	if len(ips) != 1 || !ips[0].Equal(net.ParseIP("10.89.1.7")) {
+		t.Fatalf("fabricAddrs = %v, %v; want the member's 10.89.1.7", ips, err)
+	}
+	if took := time.Since(start); took > bindLookup/2 {
+		t.Errorf("finding the member took %v, which is waiting on an AAAA nobody answers", took)
 	}
 }

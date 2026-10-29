@@ -933,8 +933,9 @@ the loan's name and the caller's address. A lender container started without its
 replaced rather than adopted (R150f). *A loan token is a bearer value that leaks the ordinary
 ways, through a readable file, a log or a shared repository. Unbound, any peer that finds one spends
 it, and the log names the wrong sandbox. The name is looked up rather than an address recorded,
-because a container's address changes when it restarts. A source address on a bridge is not proof
-of identity, so a member that forges one, or poisons the lender's ARP, passes as another. A lender
+because a container's address changes when it restarts. It is looked up for IPv4 alone: the bridges
+are IPv4, and the fabric's DNS forwards a bare name's IPv6 question to a resolver that may never
+answer. A source address on a bridge is not proof of identity, so a member that forges one, or poisons the lender's ARP, passes as another. A lender
 run on the host sees every sandbox as the host itself, so it binds nothing.*
 
 **R153.** The lender **MUST** answer `CONNECT`. It **MUST** refuse the hosts it is itself the front for and

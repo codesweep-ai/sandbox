@@ -111,6 +111,12 @@ func (s *Server) fromItsSandbox(ctx context.Context, loan Loan, remote string) b
 // waiting on it first would cost a podman-only group a timeout per lookup. Only
 // an address on this lender's own networks counts: aardvark hands a name it does
 // not hold to the host's resolvers, and their answer is not a member.
+//
+// IPv4 alone, because the bridges are IPv4 and nothing else could match. Asking
+// for both cost the A record too: the dnsmasq answers a member's A from its
+// hostsdir and forwards the AAAA for a bare name to aardvark, which often never
+// answers, and a lookup that asks for both waits out its deadline for the AAAA
+// and returns neither. The member was refused its own loan, at random.
 func fabricAddrs(ctx context.Context, name string) ([]net.IP, error) {
 	nets := bridgeNets()
 	ctx, cancel := context.WithCancel(ctx)
@@ -121,16 +127,16 @@ func fabricAddrs(ctx context.Context, name string) ([]net.IP, error) {
 	}
 	answers := make(chan answer, 2)
 	ask := func(r *net.Resolver, host string) {
-		ips, err := r.LookupIP(ctx, "ip", host)
+		ips, err := r.LookupIP(ctx, "ip4", host)
 		answers <- answer{onNets(ips, nets), err}
 	}
 	asked := 1
 	go ask(net.DefaultResolver, name)
-	if dns := fabricDNS(nets); dns != "" {
+	if dns := fabricDNSAddr(nets); dns != "" {
 		asked++
 		r := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			var d net.Dialer
-			return d.DialContext(ctx, network, net.JoinHostPort(dns, "53"))
+			return d.DialContext(ctx, network, dns)
 		}}
 		// Absolute, so the search list does not send it round aardvark first.
 		go ask(r, name+".")
@@ -184,3 +190,13 @@ func fabricDNS(nets []*net.IPNet) string {
 
 // fabricDNSOctet is the last octet of the fabric's dnsmasq address.
 const fabricDNSOctet = 53
+
+// fabricDNSAddr is where fabricAddrs sends its queries to the fabric's dnsmasq,
+// or "" where there is none. A var so a test can stand a resolver in for it on
+// a port it may bind.
+var fabricDNSAddr = func(nets []*net.IPNet) string {
+	if dns := fabricDNS(nets); dns != "" {
+		return net.JoinHostPort(dns, "53")
+	}
+	return ""
+}
