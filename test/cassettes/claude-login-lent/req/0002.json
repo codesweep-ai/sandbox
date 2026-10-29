@@ -29,7 +29,7 @@
   "stream": true,
   "system": [
     {
-      "text": "x-anthropic-billing-header: cc_version=2.1.283; cc_entrypoint=cli;",
+      "text": "x-anthropic-billing-header: cc_version=2.1.312; cc_entrypoint=cli;",
       "type": "text"
     },
     {
