@@ -748,6 +748,10 @@ others.
 **R90a.** `cs-claude` **MUST** load only the MCP servers its invocation names, which is none unless the
 caller passes their own.
 
+**R90b.** `install-agent-clis` **MUST** install on the host the agent CLI versions the agents tier pins.
+It **MUST** check each download against the checksum its vendor publishes, and **MUST** leave the
+CLI already installed in place when a download does not match.
+
 The sandbox is the isolation boundary, which is what makes R89 safe: the thing an approval prompt
 protects is a host, and there is no host here to protect. The same reasoning is why R89 reaches past
 the prompts to the rules. Claude Code enforces `permissions.deny` even under
@@ -767,6 +771,10 @@ connectors with it. Gmail, Calendar and Drive would otherwise attach inside the 
 and offer an agent working there the mailbox of whoever created it. R90a also makes a session
 reproducible. Connectors attach on their own schedule, so the tool list an agent is offered differs
 between two runs of one task, and that alone stops a recorded session replaying.
+
+R90b keeps a host on the builds its sandboxes run. An agent's own version is part of every request
+it sends. A session recorded on a host whose CLI has moved therefore does not replay in a sandbox,
+and an agent's own installer moves it by default.
 
 ### 10.1 Login
 

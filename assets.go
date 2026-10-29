@@ -198,6 +198,40 @@ func TierPins(assetDir string) (map[string]string, error) {
 	return pins, nil
 }
 
+// AgentPins reads the ARG defaults of image/Containerfile.agents, as name ->
+// value: the agent CLI versions the agents tier installs, CLAUDE_CODE_VERSION,
+// CODEX_VERSION and OPENCODE_VERSION among them.
+//
+// `install-agent-clis` reads them here so that a host gets the CLIs its
+// sandboxes run, from the one place they are pinned. Same fallback as the other
+// pins: the checkout's copy when there is one, the embedded copy otherwise.
+func AgentPins(assetDir string) (map[string]string, error) {
+	var data []byte
+	if d, ok := onDiskImage(assetDir); ok {
+		if b, err := os.ReadFile(filepath.Join(d, "Containerfile.agents")); err == nil {
+			data = b
+		}
+	}
+	if data == nil {
+		b, err := fs.ReadFile(image(), "Containerfile.agents")
+		if err != nil {
+			return nil, err
+		}
+		data = b
+	}
+	pins := map[string]string{}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "ARG ")
+		if !ok {
+			continue
+		}
+		if k, v, ok := strings.Cut(strings.TrimSpace(rest), "="); ok {
+			pins[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
+	return pins, nil
+}
+
 // GuestInitPath returns a host path to the guest init (image/guest/init): the
 // on-disk checkout copy when available, otherwise the embedded copy materialized
 // once into cacheDir (a stable path so its content hash — the base-rootfs stamp

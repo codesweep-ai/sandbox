@@ -373,6 +373,7 @@ func newRootCmd(app *App) *cobra.Command {
 	root.AddCommand(newDoctorCmd(app))
 	root.AddCommand(newAgentLoginCmd(app))
 	root.AddCommand(newInstallAgentToolsCmd(app))
+	root.AddCommand(newInstallAgentCLIsCmd(app))
 	root.AddCommand(newAgentToolsCmd(app))
 	root.AddCommand(newHostRouteCmd(app))
 	root.AddCommand(newLenderCmd(app))

@@ -29,7 +29,7 @@ cs-sandbox stores                      cs-sandbox rm-store [-f] <name>
 
 cs-sandbox build [--engine ENGINE]...  cs-sandbox doctor [--engine ENGINE] [--slim]
 cs-sandbox agent-login <agent> <name>  cs-sandbox install-agent-tools [dir]
-cs-sandbox agent-tools [--json]
+cs-sandbox agent-tools [--json]        cs-sandbox install-agent-clis [dir]
 cs-sandbox lender [--addr ADDR]         cs-sandbox renewer
 cs-sandbox lender fault <name> [--status N] [--count N] [--hang D] [--clear]
 cs-sandbox completion bash|zsh|fish|powershell
@@ -249,6 +249,7 @@ cs-sandbox doctor [--engine ENGINE]       # check prerequisites, print the fix f
 cs-sandbox doctor --slim                  # check the CI image and its artifacts instead
 cs-sandbox install-agent-tools [dir]      # the agent tools onto your PATH
 cs-sandbox agent-tools [--json]           # what those tools are, with their sha256
+cs-sandbox install-agent-clis [dir]       # the agent CLIs the image pins onto your PATH
 cs-sandbox agent-login <agent> <name>     # log an agent in inside a sandbox
 cs-sandbox lender [--addr ADDR]           # run the credential lender in the foreground
 cs-sandbox lender fault <name> --status 429  # fail a sandbox's next lent model call on purpose
@@ -421,6 +422,12 @@ build carries. It is the reference a host or a sandbox is compared against, so i
 shipped bytes rather than what is on the `PATH`. Read from the `PATH`, a drifted host would agree
 with itself. `--json` emits the build version alongside the table, for a caller checking a
 sandbox's tools from outside it.
+
+`install-agent-clis` installs `claude`, `codex` and `opencode` on the host at the versions the
+agents tier pins, into `~/.local/bin` unless you name a directory. Each download is checked against
+the checksum its vendor publishes before it replaces anything, and a CLI already at its pin is left
+alone. It says when another copy of a CLI comes first on your `PATH`, because that copy is the one
+you run.
 
 `agent-login` launches the agent inside the named sandbox so you can complete its login there. The
 login stays in that sandbox and goes when it does.

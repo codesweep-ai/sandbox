@@ -221,7 +221,11 @@ cs-sandbox install-agent-tools    # -> ~/.local/bin  (pass a directory to instal
 ```
 
 `cs-claude`, `cs-codex` and `cs-opencode` invoke the `claude`, `codex` and `opencode` CLIs, so those
-must be installed on the host too. `install-agent-tools` tells you which are missing.
+must be installed on the host too. `install-agent-clis` installs the versions your sandboxes run:
+
+```bash
+cs-sandbox install-agent-clis     # -> ~/.local/bin  (pass a directory to install elsewhere)
+```
 
 Then log in once with each one you use. Nothing about this puts a credential in a sandbox: it is
 what gives the host something to lend, and no credential is **ever baked into the image**.
