@@ -387,7 +387,7 @@ SMOKE_AGENTS ?= 1
 ##
 ## The cassettes do not move with it. What an agent sends is its own business
 ## and has nothing to do with what it is boxed in, so both engines replay the
-## same fourteen recordings, and a miss on one and not the other is a finding
+## same recordings, and a miss on one and not the other is a finding
 ## rather than a fixture problem.
 ##
 ## What DOES move with the engine is where the guest's own tools come from. A
@@ -404,7 +404,7 @@ AGENTS_ENGINE ?= podman
 ## short race-sensitive part of a create (ssh port, VM IP, the one-per-host
 ## fabric) serializes itself on the host-wide create lock. What bounds this is
 ## the machine: each cell is a sandbox with an agent inside it, and the default
-## `go test -parallel` of GOMAXPROCS would try to boot all fourteen at once.
+## `go test -parallel` of GOMAXPROCS would try to boot all of them at once.
 ##
 ## Four fits a laptop and a 4-vCPU runner alike. Set it to 1 to read a log in
 ## order; CI sets nothing, because there each cell is its own job.
@@ -589,7 +589,7 @@ test-live-agents:
 ## with the code: the replay profiles serve what this records.
 ##
 ## Re-record one at a time when a client version moves, since each costs a turn:
-##   make fixtures FIXTURE_CASES='TestLiveAgentRecordsCassettes/codex-openai-lent'
+##   make fixtures FIXTURE_CASES='TestLiveAgentRecordsCassettes/codex-login-lent'
 ##
 ## Re-record when a client version moves, when the pinned model moves, or when a
 ## replay starts missing. `scripts/record-fixtures.sh` is the way in: it checks
@@ -601,7 +601,7 @@ FIXTURE_CASES ?= TestLiveAgentRecordsCassettes
 ## The guarantee setup-smoke makes for the replay tier, made here for the
 ## recording one, and for a stronger reason. A replay against a stale image
 ## FAILS, which is a bad afternoon. A recording against one succeeds, writes
-## fourteen cassettes keyed to agents nobody is running any more, and commits
+## cassettes keyed to agents nobody is running any more, and commits
 ## them. This is the path where being wrong is paid for in model turns.
 ##
 ## What stood here was `podman image exists` in scripts/record-fixtures.sh, and

@@ -35,7 +35,7 @@ import (
 // TestAgentReplay replays every cell that has been recorded.
 //
 // The cells run in PARALLEL, bounded by `go test -parallel` (the Makefile picks
-// the bound; the default of GOMAXPROCS would try to boot fourteen sandboxes on
+// the bound; the default of GOMAXPROCS would try to boot every sandbox on
 // a laptop at once). What they share, they share safely: creates serialize
 // themselves on the host-wide create lock for the length of the race-sensitive
 // prefix — SSH-port and VM-IP allocation, the one-per-host fabric — and each
@@ -170,7 +170,7 @@ func assertCassetteRuleset(t *testing.T, c liveCase, store string) {
 }
 
 // TestCIRunsEveryCellAsItsOwnJob keeps the workflow's fan-out in step with the
-// matrix. It boots nothing, contacts nobody, and needs no engine.
+// recorded cells. It boots nothing, contacts nobody, and needs no engine.
 //
 // CI does not run this tier as one job. Each cell is a job of its own, named in
 // .github/workflows/ci.yml, on each of the two engines — which buys a failing
@@ -181,10 +181,16 @@ func assertCassetteRuleset(t *testing.T, c liveCase, store string) {
 // stale the first time a pairing is added. It goes stale SILENTLY, too: the new
 // cell simply has no job, every job that does exist is still green, and the
 // only symptom is a credential path nobody is testing. This is what says so.
+//
+// A cell with no cassette has no job. Its job's first step would fail it, and a
+// pairing nobody can sign in for cannot be recorded, so the list names the
+// cells that have been.
 func TestCIRunsEveryCellAsItsOwnJob(t *testing.T) {
-	want := make([]string, 0, len(liveCases()))
+	var want []string
 	for _, c := range liveCases() {
-		want = append(want, c.name())
+		if hasCassette(t, c) {
+			want = append(want, c.name())
+		}
 	}
 	slices.Sort(want)
 	for _, job := range []string{"agents-podman", "agents-firecracker"} {

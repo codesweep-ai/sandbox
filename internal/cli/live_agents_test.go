@@ -57,7 +57,7 @@ func TestLiveAgentCredentialMatrix(t *testing.T) {
 // It records every cell by default. Narrow it with -run when re-recording one,
 // since each costs a real model turn:
 //
-//	make fixtures FIXTURE_CASES='TestLiveAgentRecordsCassettes/codex-openai-lent'
+//	make fixtures FIXTURE_CASES='TestLiveAgentRecordsCassettes/codex-login-lent'
 func TestLiveAgentRecordsCassettes(t *testing.T) {
 	if os.Getenv("CS_SANDBOX_RECORD") == "" {
 		t.Skip("recording spends tokens and overwrites a committed cassette: set CS_SANDBOX_RECORD=1")

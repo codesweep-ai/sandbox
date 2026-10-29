@@ -720,13 +720,13 @@ jobs:
   # a single log: one wedged agent spent the job's whole budget and took the
   # other thirteen down with it, and the log said only that time ran out. Fanned
   # out, a failing cell is a red line in the job list with its own name on it,
-  # the rest still report, and the wall clock is one cell rather than fourteen.
+  # the rest still report, and the wall clock is one cell rather than all of them.
   #
   # The `case:` list is written by hand and kept honest by a test:
-  # TestCIRunsEveryCellAsItsOwnJob compares it with liveCases() and fails when a
-  # pairing has been added without a job. The workflows job runs it.
+  # TestCIRunsEveryCellAsItsOwnJob compares it with the cells that have a
+  # committed cassette, and fails when one of them has no job. The workflows job runs it.
   #
-  # Podman here and firecracker below, on the same fourteen cassettes. What an
+  # Podman here and firecracker below, on the same cassettes. What an
   # agent sends does not depend on what it is boxed in, so a miss on one engine
   # and not the other is a finding rather than a fixture problem.
   agents-podman:
@@ -736,7 +736,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       # One cell says nothing about the next: a run that stopped at the first
-      # failure would hide the other thirteen answers it had already paid for.
+      # failure would hide the other answers it had already paid for.
       fail-fast: false
       matrix:
         case:
@@ -744,14 +744,6 @@ jobs:
           - claude-login-shared
           - codex-login-lent
           - codex-login-shared
-          - claude-anthropic-lent
-          - claude-anthropic-shared
-          - opencode-anthropic-lent
-          - opencode-anthropic-shared
-          - codex-openai-lent
-          - codex-openai-shared
-          - opencode-openai-lent
-          - opencode-openai-shared
           - opencode-fireworks-lent
           - opencode-fireworks-shared
     env:
@@ -775,7 +767,7 @@ jobs:
           podman image exists "$CS_SANDBOX_IMAGE"
 
       # A cell with no cassette is passed over by the tier, which is right when
-      # fourteen share a job and wrong when each one IS a job: this job would
+      # they all share a job and wrong when each one IS a job: this job would
       # then boot nothing, assert nothing and report green. Asked before the
       # run, so the answer is about the fixture rather than about the minutes.
       - name: a cell with no cassette is not a pass
@@ -785,7 +777,7 @@ jobs:
       # cassette present but missing its index.jsonl, or a cell skipped because
       # its agent version moved, leaves the subtest unregistered -- and the job
       # reports green having replayed nothing at all. The tier is right to skip
-      # those quietly when it covers fourteen cells and says which ran; a job
+      # those quietly when it covers every cell and says which ran; a job
       # named after ONE cell has no such second opinion, so it insists on
       # finding that cell's own PASS line before it agrees it passed.
       - name: replay
@@ -821,7 +813,7 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
-  # The same fourteen cells on the engine a caller actually ships. cs-campaign's
+  # The same cells on the engine a caller actually ships. cs-campaign's
   # members are microVMs, and a microVM is also the only engine that honours the
   # 1 GB budget the matrix creates its cells with — so an agent that only works
   # with the host's whole RAM behind it fails here and nowhere else.
@@ -841,14 +833,6 @@ jobs:
           - claude-login-shared
           - codex-login-lent
           - codex-login-shared
-          - claude-anthropic-lent
-          - claude-anthropic-shared
-          - opencode-anthropic-lent
-          - opencode-anthropic-shared
-          - codex-openai-lent
-          - codex-openai-shared
-          - opencode-openai-lent
-          - opencode-openai-shared
           - opencode-fireworks-lent
           - opencode-fireworks-shared
     env:
@@ -915,7 +899,7 @@ jobs:
       # cassette present but missing its index.jsonl, or a cell skipped because
       # its agent version moved, leaves the subtest unregistered -- and the job
       # reports green having replayed nothing at all. The tier is right to skip
-      # those quietly when it covers fourteen cells and says which ran; a job
+      # those quietly when it covers every cell and says which ran; a job
       # named after ONE cell has no such second opinion, so it insists on
       # finding that cell's own PASS line before it agrees it passed.
       - name: replay
@@ -1341,7 +1325,7 @@ jobs:
           make build-ci-image CI_IMAGE="$CS_SANDBOX_IMAGE"
           podman image inspect --format 'built {{.Architecture}} {{index .RepoTags 0}}' "$CS_SANDBOX_IMAGE"
 
-  # The same fourteen cells on arm64 macOS, one job per cell, on the Mac mini's
+  # The same cells on arm64 macOS, one job per cell, on the Mac mini's
   # pool of self-hosted runners.
   #
   # This is the tier the whole group-isolation work was for. Every cell runs in a
@@ -1374,7 +1358,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       # One cell says nothing about the next: a run that stopped at the first
-      # failure would hide the other thirteen answers it had already paid for.
+      # failure would hide the other answers it had already paid for.
       fail-fast: false
       matrix:
         case:
@@ -1382,14 +1366,6 @@ jobs:
           - claude-login-shared
           - codex-login-lent
           - codex-login-shared
-          - claude-anthropic-lent
-          - claude-anthropic-shared
-          - opencode-anthropic-lent
-          - opencode-anthropic-shared
-          - codex-openai-lent
-          - codex-openai-shared
-          - opencode-openai-lent
-          - opencode-openai-shared
           - opencode-fireworks-lent
           - opencode-fireworks-shared
     env:
@@ -1447,7 +1423,7 @@ jobs:
           podman image inspect --format 'image arch: {{.Architecture}}' "$CS_SANDBOX_IMAGE"
 
       # A cell with no cassette is passed over by the tier, which is right when
-      # fourteen share a job and wrong when each one IS a job: this job would
+      # they all share a job and wrong when each one IS a job: this job would
       # then boot nothing, assert nothing and report green.
       - name: a cell with no cassette is not a pass
         run: test -d "test/cassettes/${{ matrix.case }}"
