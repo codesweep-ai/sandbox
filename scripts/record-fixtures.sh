@@ -2,20 +2,22 @@
 # Re-record every cassette the replay profiles serve, from this machine's own
 # credentials.
 #
-# Fourteen cases: seven agent-and-credential pairings, each recorded twice --
-# once with the credential copied into the sandbox, once with it lent through
-# the lender. Each drives a real agent in a real sandbox and asks a real model
-# for one word. This checks what all of that needs before any of it starts, and
-# `make fixtures-strict` fails on a case it cannot sign in for rather than
-# skipping it. Recording thirteen of fourteen and reporting green is the outcome
-# worth refusing.
+# Up to fourteen cases: seven agent-and-credential pairings, each recorded
+# twice -- once with the credential copied into the sandbox, once with it lent
+# through the lender. Each drives a real agent in a real sandbox and asks a real
+# model for one word. This checks what all of that needs before any of it starts.
+# With every key present it runs `make fixtures-strict`, which fails on a case it
+# cannot sign in for rather than skipping it. An API key .env does not set skips
+# the cases that need it instead, under `make fixtures`, and a cassette one of
+# them is left holding from another version of its agent is dropped afterwards.
+# The logins are still required: each is one command away.
 #
-#   ./scripts/record-fixtures.sh          record all fourteen
+#   ./scripts/record-fixtures.sh          record what this host can sign in for
 #   ./scripts/record-fixtures.sh --check  say what would run, record nothing
 #
 # To re-record one, go straight to make, which clears only that cassette:
 #
-#   make fixtures FIXTURE_CASES='TestLiveAgentRecordsCassettes/codex-openai-lent'
+#   make fixtures FIXTURE_CASES='TestLiveAgentRecordsCassettes/codex-login-lent'
 set -euo pipefail
 
 cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
@@ -38,14 +40,19 @@ check_only=0
 fail() { printf '\n%s\n' "$*" >&2; exit 1; }
 ok()   { printf '  ok    %s\n' "$*"; }
 bad()  { printf '  MISS  %s\n' "$*"; }
+skip() { printf '  SKIP  %s\n' "$*"; }
 
-# The three API keys, from the .env this repository already keeps them in. Read
-# to report on, and read again by the test itself: nothing here exports them.
-[[ -f .env ]] || fail ".env not found in $repo -- it holds the three API keys."
-set -a
-# shellcheck disable=SC1091
-. ./.env
-set +a
+# The API keys, from the .env this repository keeps them in. Read to report on,
+# and read again by the test itself, which takes them from .env and from nowhere
+# else -- so a key the shell happens to export is cleared here too, or this
+# would vouch for a key the run never gets.
+unset ANTHROPIC_API_KEY OPENAI_API_KEY FIREWORKS_API_KEY
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
 
 image=${CS_SANDBOX_IMAGE:-localhost/sandbox-slim:ci}
 
@@ -64,10 +71,13 @@ echo "  cassettes        $repo/test/cassettes"
 echo
 
 missing=0
+skipped=0
 
 echo "API keys (.env):"
 for v in ANTHROPIC_API_KEY OPENAI_API_KEY FIREWORKS_API_KEY; do
-  if [[ -n ${!v:-} ]]; then ok "$v is set"; else bad "$v is not set"; missing=1; fi
+  if [[ -n ${!v:-} ]]; then ok "$v is set"
+  else skip "$v is not set -- the cases that need it are skipped"; skipped=1
+  fi
 done
 
 # The subscription logins. The suite reads each from the profile the wrappers
@@ -116,7 +126,7 @@ if command -v cs-vcr >/dev/null; then ok "cs-vcr"; else bad "cs-vcr is not on PA
 
 # The recorder takes a fixed port, because that port is written into every
 # sandbox's environment and into the lender's upstream. Asking here costs
-# nothing and names it before fourteen sandboxes boot against a dead address.
+# nothing and names it before every sandbox boots against a dead address.
 # bash's own /dev/tcp rather than ss or lsof: this script already needs bash,
 # and neither of those is a prerequisite worth adding for one question.
 if (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null; then
@@ -129,26 +139,56 @@ fi
 
 echo
 if (( missing )); then
-  fail "Something above is missing. fixtures-strict fails on it rather than
-skipping, so fix it before a recording starts."
+  fail "Something above is missing. Fix it before a recording starts: a login,
+the engine or the recorder is not something a case can skip around."
 fi
 
+# Strict when every key is here, so a case that skips for any other reason
+# still fails the run.
+target=fixtures-strict
+(( skipped )) && target=fixtures
+
 if (( check_only )); then
-  echo "--check: everything the fourteen cases need is present. Nothing recorded."
+  echo "--check: this would run \`make $target\`. Nothing recorded."
   exit 0
 fi
 
 cat <<'WARN'
 
-This drives fourteen real agent turns against real providers, and spends real
-money. Re-recording REPLACES each cassette; it does not append.
+This drives one real agent turn for each case it can sign in for, against real
+providers, and spends real money. Re-recording REPLACES each cassette; it does
+not append.
 
 WARN
 read -r -p "Type 'record' to continue: " answer
 [[ $answer == record ]] || fail "Nothing recorded."
 
 echo
-make fixtures-strict
+make "$target"
+
+# A case skipped for want of a key keeps the cassette it had. Once the image
+# carries another version of its agent, that cassette is obsolete: replay skips
+# it locally, and in CI, where each case is a job that insists on its own PASS,
+# it fails. Dropped, the case is one with no cassette, which the replay tier
+# passes over; take it out of the case lists in .github/workflows/ci.yml too.
+# The image is asked the way the replay asks it, so the two cannot disagree.
+versions=$(podman run --rm --pull=never --entrypoint sh "$image" -c \
+  'for a in claude codex opencode; do v=$("$a" --version 2>/dev/null | head -1); printf "%s %s\n" "$a" "$v"; done')
+VERSIONS=$versions python3 - <<'PY'
+import json, os, pathlib, re, shutil
+
+image = {}
+for line in os.environ["VERSIONS"].splitlines():
+    name, _, rest = line.strip().partition(" ")
+    m = re.search(r"[0-9]+\.[0-9]+\.[0-9]+", rest)
+    image[name] = m.group(0) if m else ""
+for claim in sorted(pathlib.Path("test/cassettes").glob("*/recorded.json")):
+    c = json.loads(claim.read_text())
+    if c.get("cli_version") != image.get(c.get("cli"), ""):
+        shutil.rmtree(claim.parent)
+        print(f"dropped {claim.parent.name}: recorded with {c.get('cli')} {c.get('cli_version')}, "
+              f"and the image carries {image.get(c.get('cli')) or 'none'}")
+PY
 
 cat <<'AFTER'
 

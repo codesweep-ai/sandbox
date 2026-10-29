@@ -81,8 +81,11 @@ in. A miss on one engine and not the other is therefore a finding, not a fixture
 each cell in a job of its own.
 
 Re-record with `scripts/record-fixtures.sh`, which checks everything the matrix needs before it
-clears a single cassette. Replay them before you commit. A recording can come out truncated when an
-agent prints its answer and exits mid-response, and the replay is what says whether that mattered.
+clears a single cassette. It skips the cases whose key `.env` does not set, and drops a cassette one
+of them is left holding from another version of its agent. Take that case out of the lists in
+`.github/workflows/ci.yml` as well. Replay them before you commit. A recording can come out
+truncated when an agent prints its answer and exits mid-response, and the replay is what says
+whether that mattered.
 
 A recording writes `recorded.json` beside the cassette, naming the agent CLI and the version that
 made it. The replay members compare that with the image they are about to boot. A cassette whose
