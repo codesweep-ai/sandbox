@@ -85,48 +85,6 @@ return {
       capabilities = require("cmp_nvim_lsp").default_capabilities(),
     })
 
-    vim.lsp.config("svelte", {
-      on_attach = function(client, _)
-        vim.api.nvim_create_autocmd("BufWritePost", {
-          pattern = { "*.js", "*.ts" },
-          callback = function(ctx)
-            -- Here use ctx.match instead of ctx.file
-            client:notify("$/onDidChangeTsOrJsFile", { uri = ctx.match })
-          end,
-        })
-      end,
-    })
-
-    vim.lsp.config("graphql", {
-      filetypes = { "graphql", "gql", "svelte", "typescriptreact", "javascriptreact" },
-    })
-
-    vim.lsp.config("emmet_ls", {
-      filetypes = { "html", "typescriptreact", "javascriptreact", "css", "sass", "scss", "less", "svelte" },
-    })
-
-    vim.lsp.config("lua_ls", {
-      -- LuaLS defaults its log + metadata directories to its own install directory,
-      -- which is the shared read-only Mason root in a sandbox (see mason.lua); left
-      -- alone it exits 1 with "create_directories … Permission denied".
-      cmd = {
-        "lua-language-server",
-        "--logpath=" .. vim.fn.stdpath("state") .. "/lua-language-server/log",
-        "--metapath=" .. vim.fn.stdpath("state") .. "/lua-language-server/meta",
-      },
-      settings = {
-        Lua = {
-          -- make the language server recognize "vim" global
-          diagnostics = {
-            globals = { "vim" },
-          },
-          completion = {
-            callSnippet = "Replace",
-          },
-        },
-      },
-    })
-
     -- Auto-detect and set PYENV_VERSION and the Python path from the Pyenv version
     local function find_pyenv_version_file(start_dir)
       local Path = require("plenary.path")

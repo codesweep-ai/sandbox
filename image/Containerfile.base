@@ -379,7 +379,7 @@ COPY home/.config/nvim /sandbox/home/.config/nvim
 #                  own install is async, so a plain headless call would exit before it finished.
 #   3. LSP servers / formatters -> /opt/nvim/mason, NOT the home. Mason bakes the absolute
 #                  install path into its bin/ wrappers (and into the venvs it builds for
-#                  the Python tools), so ~700 MB of servers pre-installed under /sandbox/home would
+#                  the Python tools), so ~250 MB of servers pre-installed under /sandbox/home would
 #                  still point at /sandbox/home after being copied to a developer's home. They
 #                  go under /opt with the other shared toolchains instead: one root-owned,
 #                  path-stable copy, never duplicated into an instance's home. lua/plugins/
@@ -395,7 +395,7 @@ COPY home/.config/nvim /sandbox/home/.config/nvim
 # leak is invisible (the build still succeeds), so the final `du` check fails the build if
 # the seed grows past ~100 MB. $HOME holds the nvim config and what this step made and
 # nothing else — the rest of the home skeleton is copied in below — so that number is this
-# step's own output: ~80 MB is plugins + treesitter parsers, and anything beyond
+# step's own output: ~70 MB is plugins + treesitter parsers, and anything beyond
 # means a newly added package left a cache that needs adding to the rm list.
 #
 # `step` keeps the console quiet. `podman build -q` (what `cs-sandbox build` uses unless

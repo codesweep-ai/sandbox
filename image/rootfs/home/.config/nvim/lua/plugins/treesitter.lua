@@ -5,24 +5,25 @@
 -- takes `install_dir`, parsers are installed with `install()`, and NONE of the
 -- features are enabled automatically — highlight/indent/folds are turned on per
 -- buffer below. `main` also cannot be lazy-loaded, hence `lazy = false`.
+--
+-- The mainstream languages and the config formats around them. Anything else keeps
+-- Vim's regex highlighting.
 local parsers = {
   "bash",
   "c",
   "cpp",
-  "css",
   "go",
   "gomod",
-  "html",
   "java",
   "javascript",
   "json",
+  -- Neovim's own ftplugin/lua.lua starts treesitter on every Lua buffer and errors when
+  -- no parser loads. Neovim bundles one, but lazy.nvim's runtimepath reset leaves the
+  -- bundled parsers out, so this config has to install its own.
   "lua",
   "markdown",
   "markdown_inline",
-  "nix",
   "python",
-  "rust",
-  "scala",
   "typescript",
   -- the parser Neovim uses for BOTH typescriptreact (.tsx) and javascriptreact (.jsx);
   -- the "typescript" parser above only covers plain .ts

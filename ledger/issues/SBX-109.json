@@ -1,0 +1,22 @@
+{
+  "id": "SBX-109",
+  "title": "`:help` in a sandbox's Neovim fails with an error because the vimdoc parser never loads",
+  "type": "defect",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "session agent, while checking SBX-108's trimmed parser list in the shipped image",
+  "opened": "2026-10-29",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "Running `:help` in a sandbox's Neovim prints `E5113: … Parser could not be created for buffer 2 and language \"vimdoc\"`. A buffer whose filetype is `query` fails the same way. Neovim's own ftplugins for both start treesitter without a guard.\n\nNeovim bundles the vimdoc, vim, query, lua, c and markdown parsers in /usr/local/lib/nvim/parser. At startup lazy.nvim resets the runtimepath and leaves that directory out, so none of the bundled parsers are found. Under `nvim --clean` the same parsers load. The config installs its own lua, c and markdown parsers through nvim-treesitter, which is why only vimdoc and query show the error.\n\nReproduce in ghcr.io/codesweep-ai/sandbox:v0.0.0-20260929195333-38b6867ec3dd with `HOME=/sandbox/home nvim --headless +help +qa!`.\n\nA fix puts /usr/local/lib/nvim back on the runtimepath through lazy.nvim's `performance.rtp.paths`, or installs vimdoc and query alongside the other parsers. The first also lets SBX-108's list drop its own lua parser.",
+  "notes": [],
+  "links": [
+    "SBX-108"
+  ]
+}

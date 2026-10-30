@@ -1,0 +1,27 @@
+{
+  "id": "SBX-108",
+  "title": "The Neovim pre-build ships language servers for languages outside the mainstream set",
+  "type": "improvement",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "repository owner: \"807Mb for an editor is a lot, can we remove some of the LSPs and neovim support for some languages that aren't mainstream, basically outside of Python, Java, Javascript/Typescript, Bash/sh, Go, C/C++?\"",
+  "opened": "2026-10-29",
+  "resolved": null,
+  "stint": "2026-10-29 image size session",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "Neovim costs about 807 MB of the shipped image, and the Mason root under /opt/nvim/mason is 697 MB of it. Most of that root serves languages outside Python, Java, JavaScript, TypeScript, Bash, Go and C/C++. The largest are GraphQL at 128 MB, HTML and CSS at 94 MB, Emmet at 69 MB and Svelte at 65 MB. Prisma takes 47 MB, Lua and its formatter 32 MB, and Tailwind 10 MB. The treesitter list also builds parsers for Nix, Rust, Scala, Lua, HTML and CSS.\n\nThe sizes come from `du -sm /opt/nvim/mason/packages/*` in ghcr.io/codesweep-ai/sandbox:v0.0.0-20260929195333-38b6867ec3dd.\n\nWanted: the config in image/rootfs/home/.config/nvim installs servers, tools and parsers for the mainstream languages only. A user who needs another server can still install it into a private `$MASON_ROOT`.",
+  "notes": [
+    {
+      "date": "2026-10-29",
+      "text": "The trimmed config ran the base image's pre-build step from Containerfile.base in a container from the 2026-09-29 image. `:MasonInstallSync!` and `:TSInstallSync!` both returned 0. The Mason root went from 697 MB to 257 MB. The pre-build output went from 725 MB to 307 MB on disk, and from 208 MB to 135 MB gzipped. Python, Go, TypeScript, JavaScript and Java buffers attached their servers as an ordinary user. Bash, C, C++ and Lua buffers got treesitter highlighting, and nothing wrote to stderr. The Lua parser stays in the list, because without it every Lua buffer fails to open with an error. SBX-109 has the cause."
+    }
+  ],
+  "links": [
+    "SBX-109"
+  ]
+}

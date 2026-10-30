@@ -14,7 +14,6 @@ return {
     },
     "saadparwaiz1/cmp_luasnip", -- for autocompletion
     "onsails/lspkind.nvim", -- vs-code like pictograms
-    "folke/lazydev.nvim", -- completion source for the Neovim lua API
   },
   config = function()
     local cmp = require("cmp")
@@ -47,9 +46,6 @@ return {
       }),
       -- sources for autocompletion
       sources = cmp.config.sources({
-        -- group_index 0: answer `require("…")` / `---@module` from lazydev instead of
-        -- asking LuaLS to load every module in the workspace
-        { name = "lazydev", group_index = 0 },
         { name = "nvim_lsp" },
         { name = "luasnip" }, -- snippets
         { name = "buffer" }, -- text within current buffer
