@@ -89,20 +89,23 @@ RUN case "$(uname -m)" in x86_64|amd64) tgt=x86_64-unknown-linux-musl ;; arm64|a
   && chmod -R a+rX /opt/codex \
   && /opt/codex/bin/codex --version
 
-# OpenCode (anomalyco/opencode) — OpenCode 2's single bun-compiled binary, installed into read-only
-# /opt on the same pinned model as Claude Code and Codex above, and verified the way Codex is: from
-# OpenCode 2 on, each release publishes a SHA256SUMS covering the CLI tarballs. OpenCode 1 releases
-# carry none, so a version below 2 fails the check rather than installing unverified. Its one
-# external runtime dependency (ripgrep) is already installed from Fedora above.
-ARG OPENCODE_VERSION=2.2.2
-RUN case "$(uname -m)" in x86_64|amd64) arch=x64 ;; arm64|aarch64) arch=arm64 ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
-  && base="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}" \
+# OpenCode (anomalyco/opencode) — a single bun-compiled binary, installed into read-only /opt on
+# the same pinned model as Claude Code and Codex above. Upstream publishes NO SHA256SUMS for the
+# CLI tarballs (its minisign signatures cover only the desktop-app assets), so the digests below
+# were recorded from the release assets themselves; bumping OPENCODE_VERSION means re-recording
+# both. Its one external runtime dependency (ripgrep) is already installed from Fedora above.
+ARG OPENCODE_VERSION=1.19.5
+ARG OPENCODE_SHA256_X64=588310a336fa3b9df36b3f0225b26f679d453efaad0cf3d66c3651ef3ec1647a
+ARG OPENCODE_SHA256_ARM64=fae5be262d693b7c5e562856cc473e59e741772936db0c0600ac0d5ed5bd088b
+RUN case "$(uname -m)" in \
+       x86_64|amd64)  arch=x64;   want=$OPENCODE_SHA256_X64 ;; \
+       arm64|aarch64) arch=arm64; want=$OPENCODE_SHA256_ARM64 ;; \
+       *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac \
   && asset="opencode-linux-${arch}.tar.gz" \
   && mkdir -p /opt/opencode/bin /tmp/opencode-dl \
-  && curl -fsSL -o "/tmp/opencode-dl/$asset" "$base/$asset" \
-  && want=$(curl -fsSL "$base/SHA256SUMS" | awk -v a="$asset" '$2 == a { print $1 }') \
+  && curl -fsSL -o "/tmp/opencode-dl/$asset" "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/$asset" \
   && got=$(sha256sum "/tmp/opencode-dl/$asset" | cut -d' ' -f1) \
-  && { [ -n "$want" ] && [ "$want" = "$got" ] || { echo "opencode checksum mismatch: want=$want got=$got" >&2; exit 1; }; } \
+  && { [ "$want" = "$got" ] || { echo "opencode checksum mismatch: want=$want got=$got" >&2; exit 1; }; } \
   && tar -xzf "/tmp/opencode-dl/$asset" -C /opt/opencode/bin --no-same-owner \
   && chmod 0755 /opt/opencode/bin/opencode \
   && rm -rf /tmp/opencode-dl \
