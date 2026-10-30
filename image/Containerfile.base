@@ -53,6 +53,12 @@ RUN printf '%s\n' \
     >> /etc/dnf/dnf.conf
 
 # Install Fedora packages
+#
+# All of them, in this one transaction: every dnf step writes its own copy of the ~35 MB rpm
+# database into its layer. That includes tree-sitter-cli, which only the Neovim config needs:
+# nvim-treesitter's `main` branch builds parsers with it (`:TSInstall`, `:TSUpdate`, and the
+# parser pre-build below). Its Recommends name a second Node, which install_weak_deps=False
+# above keeps out.
 RUN dnf update -y && dnf install -y \
   vim findutils fd procps-ng tar zip unzip patch jq yq which lsof \
   iputils dnsutils iproute tcpdump wireshark-cli hostname netstat socat \
@@ -70,7 +76,7 @@ RUN dnf update -y && dnf install -y \
   dnf-utils rclone bash-completion \
   ripgrep fzf bat git-delta tree htop less wget nmap-ncat gh uv \
   ninja-build gettext glibc-gconv-extra \
-  pandoc && \
+  pandoc tree-sitter-cli && \
   dnf clean all
 
 # Install Chromium
@@ -172,14 +178,6 @@ RUN case "$(uname -m)" in \
   && tar -xzf /tmp/nvim.tar.gz -C /usr/local --strip-components=1 --no-same-owner \
   && rm -f /tmp/nvim.tar.gz \
   && nvim --version | head -2
-
-# tree-sitter CLI: a hard requirement of nvim-treesitter's `main` branch, which uses it to
-# install/update parsers (`:TSInstall`, `:TSUpdate`, and the parser pre-build below).
-# Its Recommends pull in a second, unwanted Node (gcc is already installed, and the shared
-# /opt/nvm Node is on PATH for `tree-sitter generate`) — now covered by the global
-# install_weak_deps=False in dnf.conf, which this stanza used to set on its own.
-RUN dnf install -y tree-sitter-cli && dnf clean all \
-  && tree-sitter --version
 
 # --- Toolchains under /opt (shared, root-owned, path-independent) ---------------
 # No developer user is created at build time (the entrypoint does that on first boot),

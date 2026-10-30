@@ -105,7 +105,6 @@ BEGIN {
   if (tier == "base") {
     DROP["chromium"]                        # browser + its X/mesa font stack
     DROP["neovim/releases/download"]        # editor tarball
-    DROP["tree-sitter-cli"]                 # required by the nvim config only
     DROP["pyenv.run"]                       # compiles CPython from source
     DROP["nvm-sh/nvm"]                      # node
     DROP["temurin25-binaries"]              # jdk
@@ -117,7 +116,7 @@ BEGIN {
     DROP["+Lazy! install"]                  # the nvim plugin/LSP pre-build
     DROP["COPY home/.config/nvim"]          # the config that pre-build reads
     DROP["/opt/nvim/.config-hash"]          # the guard over a pre-build that is gone
-    want_dropped = 14
+    want_dropped = 13
     want_replaced = 1                       # the base package install
     want_path = 1                           # the toolchain PATH
   } else if (tier == "leaf") {

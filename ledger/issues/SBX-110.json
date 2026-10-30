@@ -1,0 +1,20 @@
+{
+  "id": "SBX-110",
+  "title": "The tree-sitter CLI's own dnf step adds a second copy of the rpm database to the base image",
+  "type": "improvement",
+  "severity": "low",
+  "status": "in-progress",
+  "foundBy": "session agent, while measuring the Neovim layers for SBX-108",
+  "opened": "2026-10-29",
+  "resolved": null,
+  "stint": "2026-10-29 image size session",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "Containerfile.base installs tree-sitter-cli in a dnf transaction of its own, after the main package install. Every dnf transaction writes a fresh copy of the rpm database into its layer, and that database is 35 MB in the shipped image. The package is 7.1 MB, but its layer is 45 MB in ghcr.io/codesweep-ai/sandbox:v0.0.0-20260929195333-38b6867ec3dd.\n\nWanted: tree-sitter-cli installs in the main package transaction, so the image carries one copy of the database. The step stood alone to keep its Recommends from pulling in a second Node, and the global `install_weak_deps=False` in dnf.conf does that now.",
+  "notes": [],
+  "links": ["SBX-108"]
+}
