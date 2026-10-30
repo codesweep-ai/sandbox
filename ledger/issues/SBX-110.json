@@ -3,18 +3,22 @@
   "title": "The tree-sitter CLI's own dnf step adds a second copy of the rpm database to the base image",
   "type": "improvement",
   "severity": "low",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, while measuring the Neovim layers for SBX-108",
   "opened": "2026-10-29",
-  "resolved": null,
+  "resolved": "2026-10-29",
   "stint": "2026-10-29 image size session",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "4178421"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "I built the base tier at 04cd4e2 with `podman build -f image/Containerfile.base image/rootfs`, and the build passed. Read from podman's layer store, the new base carries the rpm database in three layers: the Fedora base, the main install and Chromium. The 2026-09-29 image carries a fourth copy, 34 MB of its 42 MB tree-sitter layer. In the new base `tree-sitter --version` printed 0.26.11, `rpm -qa 'nodejs*'` listed nothing, and the Neovim pre-build passed. The build used this host's cached fedora:44, so the main layer's size does not compare with a published one."
   },
-  "resolution": null,
+  "resolution": "The main package transaction now installs tree-sitter-cli, so the base image carries one fewer copy of the 35 MB rpm database.",
   "details": "Containerfile.base installs tree-sitter-cli in a dnf transaction of its own, after the main package install. Every dnf transaction writes a fresh copy of the rpm database into its layer, and that database is 35 MB in the shipped image. The package is 7.1 MB, but its layer is 45 MB in ghcr.io/codesweep-ai/sandbox:v0.0.0-20260929195333-38b6867ec3dd.\n\nWanted: tree-sitter-cli installs in the main package transaction, so the image carries one copy of the database. The step stood alone to keep its Recommends from pulling in a second Node, and the global `install_weak_deps=False` in dnf.conf does that now.",
   "notes": [],
-  "links": ["SBX-108"]
+  "links": [
+    "SBX-108"
+  ]
 }
