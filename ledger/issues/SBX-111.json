@@ -3,17 +3,19 @@
   "title": "Sandboxes that run syslang install Lean and cvc5 themselves, because the image carries neither",
   "type": "improvement",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "repository owner, through the brief tasks/lean-in-the-sandbox-image.md that the syslang-playbooks session wrote: \"The user has decided to put Lean and cvc5 in the image\"",
   "opened": "2026-10-29",
-  "resolved": null,
+  "resolved": "2026-10-29",
   "stint": "2026-10-29 Lean in the image",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "da19ffc"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "I built all three tiers locally from the tree that became da19ffc, with `cs-sandbox build --rebuild-base`. The Lean layer measured 2837 MiB on disk and 769 MiB gzipped, and the cvc5 layer 30 MiB and 11 MiB. In a Podman sandbox and a Firecracker one, `lean` and `lake` printed 4.34.1 and `cvc5 --version` printed 1.4.2. `lean --run` ran a one-line program, and `lake env true` exited 0 with the network cut. The arm64 build has not run yet; its digests match GitHub's. `make check` passed."
   },
-  "resolution": null,
+  "resolution": "The base tier installs elan, the Lean toolchain syslang pins and cvc5, each checked against a pinned digest. Each user's ~/.elan links the shared toolchain, so another Lean version installs there without sudo.",
   "details": "Every sandbox that runs syslang needs Lean, because `cs-syslang validate` and every command that proves, simulates or mutates runs it through `lake`. The image has no Lean, so each campaign member installs elan and the toolchain itself. That costs a 0.6 GB download and 3 GB written to the sandbox's own disk, twice per campaign. The prover in syslang and `cs-syslang analyze` also ask the cvc5 SMT solver. Without it, more claims stay unproved.\n\nWanted: the base tier installs elan 4.2.4, the Lean toolchain syslang pins (leanprover/lean4:v4.34.1) and cvc5 1.4.2 on both architectures. Each download is checked against a pinned digest. The slim CI image drops all three.\n\nA project that pins another Lean version gets it the way a Go project gets another Go. A per-user `~/.elan` links the image's toolchain, and elan downloads any other one there without `sudo`.",
   "notes": [
     {
