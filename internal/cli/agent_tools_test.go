@@ -778,8 +778,9 @@ func TestRemoteKillStopsTheRunner(t *testing.T) {
 			if out, exit := runScript(t, home, bin, "cs-"+fam.agent+"-remote", "--kill", name); exit != 0 {
 				t.Fatalf("--kill exit %d: %s", exit, out)
 			}
-			done := make(chan error, 1)
-			go func() { done <- runner.Wait() }()
+			// Wait's error is the kill's doing; only that the runner exited counts.
+			done := make(chan struct{})
+			go func() { _ = runner.Wait(); close(done) }()
 			select {
 			case <-done:
 			case <-time.After(3 * time.Second):

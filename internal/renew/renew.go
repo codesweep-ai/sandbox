@@ -686,11 +686,11 @@ func procStarted(pid int) (string, bool) {
 		return "", false
 	}
 	line := string(b)
-	close := strings.LastIndex(line, ")")
-	if close < 0 {
+	_, rest, found := strings.CutLast(line, ")")
+	if !found {
 		return "", false
 	}
-	fields := strings.Fields(line[close+1:])
+	fields := strings.Fields(rest)
 	// After the comm field, stat continues at field 3 (state), so field 22 is
 	// index 19 here.
 	if len(fields) < 20 {

@@ -141,11 +141,11 @@ type stat struct {
 // /proc/<pid>/stat line. The comm field can hold spaces and parentheses, so
 // the fields are counted from the last ')'.
 func parseStat(line string) (stat, bool) {
-	i := strings.LastIndexByte(line, ')')
-	if i < 0 {
+	_, rest, found := strings.CutLast(line, ")")
+	if !found {
 		return stat{}, false
 	}
-	f := strings.Fields(line[i+1:])
+	f := strings.Fields(rest)
 	// f[0] is field 3, so field 22 is f[19].
 	if len(f) < 20 || len(f[0]) != 1 {
 		return stat{}, false

@@ -197,10 +197,9 @@ func cleanManifestField(value string) string {
 // splitName applies the PATH:NAME grammar (NAME must contain no slash and be
 // non-empty), returning (path, name).
 func splitName(s string) (path, name string) {
-	if i := strings.LastIndexByte(s, ':'); i >= 0 {
-		tail := s[i+1:]
+	if head, tail, found := strings.CutLast(s, ":"); found {
 		if tail != "" && !strings.Contains(tail, "/") {
-			return s[:i], tail
+			return head, tail
 		}
 	}
 	return s, ""

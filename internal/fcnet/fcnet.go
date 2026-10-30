@@ -657,8 +657,8 @@ func (f Fabric) FwdDown(idir string) {
 // --- helpers ---
 
 func lastOctet(ip string) string {
-	if i := strings.LastIndexByte(ip, '.'); i >= 0 {
-		return ip[i+1:]
+	if _, octet, found := strings.CutLast(ip, "."); found {
+		return octet
 	}
 	return ip
 }
