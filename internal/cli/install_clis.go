@@ -39,9 +39,10 @@ type agentCLI struct {
 	name string // the command, as it appears on PATH
 	pin  string // the Containerfile.agents ARG holding its version
 	// install fetches the build for goos/goarch, checks it against the
-	// checksum its vendor publishes, and puts it at dir/name. Nothing at
-	// dir/name changes unless the download verified.
-	install func(ctx context.Context, c *http.Client, dir, version, goos, goarch string) error
+	// checksum its vendor publishes, or the digest pins records where the
+	// vendor publishes none, and puts it at dir/name. Nothing at dir/name
+	// changes unless the download verified.
+	install func(ctx context.Context, c *http.Client, dir, version string, pins map[string]string, goos, goarch string) error
 }
 
 var agentCLIs = []agentCLI{
@@ -61,8 +62,9 @@ func newInstallAgentCLIsCmd(app *App) *cobra.Command {
 		Use:   "install-agent-clis [dir]",
 		Short: "Install the agent CLIs (claude, codex, opencode) at the versions the image pins (default: ~/.local/bin)",
 		Long: "Install claude, codex and opencode on this host at the versions image/Containerfile.agents\n" +
-			"pins, so the host runs the same builds as its sandboxes. Each download is checked against the\n" +
-			"checksum its vendor publishes before it replaces anything. A CLI already at its pin is left as it is.",
+			"pins, so the host runs the same builds as its sandboxes. Each download is checked before it\n" +
+			"replaces anything: against the checksum its vendor publishes, or the digest the image records\n" +
+			"where the vendor publishes none. A CLI already at its pin is left as it is.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dest := filepath.Join(app.Host.Home, ".local", "bin")
@@ -88,7 +90,7 @@ func newInstallAgentCLIsCmd(app *App) *cobra.Command {
 				if cliVersion(target) == want {
 					fmt.Fprintf(out, "%s %s is already in %s\n", a.name, want, dest)
 				} else {
-					if err := a.install(cmd.Context(), client, dest, want, runtime.GOOS, runtime.GOARCH); err != nil {
+					if err := a.install(cmd.Context(), client, dest, want, pins, runtime.GOOS, runtime.GOARCH); err != nil {
 						return fmt.Errorf("install %s %s: %w", a.name, want, err)
 					}
 					if got := cliVersion(target); got != want {
@@ -113,7 +115,7 @@ func newInstallAgentCLIsCmd(app *App) *cobra.Command {
 
 // installClaude installs Claude Code's native binary, checked against the
 // release manifest, as the agents tier does.
-func installClaude(ctx context.Context, c *http.Client, dir, version, goos, goarch string) error {
+func installClaude(ctx context.Context, c *http.Client, dir, version string, _ map[string]string, goos, goarch string) error {
 	arch, ok := map[string]string{"amd64": "x64", "arm64": "arm64"}[goarch]
 	if !ok || (goos != "linux" && goos != "darwin") {
 		return fmt.Errorf("no Claude Code build for %s/%s", goos, goarch)
@@ -141,7 +143,7 @@ func installClaude(ctx context.Context, c *http.Client, dir, version, goos, goar
 
 // installCodex installs Codex's release package: the CLI with the helpers it
 // ships, kept together under dir/.agent-clis, and dir/codex linked into it.
-func installCodex(ctx context.Context, c *http.Client, dir, version, goos, goarch string) error {
+func installCodex(ctx context.Context, c *http.Client, dir, version string, _ map[string]string, goos, goarch string) error {
 	arch, ok := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[goarch]
 	target := map[string]string{"linux": "-unknown-linux-musl", "darwin": "-apple-darwin"}[goos]
 	if !ok || target == "" {
@@ -195,21 +197,26 @@ func installCodex(ctx context.Context, c *http.Client, dir, version, goos, goarc
 	return nil
 }
 
-// installOpencode installs OpenCode's single binary from its release archive,
-// checked against the release's SHA256SUMS.
-func installOpencode(ctx context.Context, c *http.Client, dir, version, goos, goarch string) error {
+// installOpencode installs OpenCode's single binary from its release archive.
+// OpenCode publishes no checksums for its CLI builds, so the archive is checked
+// against the digest Containerfile.agents records for this platform, the one
+// the agents tier checks its own download against.
+func installOpencode(ctx context.Context, c *http.Client, dir, version string, pins map[string]string, goos, goarch string) error {
 	arch, ok := map[string]string{"amd64": "x64", "arm64": "arm64"}[goarch]
 	ext := map[string]string{"linux": ".tar.gz", "darwin": ".zip"}[goos]
 	if !ok || ext == "" {
 		return fmt.Errorf("no OpenCode build for %s/%s", goos, goarch)
 	}
 	asset := "opencode-" + goos + "-" + arch + ext
-	base := opencodeReleases + "/v" + version
-	want, err := publishedSum(ctx, c, base+"/SHA256SUMS", asset)
-	if err != nil {
-		return err
+	key := "OPENCODE_SHA256_" + strings.ToUpper(arch)
+	if goos == "darwin" {
+		key = "OPENCODE_SHA256_DARWIN_" + strings.ToUpper(arch)
 	}
-	tmp, err := fetchVerified(ctx, c, base+"/"+asset, dir, want)
+	want := pins[key]
+	if want == "" {
+		return fmt.Errorf("image/Containerfile.agents records no %s to check %s against", key, asset)
+	}
+	tmp, err := fetchVerified(ctx, c, opencodeReleases+"/v"+version+"/"+asset, dir, want)
 	if err != nil {
 		return err
 	}

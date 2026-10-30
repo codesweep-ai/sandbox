@@ -93,10 +93,14 @@ RUN case "$(uname -m)" in x86_64|amd64) tgt=x86_64-unknown-linux-musl ;; arm64|a
 # the same pinned model as Claude Code and Codex above. Upstream publishes NO SHA256SUMS for the
 # CLI tarballs (its minisign signatures cover only the desktop-app assets), so the digests below
 # were recorded from the release assets themselves; bumping OPENCODE_VERSION means re-recording
-# both. Its one external runtime dependency (ripgrep) is already installed from Fedora above.
+# all four. Its one external runtime dependency (ripgrep) is already installed from Fedora above.
+# The image installs the Linux builds. The macOS digests are recorded for `cs-sandbox
+# install-agent-clis`, which reads its pins from this file and checks a Mac host's download too.
 ARG OPENCODE_VERSION=1.19.5
 ARG OPENCODE_SHA256_X64=588310a336fa3b9df36b3f0225b26f679d453efaad0cf3d66c3651ef3ec1647a
 ARG OPENCODE_SHA256_ARM64=fae5be262d693b7c5e562856cc473e59e741772936db0c0600ac0d5ed5bd088b
+ARG OPENCODE_SHA256_DARWIN_X64=b0212efa6db347187225a17fa3a31c6b261bf4c9f1589a290b0ca902d720d250
+ARG OPENCODE_SHA256_DARWIN_ARM64=c1c9e62521192192ef4c3ed1355ada2144055bddb61682217e997b03c55203c1
 RUN case "$(uname -m)" in \
        x86_64|amd64)  arch=x64;   want=$OPENCODE_SHA256_X64 ;; \
        arm64|aarch64) arch=arm64; want=$OPENCODE_SHA256_ARM64 ;; \

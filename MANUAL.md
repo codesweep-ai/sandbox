@@ -424,8 +424,9 @@ with itself. `--json` emits the build version alongside the table, for a caller 
 sandbox's tools from outside it.
 
 `install-agent-clis` installs `claude`, `codex` and `opencode` on the host at the versions the
-agents tier pins, into `~/.local/bin` unless you name a directory. Each download is checked against
-the checksum its vendor publishes before it replaces anything, and a CLI already at its pin is left
+agents tier pins, into `~/.local/bin` unless you name a directory. Each download is checked before
+it replaces anything. The check is against the checksum its vendor publishes, or against the digest
+the image records when the vendor publishes none, as OpenCode does. A CLI already at its pin is left
 alone. It says when another copy of a CLI comes first on your `PATH`, because that copy is the one
 you run.
 

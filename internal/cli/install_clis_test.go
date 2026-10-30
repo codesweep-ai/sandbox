@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -85,6 +86,9 @@ type releases struct {
 	files   map[string][]byte
 	builds  int
 	tampers map[string]bool
+	// digests are the OpenCode digests a Containerfile.agents records for
+	// these builds, as ARG name -> sha256: OpenCode publishes none.
+	digests map[string]string
 }
 
 func (r *releases) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -107,7 +111,7 @@ func (r *releases) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 func serveReleases(t *testing.T) *releases {
 	t.Helper()
 	goos, goarch := runtime.GOOS, runtime.GOARCH
-	r := &releases{files: map[string][]byte{}, tampers: map[string]bool{}}
+	r := &releases{files: map[string][]byte{}, tampers: map[string]bool{}, digests: map[string]string{}}
 
 	plat := goos + "-" + map[string]string{"amd64": "x64", "arm64": "arm64"}[goarch]
 	claude := fakeCLI(fakeClaude + " (Claude Code)")
@@ -131,9 +135,8 @@ func serveReleases(t *testing.T) *releases {
 	ocZip := zipOf(t, "opencode", oc)
 	r.files["/opencode/v"+fakeOpencode+"/opencode-linux-"+ocArch+".tar.gz"] = ocTar
 	r.files["/opencode/v"+fakeOpencode+"/opencode-darwin-"+ocArch+".zip"] = ocZip
-	r.files["/opencode/v"+fakeOpencode+"/SHA256SUMS"] = []byte(
-		sum(ocTar) + "  opencode-linux-" + ocArch + ".tar.gz\n" +
-			sum(ocZip) + "  opencode-darwin-" + ocArch + ".zip\n")
+	r.digests["OPENCODE_SHA256_"+strings.ToUpper(ocArch)] = sum(ocTar)
+	r.digests["OPENCODE_SHA256_DARWIN_"+strings.ToUpper(ocArch)] = sum(ocZip)
 
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
@@ -144,18 +147,22 @@ func serveReleases(t *testing.T) *releases {
 }
 
 // pinnedCheckout is an asset dir whose Containerfile.agents pins the fake
-// versions. The root command takes its asset dir from CS_SANDBOX_ASSETS_DIR, so
-// this sets that too.
-func pinnedCheckout(t *testing.T) string {
+// versions and records r's OpenCode digests. The root command takes its asset
+// dir from CS_SANDBOX_ASSETS_DIR, so this sets that too.
+func pinnedCheckout(t *testing.T, r *releases) string {
 	t.Helper()
 	dir := t.TempDir()
 	img := filepath.Join(dir, "image")
 	if err := os.MkdirAll(img, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	agents := fmt.Sprintf("ARG CLAUDE_CODE_VERSION=%s\nARG CODEX_VERSION=%s\nARG OPENCODE_VERSION=%s\n",
+	var agents strings.Builder
+	fmt.Fprintf(&agents, "ARG CLAUDE_CODE_VERSION=%s\nARG CODEX_VERSION=%s\nARG OPENCODE_VERSION=%s\n",
 		fakeClaude, fakeCodex, fakeOpencode)
-	for name, body := range map[string]string{"Containerfile": "FROM scratch\n", "Containerfile.agents": agents} {
+	for k, v := range r.digests {
+		fmt.Fprintf(&agents, "ARG %s=%s\n", k, v)
+	}
+	for name, body := range map[string]string{"Containerfile": "FROM scratch\n", "Containerfile.agents": agents.String()} {
 		if err := os.WriteFile(filepath.Join(img, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -164,9 +171,9 @@ func pinnedCheckout(t *testing.T) string {
 	return dir
 }
 
-func pinnedApp(t *testing.T) *App {
+func pinnedApp(t *testing.T, r *releases) *App {
 	t.Helper()
-	pinnedCheckout(t)
+	pinnedCheckout(t, r)
 	return &App{}
 }
 
@@ -182,9 +189,9 @@ func skipUnlessUnixHost(t *testing.T) {
 // package rather than standing alone.
 func TestInstallAgentCLIsInstallsThePins(t *testing.T) {
 	skipUnlessUnixHost(t)
-	serveReleases(t)
+	r := serveReleases(t)
 	dest := t.TempDir()
-	if _, err := runRoot(t, pinnedApp(t), "install-agent-clis", dest); err != nil {
+	if _, err := runRoot(t, pinnedApp(t, r), "install-agent-clis", dest); err != nil {
 		t.Fatalf("install-agent-clis: %v", err)
 	}
 	for name, want := range map[string]string{"claude": fakeClaude, "codex": fakeCodex, "opencode": fakeOpencode} {
@@ -214,7 +221,7 @@ func TestInstallAgentCLIsRefusesABadChecksum(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dest, "opencode"), before, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, err := runRoot(t, pinnedApp(t), "install-agent-clis", dest)
+	_, err := runRoot(t, pinnedApp(t, r), "install-agent-clis", dest)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("a tampered download installed: %v", err)
 	}
@@ -231,7 +238,7 @@ func TestInstallAgentCLIsSkipsWhatIsAlreadyPinned(t *testing.T) {
 	skipUnlessUnixHost(t)
 	r := serveReleases(t)
 	dest := t.TempDir()
-	if _, err := runRoot(t, pinnedApp(t), "install-agent-clis", dest); err != nil {
+	if _, err := runRoot(t, pinnedApp(t, r), "install-agent-clis", dest); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	first := r.builds
@@ -247,10 +254,10 @@ func TestInstallAgentCLIsSkipsWhatIsAlreadyPinned(t *testing.T) {
 // taken out of either.
 func TestOpencodeOnMacOSComesAsAZip(t *testing.T) {
 	skipUnlessUnixHost(t)
-	serveReleases(t)
+	r := serveReleases(t)
 	dest := t.TempDir()
 	arch := runtime.GOARCH
-	if err := installOpencode(context.Background(), http.DefaultClient, dest, fakeOpencode, "darwin", arch); err != nil {
+	if err := installOpencode(context.Background(), http.DefaultClient, dest, fakeOpencode, r.digests, "darwin", arch); err != nil {
 		t.Fatalf("installOpencode for darwin: %v", err)
 	}
 	if got := cliVersion(filepath.Join(dest, "opencode")); got != fakeOpencode {
@@ -258,8 +265,26 @@ func TestOpencodeOnMacOSComesAsAZip(t *testing.T) {
 	}
 }
 
+// R90b: OpenCode publishes no checksums, so a platform the agents tier
+// records no digest for gets nothing installed, rather than an unchecked build.
+func TestOpencodeWithNoRecordedDigestInstallsNothing(t *testing.T) {
+	skipUnlessUnixHost(t)
+	r := serveReleases(t)
+	dest := t.TempDir()
+	err := installOpencode(context.Background(), http.DefaultClient, dest, fakeOpencode, map[string]string{}, runtime.GOOS, runtime.GOARCH)
+	if err == nil || !strings.Contains(err.Error(), "records no OPENCODE_SHA256_") {
+		t.Fatalf("an OpenCode build with no recorded digest installed: %v", err)
+	}
+	if r.builds != 0 {
+		t.Errorf("downloaded %d build(s) with nothing to check them against", r.builds)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "opencode")); !os.IsNotExist(err) {
+		t.Errorf("opencode was installed: %v", err)
+	}
+}
+
 // The pins come from the agents tier's own Containerfile, so the embedded copy
-// has to carry all three.
+// has to carry all three, and a digest for each OpenCode build a host can take.
 func TestAgentPinsReadsTheAgentsTier(t *testing.T) {
 	pins, err := assets.AgentPins("")
 	if err != nil {
@@ -268,6 +293,12 @@ func TestAgentPinsReadsTheAgentsTier(t *testing.T) {
 	for _, a := range agentCLIs {
 		if !semverOf.MatchString(pins[a.pin]) {
 			t.Errorf("Containerfile.agents pins %s = %q, want a version", a.pin, pins[a.pin])
+		}
+	}
+	sha := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	for _, k := range []string{"OPENCODE_SHA256_X64", "OPENCODE_SHA256_ARM64", "OPENCODE_SHA256_DARWIN_X64", "OPENCODE_SHA256_DARWIN_ARM64"} {
+		if !sha.MatchString(pins[k]) {
+			t.Errorf("Containerfile.agents records %s = %q, want a sha256", k, pins[k])
 		}
 	}
 }

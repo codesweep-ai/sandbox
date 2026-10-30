@@ -749,8 +749,9 @@ others.
 caller passes their own.
 
 **R90b.** `install-agent-clis` **MUST** install on the host the agent CLI versions the agents tier pins.
-It **MUST** check each download against the checksum its vendor publishes, and **MUST** leave the
-CLI already installed in place when a download does not match.
+It **MUST** check each download against the checksum its vendor publishes. Where the vendor
+publishes none, it **MUST** check the download against the digest the agents tier records instead.
+It **MUST** leave the CLI already installed in place when a download does not match.
 
 The sandbox is the isolation boundary, which is what makes R89 safe: the thing an approval prompt
 protects is a host, and there is no host here to protect. The same reasoning is why R89 reaches past
