@@ -113,10 +113,12 @@ BEGIN {
     DROP["golangci-lint/releases/download"] # the dev toolchain for this repo
     DROP["cmd/deadcode@"]                   # deadcode, the one built from source
     DROP["python3 -m venv /opt/py-tools"]   # python CLI tools venv
+    DROP["leanprover/lean4/releases/download"] # lean, through elan
+    DROP["cvc5/cvc5/releases/download"]     # the cvc5 solver
     DROP["+Lazy! install"]                  # the nvim plugin/LSP pre-build
     DROP["COPY home/.config/nvim"]          # the config that pre-build reads
     DROP["/opt/nvim/.config-hash"]          # the guard over a pre-build that is gone
-    want_dropped = 13
+    want_dropped = 15
     want_replaced = 1                       # the base package install
     want_path = 1                           # the toolchain PATH
   } else if (tier == "leaf") {

@@ -75,7 +75,7 @@ RUN dnf update -y && dnf install -y \
   fuse-overlayfs crun slirp4netns passt containers-common \
   dnf-utils rclone bash-completion \
   ripgrep fzf bat git-delta tree htop less wget nmap-ncat gh uv \
-  ninja-build gettext glibc-gconv-extra \
+  ninja-build gettext glibc-gconv-extra zstd \
   pandoc tree-sitter-cli && \
   dnf clean all
 
@@ -343,6 +343,82 @@ RUN python3 -m venv /opt/py-tools \
   && /opt/py-tools/bin/pip install --no-cache-dir --disable-pip-version-check claude-code-transcripts \
   && chmod -R a+rX /opt/py-tools
 
+# Lean 4 through elan (/opt/elan), at the toolchain syslang pins in its lean/lean-toolchain, so
+# `lake` in a sandbox needs no 0.6 GB download and no 3 GB of the sandbox's own disk. Both
+# downloads are checked against the digests pinned here, which are the release assets' digests on
+# GitHub. elan's own downloader checks none, so the toolchain is extracted straight into the
+# directory elan resolves it from rather than installed with `elan toolchain install`. Bump
+# LEAN_VERSION with syslang's pin, and its two digests with it. The .tar.zst needs `zstd`, which
+# the package install above names.
+#
+# The toolchain loses its .ilean files (the language server's find-references) and src/
+# (go-to-definition), 0.12 GB that nothing a sandbox runs reads. Its static libraries stay,
+# because every `lean_exe` links them.
+#
+# ELAN_HOME stays at elan's default, ~/.elan, and the home skeleton seeds it with links to this
+# toolchain and to /opt/elan/bin, defaulting to the toolchain. A project that pins another Lean
+# then gets it the way a go.mod gets another Go: elan downloads it into ~/.elan, without sudo.
+ARG ELAN_VERSION=4.2.4
+ARG ELAN_SHA256_X86_64=42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63
+ARG ELAN_SHA256_AARCH64=05febd124d84ebf994b2e7479922a5650b1e950c17ae3bd1ddd776b65bb72bf9
+ARG LEAN_VERSION=4.34.1
+ARG LEAN_SHA256_X86_64=47bf4bbd78f70c2e9670598ab7124d92b6efb7330ff33e5fbb4030f6fd72e4e4
+ARG LEAN_SHA256_AARCH64=fdb974c2cdb4627e090d5d4007b913e09d13c4868720fb5594e22808b3de9e37
+RUN case "$(uname -m)" in \
+      x86_64|amd64)  earch=x86_64;  lsuffix=;         ewant="$ELAN_SHA256_X86_64";  lwant="$LEAN_SHA256_X86_64" ;; \
+      arm64|aarch64) earch=aarch64; lsuffix=_aarch64; ewant="$ELAN_SHA256_AARCH64"; lwant="$LEAN_SHA256_AARCH64" ;; \
+      *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; \
+    esac \
+  && export ELAN_HOME=/opt/elan \
+  && tc="leanprover--lean4---v${LEAN_VERSION}" \
+  && curl -fsSL -o /tmp/elan.tar.gz \
+       "https://github.com/leanprover/elan/releases/download/v${ELAN_VERSION}/elan-${earch}-unknown-linux-gnu.tar.gz" \
+  && got=$(sha256sum /tmp/elan.tar.gz | cut -d' ' -f1) \
+  && { [ "$ewant" = "$got" ] || { echo "elan checksum mismatch: want=$ewant got=$got" >&2; exit 1; }; } \
+  && curl -fsSL -o /tmp/lean.tar.zst \
+       "https://github.com/leanprover/lean4/releases/download/v${LEAN_VERSION}/lean-${LEAN_VERSION}-linux${lsuffix}.tar.zst" \
+  && got=$(sha256sum /tmp/lean.tar.zst | cut -d' ' -f1) \
+  && { [ "$lwant" = "$got" ] || { echo "lean checksum mismatch: want=$lwant got=$got" >&2; exit 1; }; } \
+  && mkdir -p /tmp/elan "$ELAN_HOME/toolchains/$tc" \
+  && tar -xzf /tmp/elan.tar.gz -C /tmp/elan --no-same-owner \
+  && { /tmp/elan/elan-init -y --no-modify-path --default-toolchain none >/tmp/elan.log 2>&1 \
+       || { cat /tmp/elan.log >&2; exit 1; }; } \
+  && tar --zstd -xf /tmp/lean.tar.zst -C "$ELAN_HOME/toolchains/$tc" --strip-components=1 --no-same-owner \
+  && find "$ELAN_HOME/toolchains/$tc" -name '*.ilean' -delete \
+  && rm -rf "$ELAN_HOME/toolchains/$tc/src" /tmp/elan /tmp/elan.tar.gz /tmp/lean.tar.zst \
+  && { "$ELAN_HOME/bin/elan" default "leanprover/lean4:v${LEAN_VERSION}" >/tmp/elan.log 2>&1 \
+       || { cat /tmp/elan.log >&2; exit 1; }; } \
+  && rm -f /tmp/elan.log \
+  && chmod -R a+rX "$ELAN_HOME" \
+  && mkdir -p /sandbox/home/.elan/toolchains \
+  && cp "$ELAN_HOME/settings.toml" /sandbox/home/.elan/ \
+  && ln -s "$ELAN_HOME/bin" /sandbox/home/.elan/bin \
+  && ln -s "$ELAN_HOME/toolchains/$tc" "/sandbox/home/.elan/toolchains/$tc" \
+  && "$ELAN_HOME/bin/lean" --version && "$ELAN_HOME/bin/lake" --version
+
+# cvc5, the SMT solver that syslang's prover and `cs-syslang analyze` ask about the regions their
+# own search leaves open. One static binary, from the `static` release zip that syslang's Makefile
+# pins, unzipped the way that Makefile does it. The `static-gpl` zip links GPL libraries and is
+# three times the size. A checkout's own `make cvc5` copy in bin/tools/ still wins over this one.
+ARG CVC5_VERSION=1.4.2
+ARG CVC5_SHA256_X86_64=7eb18f8c814c36a46c5a7d003983e9cfbc4b0a9828d6dd596239291bd4cc61d8
+ARG CVC5_SHA256_ARM64=765ebee59d9e5efccb60a445fa66fbddfb07a8de9fe7a5b6d128e5c2aafec974
+RUN case "$(uname -m)" in \
+      x86_64|amd64)  carch=x86_64; want="$CVC5_SHA256_X86_64" ;; \
+      arm64|aarch64) carch=arm64;  want="$CVC5_SHA256_ARM64" ;; \
+      *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; \
+    esac \
+  && curl -fsSL -o /tmp/cvc5.zip \
+       "https://github.com/cvc5/cvc5/releases/download/cvc5-${CVC5_VERSION}/cvc5-Linux-${carch}-static.zip" \
+  && got=$(sha256sum /tmp/cvc5.zip | cut -d' ' -f1) \
+  && { [ "$want" = "$got" ] || { echo "cvc5 checksum mismatch: want=$want got=$got" >&2; exit 1; }; } \
+  && mkdir -p /opt/cvc5/bin \
+  && unzip -q -j -o /tmp/cvc5.zip '*/bin/cvc5' -d /opt/cvc5/bin \
+  && rm -f /tmp/cvc5.zip \
+  && chmod 0755 /opt/cvc5/bin/cvc5 \
+  && chmod -R a+rX /opt/cvc5 \
+  && /opt/cvc5/bin/cvc5 --version | head -1
+
 # Note: there is deliberately no `RUN chmod -R a+rX /opt` here. Each stanza above chmods the
 # tree it just installed, in the same layer. A separate chmod pass costs 1.9 GB: chmod writes
 # every inode, overlayfs copies up every file it writes, and the result is a second, complete
@@ -354,7 +430,7 @@ RUN python3 -m venv /opt/py-tools \
 # the agents (claude, codex, opencode), and the py-tools are found without sourcing ~/.bashrc.
 # (~/.bashrc additionally runs pyenv/nvm init for interactive version switching.)
 ENV JAVA_HOME=/opt/java
-ENV PATH=/opt/nvm/versions/node/v26.13.0/bin:/opt/py-tools/bin:/opt/claude/bin:/opt/codex/bin:/opt/opencode/bin:/opt/pyenv/bin:/opt/go/bin:/opt/java/bin:/opt/maven/bin:${PATH}
+ENV PATH=/opt/nvm/versions/node/v26.13.0/bin:/opt/py-tools/bin:/opt/claude/bin:/opt/codex/bin:/opt/opencode/bin:/opt/pyenv/bin:/opt/go/bin:/opt/java/bin:/opt/maven/bin:/opt/elan/bin:/opt/cvc5/bin:${PATH}
 
 # The Neovim config, and ONLY that, ahead of the pre-build below — 72 KB of the 392 KB
 # `COPY . /sandbox` used to bring here. That pre-build is the single largest layer in the
@@ -391,9 +467,9 @@ COPY home/.config/nvim /sandbox/home/.config/nvim
 # behind (gopls alone leaves ~550 MB in ~/.cache/go-build and ~/go), plus the path-keyed Lua
 # bytecode cache and logs — which would otherwise be copied into every sandbox home. That
 # leak is invisible (the build still succeeds), so the final `du` check fails the build if
-# the seed grows past ~100 MB. $HOME holds the nvim config and what this step made and
-# nothing else — the rest of the home skeleton is copied in below — so that number is this
-# step's own output: ~70 MB is plugins + treesitter parsers, and anything beyond
+# the seed grows past ~100 MB. $HOME holds the nvim config, the Lean stanza's few KB of ~/.elan
+# links and what this step made — the rest of the home skeleton is copied in below — so that
+# number is this step's own output: ~70 MB is plugins + treesitter parsers, and anything beyond
 # means a newly added package left a cache that needs adding to the rm list.
 #
 # `step` keeps the console quiet. `podman build -q` (what `cs-sandbox build` uses unless

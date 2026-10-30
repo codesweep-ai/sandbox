@@ -200,7 +200,7 @@ needs. It is tagged apart from the shipped image, so it cannot be mistaken for i
 doctor` reports the same gap first, and names the build command for the image it was asked about.
 
 The image bundles a broad toolchain: podman, skopeo and buildah, tmux, chromium, java and maven, Go,
-pyenv with Python, nvm with Node, and Neovim. It adds the usual CLI helpers, and the Claude Code,
+pyenv with Python, nvm with Node, elan with Lean, the cvc5 solver, and Neovim. It adds the usual CLI helpers, and the Claude Code,
 Codex and OpenCode agents with their launch wrappers and remote tools. See
 [what's in a sandbox](README.md#whats-in-a-sandbox) for the tour, and
 [`image/Containerfile`](image/Containerfile) for the full package list.

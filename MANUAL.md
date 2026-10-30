@@ -275,7 +275,7 @@ The image is built in **three tiers**, and `build` makes only the last of them. 
 pulled at the tag `image/tiers.env` pins: the OS and the toolchains
 (`ghcr.io/codesweep-ai/sandbox-base`), then the agent CLIs on top of them
 (`ghcr.io/codesweep-ai/sandbox-agents`). What is built here is this repository on top, about 25 MB
-against 2.2 GB. Those two tiers are rebuilt weekly by `.github/workflows/base-images.yml`. That
+against 2.9 GB. Those two tiers are rebuilt weekly by `.github/workflows/base-images.yml`. That
 workflow publishes a candidate, proves it, and prints the two lines to paste into
 `image/tiers.env`.
 
@@ -284,10 +284,10 @@ workflow publishes a candidate, proves it, and prints the two lines to paste int
 the edit is silently ignored.
 
 `--slim` builds the CI image instead of the shipped one: the same three Containerfiles with the
-developer toolchains removed. That drops Go, Node, the JDK, Maven, Neovim and its language
-servers, and Chromium. It drops the Python toolchain as well, meaning pyenv and the `/opt/py-tools`
-venv, but keeps the distro `python3` and the bare `python` name beside it. A sandbox has to run the
-scripts an agent writes, and agents write `python`. The image weighs about 474 MB against 6.04 GB, and it builds in minutes
+developer toolchains removed. That drops Go, Node, the JDK, Maven, elan with Lean, the cvc5
+solver, Neovim and its language servers, and Chromium. It drops the Python toolchain as well,
+meaning pyenv and the `/opt/py-tools` venv, but keeps the distro `python3` and the bare `python` name beside it. A sandbox has to run the
+scripts an agent writes, and agents write `python`. The image weighs about 474 MB against 8.6 GB, and it builds in minutes
 against tens of them. That difference is what lets a job boot real sandboxes on a hosted runner.
 Building the full image on every push would cost more time and disk than such a job has. The
 derivation lives in `image/ci-slim.sh` and is applied to

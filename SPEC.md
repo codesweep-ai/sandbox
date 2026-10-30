@@ -179,10 +179,12 @@ same file. In a store that is a git repository, as a campaign's is, the file is 
 `make ci` commits each build there.
 
 Toolchains under `/opt` are read-only for the dev user, so a new language version or a global
-package needs `sudo`. Per-project virtualenvs and `node_modules` are unaffected. Two cases would
-otherwise chafe, and both have an escape hatch. Go keeps upstream's `GOTOOLCHAIN=auto`, so a
-`go.mod` naming another `go 1.x` fetches it into `$GOPATH` without `sudo`. Neovim's Mason honours
-`$MASON_ROOT` for a private writable package set.
+package needs `sudo`. Per-project virtualenvs and `node_modules` are unaffected. Three cases would
+otherwise chafe, and each has an escape hatch. Go keeps upstream's `GOTOOLCHAIN=auto`, so a
+`go.mod` naming another `go 1.x` fetches it into `$GOPATH` without `sudo`. Lean works the same way.
+Each user's `ELAN_HOME` is `~/.elan`, which links the image's toolchain in `/opt/elan`, so a
+`lean-toolchain` naming another version has elan fetch it into `~/.elan` without `sudo`. Neovim's
+Mason honours `$MASON_ROOT` for a private writable package set.
 
 ### 3.2 The user is created at first boot
 

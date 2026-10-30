@@ -98,8 +98,8 @@ Until then you can ignore groups entirely.
 
 Every sandbox boots from the same image, so there is nothing to install inside one:
 
-- **A broad dev toolchain**: git, Podman, Node, Python, Go, Java, Neovim, tmux, and the usual CLI
-  helpers (ripgrep, fd, fzf, bat, jq/yq, gh, uv). Full list in
+- **A broad dev toolchain**: git, Podman, Node, Python, Go, Java, Lean with the cvc5 solver,
+  Neovim, tmux, and the usual CLI helpers (ripgrep, fd, fzf, bat, jq/yq, gh, uv). Full list in
   [`image/Containerfile`](image/Containerfile).
 - **The Claude Code, Codex, and OpenCode agents**, with **`cs-claude` / `cs-codex` /
   `cs-opencode`**, wrappers that launch each on a sandbox-local profile (never your personal

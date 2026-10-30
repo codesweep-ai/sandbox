@@ -1,0 +1,20 @@
+{
+  "id": "SBX-112",
+  "title": "`sudo pyenv` and `sudo nvm` do not work, though SPEC.md says a new Python or Node version needs `sudo`",
+  "type": "defect",
+  "severity": "low",
+  "status": "open",
+  "foundBy": "session agent, while comparing how each /opt toolchain adds a version for SBX-111",
+  "opened": "2026-10-29",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "SPEC.md §3.1 says the toolchains under /opt are read-only for the dev user, so a new language version needs `sudo`. As the sandbox user, `sudo pyenv --version` prints `sudo: pyenv: command not found`. Fedora's sudo replaces PATH with its `secure_path`, which does not name /opt/pyenv/bin, and it drops PYENV_ROOT. `sudo nvm` cannot work at all, because nvm is a shell function that ~/.bashrc sources.\n\nReproduce in ghcr.io/codesweep-ai/sandbox:v0.0.0-20260929195333-38b6867ec3dd as a user with the image's NOPASSWD sudo.\n\nA user who follows the rule meets a failure that names nothing about /opt. A fix either makes sudo find the tools, for example with a sudoers drop-in that extends `secure_path` and keeps PYENV_ROOT and NVM_DIR, or documents the commands that work.",
+  "notes": [],
+  "links": ["SBX-111"]
+}

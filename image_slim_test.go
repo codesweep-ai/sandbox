@@ -67,6 +67,7 @@ var toolchainStanzas = []string{
 	"chromium", "neovim/releases/download", "tree-sitter-cli", "pyenv.run",
 	"nvm-sh/nvm", "temurin25-binaries", "archive.apache.org/dist/maven",
 	"go.dev/dl/go", "python3 -m venv /opt/py-tools", "+Lazy! install",
+	"leanprover/lean4/releases/download", "cvc5/cvc5/releases/download",
 }
 
 // TestTierBoundaries: each Containerfile holds only what its tier is for.
@@ -181,7 +182,7 @@ func TestCISlimKeepsTheAgents(t *testing.T) {
 	}
 	// The PATH names nothing that was dropped — a stale entry is a sandbox that
 	// looks configured and resolves nothing.
-	for _, gone := range []string{"/opt/go/bin", "/opt/java/bin", "/opt/maven/bin", "/opt/pyenv/bin", "/opt/py-tools/bin", "/opt/nvm"} {
+	for _, gone := range []string{"/opt/go/bin", "/opt/java/bin", "/opt/maven/bin", "/opt/pyenv/bin", "/opt/py-tools/bin", "/opt/nvm", "/opt/elan/bin", "/opt/cvc5/bin"} {
 		if strings.Contains(base, gone) {
 			t.Errorf("the slim PATH still names dropped directory %q", gone)
 		}
@@ -234,6 +235,7 @@ func TestCISlimKeepsWhatASandboxBootsWith(t *testing.T) {
 var optRoots = []string{
 	"/opt/pyenv", "/opt/nvm", "/opt/java", "/opt/maven", "/opt/go",
 	"/opt/claude", "/opt/codex", "/opt/opencode", "/opt/py-tools", "/opt/nvim",
+	"/opt/elan", "/opt/cvc5",
 }
 
 // buildsSomething reports whether a stanza writes a layer at all.

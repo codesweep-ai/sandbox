@@ -112,6 +112,15 @@ for d in "$JAVA_HOME/bin" /opt/maven/bin; do
 done
 unset d
 
+# Lean (elan) and the cvc5 solver (shared, under /opt). ELAN_HOME stays at elan's default,
+# ~/.elan, which the home skeleton seeds with links to the image's toolchain in read-only
+# /opt/elan. A project that pins another Lean has elan download it there, without sudo — the
+# same as Go's GOTOOLCHAIN above (SPEC.md §3.1).
+for d in /opt/elan/bin /opt/cvc5/bin; do
+  [[ -d $d ]] && [[ ":$PATH:" != *":$d:"* ]] && export PATH="$d:$PATH"
+done
+unset d
+
 # Native AI coding agents (shared, under /opt — pinned single binaries, no npm/Node).
 # Added here too because sshd resets PATH and bash sources ~/.bashrc for `ssh <instance> <cmd>`,
 # so the image's ENV PATH (which `podman exec` inherits) wouldn't otherwise cover SSH shells.
