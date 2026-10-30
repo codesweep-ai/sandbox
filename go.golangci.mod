@@ -9,7 +9,7 @@
 // file holding both builds neither.
 module github.com/codesweep-ai/sandbox/internal/golangci
 
-go 1.27.0
+go 1.27.3
 
 tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 
