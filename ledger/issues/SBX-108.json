@@ -3,17 +3,19 @@
   "title": "The Neovim pre-build ships language servers for languages outside the mainstream set",
   "type": "improvement",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "repository owner: \"807Mb for an editor is a lot, can we remove some of the LSPs and neovim support for some languages that aren't mainstream, basically outside of Python, Java, Javascript/Typescript, Bash/sh, Go, C/C++?\"",
   "opened": "2026-10-29",
-  "resolved": null,
+  "resolved": "2026-10-29",
   "stint": "2026-10-29 image size session",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "ebe2a76"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "I ran the pre-build step from Containerfile.base on this config, in a container from the 2026-09-29 image. `:MasonInstallSync!` and `:TSInstallSync!` both returned 0. `du -sm /opt/nvim/mason` gave 257 MB against 697 MB before, and the pre-build output measured 307 MB against 725 MB. As an ordinary user, Python, Go, TypeScript, JavaScript and Java files attached basedpyright, gopls, ts_ls, ts_ls and jdtls. Bash, C, C++ and Lua files got treesitter highlighting, and nothing wrote to stderr. `make ci` passed on the tree that became ebe2a76."
   },
-  "resolution": null,
+  "resolution": "The image now installs language servers and tools for Python, Java, Go, JavaScript and TypeScript only. Its parsers cover those languages, Bash, C, C++, Lua and the config formats. A user who needs another server can install it into a private `$MASON_ROOT`.",
   "details": "Neovim costs about 807 MB of the shipped image, and the Mason root under /opt/nvim/mason is 697 MB of it. Most of that root serves languages outside Python, Java, JavaScript, TypeScript, Bash, Go and C/C++. The largest are GraphQL at 128 MB, HTML and CSS at 94 MB, Emmet at 69 MB and Svelte at 65 MB. Prisma takes 47 MB, Lua and its formatter 32 MB, and Tailwind 10 MB. The treesitter list also builds parsers for Nix, Rust, Scala, Lua, HTML and CSS.\n\nThe sizes come from `du -sm /opt/nvim/mason/packages/*` in ghcr.io/codesweep-ai/sandbox:v0.0.0-20260929195333-38b6867ec3dd.\n\nWanted: the config in image/rootfs/home/.config/nvim installs servers, tools and parsers for the mainstream languages only. A user who needs another server can still install it into a private `$MASON_ROOT`.",
   "notes": [
     {
