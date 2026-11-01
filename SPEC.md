@@ -1105,10 +1105,10 @@ flags either side of them name one.
 **R159.** A key slot **MUST** name every variable its clients read the credential from.
 
 R158 is OpenCode's doing. Its base URL belongs to the provider rather than to the client, and only
-two providers have a variable of their own. A third has none, so OpenCode's own `OPENCODE_BASE_URL`
-points it, aimed at whichever provider the running model names. The Fireworks slot therefore names
-that variable where the others name a provider's, and a lent Fireworks key reaches OpenCode on the
-model the image pins.
+two providers have a variable of their own, which `cs-opencode` hands to them. A third has none, so
+`OPENCODE_BASE_URL` points it, aimed at whichever provider the running model names. The Fireworks
+slot therefore names that variable where the others name a provider's, and a lent Fireworks key
+reaches OpenCode on the model the image pins.
 
 R159 is Codex's doing, and it is not symmetric with R158. One OpenAI key reaches two clients that
 read different variables. OpenCode reads `OPENAI_API_KEY`. Codex reads `CODEX_API_KEY`, and given

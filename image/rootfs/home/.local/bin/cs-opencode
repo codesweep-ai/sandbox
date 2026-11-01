@@ -45,10 +45,12 @@ fi
 
 # One inline config, merged over this profile's opencode.json, for what the profile's files
 # cannot say:
-#   * the base URL. opencode's base URL belongs to the PROVIDER, and opencode reads no variable
+#   * the base URLs. opencode's base URL belongs to the PROVIDER, and opencode reads no variable
 #     for one, so the route that works for every provider is a baseURL in the config.
-#     OPENCODE_BASE_URL points the provider the pinned model names, because that is the provider
-#     this session will actually use. Deliberately not OPENAI_BASE_URL: it already means the
+#     OPENAI_BASE_URL and ANTHROPIC_BASE_URL point the openai and anthropic providers, as each
+#     provider's own variable did in OpenCode 1. OPENCODE_BASE_URL points the provider the
+#     pinned model names, because that is the provider this session will actually use, and it
+#     wins for that provider. Deliberately not OPENAI_BASE_URL for that: it already means the
 #     openai provider, and quietly repointing a fireworks model with it would surprise anyone
 #     who set it for the reason it exists;
 #   * the API keys in a seeded ~/.cs-opencode/auth.json. opencode keeps its own credentials in
@@ -58,9 +60,11 @@ fi
 # The content MERGES over the profile's opencode.json rather than replacing it, so the pinned
 # model, the permissions and disabled_providers all survive. Nothing is written to disk, so an
 # unset variable changes nothing and switching endpoints leaves no state behind.
-if [ -n "${OPENCODE_BASE_URL:-}" ] || [ -f "$OC_DIR/auth.json" ]; then
+if [ -n "${OPENCODE_BASE_URL:-}${OPENAI_BASE_URL:-}${ANTHROPIC_BASE_URL:-}" ] || [ -f "$OC_DIR/auth.json" ]; then
   if command -v jq >/dev/null 2>&1; then
     _cfg='{}'
+    [ -n "${OPENAI_BASE_URL:-}" ] && _cfg="$(jq -nc --argjson c "$_cfg" --arg u "$OPENAI_BASE_URL" '$c * {provider: {openai: {options: {baseURL: $u}}}}')"
+    [ -n "${ANTHROPIC_BASE_URL:-}" ] && _cfg="$(jq -nc --argjson c "$_cfg" --arg u "$ANTHROPIC_BASE_URL" '$c * {provider: {anthropic: {options: {baseURL: $u}}}}')"
     if [ -n "${OPENCODE_BASE_URL:-}" ]; then
       _prov="$(jq -r '(.model // "") | split("/")[0]' "$OC_DIR/opencode.json" 2>/dev/null || true)"
       if [ -n "${_prov:-}" ] && [ "$_prov" != "null" ]; then
@@ -87,7 +91,7 @@ if [ -n "${OPENCODE_BASE_URL:-}" ] || [ -f "$OC_DIR/auth.json" ]; then
     fi
     unset _prov _cfg _keys
   else
-    echo "cs-opencode: jq is missing, so the provider base URL and the profile's API keys were not applied" >&2
+    echo "cs-opencode: jq is missing, so the provider base URLs and the profile's API keys were not applied" >&2
   fi
 fi
 

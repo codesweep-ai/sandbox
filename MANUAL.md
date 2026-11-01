@@ -463,6 +463,7 @@ nothing but the variable. A gateway, a proxy and a traffic recorder are all reac
 | `cs-codex` | `OPENAI_BASE_URL` | Codex |
 | `cs-opencode` | `OPENCODE_BASE_URL` | the provider the pinned model names |
 | `cs-opencode` | `OPENAI_BASE_URL` | OpenCode's openai provider alone |
+| `cs-opencode` | `ANTHROPIC_BASE_URL` | OpenCode's anthropic provider alone |
 
 Claude reads its own, and one variable covers it whatever serves it. Codex reads none: it takes a
 whole provider declaration instead, so `cs-codex` builds one from `OPENAI_BASE_URL` and passes it as
@@ -486,13 +487,15 @@ for a key that is throttled often, and expect a bad credential to take that much
 Codex stops counting at 100. Set a variable to empty to
 leave that count to codex. Codex does not retry an HTTP 429 status, whatever either count says.
 
-OpenCode is the awkward one. Its base URL belongs to the *provider*, and only the openai and
-anthropic providers have a variable. A model on any other one ignores `OPENAI_BASE_URL` completely:
-the agent reaches the real endpoint while whatever you pointed it at sits idle.
+OpenCode is the awkward one. Its base URL belongs to the *provider*, and OpenCode reads no variable
+for one. `cs-opencode` hands `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL` to the openai and anthropic
+providers. A model on any other provider ignores both completely: the agent reaches the real
+endpoint while whatever you pointed it at sits idle.
 
 Use `OPENCODE_BASE_URL` for those. `cs-opencode` reads the provider from the pinned model in the
-profile's `opencode.json`, and supplies a base URL for it inline. Nothing is written, and the pinned
-model, the permissions and the disabled providers all survive.
+profile's `opencode.json`, and supplies a base URL for it inline, ahead of that provider's own
+variable. Nothing is written, and the pinned model, the permissions and the disabled providers all
+survive.
 
 Codex authenticates two ways, and the wrapper follows what it finds. With `OPENAI_API_KEY` set, the
 provider names that variable. Without one it asks for Codex's own sign-in, which is the ChatGPT

@@ -441,11 +441,42 @@ func TestOpenCodeWrapperForwardsABaseURL(t *testing.T) {
 		}
 	})
 
+	// The openai and anthropic providers each have a variable of their own, and the wrapper
+	// carries it, because opencode reads none. A lent key for either provider reaches the
+	// lender this way, whatever model is pinned.
+	t.Run("the provider variables point their own providers", func(t *testing.T) {
+		writeConfig(`{"model":"fireworks-ai/accounts/fireworks/models/kimi-k3"}`)
+		out, exit := runScriptStdin(t, home, bin, append(openCodeNoEndpoints,
+			"OPENAI_BASE_URL=http://lender:2500/openai", "ANTHROPIC_BASE_URL=http://lender:2500/anthropic"), "", "cs-opencode", "run", "x")
+		if exit != 0 {
+			t.Fatalf("cs-opencode exit %d: %s", exit, out)
+		}
+		want := `{"provider":{"openai":{"options":{"baseURL":"http://lender:2500/openai"}},` +
+			`"anthropic":{"options":{"baseURL":"http://lender:2500/anthropic"}}}}`
+		if !strings.Contains(out, want) {
+			t.Errorf("want %s:\n%s", want, out)
+		}
+		covemit.Prove(t, "auth-provisioning", "opencode", "", "scripts")
+	})
+
+	// OPENCODE_BASE_URL names the endpoint for the provider the session uses, so it wins over
+	// that provider's own variable.
+	t.Run("OPENCODE_BASE_URL wins for the pinned provider", func(t *testing.T) {
+		writeConfig(`{"model":"openai/gpt-5"}`)
+		out, exit := runScriptStdin(t, home, bin, append(openCodeNoEndpoints,
+			"OPENAI_BASE_URL=http://lender:2500/openai", "OPENCODE_BASE_URL="+url), "", "cs-opencode", "run", "x")
+		if exit != 0 {
+			t.Fatalf("cs-opencode exit %d: %s", exit, out)
+		}
+		if want := `{"provider":{"openai":{"options":{"baseURL":"` + url + `"}}}}`; !strings.Contains(out, want) {
+			t.Errorf("want %s:\n%s", want, out)
+		}
+	})
 }
 
 // openCodeNoEndpoints clears every variable cs-opencode composes a config from, so a test is
-// not decided by the environment it runs in.
-var openCodeNoEndpoints = []string{"OPENCODE_BASE_URL=", "OPENCODE_CONFIG_CONTENT="}
+// not decided by the environment it runs in: a lent sandbox sets ANTHROPIC_BASE_URL.
+var openCodeNoEndpoints = []string{"OPENCODE_BASE_URL=", "OPENAI_BASE_URL=", "ANTHROPIC_BASE_URL=", "OPENCODE_CONFIG_CONTENT="}
 
 // TestCodexWrapperForwardsABaseURL: OPENAI_BASE_URL points codex at an alternative
 // OpenAI-compatible endpoint, the way it points every other client at one.
