@@ -3,17 +3,19 @@
   "title": "`--inherit-agent-login opencode` finds no login on a host signed in with OpenCode 2",
   "type": "defect",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent, while porting the OpenCode tools to OpenCode 2 for SBX-113",
   "opened": "2026-11-01",
-  "resolved": null,
+  "resolved": "2026-11-01",
   "stint": "opencode-v2.x branch, 2026-10-31",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "91fa195"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "At 91fa195, `go vet ./... && go test -count=1 ./internal/cli/ ./internal/seed/` passed, TestWriteAgentLoginsCarriesOpenCodeSignIns and TestOpenCodeWrapperImportsCarriedSignIns among them. The container check used a slim image built locally with OpenCode 2.2.5, no network, and the scripts of 91fa195 mounted in. On a host profile signed in with a Fireworks key, `cs-opencode auth export` printed one credential. Seeded into a fresh profile, it was imported by the first `cs-opencode run`, and the fake provider saw `Bearer k-from-host` with no key in the environment. `credentials.json` was then `[]` at mode 600, and after a second start the profile still held the one sign-in."
   },
-  "resolution": null,
+  "resolution": "`--inherit-agent-login opencode` carries what the host's `cs-opencode auth export` prints, as `credentials.json` in the seed, and a hand-written `auth.json` as before. The guest installs it at first boot. `cs-opencode` imports it into the profile's database on its first start, then leaves the file as `[]`. The login hints name `cs-opencode auth login`.",
   "details": "`--inherit-agent-login opencode` copies the host's `~/.cs-opencode/auth.json` into the sandbox. OpenCode 1 wrote that file when you signed in. OpenCode 2 keeps every sign-in inside its database and writes no auth file, so a host that signs in with `cs-opencode auth login` has nothing for `create` to copy. `create` then says there is no host login and tells you to run `cs-opencode providers login`, a command OpenCode 2 no longer has.\n\nWanted: `create` carries what the host is signed in with, API keys and OAuth sign-ins alike, as `cs-opencode auth export` prints them. The sandbox imports them into its own profile on the first start. A hand-written `auth.json` of API keys still works, and the hints name the command that exists.",
   "notes": [
     {
