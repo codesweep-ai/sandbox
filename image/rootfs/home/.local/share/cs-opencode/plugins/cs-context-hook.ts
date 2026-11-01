@@ -3,24 +3,28 @@
 // The same behaviour as the cs-context-hook script Claude Code and Codex run, as an OpenCode
 // plugin, because OpenCode has no command hooks. It lives here, outside the profile, and the
 // cs-opencode wrapper links it into the profile's plugins directory only when CS_HANDOFF_TOKENS
-// is set: OpenCode installs its plugin SDK from npm on the first start that finds any plugin,
-// and a member with no line set must start exactly as before. Linked in, it registers nothing
-// unless the line is set.
+// is set, so a member with no line set starts exactly as it would without the feature. Linked
+// in, it registers nothing unless the line is set.
 //
 // Environment: CS_HANDOFF_TOKENS (the line; unset or 0 is off), CS_HANDOFF_FILE (default
-// ~/.cs-turns/handoff.md), CS_HANDOFF_ASK (the sentence, with {tokens} and {h}).
+// ~/.cs-turns/handoff.md), CS_HANDOFF_ASK (the sentence, with {tokens} and {h}). The plugin runs
+// in the server process, so these are the server's: cs-opencode-turn starts that server in the
+// tmux session it drives.
 //
 // On every tool result of the session the turn driver drives (~/.cs-turns/driven names it)
 // it reads the context from the driver (`cs-opencode-turn --context`), adds the result that
 // is about to be appended, and over the line appends the ask until the handoff file is newer
 // than the first ask; then it says once more to end the turn, and after two more tool calls
-// aborts the session. A later turn of the same session that is still over the line is asked
+// interrupts the session. A later turn of the same session that is still over the line is asked
 // again, because the driver counts only an ask made in its own turn. The ask is recorded in
 // ~/.cs-turns/handoff-ask for the driver, which reports such a turn end as class `handoff`. A
 // session whose first reading is already over the line is never asked, and
-// ~/.cs-turns/handoff-floor records why. A child session (a sub-agent the task tool runs) is
+// ~/.cs-turns/handoff-floor records why. A child session (a sub-agent the subagent tool runs) is
 // never asked: OpenCode gives it a parentID, which the plugin reads once per session. When
 // OpenCode compacts, the summary is told to end by pointing at the handoff file.
+//
+// opencode turns an exception thrown by a hook into a failed tool call, so every hook here
+// catches its own.
 import * as fs from "node:fs"
 import * as path from "node:path"
 
@@ -93,36 +97,60 @@ function reading(sessionID: string): number | null {
   return null
 }
 
-export const ContextHook = async ({ client }: any) => {
-  if (!(H > 0)) return {}
-  // A child session runs in the parent's process, so it shares the parent's tmux session and
-  // drivenHere cannot tell them apart. OpenCode records the parent on the child, as parentID.
-  // The answer is kept per session id, so a session costs one call, not one per tool result.
-  // A call that fails is not kept, and the session is treated as the main one.
-  const child = new Map<string, boolean>()
-  async function isChild(id: string): Promise<boolean> {
-    const known = child.get(id)
-    if (known !== undefined) return known
-    try {
-      const info = (await client.session.get({ path: { id } }))?.data
-      if (info && typeof info === "object") {
-        child.set(id, Boolean(info.parentID))
-        return Boolean(info.parentID)
-      }
-    } catch {}
-    return false
-  }
-  return {
-    "tool.execute.after": async (input: any, output: any) => {
+// The text of a tool's result as the model will read it: its content, or its output when the
+// content is empty, which is what opencode sends the model then.
+function resultText(result: any): string {
+  const c = result?.content
+  if (typeof c === "string" && c !== "") return c
+  if (Array.isArray(c) && c.length > 0)
+    return c
+      .filter((p: any) => p?.type === "text")
+      .map((p: any) => String(p.text ?? ""))
+      .join("\n")
+  const o = result?.output
+  if (o === undefined) return ""
+  return typeof o === "string" ? o : JSON.stringify(o)
+}
+
+// Append a sentence to what the model reads back from the tool.
+function append(result: any, sentence: string) {
+  const c = result.content
+  if (Array.isArray(c) && c.length > 0) c.push({ type: "text", text: `\n\n${sentence}` })
+  else result.content = `${resultText(result)}\n\n${sentence}`
+}
+
+export default {
+  id: "cs.context-hook",
+  async setup(ctx: any) {
+    if (!(H > 0)) return
+    // A child session runs in the parent's process, so it shares the parent's tmux session and
+    // drivenHere cannot tell them apart. OpenCode records the parent on the child, as parentID.
+    // The answer is kept per session id, so a session costs one call, not one per tool result.
+    // A call that fails is not kept, and the session is treated as the main one.
+    const child = new Map<string, boolean>()
+    async function isChild(id: string): Promise<boolean> {
+      const known = child.get(id)
+      if (known !== undefined) return known
       try {
-        if (await isChild(input.sessionID)) return
+        const info = await ctx.session.get({ sessionID: id })
+        if (info && typeof info === "object") {
+          child.set(id, Boolean(info.parentID))
+          return Boolean(info.parentID)
+        }
+      } catch {}
+      return false
+    }
+    await ctx.tool.hook("execute.after", async (event: any) => {
+      try {
+        if (event.status !== "completed" || !event.result) return
+        if (await isChild(event.sessionID)) return
         if (!drivenHere()) return
-        const base = reading(input.sessionID)
+        const base = reading(event.sessionID)
         if (base === null) return
-        const tokens = base + Math.floor(String(output.output ?? "").length / 4)
+        const tokens = base + Math.floor(resultText(event.result).length / 4)
         const state = loadState()
-        const st: Session = state[input.sessionID] ?? {}
-        state[input.sessionID] = st
+        const st: Session = state[event.sessionID] ?? {}
+        state[event.sessionID] = st
         const turn = turnStarted()
         if (st.askedAt !== undefined && turn !== null && turn > st.askedAt) {
           delete st.askedAt
@@ -132,7 +160,7 @@ export const ContextHook = async ({ client }: any) => {
           st.first = tokens
           if (tokens >= H) {
             st.floor = tokens
-            saveJSON(FLOOR_PATH, { session: input.sessionID, tokens, h: H, at: Date.now() / 1000 })
+            saveJSON(FLOOR_PATH, { session: event.sessionID, tokens, h: H, at: Date.now() / 1000 })
           }
         }
         let stop = false
@@ -148,13 +176,13 @@ export const ContextHook = async ({ client }: any) => {
               try {
                 session = fs.readFileSync(DRIVEN, "utf8").trim()
               } catch {}
-              saveJSON(ASK_PATH, { session, sid: input.sessionID, tokens, h: H, at: st.askedAt })
+              saveJSON(ASK_PATH, { session, sid: event.sessionID, tokens, h: H, at: st.askedAt })
             }
-            output.output = `${output.output ?? ""}\n\n${ASK.replaceAll("{tokens}", String(tokens)).replaceAll("{h}", String(H))}`
+            append(event.result, ASK.replaceAll("{tokens}", String(tokens)).replaceAll("{h}", String(H)))
           } else {
             st.afterFresh = (st.afterFresh ?? 0) + 1
             if (st.afterFresh > HARDSTOP_AFTER) stop = true
-            else output.output = `${output.output ?? ""}\n\n${NUDGE}`
+            else append(event.result, NUDGE)
           }
         }
         const keys = Object.keys(state)
@@ -162,18 +190,23 @@ export const ContextHook = async ({ client }: any) => {
         saveJSON(STATE, state)
         if (stop) {
           try {
-            await client.session.abort({ path: { id: input.sessionID } })
+            await ctx.session.interrupt({ sessionID: event.sessionID })
           } catch {}
         }
       } catch (e) {
         // A hook that fails must not fail the tool call.
         console.error(`cs-context-hook: ${String(e).slice(0, 200)}`)
       }
-    },
-    "experimental.session.compacting": async (_input: any, output: any) => {
-      output.context.push(
-        `End the summary with this sentence: "After this summary, read ${HANDOFF} if it exists before continuing."`,
-      )
-    },
-  }
+    })
+    await ctx.session.hook("compaction", async (event: any) => {
+      try {
+        event.system.push({
+          type: "text",
+          text: `End the summary with this sentence: "After this summary, read ${HANDOFF} if it exists before continuing."`,
+        })
+      } catch (e) {
+        console.error(`cs-context-hook: ${String(e).slice(0, 200)}`)
+      }
+    })
+  },
 }

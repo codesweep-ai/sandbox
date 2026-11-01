@@ -7,12 +7,10 @@ import (
 	"testing"
 )
 
-// The OpenCode context hook is a plugin, and OpenCode installs its plugin SDK from npm on the
-// first start that finds any plugin in a config directory, holding that start's first session
-// until the install is done. In a CI replay the network is a recorder that answers no such
-// request, so a profile that shipped the plugin failed every OpenCode cell on its first turn
-// (SBX-106). The plugin therefore ships outside the profile and is linked in only for a
-// machine with a hand-off line.
+// The OpenCode context hook is a plugin. It ships outside the profile and is linked in only for
+// a machine with a hand-off line, so a member with no line starts exactly as it would without
+// the feature: OpenCode 1 installed its plugin SDK from npm on the first start that found any
+// plugin, and a profile that shipped the plugin failed every offline first turn (SBX-106).
 
 // shippedOpenCodeHook is where the plugin lives in the image's home seed.
 func shippedOpenCodeHook(t *testing.T) string {
@@ -25,7 +23,7 @@ func shippedOpenCodeHook(t *testing.T) string {
 }
 
 // TestOpenCodeProfileShipsNoPlugin: the profile's plugins directory holds nothing in the
-// image, so a member with no line starts without an SDK install.
+// image, so a member with no line loads no plugin.
 func TestOpenCodeProfileShipsNoPlugin(t *testing.T) {
 	shippedOpenCodeHook(t)
 	entries, err := os.ReadDir(filepath.Join("..", "..", "image", "rootfs", "home", ".cs-opencode", "plugins"))
@@ -33,7 +31,7 @@ func TestOpenCodeProfileShipsNoPlugin(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		t.Errorf("image/rootfs/home/.cs-opencode/plugins ships %q; a plugin there makes every OpenCode start install the plugin SDK", e.Name())
+		t.Errorf("image/rootfs/home/.cs-opencode/plugins ships %q; a plugin there loads in every OpenCode start, line or none", e.Name())
 	}
 }
 
@@ -114,4 +112,33 @@ func TestOpenCodeWrapperLinksTheHookOnlyWithALine(t *testing.T) {
 			t.Error("a link was made to a hook that does not exist")
 		}
 	})
+}
+
+// TestOpenCodeHookIsAnOpenCode2Plugin: OpenCode 2 imports a plugin file and then loads it only
+// when its default export is a definition with an id and a setup function. A module in OpenCode
+// 1's shape, a named export returning hook names, is skipped with nothing on the turn's output,
+// and the hand-off line is then never asked. The hooks it registers are OpenCode 2's.
+func TestOpenCodeHookIsAnOpenCode2Plugin(t *testing.T) {
+	src, err := os.ReadFile(shippedOpenCodeHook(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := string(src)
+	for _, want := range []string{
+		"export default {",
+		`id: "cs.context-hook"`,
+		"async setup(ctx: any)",
+		`ctx.tool.hook("execute.after"`,
+		`ctx.session.hook("compaction"`,
+		"ctx.session.interrupt(",
+	} {
+		if !strings.Contains(code, want) {
+			t.Errorf("the hook does not have %q, so OpenCode 2 would not run it as written", want)
+		}
+	}
+	for _, old := range []string{`"tool.execute.after"`, `"experimental.session.compacting"`, "client.session."} {
+		if strings.Contains(code, old) {
+			t.Errorf("the hook still uses OpenCode 1's %s, which OpenCode 2 never calls", old)
+		}
+	}
 }

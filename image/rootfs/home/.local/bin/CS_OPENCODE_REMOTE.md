@@ -210,9 +210,9 @@ in the server the turn driver starts, which takes these variables from the drive
 
 Over the line, the plugin appends the ask to every tool result until the handoff file is newer
 than the first ask. Then it tells the agent once more to end its turn, and after two more tool
-calls it aborts the session itself. The agent writes the handoff with its own tools, so it can
-check its own state first. The plugin skips a child session's tool calls (a sub-agent the task
-tool runs, which OpenCode records with a `parentID`), and any OpenCode session other than the one
+calls it interrupts the session itself. The agent writes the handoff with its own tools, so it can
+check its own state first. The plugin skips a child session's tool calls (a sub-agent the
+subagent tool runs, which OpenCode records with a `parentID`), and any OpenCode session other than the one
 this driver drives, so a session the agent starts itself is never asked.
 
 A turn driver the agent starts from inside the driven session runs with no line, and says so on
