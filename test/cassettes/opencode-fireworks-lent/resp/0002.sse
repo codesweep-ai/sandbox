@@ -1,44 +1,16 @@
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-6a4a094cdd31442a95750846895d7a0a","object":"chat.completion.chunk","created":1793519776,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"choices":[{"delta":{"reasoning_content":"The user provided a meta request: \"Generate a title for this conversation: 'Reply with the single word: pong'\". Need produce only title. Need infer same language English. Conversation content is asking to reply with single word pong, likely connectivity/ping test. Title \u003c=50 chars, meaningful. Could be \"Ping-pong reply test\" or \"Pong response check\". Need final only single line no explanation. Ensure no tool names. Title should reflect intent: user wants assistant to reply \"pong\". Good title: \"Pong reply check\". 16 chars. Use natural. final only that."},"finish_reason":null,"index":0,"raw_output":null}],"created":1793307098,"id":"chatcmpl-c650d2e3","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
+data: {"choices":[{"delta":{"reasoning_content":"The user wants me to title a conversation whose first message is \"Reply with the single word: pong\". This is a ping/pong style message. Title should be short, like \"Ping pong test\" or \"Pong reply\". Keep 3-5 words max... aim for three to five words, but shorter is fine? \"Aim for three to five words.\" Something like \"Ping pong reply\"."},"finish_reason":null,"index":0,"raw_output":null}],"created":1793519776,"id":"chatcmpl-6a4a094cdd31442a95750846895d7a0a","model":"accounts/fireworks/models/kimi-k3","object":"chat.completion.chunk","usage":null}
 
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":""},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-6a4a094cdd31442a95750846895d7a0a","object":"chat.completion.chunk","created":1793519776,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"Ping"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":""},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-6a4a094cdd31442a95750846895d7a0a","object":"chat.completion.chunk","created":1793519776,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" pong"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":""},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-6a4a094cdd31442a95750846895d7a0a","object":"chat.completion.chunk","created":1793519776,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" reply"},"finish_reason":null,"raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":""},"finish_reason":null,"raw_output":null}],"usage":null}
+data: {"id":"chatcmpl-6a4a094cdd31442a95750846895d7a0a","object":"chat.completion.chunk","created":1793519776,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
 
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":""},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":""},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"P"},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":"ong"},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" reply"},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":" check"},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":""},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":""},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":""},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":""},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":""},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":""},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{"content":""},"finish_reason":null,"raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","object":"chat.completion.chunk","created":1793307098,"model":"accounts/fireworks/models/kimi-k3","choices":[{"index":0,"delta":{},"finish_reason":"stop","raw_output":null}],"usage":null}
-
-data: {"id":"chatcmpl-c650d2e3","choices":[],"created":1793307098,"model":"accounts/fireworks/models/kimi-k3","service_tier":null,"system_fingerprint":null,"object":"chat.completion.chunk","usage":{"prompt_tokens":624,"completion_tokens":139,"total_tokens":763,"prompt_tokens_details":{"audio_tokens":null,"cached_tokens":0},"completion_tokens_details":{"accepted_prediction_tokens":null,"audio_tokens":null,"reasoning_tokens":122,"rejected_prediction_tokens":null}}}
+data: {"id":"chatcmpl-6a4a094cdd31442a95750846895d7a0a","object":"chat.completion.chunk","created":1793519776,"model":"accounts/fireworks/models/kimi-k3","choices":[],"usage":{"prompt_tokens":468,"total_tokens":567,"completion_tokens":99,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":83},"output_tokens_details":{"reasoning_tokens":83}}}
 
 data: [DONE]
 
