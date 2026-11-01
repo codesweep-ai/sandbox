@@ -1,0 +1,27 @@
+{
+  "id": "SBX-114",
+  "title": "`--inherit-agent-login opencode` finds no login on a host signed in with OpenCode 2",
+  "type": "defect",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "session agent, while porting the OpenCode tools to OpenCode 2 for SBX-113",
+  "opened": "2026-11-01",
+  "resolved": null,
+  "stint": "opencode-v2.x branch, 2026-10-31",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`--inherit-agent-login opencode` copies the host's `~/.cs-opencode/auth.json` into the sandbox. OpenCode 1 wrote that file when you signed in. OpenCode 2 keeps every sign-in inside its database and writes no auth file, so a host that signs in with `cs-opencode auth login` has nothing for `create` to copy. `create` then says there is no host login and tells you to run `cs-opencode providers login`, a command OpenCode 2 no longer has.\n\nWanted: `create` carries what the host is signed in with, API keys and OAuth sign-ins alike, as `cs-opencode auth export` prints them. The sandbox imports them into its own profile on the first start. A hand-written `auth.json` of API keys still works, and the hints name the command that exists.",
+  "notes": [
+    {
+      "date": "2026-11-01",
+      "text": "This is built on the opencode-v2.x branch and not yet committed. In a container from that image, a host profile signed in with a Fireworks key exported one credential. Seeded into a fresh profile, the wrapper imported it on the first start, the provider saw that key with none in the environment, and the second start imported nothing. `go test ./internal/seed/` covers the carry, and TestOpenCodeWrapperImportsCarriedSignIns covers the import."
+    }
+  ],
+  "links": [
+    "SBX-113"
+  ]
+}
