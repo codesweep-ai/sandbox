@@ -19,7 +19,7 @@ cs-opencode-remote-status <name> -H cs-sandbox-web   # override the SSH host
 
 ## Target SSH host
 
-By default this runs `cs-opencode export <id>` on the **host stored for that session** (set by
+By default this runs `cs-opencode session export <id>` on the **host stored for that session** (set by
 `cs-opencode-remote`), falling back to `$CS_OPENCODE_REMOTE_HOST` then this machine's `hostname -s`.
 Override with `-H <host>`. See `CS_OPENCODE_REMOTE.md` → "Target SSH host".
 

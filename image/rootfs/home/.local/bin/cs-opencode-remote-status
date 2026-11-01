@@ -1,7 +1,7 @@
 #!/bin/bash
 # Show progress of a remote opencode session.
 # Exports the session as JSON on the session's remote host (via the cs-opencode wrapper, so the
-# profile's OPENCODE_DB is used — no live server required) and summarizes recent activity.
+# profile's OPENCODE_DB is used — no warm server required) and summarizes recent activity.
 #
 # Usage:
 #   cs-opencode-remote-status <name-or-id>         # session name or opencode session id REQUIRED
@@ -52,9 +52,10 @@ fi
 REMOTE_HOST="$(resolve_remote_host "$ORIG_NAME")"
 SHOW_TOOLS_PY=$( $SHOW_TOOLS && echo True || echo False )
 
-# `cs-opencode export` emits one JSON document {info, messages: [{info, parts}]} with per-part
-# tool inputs/outputs and per-message timestamps — the same evidence the archive layer captures.
-EXPORT_JSON="$(ssh "$REMOTE_HOST" "cs-opencode export '$SESSION'" 2>/dev/null)" \
+# `cs-opencode session export` emits one JSON document {info, messages: [...]}, oldest first, with
+# each tool call's input and output and per-message timestamps — the same evidence the archive
+# layer captures.
+EXPORT_JSON="$(ssh "$REMOTE_HOST" "cs-opencode session export '$SESSION'" 2>/dev/null)" \
     || { echo "Session $SESSION not found on $REMOTE_HOST" >&2; exit 1; }
 [[ -n "$EXPORT_JSON" ]] || { echo "Session $SESSION not found on $REMOTE_HOST" >&2; exit 1; }
 
@@ -73,31 +74,30 @@ except json.JSONDecodeError:
 
 entries = []
 for m in doc.get('messages', []):
-    info = m.get('info') or {}
-    if info.get('role') != 'assistant':
+    if m.get('type') != 'assistant':
         continue
-    ts = ((info.get('time') or {}).get('created') or 0)
+    ts = ((m.get('time') or {}).get('created') or 0)
     ts_short = datetime.datetime.fromtimestamp(ts / 1000).strftime('%Y-%m-%d %H:%M:%S') if ts else ''
     texts, tools = [], []
-    for p in m.get('parts', []):
+    for p in m.get('content') or []:
         pt = p.get('type')
         if pt == 'text':
             t = (p.get('text') or '').strip()
             if t: texts.append(t)
         elif pt == 'tool' and SHOW_TOOLS:
-            name = p.get('tool', 'tool')
+            name = p.get('name', 'tool')
             state = p.get('state') or {}
             inp = state.get('input') or {}
             if isinstance(inp, (dict, list)): inp = json.dumps(inp)
             tools.append(f'{name}({str(inp)[:90]})')
-    err = info.get('error')
+    err = m.get('error')
     entries.append((ts_short, '\n'.join(texts), tools, err))
 
 for ts_short, text, tools, err in entries[-NUM:]:
     print(dim(f'--- {ts_short} ---'))
     for t in tools: print(cyan(f'  [tool] {t}'))
     if err:
-        name = err.get('name', 'error') if isinstance(err, dict) else 'error'
+        name = err.get('type', 'error') if isinstance(err, dict) else 'error'
         print(f'  [ERROR] {name}')
     if text:
         if len(text) > 2000: text = text[:2000] + '\n... (truncated)'
