@@ -108,3 +108,8 @@ RUN case "$(uname -m)" in x86_64|amd64) arch=x64 ;; arm64|aarch64) arch=arm64 ;;
   && rm -rf /tmp/opencode-dl \
   && chmod -R a+rX /opt/opencode \
   && /opt/opencode/bin/opencode --version
+
+# The CLIs above ran as root to print their versions and left their temp directories in /tmp,
+# which the member (uid 1000) cannot write: opencode's /tmp/opencode cost a modeller its scratch
+# space on 2026-10-19.
+RUN find /tmp -mindepth 1 -delete
