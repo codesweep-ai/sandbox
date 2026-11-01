@@ -1,0 +1,32 @@
+{
+  "id": "SBX-113",
+  "title": "The image holds OpenCode at 1.19.5 because the tools around it speak only OpenCode 1",
+  "type": "improvement",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "repository owner: 41532ee moved the image to OpenCode 2.2.2, and 19ad529 reverted it with the port of the cs-opencode wrapper unfinished",
+  "opened": "2026-10-31",
+  "resolved": null,
+  "stint": "opencode-v2.x branch, 2026-10-31",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "OpenCode 2 changed every surface the sandbox's OpenCode tools are built on. Measured on 2.2.5 in a container from the current slim image, with a fake provider:\n\n- A plain client starts a per-user background service, `opencode serve --service`, which outlives it and keeps the environment of whichever client started it. A personal OpenCode on the same account would share it.\n- The TUI no longer serves an API on `--port`, and `run` has no `--attach`. The server API moved under `/api`, behind Basic auth. Every other path answers 200 with the web UI, so a status-only health check passes against anything.\n- Messages are flat, listed newest first, and each turn ends with an `idle` message carrying its outcome and a structured error.\n- `OPENCODE_AUTH_CONTENT` and a 1.x `auth.json` are no longer read, so a seeded API key never reaches the provider. An environment key and a config `apiKey` both do.\n- The context hook, a plugin file linked into the profile's `plugins` directory, does not load as written.\n\n`cs-opencode`, `cs-opencode-turn`, the context hook, the remote family and the recorded cassettes all depend on the 1.x behaviour. Upstream's 1.19 line is maintained alongside 2.x.\n\nWanted: the agents tier on the newest 2.x, with those tools ported. They keep the 1.x contracts: an isolated profile, the driver's exit codes and failure classes, the hand-off, and nothing of the caller's in an argv.",
+  "notes": [
+    {
+      "date": "2026-10-31",
+      "text": "Ported on the opencode-v2.x branch, uncommitted: the agents tier on 2.2.5 checked against its SHA256SUMS, the wrapper, the turn driver, the context hook and the remote tools. The profile's service.json turns the background service off. The driver runs `serve` in its tmux session with the TUI beside it, and judges a turn by the session's own `idle` message. Offline in a container against a fake provider, every driver path behaved as before, including a hand-off the hook ended. Two decisions are open: what `--inherit-agent-login opencode` carries now that a 2.x sign-in lives in the database, and re-recording the OpenCode cassettes with the Fireworks key."
+    },
+    {
+      "date": "2026-11-01",
+      "text": "The OpenCode cassettes were re-recorded on 2.2.5 from a slim image built locally with all three tiers. Both replay with cs-vcr serving 4 requests and missing 0, on podman and on Firecracker within the 2 GB the matrix gives OpenCode. OpenCode 2 reads no provider base-URL variable. The wrapper now hands OPENAI_BASE_URL and ANTHROPIC_BASE_URL to those two providers, without which a lent openai or anthropic key never reached the lender. image/tiers.env still names the published 1.19.5 tier. Before the branch merges, the base-images workflow has to publish a 2.2.5 tier, and its two lines go into image/tiers.env."
+    }
+  ],
+  "links": [
+    "SBX-105",
+    "SBX-106"
+  ]
+}
