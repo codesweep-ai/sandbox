@@ -23,6 +23,10 @@
     {
       "date": "2026-11-01",
       "text": "The OpenCode cassettes were re-recorded on 2.2.5 from a slim image built locally with all three tiers. Both replay with cs-vcr serving 4 requests and missing 0, on podman and on Firecracker within the 2 GB the matrix gives OpenCode. OpenCode 2 reads no provider base-URL variable. The wrapper now hands OPENAI_BASE_URL and ANTHROPIC_BASE_URL to those two providers, without which a lent openai or anthropic key never reached the lender. image/tiers.env still names the published 1.19.5 tier. Before the branch merges, the base-images workflow has to publish a 2.2.5 tier, and its two lines go into image/tiers.env."
+    },
+    {
+      "date": "2026-11-01",
+      "text": "The tools were committed as 44652ae, 9decbfb, aafce79, 4a674c2 and f89b023. 8b0d24d moved the agents tier to 2.2.5, 65975b4 added its /tmp step, and af17f86 holds the cassettes. `go vet` and the unit tests of internal/cli and internal/seed pass at each of them. This stays open until the base-images workflow publishes a 2.2.5 agents tier and image/tiers.env names it."
     }
   ],
   "links": [
