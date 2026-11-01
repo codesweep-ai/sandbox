@@ -280,8 +280,9 @@ chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CODEX_DIR" 2>/dev/null || true
 
 # --- OpenCode auth (cs-opencode profile: OPENCODE_CONFIG_DIR=~/.cs-opencode) ---
 # Same model as Codex above. opencode.json ships in the home skeleton; auth.json is installed
-# from the seed first boot only. The cs-opencode wrapper folds it into OPENCODE_AUTH_CONTENT
-# (inline env) so the credential never lands in opencode's data dir next to the session db.
+# from the seed first boot only. The cs-opencode wrapper hands its API keys to opencode inline,
+# in OPENCODE_CONFIG_CONTENT, so the credential never lands in opencode's database beside the
+# sessions.
 OC_DIR="$CS_SANDBOX_HOME/.cs-opencode"
 mkdir -p "$OC_DIR"; chmod 700 "$OC_DIR" 2>/dev/null || true
 install_agent_cred opencode "$OC_DIR" auth.json

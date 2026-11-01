@@ -386,8 +386,8 @@ func TestCLIAgentLoginInheritedLive(t *testing.T) {
 
 // TestCLIOpenCodeLoginInheritedLive is the opencode half of the test above: the
 // credential lands in the seed and at 0600 in the profile the cs-opencode wrapper
-// binds, and the wrapper hands it to opencode inline rather than leaving it on
-// disk for opencode to find beside the session db.
+// binds, and the wrapper hands it to opencode inline rather than leaving it for
+// opencode to store beside the sessions.
 func TestCLIOpenCodeLoginInheritedLive(t *testing.T) {
 	r, host := liveSetup(t)
 	ctx := context.Background()
@@ -413,10 +413,10 @@ func TestCLIOpenCodeLoginInheritedLive(t *testing.T) {
 	if strings.Join(in.AgentLogins, ",") != "opencode" {
 		t.Errorf("state AgentLogins = %v, want [opencode]", in.AgentLogins)
 	}
-	// The wrapper folds the credential into OPENCODE_AUTH_CONTENT; opencode's own
-	// data dir must stay free of it.
+	// The wrapper hands the key to opencode inline; opencode's own data dir must stay
+	// free of it.
 	if got := strings.TrimSpace(inBox(ctx, r, host, name,
-		"OPENCODE_AUTH_CONTENT= cs-opencode --version >/dev/null 2>&1; "+
+		"cs-opencode --version >/dev/null 2>&1; "+
 			"test -f ~/.local/share/opencode/auth.json && echo leaked || echo clean")); got != "clean" {
 		t.Errorf("credential reached opencode's data dir: %q", got)
 	}

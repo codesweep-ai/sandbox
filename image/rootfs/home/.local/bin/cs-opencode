@@ -2,11 +2,17 @@
 # Launch opencode under the cs-opencode profile — the OpenCode counterpart of cs-claude/cs-codex.
 # A dedicated profile keeps the sandbox's opencode config, sessions, and auth isolated from any
 # personal ~/.config/opencode or ~/.local/share/opencode, using opencode's first-class overrides
-# (NOT blunt XDG redirection, which children of opencode's bash tool would inherit):
-#   OPENCODE_CONFIG_DIR  -> ~/.cs-opencode          (opencode.json with the pinned model, AGENTS.md)
+# (NOT blunt XDG redirection, which children of opencode's shell tool would inherit):
+#   OPENCODE_CONFIG_DIR  -> ~/.cs-opencode          (opencode.json with the pinned model, AGENTS.md,
+#                                                    service.json)
 #   OPENCODE_DB          -> ~/.cs-opencode/opencode.db   (session store, isolated per profile)
-#   OPENCODE_AUTH_CONTENT <- ~/.cs-opencode/auth.json    (inline; the credential is NEVER written
-#                            into opencode's data dir, where it would sit beside the session db)
+#
+# opencode attaches every client to one per-user background service by default. That service
+# keeps the environment of whichever client started it, so the base URL and keys set here would
+# never reach it, and it would be shared with any personal opencode on the same account. The
+# profile's service.json turns it off: every client of this profile starts a private server on
+# its own environment, or connects to the one it names with --server, which is how
+# cs-opencode-turn drives the server it starts itself.
 #
 # YOLO mode is enabled when CS_OPENCODE_YOLO is set or the marker ~/.cs-opencode/.yolo exists;
 # cs-sandbox creates that marker for `--yolo` agent instances. YOLO appends --auto (auto-approve
@@ -24,55 +30,70 @@ mkdir -p "$OC_DIR" 2>/dev/null || true   # ensure the profile dir exists (first 
 export OPENCODE_CONFIG_DIR="$OC_DIR"
 export OPENCODE_DB="$OC_DIR/opencode.db"
 # The binary can't write read-only /opt anyway; silence the upgrade nag and any shadow-install
-# attempt, and keep sessions private.
+# attempt.
 export OPENCODE_DISABLE_AUTOUPDATE=1
-export OPENCODE_DISABLE_SHARE=1
 
-# Fold a seeded credential file into the inline-auth env var (short-circuits auth.json reads).
-if [ -f "$OC_DIR/auth.json" ] && [ -z "${OPENCODE_AUTH_CONTENT:-}" ]; then
-  OPENCODE_AUTH_CONTENT="$(cat "$OC_DIR/auth.json")"
-  export OPENCODE_AUTH_CONTENT
+# The background service stays off for this profile. Written once and only when absent, so a
+# profile whose owner turned the service back on (`cs-opencode service set disabled false`)
+# keeps that choice. Several servers of the profile then share its database, which is safe:
+# only the managed service resumes a turn another process left unfinished, so none of them
+# takes over a turn in flight.
+if [ ! -e "$OC_DIR/service.json" ]; then
+  ( umask 077; printf '{"disabled": true}\n' > "$OC_DIR/service.json" ) 2>/dev/null \
+    || echo "cs-opencode: could not write $OC_DIR/service.json; clients will use opencode's shared background service" >&2
 fi
 
-# Point opencode's active provider at another endpoint — a gateway, a proxy, a
-# traffic recorder.
-#
-# opencode's base URL belongs to the PROVIDER, not the client: it reads
-# OPENAI_BASE_URL and ANTHROPIC_BASE_URL and nothing else, so a model on any
-# other provider (fireworks, say) cannot be redirected by environment alone. The
-# route that works for every provider is a baseURL in the config, and
-# OPENCODE_CONFIG_CONTENT supplies one inline. It MERGES over this profile's
-# opencode.json rather than replacing it, so the pinned model, the permissions
-# and disabled_providers all survive — checked, not assumed.
-#
-# The provider is taken from the pinned model's own slug, because that is the
-# provider this session will actually use. Nothing is written to disk, so an
+# One inline config, merged over this profile's opencode.json, for what the profile's files
+# cannot say:
+#   * the base URL. opencode's base URL belongs to the PROVIDER, and opencode reads no variable
+#     for one, so the route that works for every provider is a baseURL in the config.
+#     OPENCODE_BASE_URL points the provider the pinned model names, because that is the provider
+#     this session will actually use. Deliberately not OPENAI_BASE_URL: it already means the
+#     openai provider, and quietly repointing a fireworks model with it would surprise anyone
+#     who set it for the reason it exists;
+#   * the API keys in a seeded ~/.cs-opencode/auth.json. opencode keeps its own credentials in
+#     its database and reads no auth file, so these keys travel inline instead of being written
+#     into it. A key opencode already holds, or one in the provider's own variable, comes first;
+#   * the caller's own OPENCODE_CONFIG_CONTENT, merged last so what it says wins.
+# The content MERGES over the profile's opencode.json rather than replacing it, so the pinned
+# model, the permissions and disabled_providers all survive. Nothing is written to disk, so an
 # unset variable changes nothing and switching endpoints leaves no state behind.
-#
-# Deliberately not OPENAI_BASE_URL: opencode already gives that one a narrower
-# meaning, its openai provider, and quietly repointing a fireworks model with it
-# would surprise anyone who set it for the reason it exists. A caller who has
-# already composed OPENCODE_CONFIG_CONTENT keeps theirs.
-if [ -n "${OPENCODE_BASE_URL:-}" ] && [ -z "${OPENCODE_CONFIG_CONTENT:-}" ]; then
+if [ -n "${OPENCODE_BASE_URL:-}" ] || [ -f "$OC_DIR/auth.json" ]; then
   if command -v jq >/dev/null 2>&1; then
-    _prov="$(jq -r '(.model // "") | split("/")[0]' "$OC_DIR/opencode.json" 2>/dev/null || true)"
-    if [ -n "${_prov:-}" ] && [ "$_prov" != "null" ]; then
-      OPENCODE_CONFIG_CONTENT="$(jq -nc --arg p "$_prov" --arg u "$OPENCODE_BASE_URL" \
-        '{provider: {($p): {options: {baseURL: $u}}}}')"
-      export OPENCODE_CONFIG_CONTENT
-    else
-      echo "cs-opencode: OPENCODE_BASE_URL is set but $OC_DIR/opencode.json names no model, so no provider to point" >&2
+    _cfg='{}'
+    if [ -n "${OPENCODE_BASE_URL:-}" ]; then
+      _prov="$(jq -r '(.model // "") | split("/")[0]' "$OC_DIR/opencode.json" 2>/dev/null || true)"
+      if [ -n "${_prov:-}" ] && [ "$_prov" != "null" ]; then
+        _cfg="$(jq -nc --argjson c "$_cfg" --arg p "$_prov" --arg u "$OPENCODE_BASE_URL" '$c * {provider: {($p): {options: {baseURL: $u}}}}')"
+      else
+        echo "cs-opencode: OPENCODE_BASE_URL is set but $OC_DIR/opencode.json names no model, so no provider to point" >&2
+      fi
     fi
-    unset _prov
+    if [ -f "$OC_DIR/auth.json" ]; then
+      _keys="$(jq -c 'with_entries(select(.value.type == "api" and (.value.key // "") != ""))
+        | with_entries(.value = {options: {apiKey: .value.key}}) | {provider: .}' "$OC_DIR/auth.json" 2>/dev/null || true)"
+      [ -n "$_keys" ] && _cfg="$(jq -nc --argjson c "$_cfg" --argjson k "$_keys" '$c * $k')"
+      if jq -e 'any(.[]; .type != "api")' "$OC_DIR/auth.json" >/dev/null 2>&1; then
+        echo "cs-opencode: $OC_DIR/auth.json holds a login opencode cannot take inline; sign in with 'cs-opencode auth login'" >&2
+      fi
+    fi
+    if [ "$_cfg" != '{}' ]; then
+      if [ -n "${OPENCODE_CONFIG_CONTENT:-}" ]; then
+        _cfg="$(jq -nc --argjson c "$_cfg" --argjson u "$OPENCODE_CONFIG_CONTENT" '$c * $u' 2>/dev/null)" \
+          || { echo "cs-opencode: OPENCODE_CONFIG_CONTENT is not JSON; it was left as it is" >&2; _cfg="$OPENCODE_CONFIG_CONTENT"; }
+      fi
+      OPENCODE_CONFIG_CONTENT="$_cfg"
+      export OPENCODE_CONFIG_CONTENT
+    fi
+    unset _prov _cfg _keys
   else
-    echo "cs-opencode: OPENCODE_BASE_URL is set but jq is missing, so the provider base URL was not applied" >&2
+    echo "cs-opencode: jq is missing, so the provider base URL and the profile's API keys were not applied" >&2
   fi
 fi
 
-# The context hook is an OpenCode plugin, and OpenCode installs its plugin SDK from npm on the
-# first start that finds any plugin, blocking that start's first session until the install is
-# done. A member with no hand-off line has no use for the plugin, so it is kept out of the
-# profile's plugins directory and linked in here only when CS_HANDOFF_TOKENS names a line. The
+# The context hook is an OpenCode plugin. A member with no hand-off line has no use for it, so it
+# is kept out of the profile's plugins directory and linked in here only when CS_HANDOFF_TOKENS
+# names a line, and a member with no line starts exactly as it would without the feature. The
 # link stays once made: the plugin registers nothing without the line, and a start with no line
 # after one with it costs nothing new. A missing source is reported, not fatal: the agent still
 # runs, without the hook.
@@ -89,10 +110,10 @@ fi
 
 if [ -n "${CS_OPENCODE_YOLO:-}" ] || [ -f "$OC_DIR/.yolo" ]; then
   # --auto exists on the TUI (default command) and `run` only; injecting it into other
-  # subcommands (serve, export, session, db, ...) would be an unknown-flag error.
+  # subcommands (serve, session, auth, mini, ...) would be an unknown-flag error.
   case "${1:-}" in
     run) shift; exec opencode run --auto "$@" ;;
-    completion|acp|mcp|attach|debug|providers|auth|agent|upgrade|uninstall|serve|web|models|stats|export|import|github|pr|session|plugin|plug|db) ;;
+    upgrade|update|uninstall|acp|api|debug|auth|mcp|plugin|models|stats|mini|session|service|reload|pair|serve) ;;
     *) exec opencode --auto "$@" ;;
   esac
 fi

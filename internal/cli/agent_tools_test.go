@@ -203,10 +203,17 @@ func TestOpenCodeProfileConfigFailsClosed(t *testing.T) {
 }
 
 // TestOpenCodeWrapperProfile: the cs-opencode wrapper is what binds the isolated profile.
-// A seeded credential must reach opencode as inline OPENCODE_AUTH_CONTENT rather than being
-// left for opencode to read out of its data dir beside the session db.
+//
+// opencode reads no auth file and no inline-auth variable, so a seeded API key reaches it inside
+// the config the wrapper composes rather than being written beside the session db. The profile
+// turns opencode's shared background service off, because that service keeps the environment of
+// whichever client started it and would never see the profile's; an owner who turned it back on
+// keeps that choice.
 func TestOpenCodeWrapperProfile(t *testing.T) {
 	skipUnlessLinux(t)
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("the wrapper composes the config with jq")
+	}
 	home := t.TempDir()
 	bin := filepath.Join(home, "bin")
 	if err := os.MkdirAll(bin, 0o700); err != nil {
@@ -217,28 +224,34 @@ func TestOpenCodeWrapperProfile(t *testing.T) {
 		"echo \"argv: $*\"\n"+
 		"echo \"config: $OPENCODE_CONFIG_DIR\"\n"+
 		"echo \"db: $OPENCODE_DB\"\n"+
-		"echo \"auth: $OPENCODE_AUTH_CONTENT\"\n"+
+		"echo \"content: $OPENCODE_CONFIG_CONTENT\"\n"+
 		"echo \"key: $FIREWORKS_API_KEY\"\n")
 	ocDir := filepath.Join(home, ".cs-opencode")
 	if err := os.MkdirAll(ocDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(ocDir, "auth.json"), []byte(`{"tok":"seeded"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(ocDir, "opencode.json"),
+		[]byte(`{"model":"fireworks-ai/accounts/fireworks/models/kimi-k3"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ocDir, "auth.json"),
+		[]byte(`{"fireworks-ai":{"type":"api","key":"seeded"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(ocDir, "env"), []byte("FIREWORKS_API_KEY=from-env-file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	out, exit := runScript(t, home, bin, "cs-opencode")
+	out, exit := runScriptStdin(t, home, bin, openCodeNoEndpoints, "", "cs-opencode")
 	if exit != 0 {
 		t.Fatalf("cs-opencode exit %d: %s", exit, out)
 	}
 	for _, want := range []string{
+		"argv: \n",
 		"config: " + ocDir,
 		"db: " + filepath.Join(ocDir, "opencode.db"),
-		`auth: {"tok":"seeded"}`, // the credential is passed inline, not by path
-		"key: from-env-file",     // the profile env file is sourced for provider keys
+		`{"provider":{"fireworks-ai":{"options":{"apiKey":"seeded"}}}}`, // the seeded key, inline
+		"key: from-env-file", // the profile env file is sourced for provider keys
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("wrapper output missing %q:\n%s", want, out)
@@ -248,8 +261,33 @@ func TestOpenCodeWrapperProfile(t *testing.T) {
 		t.Errorf("non-yolo launch must not pass --auto:\n%s", out)
 	}
 
-	// YOLO adds --auto to the TUI and to `run`, but never to a subcommand that would
-	// reject the flag.
+	// The service switch is written once, where only the account can read it.
+	service := filepath.Join(ocDir, "service.json")
+	raw, err := os.ReadFile(service)
+	if err != nil {
+		t.Fatalf("no service.json: every client would join the shared background service: %v", err)
+	}
+	var cfg struct {
+		Disabled bool `json:"disabled"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil || !cfg.Disabled {
+		t.Errorf("service.json = %s, want the background service disabled", raw)
+	}
+	if m := mode(t, service); m.Perm() != 0o600 {
+		t.Errorf("service.json mode = %o, want 600", m.Perm())
+	}
+	if err := os.WriteFile(service, []byte(`{"disabled": false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, exit := runScript(t, home, bin, "cs-opencode"); exit != 0 {
+		t.Fatalf("second launch exit %d", exit)
+	}
+	if raw, _ := os.ReadFile(service); string(raw) != `{"disabled": false}` {
+		t.Errorf("the wrapper rewrote an owner's service.json: %s", raw)
+	}
+
+	// YOLO adds --auto to the TUI and to `run`, but never to a subcommand that would reject
+	// the flag.
 	if err := os.WriteFile(filepath.Join(ocDir, ".yolo"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -258,9 +296,13 @@ func TestOpenCodeWrapperProfile(t *testing.T) {
 		args     []string
 		wantArgv string
 	}{
-		{"tui", nil, "argv: --auto"},
-		{"run", []string{"run", "do it"}, "argv: run --auto do it"},
-		{"serve", []string{"serve", "--port", "1234"}, "argv: serve --port 1234"},
+		{"tui", nil, "argv: --auto\n"},
+		{"run", []string{"run", "do it"}, "argv: run --auto do it\n"},
+		{"tui on a server", []string{"--server", "http://127.0.0.1:4096", "-s", "ses_x"},
+			"argv: --auto --server http://127.0.0.1:4096 -s ses_x\n"},
+		{"session", []string{"session", "list"}, "argv: session list\n"},
+		{"mini", []string{"mini"}, "argv: mini\n"},
+		{"serve", []string{"serve", "--port", "1234"}, "argv: serve --port 1234\n"},
 	} {
 		t.Run("yolo/"+tc.name, func(t *testing.T) {
 			out, exit := runScript(t, home, bin, "cs-opencode", tc.args...)
@@ -339,7 +381,7 @@ func TestOpenCodeWrapperForwardsABaseURL(t *testing.T) {
 
 	t.Run("unset leaves the invocation alone", func(t *testing.T) {
 		writeConfig(`{"model":"fireworks-ai/accounts/fireworks/models/kimi-k3"}`)
-		out, exit := runScript(t, home, bin, "cs-opencode", "run", "x")
+		out, exit := runScriptStdin(t, home, bin, openCodeNoEndpoints, "", "cs-opencode", "run", "x")
 		if exit != 0 {
 			t.Fatalf("cs-opencode exit %d: %s", exit, out)
 		}
@@ -357,7 +399,7 @@ func TestOpenCodeWrapperForwardsABaseURL(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			writeConfig(`{"model":"` + tc.model + `"}`)
-			out, exit := runScriptStdin(t, home, bin, []string{"OPENCODE_BASE_URL=" + url}, "", "cs-opencode", "run", "x")
+			out, exit := runScriptStdin(t, home, bin, append(openCodeNoEndpoints, "OPENCODE_BASE_URL="+url), "", "cs-opencode", "run", "x")
 			if exit != 0 {
 				t.Fatalf("cs-opencode exit %d: %s", exit, out)
 			}
@@ -369,16 +411,20 @@ func TestOpenCodeWrapperForwardsABaseURL(t *testing.T) {
 		})
 	}
 
-	// A config content the caller composed themselves is theirs.
-	t.Run("a caller's own config content is kept", func(t *testing.T) {
+	// A config content the caller composed themselves is merged last, so what it says wins and
+	// what it leaves out still comes from the wrapper.
+	t.Run("a caller's own config content is merged last", func(t *testing.T) {
 		writeConfig(`{"model":"fireworks-ai/accounts/fireworks/models/kimi-k3"}`)
+		mine := `{"mine":true,"provider":{"fireworks-ai":{"options":{"baseURL":"http://theirs/v1"}}}}`
 		out, exit := runScriptStdin(t, home, bin,
-			[]string{"OPENCODE_BASE_URL=" + url, `OPENCODE_CONFIG_CONTENT={"mine":true}`}, "", "cs-opencode", "run", "x")
+			append(openCodeNoEndpoints, "OPENCODE_BASE_URL="+url, "OPENCODE_CONFIG_CONTENT="+mine), "", "cs-opencode", "run", "x")
 		if exit != 0 {
 			t.Fatalf("cs-opencode exit %d: %s", exit, out)
 		}
-		if !strings.Contains(out, `{"mine":true}`) {
-			t.Errorf("the caller's own content must survive:\n%s", out)
+		for _, want := range []string{`"mine":true`, `"baseURL":"http://theirs/v1"`} {
+			if !strings.Contains(out, want) {
+				t.Errorf("want %s in the merged content:\n%s", want, out)
+			}
 		}
 	})
 
@@ -386,7 +432,7 @@ func TestOpenCodeWrapperForwardsABaseURL(t *testing.T) {
 	// keyed on an empty string.
 	t.Run("no pinned model says so", func(t *testing.T) {
 		writeConfig(`{}`)
-		out, exit := runScriptStdin(t, home, bin, []string{"OPENCODE_BASE_URL=" + url}, "", "cs-opencode", "run", "x")
+		out, exit := runScriptStdin(t, home, bin, append(openCodeNoEndpoints, "OPENCODE_BASE_URL="+url), "", "cs-opencode", "run", "x")
 		if exit != 0 {
 			t.Fatalf("cs-opencode exit %d: %s", exit, out)
 		}
@@ -394,7 +440,12 @@ func TestOpenCodeWrapperForwardsABaseURL(t *testing.T) {
 			t.Errorf("want a diagnostic naming the gap:\n%s", out)
 		}
 	})
+
 }
+
+// openCodeNoEndpoints clears every variable cs-opencode composes a config from, so a test is
+// not decided by the environment it runs in.
+var openCodeNoEndpoints = []string{"OPENCODE_BASE_URL=", "OPENCODE_CONFIG_CONTENT="}
 
 // TestCodexWrapperForwardsABaseURL: OPENAI_BASE_URL points codex at an alternative
 // OpenAI-compatible endpoint, the way it points every other client at one.

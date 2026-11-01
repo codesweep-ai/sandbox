@@ -734,7 +734,7 @@ its agent on a sandbox-local profile.
 |---|---|---|
 | `cs-claude` | `CLAUDE_CONFIG_DIR=~/.cs-claude` | `--permission-mode auto`, `--strict-mcp-config`; under `--yolo`, `--dangerously-skip-permissions` on a deny-free profile (R89) |
 | `cs-codex` | `CODEX_HOME=~/.cs-codex` | `approval_policy=on-request`, `sandbox_mode=workspace-write` |
-| `cs-opencode` | `OPENCODE_CONFIG_DIR=~/.cs-opencode` | pinned model, blanket-allow permissions, profile-scoped session database |
+| `cs-opencode` | `OPENCODE_CONFIG_DIR=~/.cs-opencode` | pinned model, blanket-allow permissions, profile-scoped session database, a server of its own rather than OpenCode's shared background service |
 
 **R88.** Everything non-secret **MUST** be baked into the image skeleton. Everything secret **MUST** be carried
 per sandbox through the seed.
