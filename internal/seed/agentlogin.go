@@ -1,11 +1,14 @@
 package seed
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // agentProfile describes one coding agent's host profile and the credential that
@@ -19,11 +22,51 @@ type agentProfile struct {
 var agentProfiles = []agentProfile{
 	{"claude", ".credentials.json", "cs-claude"},
 	{"codex", "auth.json", "cs-codex login"},
-	// opencode keeps its own auth.json in the profile dir the cs-opencode wrapper
-	// points at, so it inherits exactly like codex. A provider API key in
+	// opencode keeps its sign-ins in its database, and they are carried as
+	// `cs-opencode auth export` prints them (openCodeSignIns). An auth.json of API
+	// keys in the profile dir is carried too, as for codex. A provider API key in
 	// ~/.cs-opencode/env is the other (and more common) opencode path; env files
 	// are never carried, same as for the other two agents.
-	{"opencode", "auth.json", "cs-opencode providers login"},
+	{"opencode", "auth.json", "cs-opencode auth login"},
+}
+
+// OpenCodeSignInsFile is the seed file that carries the host's OpenCode sign-ins,
+// as `cs-opencode auth export` prints them. The cs-opencode wrapper in the sandbox
+// imports it into the profile on its first start.
+const OpenCodeSignInsFile = "credentials.json"
+
+// openCodeExport prints the OpenCode sign-ins of the cs-opencode profile under
+// home, through the host's own cs-opencode. A variable so a test can stand in for
+// the host's CLI.
+var openCodeExport = func(home string) ([]byte, error) {
+	bin, err := exec.LookPath("cs-opencode")
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "auth", "export")
+	cmd.Env = append(os.Environ(), "HOME="+home)
+	return cmd.Output()
+}
+
+// openCodeSignIns returns the host's OpenCode sign-ins, or nil when it has none.
+// They live in the profile's database, so a profile with no database has none,
+// and nothing is run. A host whose opencode cannot export, or exports something
+// that is not a list of credentials, has none either.
+func openCodeSignIns(home string) []byte {
+	if !fileExists(filepath.Join(home, ".cs-opencode", "opencode.db")) {
+		return nil
+	}
+	out, err := openCodeExport(home)
+	if err != nil {
+		return nil
+	}
+	var creds []json.RawMessage
+	if json.Unmarshal(out, &creds) != nil || len(creds) == 0 {
+		return nil
+	}
+	return out
 }
 
 // AgentNames returns the agents whose login can be inherited, in a stable order.
@@ -79,13 +122,24 @@ func WriteAgentLogins(seedDir, home string, inherit []string, note func(string))
 			continue
 		}
 		cred := filepath.Join(home, ".cs-"+ap.name, ap.credFile)
-		if !fileExists(cred) {
+		var signIns []byte
+		if ap.name == "opencode" {
+			signIns = openCodeSignIns(home)
+		}
+		if !fileExists(cred) && signIns == nil {
 			say(fmt.Sprintf("no host %s login to inherit — run '%s' on the host first, or log in with 'cs-sandbox agent-login %s <name>' after create",
 				capitalize(ap.name), ap.loginCmd, ap.name))
 			continue
 		}
-		if err := installSecretFile(cred, filepath.Join(sd, ap.credFile)); err != nil {
-			return nil, err
+		if fileExists(cred) {
+			if err := installSecretFile(cred, filepath.Join(sd, ap.credFile)); err != nil {
+				return nil, err
+			}
+		}
+		if signIns != nil {
+			if err := writeSecretFile(filepath.Join(sd, OpenCodeSignInsFile), signIns); err != nil {
+				return nil, err
+			}
 		}
 		carried = append(carried, ap.name)
 	}

@@ -286,6 +286,9 @@ chown -R "$CS_SANDBOX_UID:$CS_SANDBOX_GID" "$CODEX_DIR" 2>/dev/null || true
 OC_DIR="$CS_SANDBOX_HOME/.cs-opencode"
 mkdir -p "$OC_DIR"; chmod 700 "$OC_DIR" 2>/dev/null || true
 install_agent_cred opencode "$OC_DIR" auth.json
+# The host's sign-ins, as its `cs-opencode auth export` printed them. The wrapper imports them
+# into the profile's database on its first start.
+install_agent_cred opencode "$OC_DIR" credentials.json
 # YOLO marker for cs-opencode (--yolo): the wrapper then runs opencode with --auto.
 if [ "${CS_SANDBOX_YOLO:-0}" = "1" ]; then
   : > "$OC_DIR/.yolo"

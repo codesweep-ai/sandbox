@@ -316,6 +316,75 @@ func TestOpenCodeWrapperProfile(t *testing.T) {
 	}
 }
 
+// TestOpenCodeWrapperImportsCarriedSignIns: the sign-ins `--inherit-agent-login opencode`
+// carries are imported into the profile's database on the first start that finds them, and
+// only then. opencode keeps sign-ins in its database, so the file is emptied rather than kept
+// beside it; it is not removed, because the guest installs a seeded credential again on any
+// boot that does not find it. A failed import keeps them for the next start, and the import
+// names the file, never the secret.
+func TestOpenCodeWrapperImportsCarriedSignIns(t *testing.T) {
+	skipUnlessLinux(t)
+	home := t.TempDir()
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(home, "calls")
+	writeStub(t, bin, "opencode", `#!/bin/sh
+echo "$*" >> "`+calls+`"
+[ "$1 $2" = "auth import" ] && exit "${STUB_IMPORT_EXIT:-0}"
+exit 0
+`)
+	ocDir := filepath.Join(home, ".cs-opencode")
+	if err := os.MkdirAll(ocDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	signIns := filepath.Join(ocDir, "credentials.json")
+	const exported = `[{"id":"cred_1","integrationID":"fireworks-ai","label":"default","active":true,"value":{"type":"key","key":"fw-secret"}}]`
+	if err := os.WriteFile(signIns, []byte(exported), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	imports := func() int {
+		raw, _ := os.ReadFile(calls)
+		return strings.Count(string(raw), "auth import "+signIns+"\n")
+	}
+
+	// A failed import keeps the sign-ins, and says so.
+	out, exit := runScriptStdin(t, home, bin, append(openCodeNoEndpoints, "STUB_IMPORT_EXIT=1"), "", "cs-opencode", "run", "x")
+	if exit != 0 || !strings.Contains(out, "could not import") {
+		t.Fatalf("a failed import must be reported and must not stop the agent; exit %d: %s", exit, out)
+	}
+	if got, _ := os.ReadFile(signIns); string(got) != exported {
+		t.Fatalf("a failed import lost the sign-ins: %s", got)
+	}
+
+	// The next start imports them, and empties the file.
+	if out, exit := runScriptStdin(t, home, bin, openCodeNoEndpoints, "", "cs-opencode", "run", "x"); exit != 0 {
+		t.Fatalf("cs-opencode exit %d: %s", exit, out)
+	}
+	if got := imports(); got != 2 {
+		t.Fatalf("auth import ran %d times; want once per start until one succeeds", got)
+	}
+	if got, _ := os.ReadFile(signIns); strings.TrimSpace(string(got)) != "[]" {
+		t.Errorf("credentials.json = %s after an import, want []", got)
+	}
+	if m := mode(t, signIns); m.Perm() != 0o600 {
+		t.Errorf("credentials.json mode = %o, want 600", m.Perm())
+	}
+
+	// Once imported, they are not imported again.
+	if out, exit := runScriptStdin(t, home, bin, openCodeNoEndpoints, "", "cs-opencode", "run", "x"); exit != 0 {
+		t.Fatalf("cs-opencode exit %d: %s", exit, out)
+	}
+	if got := imports(); got != 2 {
+		t.Errorf("auth import ran again on a start after the import")
+	}
+	if raw, _ := os.ReadFile(calls); strings.Contains(string(raw), "fw-secret") {
+		t.Errorf("the secret reached an argv:\n%s", raw)
+	}
+	covemit.Prove(t, "auth-provisioning", "opencode", "", "scripts")
+}
+
 // installOpenCodeTurnStubs fakes the driver's dependencies: a tmux whose session is always
 // alive with its server and TUI windows, a curl answering the server API (openCodeAPIStub),
 // and a cs-opencode whose `run` exits $STUB_RUN_EXIT. Each logs its calls to

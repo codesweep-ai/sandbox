@@ -81,7 +81,7 @@ Firecracker where the host has KVM, and to Podman otherwise.
 | `--group NAME` | The group whose network, keys and gateway it joins. Default `default`. |
 | `--lend-agent-login AGENT` | **Lend** a host agent login: `claude` or `codex`. The sandbox gets a fabricated credential; yours never enters it. Repeatable and comma-separated. |
 | `--lend-api-key PROVIDER` | **Lend** an LLM API key from `~/.cs-keys/<provider>`: `anthropic`, `openai` or `fireworks`. Same trade. Repeatable and comma-separated. |
-| `--inherit-agent-login AGENT` | Copy a host agent login in: `claude`, `codex` or `opencode`. The sandbox then holds the real credential. Repeatable and comma-separated. |
+| `--inherit-agent-login AGENT` | Copy a host agent login in: `claude`, `codex` or `opencode`. The sandbox then holds the real credential. For OpenCode that is every sign-in `cs-opencode auth export` prints on the host, which the sandbox imports the first time `cs-opencode` starts. Repeatable and comma-separated. |
 | `--inherit-api-key PROVIDER` | Copy an LLM API key in from `~/.cs-keys/<provider>`: `anthropic`, `openai` or `fireworks`. Repeatable and comma-separated. |
 | `--block-side-calls` | Refuse the sandbox a direct route to the hosts the lender fronts. Default true, and only meaningful with a loan. |
 | `--git-identity WHO` | Whose name and address the sandbox commits as. `host` (the default) is your own git identity. `"Name <address>"` names another. `none` sets none, and git then refuses to commit until one is set inside. Use one of the last two for a run whose sessions are recorded or published. |

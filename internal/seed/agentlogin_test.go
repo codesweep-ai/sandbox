@@ -1,6 +1,7 @@
 package seed
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,13 @@ import (
 
 	"github.com/codesweep-ai/sandbox/internal/covemit"
 )
+
+// TestMain keeps every test here off the host's own cs-opencode: a profile with a database
+// would otherwise run it to export the sign-ins. A test that wants an export stands one in.
+func TestMain(m *testing.M) {
+	openCodeExport = func(string) ([]byte, error) { return nil, errors.New("no host cs-opencode in a unit test") }
+	os.Exit(m.Run())
+}
 
 // writeProfile builds a host ~/.cs-<agent> profile with the given files.
 func writeProfile(t *testing.T, home, agent string, files map[string]string) {
@@ -140,7 +148,7 @@ func TestWriteAgentLoginsNoHostLogin(t *testing.T) {
 	for _, tc := range []struct{ agent, wantMissing, wantLoginCmd string }{
 		{"claude", "no host Claude login", "cs-claude"},
 		{"codex", "no host Codex login", "cs-codex login"},
-		{"opencode", "no host Opencode login", "cs-opencode providers login"},
+		{"opencode", "no host Opencode login", "cs-opencode auth login"},
 	} {
 		t.Run(tc.agent, func(t *testing.T) {
 			home, seedDir := t.TempDir(), t.TempDir()
@@ -156,6 +164,80 @@ func TestWriteAgentLoginsNoHostLogin(t *testing.T) {
 			if !strings.Contains(joined, tc.wantMissing) || !strings.Contains(joined, tc.wantLoginCmd) ||
 				!strings.Contains(joined, "agent-login") {
 				t.Errorf("expected an advisory naming %q and agent-login, got:\n%s", tc.wantLoginCmd, joined)
+			}
+		})
+	}
+}
+
+// TestWriteAgentLoginsCarriesOpenCodeSignIns: OpenCode keeps its sign-ins in its database
+// and writes no auth file, so they are carried as `cs-opencode auth export` prints them, beside
+// a hand-written auth.json of API keys when there is one. A profile with no database has no
+// sign-in, and the host's CLI is not run for it; an export that is empty or is not a list of
+// credentials carries nothing.
+func TestWriteAgentLoginsCarriesOpenCodeSignIns(t *testing.T) {
+	defer func() {
+		if !t.Failed() {
+			covemit.Prove(t, "login-seeding", "", "", "unit")
+		}
+	}()
+	const exported = `[{"id":"cred_1","integrationID":"fireworks-ai","label":"default","active":true,"value":{"type":"key","key":"fw-secret"}}]`
+	stub := func(t *testing.T, out string, err error) *int {
+		t.Helper()
+		calls := 0
+		old := openCodeExport
+		openCodeExport = func(string) ([]byte, error) { calls++; return []byte(out), err }
+		t.Cleanup(func() { openCodeExport = old })
+		return &calls
+	}
+	for _, tc := range []struct {
+		name          string
+		files         map[string]string
+		export        string
+		exportErr     error
+		wantCarried   bool
+		wantSignIns   bool
+		wantAuthJSON  bool
+		wantExportRun bool
+	}{
+		{"sign-ins only", map[string]string{"opencode.db": "x"}, exported, nil, true, true, false, true},
+		{"sign-ins and a key file", map[string]string{"opencode.db": "x", "auth.json": `{"openai":{"type":"api","key":"k"}}`},
+			exported, nil, true, true, true, true},
+		{"a key file and no database", map[string]string{"auth.json": `{"openai":{"type":"api","key":"k"}}`},
+			exported, nil, true, false, true, false},
+		{"a database with no sign-in", map[string]string{"opencode.db": "x"}, "[]", nil, false, false, false, true},
+		{"an opencode that cannot export", map[string]string{"opencode.db": "x"}, "", os.ErrNotExist, false, false, false, true},
+		{"an export that is not a list", map[string]string{"opencode.db": "x"}, `{"error":"x"}`, nil, false, false, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := stub(t, tc.export, tc.exportErr)
+			home, seedDir := t.TempDir(), t.TempDir()
+			writeProfile(t, home, "opencode", tc.files)
+			carried, err := WriteAgentLogins(seedDir, home, []string{"opencode"}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(carried) == 1; got != tc.wantCarried {
+				t.Errorf("carried = %v, want carried %v", carried, tc.wantCarried)
+			}
+			if got := *calls > 0; got != tc.wantExportRun {
+				t.Errorf("the host's cs-opencode ran = %v, want %v", got, tc.wantExportRun)
+			}
+			signIns := filepath.Join(seedDir, "opencode", OpenCodeSignInsFile)
+			if fi, err := os.Stat(signIns); (err == nil) != tc.wantSignIns {
+				t.Errorf("%s seeded = %v, want %v", OpenCodeSignInsFile, err == nil, tc.wantSignIns)
+			} else if err == nil {
+				if fi.Mode().Perm() != 0o600 {
+					t.Errorf("%s mode = %o, want 600", OpenCodeSignInsFile, fi.Mode().Perm())
+				}
+				if got, _ := os.ReadFile(signIns); string(got) != exported {
+					t.Errorf("%s = %s, want the export as printed", OpenCodeSignInsFile, got)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(seedDir, "opencode", "auth.json")); (err == nil) != tc.wantAuthJSON {
+				t.Errorf("auth.json seeded = %v, want %v", err == nil, tc.wantAuthJSON)
+			}
+			if _, err := os.Stat(filepath.Join(seedDir, "opencode", "opencode.db")); err == nil {
+				t.Error("the host's database was carried into the seed")
 			}
 		})
 	}

@@ -260,6 +260,11 @@ OC_DIR="$HOME_DIR/.cs-opencode"; mkdir -p "$OC_DIR"; chmod 700 "$OC_DIR" 2>/dev/
 if [ -f "$SEED/opencode/auth.json" ] && [ ! -f "$OC_DIR/auth.json" ]; then
   install -m600 "$SEED/opencode/auth.json" "$OC_DIR/auth.json"
 fi
+# The host's sign-ins, as its `cs-opencode auth export` printed them. The wrapper imports them
+# into the profile's database on its first start.
+if [ -f "$SEED/opencode/credentials.json" ] && [ ! -f "$OC_DIR/credentials.json" ]; then
+  install -m600 "$SEED/opencode/credentials.json" "$OC_DIR/credentials.json"
+fi
 if [ "${CS_SANDBOX_YOLO:-0}" = "1" ]; then
   : > "$OC_DIR/.yolo"
 else

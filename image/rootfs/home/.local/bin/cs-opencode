@@ -43,6 +43,23 @@ if [ ! -e "$OC_DIR/service.json" ]; then
     || echo "cs-opencode: could not write $OC_DIR/service.json; clients will use opencode's shared background service" >&2
 fi
 
+# Sign-ins carried from the host by `cs-sandbox create --inherit-agent-login opencode`, as the
+# host's `cs-opencode auth export` printed them. opencode keeps sign-ins in its database, so they
+# are imported into this profile's on the first start that finds them. The file is then emptied
+# rather than removed: the database holds them from then on, and a file still there is one the
+# guest does not install again at its next boot. A failed import leaves them for the next start,
+# and the lock keeps two first starts from importing them twice.
+_signins="$OC_DIR/credentials.json"
+if [ -s "$_signins" ] && [ "$(cat "$_signins")" != "[]" ] && mkdir "$OC_DIR/.importing" 2>/dev/null; then
+  if opencode auth import "$_signins" >/dev/null 2>&1; then
+    ( umask 077; printf '[]\n' > "$_signins" )
+  else
+    echo "cs-opencode: could not import the sign-ins in $_signins; they stay there for the next start" >&2
+  fi
+  rmdir "$OC_DIR/.importing" 2>/dev/null
+fi
+unset _signins
+
 # One inline config, merged over this profile's opencode.json, for what the profile's files
 # cannot say:
 #   * the base URLs. opencode's base URL belongs to the PROVIDER, and opencode reads no variable

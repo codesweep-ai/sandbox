@@ -233,7 +233,7 @@ what gives the host something to lend, and no credential is **ever baked into th
 ```bash
 cs-claude          # launch Claude Code - log in with /login, then exit
 cs-codex           # launch Codex - choose "Sign in with ChatGPT", then exit
-cs-opencode providers login   # OpenCode - pick a provider (it is usually driven by an API key)
+cs-opencode auth login        # OpenCode - pick a provider (it is usually driven by an API key)
 ```
 
 OpenCode is the exception to lending a login. It reaches a provider through whichever model it runs,

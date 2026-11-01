@@ -491,7 +491,7 @@ func normalizeInsecure(v string) string {
 var agentLaunch = map[string]string{
 	"claude":   "cs-claude",
 	"codex":    "cs-codex login",
-	"opencode": "cs-opencode providers login",
+	"opencode": "cs-opencode auth login",
 }
 
 // agentNames lists the supported agents, sorted, for errors and completion.
