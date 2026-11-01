@@ -1,26 +1,37 @@
 #!/bin/bash
 # Remote-side driver for OpenCode remote delegation (server model — the opencode counterpart of
-# cs-codex-turn). Runs ON the remote machine. Drives one conversational turn against an
-# INTERACTIVE opencode TUI kept warm in a long-running tmux session, over the HTTP API the TUI
-# hosts when launched with --port — never by scraping the tmux pane (opencode's TUI strings are
-# localized and unstable; the API is deterministic).
+# cs-codex-turn). Runs ON the remote machine. Drives one conversational turn against an opencode
+# server kept warm in a long-running tmux session, over the server's HTTP API — never by scraping
+# a pane (opencode's TUI strings are localized and unstable; the API is deterministic).
+#
+# The tmux session holds two windows. `server` runs `cs-opencode serve` on a port derived from the
+# tmux token; the session lives as long as that window does. `tui` runs the interactive TUI as a
+# client of the same server, opened on the driven session, so a human attaching sees the turn
+# render live and can intervene. opencode has no API that moves a running TUI to another session,
+# so the TUI is opened on the session once it exists, and opened again if a human closed it.
 #
 # One turn =
-#   1. ensure the warm TUI exists: it is the only server on the derived port, and a new session is
-#      minted on its own API (POST /session) and then selected in it (POST /tui/select-session), so
-#      a human attaching sees the driven session render live;
-#   2. readiness = GET /global/health on the TUI's port (no pane scraping);
-#   3. drive the turn with a blocking `cs-opencode run --attach http://127.0.0.1:<p> -s <id>
-#      --auto "<prompt>"`, watching GET /session/status for stalls (absent key = idle);
-#   4. on exit 0, UNCONDITIONALLY postcheck THIS TURN's last assistant message via
-#      GET /session/<id>/message: an `error` or a missing `time.completed` means the turn failed
-#      even though the attached client exited 0 (provider-side API errors are recorded on the
-#      session but not propagated to the attached client's exit code — verified at 1.18.10).
+#   1. ensure the server is up and knows the session: readiness = an authenticated GET /api/info
+#      that answers with the server's version (every path outside /api answers 200 with the web
+#      UI, so a status code alone proves nothing); a new session is created on it with
+#      POST /api/session, bound to the working directory;
+#   2. drive the turn with a blocking `cs-opencode run --server http://127.0.0.1:<p> -s <id>
+#      --auto`, the prompt on its stdin, watching GET /api/session/active for stalls (absent key =
+#      idle);
+#   3. read THIS TURN's messages back from GET /api/session/<id>/message and judge the turn by the
+#      `idle` message opencode appends when a session stops: its outcome is succeeded, failed or
+#      interrupted, with the provider's error. run's exit code is not the verdict. It is 1 after a
+#      stream that failed mid-step and was retried to a success, and it is 0 when the client lost
+#      its server.
 #
-# The turn is delimited by the ID of the last message that existed before it, never by a message
-# COUNT: compaction rewrites the history and inserts summary messages, so positions are not stable
-# and a positional cursor would silently return the wrong slice. `id` and `time.created` are both
-# required fields on every message, giving a primary and a fallback anchor.
+# The turn is delimited by the ID of the newest message that existed before it, never by a message
+# COUNT: compaction inserts messages of its own, so positions are not stable and a positional
+# cursor would silently return the wrong slice. `id` and `time.created` are both required fields
+# on every message, giving a primary and a fallback anchor.
+#
+# The server asks every client for a password. The driver keeps one in the profile, made once at
+# mode 600 (~/.cs-opencode/server-password), and hands it to the server and its clients in their
+# environment and to curl in ~/.cs-opencode/curlrc, so it never appears in an argv.
 #
 # The port is derived deterministically from the tmux token. The session id is emitted as a
 # trailing sentinel the local cs-opencode-remote maps to the session name (and strips):
@@ -32,17 +43,18 @@
 #        cs-opencode-turn --context [--uuid <ses_id>]
 #
 # --state says whether opencode is in a turn right now, whoever started the turn, and starts or
-# wakes nothing. It prints one line and exits 0: busy, idle, unknown (a TUI is up and its server
-# does not answer) or absent (no session). It asks the server, as the driver does, so there is
-# no screen to be blocked on and that word is never printed. With no --tmux it answers for every
-# opencode session here: busy if any is, idle only if all are. With no --uuid a TUI is busy
-# when any of its sessions is.
+# wakes nothing. It prints one line and exits 0: busy, idle, unknown (a server is up and does not
+# answer) or absent (no session). It asks the server, as the driver does, so there is no screen
+# to be blocked on and that word is never printed. With no --tmux it answers for every opencode
+# session here: busy if any is, idle only if all are. With no --uuid a server is busy when any of
+# its sessions is.
 #
 # --context reads opencode's database and says how full the conversation is. It prints one line
 # and exits 0: "tokens=<n|-> window=- compactions=<n> compacted=<epoch|-> model=<id|->", or
 # "absent" when there is no session, or "unknown" when the database cannot be read. tokens is the
 # context the latest model call carried. opencode does not record its window, so window is "-".
-# With no --uuid it answers for the newest top-level session. It starts nothing.
+# With no --uuid it answers for the newest top-level session. It starts nothing, and asks no
+# server: the context hook calls it from inside the server, which cannot answer while it waits.
 #
 # Exit codes: 0 ok, 2 turn timed out/stalled, 3 launch/setup failure, 5 turn failed (client error
 # or a provider error recorded on the session), 1 usage. 5 rather than 4 because cs-opencode-remote
@@ -148,7 +160,7 @@ while [[ $# -gt 0 ]]; do
         --state)   STATE_ONLY=true; shift ;;
         # --context is a question, not a turn, so it takes the same no-turn path as --state.
         --context) STATE_ONLY=true; CONTEXT_ONLY=true; shift ;;
-        -h|--help) trap - EXIT; sed -n '2,52p' "$0"; exit 0 ;;
+        -h|--help) trap - EXIT; sed -n '2,64p' "$0"; exit 0 ;;
         *) err "unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -176,17 +188,38 @@ fi
 # here and said out loud rather than left to whichever component noticed first.
 if [[ -n "$WORKDIR" && ! -d "$WORKDIR" ]]; then
     err "working directory '$WORKDIR' does not exist; running in $HOME instead"
-    WORKDIR=""
+    WORKDIR="$HOME"
 fi
 
-# Deterministic per-token port in 21000-25095: both the TUI and later resumes of the same token
+# Deterministic per-token port in 21000-25095: both the server and later resumes of the same token
 # derive the same value, so nothing needs to be persisted.
 port_of() { echo $(( 21000 + 16#$(printf '%s' "$1" | md5sum | cut -c1-3) )); }
 TMUX_SESSION="cs-opencode-$TOKEN"
 PORT="$(port_of "$TOKEN")"
 BASE="http://127.0.0.1:$PORT"
 
+# The profile's server password, and the curl config that carries it. Both are made only with
+# builtins, so the value never reaches an argv, and only when a turn is about to start a server.
+OC_DIR="$HOME/.cs-opencode"
+PW_FILE="$OC_DIR/server-password"
+CURLRC="$OC_DIR/curlrc"
+ensure_password() {
+    local pw
+    mkdir -p "$OC_DIR" 2>/dev/null
+    if [[ ! -s "$PW_FILE" ]]; then
+        ( umask 077; head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$PW_FILE" ) || return 1
+    fi
+    pw="$(<"$PW_FILE")"
+    if [[ ! -s "$CURLRC" || "$(<"$CURLRC")" != "user = \"opencode:$pw\"" ]]; then
+        ( umask 077; printf 'user = "opencode:%s"\n' "$pw" > "$CURLRC" ) || return 1
+    fi
+}
+# The prefix a tmux command line starts a server or client of this profile with. It names the file
+# rather than the value, which tmux's own argv would publish.
+PW_ENV="OPENCODE_PASSWORD=\"\$(cat '$PW_FILE')\""
+
 if ! $STATE_ONLY; then
+    ensure_password || { err "could not write the server password under $OC_DIR"; exit 3; }
     PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-turn.XXXXXX")"
     OUT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-out.XXXXXX")"
     ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-err.XXXXXX")"
@@ -197,8 +230,16 @@ fi
 
 # --- helpers --------------------------------------------------------------
 
-session_alive() { tmux has-session -t "$TMUX_SESSION" 2>/dev/null; }
-healthy() { curl -fsS -m 2 "$BASE/global/health" >/dev/null 2>&1; }
+# An authenticated call to the server. Never through a proxy: the server is on loopback.
+api() { curl -fsS --noproxy '*' -K "$CURLRC" "$@"; }
+
+session_alive() { tmux has-session -t "=$TMUX_SESSION" 2>/dev/null; }
+# The server window is what the session's life is measured by: a TUI left open after the server
+# died keeps the tmux session up with nothing behind it.
+server_alive() { tmux list-windows -t "=$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx server; }
+# /api/info answers 503 while the server boots and 401 without the password, which -f turns into
+# a failure; the version field is what tells the API from the web UI's fallback page.
+healthy() { api -m 2 "$BASE/api/info" 2>/dev/null | grep -q '"version"'; }
 
 wait_healthy() {
     local deadline=$(( SECONDS + ${1:-60} ))
@@ -206,11 +247,12 @@ wait_healthy() {
     return 1
 }
 
-# The server deletes a session's /session/status entry when it goes idle: present key = busy.
-# With no session id, any entry: a caller asking about the TUI rather than one session in it.
+# The server lists a session under /api/session/active while it runs and drops it when it goes
+# idle: present key = busy. With no session id, any entry: a caller asking about the server rather
+# than one session on it.
 session_busy() {
-    curl -fsS -m 5 "$BASE/session/status" 2>/dev/null \
-        | python3 -c 'import json,sys; d=json.load(sys.stdin); k=sys.argv[1]; sys.exit(0 if (k in d if k else len(d) > 0) else 1)' "$SES_ID" 2>/dev/null
+    api -m 5 "$BASE/api/session/active" 2>/dev/null \
+        | python3 -c 'import json,sys; d=json.load(sys.stdin).get("data") or {}; k=sys.argv[1]; sys.exit(0 if (k in d if k else len(d) > 0) else 1)' "$SES_ID" 2>/dev/null
 }
 
 # Several sessions of one family can be up in one sandbox. The answer is the one a caller
@@ -220,36 +262,36 @@ state_rank() { case "${1%% *}" in busy) echo 4 ;; blocked) echo 3 ;; unknown) ec
 if $CONTEXT_ONLY; then
     db="${OPENCODE_DB:-$HOME/.cs-opencode/opencode.db}"
     [[ -f "$db" ]] || { echo absent; exit 0; }
-    # A compaction is an assistant message flagged summary. Its own token count is the cost of
-    # writing the summary, not the conversation, so it is skipped, and the reading is unknown
-    # until the first model call after it. A subagent's session has a parent and is not the
-    # conversation either.
+    # A compaction is a message of its own, and its token count is the cost of writing the
+    # summary, not the conversation, so the reading is unknown until the first model call after
+    # it. A subagent's session has a parent and is not the conversation either.
     line="$(python3 - "$db" "$SES_ID" <<'PY' 2>/dev/null
 import json, sqlite3, sys
 db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 sid = sys.argv[2]
 if not sid:
-    row = db.execute("SELECT id FROM session WHERE parent_id IS NULL ORDER BY time_updated DESC LIMIT 1").fetchone()
+    row = db.execute("SELECT id FROM session_v2 WHERE parent_id IS NULL ORDER BY time_updated DESC LIMIT 1").fetchone()
     sid = row[0] if row else ""
-if not sid or not db.execute("SELECT 1 FROM session WHERE id = ?", (sid,)).fetchone():
+if not sid or not db.execute("SELECT 1 FROM session_v2 WHERE id = ?", (sid,)).fetchone():
     print("absent")
     sys.exit(0)
 tokens, comps, last, model = None, 0, None, None
-for (data,) in db.execute("SELECT data FROM message WHERE session_id = ? ORDER BY time_created", (sid,)):
+for kind, data in db.execute("SELECT type, data FROM session_message WHERE session_id = ? ORDER BY seq", (sid,)):
     m = json.loads(data)
-    if m.get("role") != "assistant":
+    if kind == "compaction":
+        if m.get("status") == "completed":
+            comps += 1
+            last = (m.get("time") or {}).get("created")
+            tokens = None
         continue
-    if m.get("summary"):
-        comps += 1
-        last = (m.get("time") or {}).get("created")
-        tokens = None
+    if kind != "assistant":
         continue
     t = m.get("tokens") or {}
-    total = t.get("total") or ((t.get("input") or 0) + (t.get("output") or 0)
-                               + ((t.get("cache") or {}).get("read") or 0) + ((t.get("cache") or {}).get("write") or 0))
+    total = ((t.get("input") or 0) + (t.get("output") or 0) + (t.get("reasoning") or 0)
+             + ((t.get("cache") or {}).get("read") or 0) + ((t.get("cache") or {}).get("write") or 0))
     if total:
         tokens = total
-        model = m.get("modelID") or model
+        model = (m.get("model") or {}).get("id") or model
 epoch = "-" if not last else str(int(last) // 1000)
 print(f"tokens={'-' if tokens is None else tokens} window=- compactions={comps} compacted={epoch} model={model or '-'}")
 PY
@@ -275,8 +317,8 @@ if $STATE_ONLY; then
 fi
 
 # Guard against a foreign server squatting the derived port (hash collision with another token's
-# TUI): our session id must be resolvable on this server.
-session_known() { curl -fsS -m 5 "$BASE/session/$SES_ID" >/dev/null 2>&1; }
+# server): our session id must be resolvable on this server.
+session_known() { api -m 5 "$BASE/api/session/$SES_ID" >/dev/null 2>&1; }
 
 # The pid listening on the derived port, or empty. ss names the socket's owner, which is the one
 # process a kill has to reach; matching the command line instead would also match the tmux process
@@ -285,7 +327,7 @@ port_pid() { ss -lptnH "sport = :$PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | hea
 
 # Whether a DIFFERENT live token derives this same port. The port is a hash of the token, so two
 # sessions in one sandbox can collide; that server belongs to its own session and reclaiming it
-# would kill somebody else's warm TUI.
+# would kill somebody else's warm server.
 port_owned_by_other_token() {
     local session token
     while read -r session; do
@@ -299,15 +341,16 @@ port_owned_by_other_token() {
 # Take the derived port back from a server that no tmux session stands behind.
 #
 # Such a server is a turn that died before it could clean up. It answers every health check below
-# while the TUI it shadows renders nothing, so the driver would attach to it, run the turn in
-# whatever directory it was started in, and leave the human attaching to a blank pane. Nothing else
-# clears it either: a restart kills the tmux session, and this process is not in one.
+# while no window shows it, so the driver would attach to it, run the turn in whatever directory
+# it was started in, and leave the human attaching to a blank pane. Nothing else clears it either:
+# a restart kills the tmux session, and this process is not in one.
 #
 # The port belongs to this token, so anything else holding it is stale by construction — except a
 # colliding token, which is checked first. The effect is what is verified, not the signal: the
-# health check is the test, and SIGKILL follows SIGTERM.
+# health check is the test, and SIGKILL follows SIGTERM. Anything listening counts, not only a
+# server that answers this profile's password.
 reclaim_port() {
-    healthy || return 0
+    [[ -n "$(port_pid)" ]] || healthy || return 0
     session_alive && return 0
     if port_owned_by_other_token; then
         err "port $PORT is held by another cs-opencode session whose token hashes to it"
@@ -316,21 +359,34 @@ reclaim_port() {
     fi
     local pid; pid="$(port_pid)"
     err "reclaiming port $PORT from a leftover opencode server (pid ${pid:-unknown})"
-    if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null; else pkill -f "opencode serve --port $PORT" 2>/dev/null; fi
-    for _ in $(seq 1 40); do healthy || return 0; sleep 0.25; done
+    if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null; else pkill -f "serve --hostname 127.0.0.1 --port $PORT" 2>/dev/null; fi
+    for _ in $(seq 1 40); do [[ -z "$(port_pid)" ]] && ! healthy && return 0; sleep 0.25; done
     [[ -n "$pid" ]] && kill -9 "$pid" 2>/dev/null
-    for _ in $(seq 1 20); do healthy || return 0; sleep 0.25; done
+    for _ in $(seq 1 20); do [[ -z "$(port_pid)" ]] && ! healthy && return 0; sleep 0.25; done
     err "port $PORT is still answering after SIGKILL; cannot start a turn on it"
     return 3
 }
 
-# Ensure the warm TUI is up, healthy, and rendering OUR session.
+# Open the TUI on the driven session, unless a TUI window is already there. A human who quits it
+# gets it back on the next turn. The turn is driven over the API and does not depend on it.
+ensure_tui() {
+    tmux list-windows -t "=$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx tui && return 0
+    local args=(new-window -t "=$TMUX_SESSION:" -n tui)
+    [[ -n "$WORKDIR" ]] && args+=(-c "$WORKDIR")
+    args+=("$PW_ENV exec cs-opencode --server $BASE -s $SES_ID")
+    tmux "${args[@]}" 2>/dev/null || err "note: the TUI did not open on $SES_ID; the turn still runs"
+}
+
+# Ensure the warm server is up, healthy, and knows OUR session.
 #
-# One server, and the TUI is it. A new session is minted on the TUI's own API and the TUI is then
-# navigated to it, so nothing else ever binds this port: a second server would have to be started,
-# killed and waited for, and a turn that died in that window left it running to shadow every turn
-# after it.
+# One server per token, and the TUI is a client of it. A new session is created on the server's
+# own API, so nothing else ever binds this port.
 ensure_session() {
+    if session_alive && ! server_alive; then
+        # The server is gone and only a TUI is left: start over, keeping the session id, since
+        # the session lives in the database rather than in the server.
+        tmux kill-session -t "=$TMUX_SESSION" 2>/dev/null
+    fi
     if session_alive; then
         if ! wait_healthy 30; then
             err "tmux session '$TMUX_SESSION' is alive but its server is not healthy on port $PORT"
@@ -339,55 +395,32 @@ ensure_session() {
         fi
         if [[ -n "$SES_ID" ]]; then
             session_known || { err "server on port $PORT does not know session $SES_ID (port collision or wrong profile)"; return 3; }
+            ensure_tui
             return 0
         fi
-        # Warm TUI but no recorded session id: the first turn never completed. Start over so the
-        # TUI is bound to the id we are about to drive.
-        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+        # Warm server but no recorded session id: the first turn never completed. Start over so
+        # the window a human attaches to shows the session we are about to drive.
+        tmux kill-session -t "=$TMUX_SESSION" 2>/dev/null
     fi
     reclaim_port || return 3
-    local newargs=(new-session -d -s "$TMUX_SESSION" -x 220 -y 50)
+    local newargs=(new-session -d -s "$TMUX_SESSION" -n server -x 220 -y 50)
     [[ -n "$WORKDIR" ]] && newargs+=(-c "$WORKDIR")
-    # -s only when the id is known. A bare launch is the new-session case, where the session does
-    # not exist yet and there is nothing for the TUI to render until it is selected below.
-    if [[ -n "$SES_ID" ]]; then
-        newargs+=("cs-opencode --port $PORT -s $SES_ID")
-    else
-        newargs+=("cs-opencode --port $PORT")
-    fi
+    newargs+=("$PW_ENV exec cs-opencode serve --hostname 127.0.0.1 --port $PORT")
     tmux "${newargs[@]}" || { err "failed to start tmux session"; return 3; }
     if ! wait_healthy 90; then
-        session_alive || { err "opencode TUI exited during startup (port $PORT in use, or launch failure)"; return 3; }
-        err "opencode TUI never became healthy on port $PORT"; return 3
+        server_alive || { err "opencode server exited during startup (port $PORT in use, or launch failure)"; return 3; }
+        err "opencode server never became healthy on port $PORT"; return 3
     fi
     if [[ -z "$SES_ID" ]]; then
         # The session is bound to the directory named here rather than to the server's cwd, so the
-        # turn runs where the caller asked even if the TUI was started somewhere else.
-        # With a hand-off line the context hook is a plugin, and the first start of a machine
-        # that finds one installs OpenCode's plugin SDK from npm before it answers for a
-        # session. The server is healthy all the while, so this is the one call that waits.
-        # Up to two minutes, in asks of ten seconds, while the ask comes back empty; the
-        # install needs the network, and a machine without it fails here as it always did.
-        local create_tries=1
-        [[ -n "${CS_HANDOFF_TOKENS:-}" && "${CS_HANDOFF_TOKENS}" != 0 ]] && create_tries=12
-        local try
-        for (( try = 1; try <= create_tries; try++ )); do
-            SES_ID="$(curl -fsS -m 10 -X POST "$BASE/session?directory=${WORKDIR:-$PWD}" \
-                -H 'content-type: application/json' -d '{}' 2>/dev/null \
-                | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null)"
-            [[ "$SES_ID" =~ ^ses_[A-Za-z0-9]{20,40}$ ]] && break
-            (( try < create_tries )) || break
-            (( try == 1 )) && err "the server answers but gave no session yet; waiting for its first start to finish"
-            sleep 1
-        done
+        # turn runs where the caller asked even if the server was started somewhere else.
+        SES_ID="$(python3 -c 'import json,os,sys; print(json.dumps({"location": {"directory": os.path.abspath(sys.argv[1])}}))' "${WORKDIR:-$PWD}" \
+            | api -m 10 -X POST -H 'content-type: application/json' --data-binary @- "$BASE/api/session" 2>/dev/null \
+            | python3 -c 'import json,sys; print((json.load(sys.stdin).get("data") or {}).get("id",""))' 2>/dev/null)"
         [[ "$SES_ID" =~ ^ses_[A-Za-z0-9]{20,40}$ ]] || { err "could not create an opencode session (got '$SES_ID')"; return 3; }
-        # Navigate the TUI to it, so a human attaching sees the driven turn rather than the home
-        # screen. The turn itself is driven over the API and does not depend on this.
-        curl -fsS -m 10 -X POST "$BASE/tui/select-session" -H 'content-type: application/json' \
-            -d "{\"sessionID\":\"$SES_ID\"}" >/dev/null 2>&1 \
-            || err "note: the TUI did not navigate to $SES_ID; the turn still runs"
     fi
-    session_known || { err "TUI server does not know session $SES_ID"; return 3; }
+    session_known || { err "server does not know session $SES_ID"; return 3; }
+    ensure_tui
     return 0
 }
 
@@ -436,30 +469,27 @@ if [[ -n "${CS_HANDOFF_TOKENS:-}" ]]; then
     { mkdir -p "$HANDOFF_DIR" && printf '%s\n' "$TMUX_SESSION" > "$HANDOFF_DIR/driven"; } 2>/dev/null || true
 fi
 
-# Anchor this turn in the session's history before submitting: the turn's output is read back
-# from the session API afterwards (an attached run client renders into the TUI, not onto its own
-# stdout). The anchor is the id of the last existing message, NOT a message COUNT — the history is
-# not append-only, because compaction rewrites it and inserts summary messages (`summary: true` on
-# AssistantMessage). A positional cursor silently returns the wrong slice the moment that happens.
-# `id` is a required field on every message, so the anchor is always available.
+# Anchor this turn in the session's history before submitting: the turn's output and verdict are
+# read back from the session API afterwards. The anchor is the id of the newest existing message,
+# NOT a message COUNT. The list is newest first, so one message is all it takes.
 #
-# TURN_START_MS is the secondary anchor for the case where compaction removed the anchor message
-# itself while we were running: `time.created` is a required epoch-ms field, so "messages created
-# since the turn began" still delimits the turn.
-ANCHOR_ID="$(curl -fsS -m 10 "$BASE/session/$SES_ID/message" 2>/dev/null | python3 -c '
+# TURN_START_MS is the secondary anchor for the case where the anchor message is gone by the time
+# the turn is read back: `time.created` is a required epoch-ms field, so "messages created since
+# the turn began" still delimits the turn.
+ANCHOR_ID="$(api -m 10 "$BASE/api/session/$SES_ID/message?order=desc&limit=1" 2>/dev/null | python3 -c '
 import json, sys
 try:
-    msgs = json.load(sys.stdin)
-    info = msgs[-1].get("info") or {} if isinstance(msgs, list) and msgs else {}
-    print(info.get("id") or "")
+    msgs = json.load(sys.stdin).get("data") or []
+    print((msgs[0] if msgs else {}).get("id") or "")
 except Exception:
     print("")
 ' 2>/dev/null)"
 TURN_START_MS="$(python3 -c 'import time; print(int(time.time() * 1000))')"
 
-RUN_ARGS=(run --attach "$BASE" -s "$SES_ID" --auto)
-
-cs-opencode "${RUN_ARGS[@]}" "$(cat "$PROMPT_FILE")" > "$OUT_FILE" 2> "$ERR_FILE" &
+# The prompt goes in on stdin, which run takes as the message: no argv carries it, and no length
+# limit applies to it.
+OPENCODE_PASSWORD="$(<"$PW_FILE")" cs-opencode run --server "$BASE" -s "$SES_ID" --auto \
+    < "$PROMPT_FILE" > "$OUT_FILE" 2> "$ERR_FILE" &
 RUN_PID=$!
 
 # TIMEOUT=0 waits indefinitely; the idle stall watchdog remains the liveness check.
@@ -470,9 +500,9 @@ while kill -0 "$RUN_PID" 2>/dev/null; do
         kill "$RUN_PID" 2>/dev/null; wait "$RUN_PID" 2>/dev/null
         err "turn did not complete within ${TIMEOUT}s"; exit 2
     fi
-    if ! session_alive; then
+    if ! server_alive; then
         kill "$RUN_PID" 2>/dev/null; wait "$RUN_PID" 2>/dev/null
-        err "tmux session died mid-turn"; exit 3
+        err "opencode server died mid-turn"; exit 3
     fi
     if (( STALL_SECS > 0 )); then
         if session_busy; then
@@ -491,59 +521,56 @@ while kill -0 "$RUN_PID" 2>/dev/null; do
 done
 wait "$RUN_PID"; RC=$?
 
-if (( RC != 0 )); then
-    err "turn failed (opencode run exit $RC)"
-    sed 's/^/  /' "$ERR_FILE" >&2
-    exit 5
-fi
-
-# Postcheck + output extraction, from ONE snapshot of the session history.
+# Verdict + output extraction, from ONE read of the turn's messages.
 #
-# The postcheck is REQUIRED even on exit 0: provider-side API errors surface only on the session's
-# assistant message (error set / time.completed absent), never on the attached client. It is scoped
-# to THIS turn's messages — checking the session's last assistant message instead would pass on the
-# PREVIOUS turn's reply whenever this turn produced nothing, reporting a silent empty success.
+# The verdict is the turn's own `idle` message. A session the provider refused records the error
+# there and on the assistant message, and checking the session's last idle message instead of
+# this turn's would pass on the PREVIOUS turn's success whenever this turn recorded nothing.
 #
-# Both the check and the output come from the same fetch, so they cannot disagree about what the
-# turn produced (two fetches could straddle a concurrent write).
-TURN_JSON="$(curl -fsS -m 10 "$BASE/session/$SES_ID/message" 2>/dev/null)"
+# Both the verdict and the output come from the same read, so they cannot disagree about what the
+# turn produced (two reads could straddle a concurrent write). The read pages newest first until
+# it reaches the anchor, so a turn of any length is read whole.
 RESULT_FILE="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-result.XXXXXX")"
 CHECK_ERR="$(mktemp "${TMPDIR:-/tmp}/cs-opencode-check.XXXXXX")"
 trap 'rc=$?; rm -f "$PROMPT_FILE" "$OUT_FILE" "$ERR_FILE" "$RESULT_FILE" "$CHECK_ERR"; record_turn_end "$rc"' EXIT
-printf '%s' "$TURN_JSON" | python3 -c '
-import json, sys
+verdict() {
+    python3 - "$BASE" "$SES_ID" "$ANCHOR_ID" "$TURN_START_MS" "$FORMAT" "$CURLRC" <<'PY' > "$RESULT_FILE" 2> "$CHECK_ERR"
+import json, math, subprocess, sys, urllib.parse
 
-anchor, start_ms, fmt = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+base, sid, anchor, start_ms, fmt, curlrc = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5], sys.argv[6]
 
 def fail(reason):
     sys.stderr.write(reason + "\n")
     sys.exit(1)
 
-try:
-    msgs = json.load(sys.stdin)
-except Exception:
-    fail("unreadable")
-if not isinstance(msgs, list):
-    fail("unreadable")
+def page(query):
+    r = subprocess.run(["curl", "-fsS", "--noproxy", "*", "-K", curlrc, "-m", "10",
+                        f"{base}/api/session/{sid}/message?{query}"], capture_output=True, text=True)
+    if r.returncode != 0:
+        fail("unreadable")
+    try:
+        doc = json.loads(r.stdout)
+    except Exception:
+        fail("unreadable")
+    return doc if isinstance(doc, dict) else {}
 
-def info_of(m):
-    i = m.get("info") if isinstance(m, dict) else None
-    return i if isinstance(i, dict) else {}
-
-# Delimit this turn: everything after the anchor message. If the anchor is gone (compaction
-# rewrote the history mid-turn) fall back to creation time, which bounds the turn just as well.
-new, idx = [], -1
-if anchor:
-    for n, m in enumerate(msgs):
-        if info_of(m).get("id") == anchor:
-            idx = n
+# Newest first, back to the anchor. If the anchor is not met, creation time bounds the turn.
+newest, found, query = [], False, "order=desc&limit=200"
+for _ in range(500):
+    doc = page(query)
+    data = doc.get("data") or []
+    for m in data:
+        if anchor and isinstance(m, dict) and m.get("id") == anchor:
+            found = True
             break
-if idx >= 0:
-    new = msgs[idx + 1:]
-elif anchor:
-    new = [m for m in msgs if (info_of(m).get("time") or {}).get("created", 0) >= start_ms]
-else:
-    new = msgs  # empty session before the turn: everything is this turn
+        newest.append(m if isinstance(m, dict) else {})
+    nxt = (doc.get("cursor") or {}).get("next")
+    if found or not data or not nxt:
+        break
+    query = "limit=200&cursor=" + urllib.parse.quote(nxt, safe="")
+if anchor and not found:
+    newest = [m for m in newest if (m.get("time") or {}).get("created", 0) >= start_ms]
+new = newest[::-1]
 
 def emit():
     if fmt == "json":
@@ -552,76 +579,95 @@ def emit():
         return
     chunks = []
     for m in new:
-        if info_of(m).get("role") != "assistant":
+        if m.get("type") != "assistant":
             continue
-        for p in m.get("parts") or []:
-            if isinstance(p, dict) and p.get("type") == "text":
-                t = (p.get("text") or "").rstrip()
+        for c in m.get("content") or []:
+            if isinstance(c, dict) and c.get("type") == "text":
+                t = (c.get("text") or "").rstrip()
                 if t:
                     chunks.append(t)
     print("\n\n".join(chunks))
 
-last = None
+idle = None
 for m in new:
-    if info_of(m).get("role") == "assistant":
-        last = info_of(m)
-if last is None:
-    fail("no-assistant-message-this-turn")
-if last.get("error"):
-    # The turn text still goes out, for the one failure the driver reports as a success: an
-    # abort that was the context hook ending a turn that had handed off.
+    if m.get("type") == "idle":
+        idle = m
+if idle is None:
+    fail("no-outcome-this-turn")
+outcome = idle.get("outcome")
+if outcome == "succeeded":
     emit()
-    e = last["error"]
-    name = e.get("name", "error") if isinstance(e, dict) else "error"
-    data = e.get("data", {}) if isinstance(e, dict) else {}
-    msg = data.get("message", "") if isinstance(data, dict) else ""
-    # The class a caller acts on, as cs-codex-turn and cs-claude-turn print it. OpenCode keeps
-    # the HTTP status the provider answered with, so the class comes from that first and from the
-    # message only when the status is missing.
-    status = data.get("statusCode") if isinstance(data, dict) else None
-    low = (str(name) + " " + str(msg)).lower()
-    if status == 429 or "rate limit" in low or "too many requests" in low:
-        cls = "throttled"
-    elif status in (500, 502, 503, 529) or "overloaded" in low or "at capacity" in low:
-        cls = "capacity"
-    elif status in (401, 403) or "providerautherror" in low or "incorrect api key" in low or "invalid api key" in low:
-        cls = "unauthorized"
-    elif "context" in low and ("length" in low or "window" in low or "too long" in low):
-        cls = "context"
-    elif status is None and any(w in low for w in ("unable to connect", "connection", "fetch failed",
-                                                   "econnrefused", "enotfound", "etimedout", "timed out", "socket")):
-        # No provider answered at all, so a caller waits it out as it does a throttle.
-        cls = "unreachable"
-    else:
-        cls = "other"
-    wait = "-"
-    headers = data.get("responseHeaders") if isinstance(data, dict) else None
-    if isinstance(headers, dict):
-        for k, v in headers.items():
-            if str(k).lower() == "retry-after" and str(v).strip().replace(".", "", 1).isdigit():
-                wait = str(v).strip()
-    sys.stderr.write(f"error:{name}:{msg[:200]}\n")
-    sys.stderr.write(f"class={cls} retry_after={wait}\n")
-    sys.exit(1)
-if not (last.get("time") or {}).get("completed"):
-    fail("incomplete")
+    sys.exit(0)
+# The turn text still goes out, for the one failure the driver reports as a success: an
+# interrupt that was the context hook ending a turn that had handed off.
 emit()
-' "$ANCHOR_ID" "$TURN_START_MS" "$FORMAT" > "$RESULT_FILE" 2> "$CHECK_ERR"
-CHECK_RC=$?
+e = idle.get("error")
+if not isinstance(e, dict):
+    for m in new:
+        if m.get("type") == "assistant" and isinstance(m.get("error"), dict):
+            e = m["error"]
+e = e if isinstance(e, dict) else {}
+kind, msg, status = str(e.get("type") or outcome), str(e.get("message") or ""), e.get("status")
+# The class a caller acts on, as cs-codex-turn and cs-claude-turn print it. opencode names the
+# kind of refusal and keeps the provider's HTTP status, so the class comes from those first and
+# from the message only when both are silent.
+low = (kind + " " + msg).lower()
+limits = ("provider.rate-limit", "provider.quota", "provider.free-limit", "provider.budget-limit",
+          "provider.model-budget-limit", "provider.go-limit", "provider.chatgpt-limit")
+if kind in limits or status == 429 or "rate limit" in low or "too many requests" in low:
+    cls = "throttled"
+elif kind == "provider.internal" or status in (500, 502, 503, 529) or "overloaded" in low or "at capacity" in low:
+    cls = "capacity"
+elif kind == "provider.auth" or status in (401, 403) or "incorrect api key" in low or "invalid api key" in low:
+    cls = "unauthorized"
+elif "context" in low and ("length" in low or "window" in low or "too long" in low or "exceed" in low):
+    cls = "context"
+elif status is None and (kind in ("provider.transport", "provider.timeout") or any(
+        w in low for w in ("unable to connect", "connection", "fetch failed", "econnrefused",
+                           "enotfound", "etimedout", "timed out", "socket"))):
+    # No provider answered at all, so a caller waits it out as it does a throttle.
+    cls = "unreachable"
+else:
+    cls = "other"
+wait = "-"
+ms = e.get("retryAfterMs")
+if isinstance(ms, (int, float)) and ms >= 0:
+    wait = str(math.ceil(ms / 1000))
+sys.stderr.write(f"outcome:{outcome}:{kind}:{msg[:200]}\n")
+sys.stderr.write(f"class={cls} retry_after={wait}\n")
+sys.exit(1)
+PY
+}
+# run returns once the server reports the session idle, and the idle message is written as the
+# session stops; a read that finds none is retried briefly before it counts.
+for try in 1 2 3; do
+    verdict && { CHECK_RC=0; break; }
+    CHECK_RC=1
+    # Only a read that found no outcome, while the session is idle, is worth another look.
+    [[ "$(sed -n 1p "$CHECK_ERR")" == no-outcome-this-turn ]] && (( try < 3 )) && ! session_busy || break
+    sleep 1
+done
 if (( CHECK_RC != 0 )); then
-    # An abort can be the context hook's own hard stop: after the handoff is written and the
-    # agent keeps making tool calls, the plugin aborts the session, and opencode records that
-    # as MessageAbortedError on the turn's last message. When the hook asked in this session
-    # and this turn and the handoff file is newer than the ask, the turn is a hand-off the
-    # hook ended, and is reported as one. An abort with no fresh handoff stays a failed turn.
-    if [[ "$(sed -n 1p "$CHECK_ERR")" == error:MessageAbortedError:* ]] && t="$(handoff_end)"; then
+    CHECK_FIRST="$(sed -n 1p "$CHECK_ERR")"
+    # An interrupt can be the context hook's own hard stop: after the handoff is written and the
+    # agent keeps making tool calls, the plugin interrupts the session, and opencode records the
+    # turn's outcome as interrupted. When the hook asked in this session and this turn and the
+    # handoff file is newer than the ask, the turn is a hand-off the hook ended, and is reported as
+    # one. An interrupt with no fresh handoff stays a failed turn.
+    if [[ "$CHECK_FIRST" == outcome:interrupted:* ]] && t="$(handoff_end)"; then
         TURN_CLASS="handoff"
         err "handoff at $t tokens, over the line of $CS_HANDOFF_TOKENS; the hook ended the turn"
         cat "$RESULT_FILE"
         printf '\n__CS_OPENCODE_SESSION_ID__ %s\n' "$SES_ID"
         exit 0
     fi
-    err "turn failed despite run exit 0 — session postcheck: $(sed -n 1p "$CHECK_ERR" | head -c 300)"
+    # Nothing this turn reached the session: the client itself failed, and its stderr says why.
+    if [[ "$CHECK_FIRST" != outcome:* ]] && (( RC != 0 )); then
+        err "turn failed (opencode run exit $RC)"
+        sed 's/^/  /' "$ERR_FILE" >&2
+        exit 5
+    fi
+    err "turn failed — session postcheck: $(printf '%s' "$CHECK_FIRST" | head -c 300)"
     # A provider's refusal carries a class line, as the other two drivers print it.
     CLASS_LINE="$(sed -n '2{/^class=/p}' "$CHECK_ERR")"
     [[ -n "$CLASS_LINE" ]] && err "failure $CLASS_LINE"

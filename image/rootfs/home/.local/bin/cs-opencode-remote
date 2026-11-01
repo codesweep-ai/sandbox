@@ -11,8 +11,9 @@
 #   cs-opencode-remote --resume <name> -b "prompt"       # run in background (async), log locally
 #
 # A session name is MANDATORY on every call. Like cs-claude-remote, a turn is driven against an
-# INTERACTIVE opencode TUI kept warm in a tmux session on the remote (via cs-opencode-turn); the
-# turn is driven over the TUI's HTTP API — never scraped from the pane.
+# opencode server kept warm in a tmux session on the remote, beside an interactive TUI opened on
+# the session (via cs-opencode-turn); the turn is driven over the server's HTTP API — never
+# scraped from the pane.
 #
 # Difference from Claude: opencode assigns its own session id, so the tmux session is named by a
 # stable local token and the opencode session id is learned from the first turn (captured from the

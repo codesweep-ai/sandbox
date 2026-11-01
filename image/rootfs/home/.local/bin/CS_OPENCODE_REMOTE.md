@@ -9,16 +9,17 @@ alias (e.g. another `cs-sandbox-<name>` instance), defaulting to this machine's 
 
 ## How it works
 
-A turn is driven against an **interactive opencode TUI kept warm in a tmux session** on the
-remote (via the `cs-opencode-turn` driver). The TUI hosts opencode's HTTP API on a per-session
-port; the driver submits each turn with a blocking `opencode run --attach`, watches the server's
-session status for stalls, and — because an attached client can exit 0 even when the provider
-errored — verifies the turn on the session's final assistant message before reporting success.
-Nothing is ever scraped from the screen. opencode assigns its own session id (`ses_…`), so the
+A turn is driven against an **opencode server kept warm in a tmux session** on the remote (via
+the `cs-opencode-turn` driver). The server runs in the tmux session's `server` window, on a port
+derived from the session token. The interactive TUI runs in its `tui` window as a client of that
+server, opened on the driven session. The driver submits each turn with a blocking
+`opencode run --server`, the prompt on its stdin, and watches the server's list of running
+sessions for stalls. It judges the turn by the outcome opencode records on the session when the
+session stops, not by the client's exit code. Nothing is ever scraped from the screen. opencode assigns its own session id (`ses_…`), so the
 tmux session is named by a stable local token and the opencode session id is learned from the
 first turn and stored for later `--resume`.
 
-The TUI is the only server on that port. Its port is derived from the session token, so a server
+The server is the only one on that port. Its port is derived from the session token, so a server
 holding it with no tmux session behind it is a turn that died before it could clean up: the driver
 says which port and which process, ends it, and starts the turn. Nothing else would, because
 `--kill` ends a tmux session and that process is not in one.
@@ -52,10 +53,11 @@ cs-opencode-remote-output api-work
 
 ## Warm session lifecycle (tmux)
 
-Each turn drives a long-lived interactive opencode TUI kept open in a tmux session on the remote,
-so the process stays warm between turns and a human attaching sees driven turns render live. The
-session id is created **before** the TUI launches (the TUI is always started with `-s <id>`), so
-the TUI never sits on its home screen showing nothing.
+Each turn drives a long-lived opencode server kept in a tmux session on the remote, so the process
+stays warm between turns, and the TUI beside it shows a human attaching the driven turns as they
+render. The session id is created **before** the TUI opens (the TUI is always started with
+`-s <id>`), so the TUI never sits on its home screen showing nothing. A human who quits the TUI
+gets it back on the next turn.
 
 ```bash
 cs-opencode-remote --kill <name>      # tear down the warm tmux process; history kept, next turn resumes
@@ -67,8 +69,8 @@ PID really is that session's runner before signalling (so a stale PID file canno
 unrelated process), tears down the runner and its SSH child along with the remote tmux, and
 records exit 130 in the log — which `-output -s` then reports as `failed`.
 
-If the tmux session has died, the next turn relaunches the TUI with `-s <id>`, so the
-conversation continues from the session history in the profile db.
+If the tmux session has died, the next turn starts the server again and opens the TUI with
+`-s <id>`, so the conversation continues from the session history in the profile db.
 
 ## Target SSH host
 
@@ -149,7 +151,7 @@ cs-opencode-turn --state
 It prints one line and always exits 0. The first word is `busy`, `idle`, `blocked`, `unknown` or
 `absent`, and `absent` means no OpenCode session exists there. `busy` can be followed by a second
 word, `busy retrying`, while the agent waits out a provider error. OpenCode is asked through its own server and not read off a screen, so it is never `blocked`.
-`unknown` is a TUI whose server does not answer.
+`unknown` is a server that does not answer.
 
 It answers for a turn whoever started it. An agent can start one of its own, when a background
 command it left running finishes, and no turn driver wraps that turn. A count of live
@@ -203,10 +205,8 @@ In a sandbox, `cs-sandbox create --env` sets them, and they reach OpenCode and i
 hook is a plugin here, because OpenCode has no command hooks. It ships at
 `~/.local/share/cs-opencode/plugins/cs-context-hook.ts`, and `cs-opencode` links it into
 `~/.cs-opencode/plugins/` when it starts OpenCode with a line set. With no line the profile holds
-no plugin, because OpenCode installs its plugin SDK from npm on the first start that finds one,
-and holds that start's first session until the install is done. With a line, that install
-happens once per machine, on the first start, and needs the network; the turn driver waits up to
-two minutes for the first session then, where it otherwise waits ten seconds.
+no plugin, so a session with no line starts exactly as it would without the hook. The plugin runs
+in the server the turn driver starts, which takes these variables from the driver's environment.
 
 Over the line, the plugin appends the ask to every tool result until the handoff file is newer
 than the first ask. Then it tells the agent once more to end its turn, and after two more tool
@@ -265,7 +265,7 @@ ended by handing off has class `handoff` on an exit-0 line ("Handing off at a co
 
 - `0` turn completed · `2` timed out or stalled · `3` launch/setup failure · `4` session busy
   (another turn holds the lock) · `5` turn failed (client error, or a provider error recorded on
-  the session — caught by the driver's postcheck even when the attached client exited 0) ·
+  the session — read from the session's own record, whatever the client exited with) ·
   `1` usage/other.
 
 `0`–`4` mean the same thing here as in the `cs-claude-remote` / `cs-codex-remote` families; `5`
@@ -275,8 +275,10 @@ failed.
 When a provider refused the turn, exit `5` comes with one line a caller can parse, the same one
 `cs-codex-turn` and `cs-claude-turn` print:
 `cs-opencode-turn: failure class=<throttled|capacity|unauthorized|context|unreachable|other> retry_after=<secs|->`.
-The class is read from the HTTP status OpenCode keeps on the error, and from the message when
-there is none. A turn that failed for another reason, such as an incomplete reply, prints no class.
+The class is read from the kind of error OpenCode records and the HTTP status it keeps, and from
+the message when both are silent. `retry_after` is the wait the provider asked for, in whole
+seconds. A turn that failed for another reason, such as one with no recorded outcome, prints no
+class.
 
 Do not confuse these with the `-s` status codes. These are the codes **this command** exits with
 after driving a turn; `cs-opencode-remote-output <name> -s` has its own, unrelated scale

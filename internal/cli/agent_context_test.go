@@ -48,8 +48,8 @@ func TestTurnDriversSayHowFullTheContextIs(t *testing.T) {
 		}
 	}
 	// opencode keeps its record in SQLite. The two tables carry only the columns the driver
-	// reads: a top-level session, a subagent session under it, a model call, the summary
-	// call a compaction writes, and one model call after it.
+	// reads: a top-level session, a subagent session under it, a model call, a compaction that
+	// failed, the summary call a compaction writes, and one model call after it.
 	openCodeDB := func(t *testing.T, home string, afterSummary bool) {
 		t.Helper()
 		db := filepath.Join(home, ".cs-opencode", "opencode.db")
@@ -58,19 +58,20 @@ func TestTurnDriversSayHowFullTheContextIs(t *testing.T) {
 		}
 		after := ""
 		if afterSummary {
-			after = `ins("m4", "ses_main", 4, {"role":"assistant","modelID":"kimi-k3","tokens":{"total":17924,"input":17000,"output":924,"cache":{"read":0,"write":0}}})`
+			after = `ins("m4", "ses_main", "assistant", 6, {"model":{"id":"kimi-k3","providerID":"fireworks-ai"},"tokens":{"input":17000,"output":900,"reasoning":24,"cache":{"read":0,"write":0}}})`
 		}
 		script := `
 import json, sqlite3, sys
 db = sqlite3.connect(sys.argv[1])
-db.execute("CREATE TABLE session (id TEXT, parent_id TEXT, time_updated INTEGER)")
-db.execute("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
-db.execute("INSERT INTO session VALUES ('ses_main', NULL, 100), ('ses_child', 'ses_main', 200)")
-def ins(i, s, t, d): db.execute("INSERT INTO message VALUES (?,?,?,?)", (i, s, t, json.dumps(d)))
-ins("m1", "ses_main", 1, {"role":"assistant","modelID":"kimi-k3","tokens":{"total":32853,"input":32000,"output":853,"cache":{"read":0,"write":0}}})
-ins("m2", "ses_main", 2, {"role":"user"})
-ins("m3", "ses_main", 3, {"role":"assistant","summary":True,"mode":"compaction","time":{"created":1792267196000},"tokens":{"total":3998,"input":2950,"output":528,"cache":{"read":0,"write":0}}})
-ins("c1", "ses_child", 5, {"role":"assistant","modelID":"kimi-k3","tokens":{"total":90000,"input":90000,"output":0,"cache":{"read":0,"write":0}}})
+db.execute("CREATE TABLE session_v2 (id TEXT, parent_id TEXT, time_updated INTEGER)")
+db.execute("CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, data TEXT)")
+db.execute("INSERT INTO session_v2 VALUES ('ses_main', NULL, 100), ('ses_child', 'ses_main', 200)")
+def ins(i, s, k, n, d): db.execute("INSERT INTO session_message VALUES (?,?,?,?,?,?)", (i, s, k, n, n, json.dumps(d)))
+ins("m1", "ses_main", "assistant", 1, {"model":{"id":"kimi-k3","providerID":"fireworks-ai"},"tokens":{"input":32000,"output":853,"reasoning":0,"cache":{"read":0,"write":0}}})
+ins("m2", "ses_main", "user", 2, {"text":"go on"})
+ins("x1", "ses_main", "compaction", 3, {"status":"failed","reason":"auto","time":{"created":1792267100000},"error":{"type":"compaction.failed","message":"no"}})
+ins("m3", "ses_main", "compaction", 4, {"status":"completed","reason":"auto","summary":"...","time":{"created":1792267196000},"tokens":{"input":2950,"output":528,"reasoning":0,"cache":{"read":0,"write":0}}})
+ins("c1", "ses_child", "assistant", 5, {"model":{"id":"kimi-k3","providerID":"fireworks-ai"},"tokens":{"input":90000,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}})
 ` + after + `
 db.commit()
 `

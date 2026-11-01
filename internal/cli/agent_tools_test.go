@@ -317,28 +317,78 @@ func TestOpenCodeWrapperProfile(t *testing.T) {
 }
 
 // installOpenCodeTurnStubs fakes the driver's dependencies: a tmux whose session is always
-// alive, a curl answering the health/status/session endpoints (the message payload comes
-// from $STUB_DIR/message.json), and a cs-opencode whose `run` exits $STUB_RUN_EXIT.
+// alive with its server and TUI windows, a curl answering the server API (openCodeAPIStub),
+// and a cs-opencode whose `run` exits $STUB_RUN_EXIT. Each logs its calls to
+// $STUB_DIR/invocations, and `run` keeps the prompt it read on stdin in $STUB_DIR/prompt.
 func installOpenCodeTurnStubs(t *testing.T, bin string) {
 	t.Helper()
 	writeStub(t, bin, "opencode", "#!/bin/sh\nexit 0\n")
-	writeStub(t, bin, "tmux", "#!/bin/sh\nexit 0\n")
-	writeStub(t, bin, "cs-opencode", "#!/bin/sh\necho \"stub-response\"\nexit \"${STUB_RUN_EXIT:-0}\"\n")
-	// The first /message call is the driver's pre-submit snapshot (pre.json); the one
-	// after the turn is the history it reads back (message.json). Serving them separately
-	// is what lets a test model a history that CHANGED SHAPE during the turn.
-	writeStub(t, bin, "curl", `#!/bin/sh
-for last; do :; done
-case "$last" in
-  */global/health) exit 0 ;;
-  */session/status) echo '{}'; exit 0 ;;
-  */session/*/message)
-    if [ ! -f "$STUB_DIR/.msg_called" ]; then touch "$STUB_DIR/.msg_called"; cat "$STUB_DIR/pre.json"; else cat "$STUB_DIR/message.json"; fi
-    exit 0 ;;
-  */session/*) printf '{"id":"%s"}\n' "`+openCodeTestSessionID+`"; exit 0 ;;
+	writeStub(t, bin, "tmux", `#!/bin/sh
+[ -n "$STUB_DIR" ] && echo "tmux $*" >> "$STUB_DIR/invocations"
+case "$1" in
+  list-windows) printf 'server\ntui\n' ;;
 esac
 exit 0
 `)
+	writeStub(t, bin, "cs-opencode", `#!/bin/sh
+echo "cs-opencode $*" >> "$STUB_DIR/invocations"
+[ "$1" = run ] && cat > "$STUB_DIR/prompt"
+echo "stub-response"
+exit "${STUB_RUN_EXIT:-0}"
+`)
+	writeStub(t, bin, "curl", openCodeAPIStub(`echo '{"version":"2.2.5"}'; exit 0`))
+}
+
+// openCodeAPIStub is a curl that answers the opencode server API as the driver asks it, and
+// logs each call. health is the shell body that answers GET /api/info. The final argument is
+// the URL for every call the driver makes, and a POST's body, read from stdin, is kept in
+// $STUB_DIR/body.
+//
+// The first message-list call is the driver's pre-submit anchor (pre.json); the ones after the
+// turn read the history back (message.json, then page-<cursor>.json for each cursor it
+// follows). Serving them separately is what lets a test model a history that CHANGED SHAPE
+// during the turn.
+func openCodeAPIStub(health string) string {
+	return `#!/bin/sh
+for last; do :; done
+echo "curl $*" >> "$STUB_DIR/invocations"
+case "$*" in *--data-binary*) cat > "$STUB_DIR/body" ;; esac
+case "$last" in
+  */api/info) ` + health + ` ;;
+  */api/session/active) cat "$STUB_DIR/active.json" 2>/dev/null || echo '{"data":{}}'; exit 0 ;;
+  *cursor=*) cat "$STUB_DIR/page-${last##*cursor=}.json"; exit 0 ;;
+  */api/session/*/message*)
+    if [ ! -f "$STUB_DIR/.msg_called" ]; then touch "$STUB_DIR/.msg_called"; cat "$STUB_DIR/pre.json"; else cat "$STUB_DIR/message.json"; fi
+    exit 0 ;;
+esac
+printf '{"data":{"id":"%s"}}\n' "` + openCodeTestSessionID + `"
+exit 0
+`
+}
+
+// ocMsg is one opencode message as the server lists it. body is the rest of its fields.
+func ocMsg(id, kind string, created int64, body string) string {
+	if body != "" {
+		body = "," + body
+	}
+	return fmt.Sprintf(`{"id":%q,"type":%q,"time":{"created":%d}%s}`, id, kind, created, body)
+}
+
+// ocText is the content of an assistant message that says text.
+func ocText(text string) string {
+	return fmt.Sprintf(`"content":[{"type":"text","text":%q}]`, text)
+}
+
+// ocPage is one page of the message list, which the server returns newest first, built from
+// messages given oldest first. next, when set, is the cursor to the page of older ones.
+func ocPage(next string, oldestFirst ...string) string {
+	msgs := slices.Clone(oldestFirst)
+	slices.Reverse(msgs)
+	page := `{"data":[` + strings.Join(msgs, ",") + `]`
+	if next != "" {
+		page += fmt.Sprintf(`,"cursor":{"next":%q}`, next)
+	}
+	return page + "}"
 }
 
 // TestOpenCodeWrapperForwardsABaseURL: OPENCODE_BASE_URL points opencode's
@@ -585,33 +635,50 @@ func TestCodexWrapperForwardsABaseURL(t *testing.T) {
 	}
 }
 
+// TestOpenCodeTurnCompletionSemantics: a turn is judged by the `idle` message opencode records
+// when the session stops, never by run's exit code. run exits 1 after a step that failed mid-stream
+// and was retried to a success, and a session's own record is the one that knows how it ended.
 func TestOpenCodeTurnCompletionSemantics(t *testing.T) {
 	skipUnlessLinux(t)
-	okMessage := `[{"info":{"role":"user","time":{"created":1}}},` +
-		`{"info":{"role":"assistant","time":{"created":2,"completed":3}},"parts":[{"type":"text","text":"stub-response"}]}]`
-	providerError := `[{"info":{"role":"assistant","time":{"created":2},` +
-		`"error":{"name":"APIError","data":{"message":"unauthorized","statusCode":401}}},"parts":[]}]`
-	incomplete := `[{"info":{"role":"assistant","time":{"created":2}},"parts":[]}]`
+	user := ocMsg("msg_u", "user", 1, `"text":"do the thing"`)
+	reply := ocMsg("msg_r", "assistant", 2, ocText("stub-response"))
+	idle := func(outcome, err string) string {
+		body := fmt.Sprintf(`"outcome":%q`, outcome)
+		if err != "" {
+			body += `,"error":` + err
+		}
+		return ocMsg("msg_i", "idle", 3, body)
+	}
+	unauthorized := `{"type":"provider.auth","message":"Invalid API key provided","status":401}`
+	throttled := `{"type":"provider.rate-limit","message":"Rate limit exceeded","status":429,"retryAfterMs":6500}`
 
 	for _, tc := range []struct {
-		name, message, runExit string
-		wantExit               int
-		wantInOut              string
+		name, page, runExit string
+		wantExit            int
+		wantInOut           string
 	}{
 		// The happy path emits the turn's text plus the session-id sentinel.
-		{"success", okMessage, "0", 0, "__CS_OPENCODE_SESSION_ID__ " + openCodeTestSessionID},
-		// run exit 0 + a provider error recorded on the session = failed turn. This is the
-		// trap the postcheck exists for: attached clients do not propagate provider errors.
-		{"provider-error-despite-exit-0", providerError, "0", 5, "failure class=unauthorized retry_after=-"},
-		{"incomplete-despite-exit-0", incomplete, "0", 5, "postcheck"},
-		// A nonzero run exit is a failed turn regardless of session state.
-		{"run-exit-nonzero", okMessage, "1", 5, "turn failed"},
+		{"success", ocPage("", user, reply, idle("succeeded", "")), "0", 0, "__CS_OPENCODE_SESSION_ID__ " + openCodeTestSessionID},
+		// The session recorded the provider's refusal, whatever the client said.
+		{"provider-error", ocPage("", user, ocMsg("msg_r", "assistant", 2, `"content":[],"error":`+unauthorized),
+			idle("failed", unauthorized)), "1", 5, "failure class=unauthorized retry_after=-"},
+		{"provider-error-despite-exit-0", ocPage("", user, idle("failed", unauthorized)), "0", 5, "failure class=unauthorized retry_after=-"},
+		// The wait opencode asks for travels as milliseconds, and a caller is told whole seconds.
+		{"throttled", ocPage("", user, idle("failed", throttled)), "1", 5, "failure class=throttled retry_after=7"},
+		// A step that failed mid-stream and was retried leaves run exiting 1 on a turn that
+		// succeeded.
+		{"run-exit-nonzero-on-a-turn-that-succeeded", ocPage("", user, reply, idle("succeeded", "")), "1", 0, "stub-response"},
+		// The client failed before the session recorded anything: its own stderr says why.
+		{"run-exit-nonzero-with-nothing-recorded", ocPage(""), "1", 5, "turn failed (opencode run exit 1)"},
+		{"no-outcome-despite-exit-0", ocPage("", user, reply), "0", 5, "no-outcome-this-turn"},
+		// An interrupt the context hook did not make is a failed turn that no provider refused.
+		{"interrupted", ocPage("", user, idle("interrupted", "")), "0", 5, "failure class=other retry_after=-"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, bin := agentHome(t, ".cs-opencode-remote")
 			installOpenCodeTurnStubs(t, bin)
 			stubDir := t.TempDir()
-			writeSnapshots(t, stubDir, "[]", tc.message)
+			writeSnapshots(t, stubDir, ocPage(""), tc.page)
 			out, exit := runScriptStdin(t, home, bin,
 				[]string{"STUB_DIR=" + stubDir, "STUB_RUN_EXIT=" + tc.runExit},
 				"do the thing\n",
@@ -622,8 +689,7 @@ func TestOpenCodeTurnCompletionSemantics(t *testing.T) {
 			if !strings.Contains(out, tc.wantInOut) {
 				t.Fatalf("output missing %q: %s", tc.wantInOut, out)
 			}
-			// Turn output is read back from the session API, never from the attached
-			// client's stdout (which stays empty when a TUI hosts the server).
+			// Turn output is read back from the session API, never from the client's stdout.
 			if tc.wantExit == 0 && !strings.Contains(out, "stub-response") {
 				t.Fatalf("success output missing the session's assistant text: %s", out)
 			}
@@ -704,56 +770,57 @@ func writeSnapshots(t *testing.T, stubDir, pre, post string) {
 	}
 }
 
-// TestOpenCodeTurnAnchorsOnMessageIdentity: a turn is delimited by the ID of the last
-// message that preceded it, never by a message COUNT. opencode's history is not
-// append-only — compaction rewrites it and inserts `summary` messages — so a positional
-// cursor returns the wrong slice as soon as the shape changes under it.
+// TestOpenCodeTurnAnchorsOnMessageIdentity: a turn is delimited by the ID of the newest
+// message that preceded it, never by a message COUNT or by position: compaction adds messages
+// of its own, and a long turn spans more than one page of the list.
 func TestOpenCodeTurnAnchorsOnMessageIdentity(t *testing.T) {
 	skipUnlessLinux(t)
-	msg := func(id, role, text string, created, completed int64, extra string) string {
-		t := fmt.Sprintf(`"created":%d`, created)
-		if completed > 0 {
-			t += fmt.Sprintf(`,"completed":%d`, completed)
-		}
-		return fmt.Sprintf(`{"info":{"id":%q,"role":%q,%s"time":{%s}},"parts":[{"type":"text","text":%q}]}`,
-			id, role, extra, t, text)
-	}
+	say := func(id, text string, created int64) string { return ocMsg(id, "assistant", created, ocText(text)) }
+	ask := func(id string, created int64) string { return ocMsg(id, "user", created, `"text":"ask"`) }
+	done := func(id string, created int64) string { return ocMsg(id, "idle", created, `"outcome":"succeeded"`) }
 	// Year 2100, so it always sorts after the turn's start timestamp.
 	const future = int64(4102444800000)
 
 	for _, tc := range []struct {
 		name, pre, post string
+		pages           map[string]string
 		wantExit        int
 		wantIn          string
 		wantNotIn       []string
 	}{
 		{
-			// Compaction replaced the head of the history while the turn ran. The list is
-			// the same LENGTH as before, so a positional cursor yields nothing at all.
-			name: "history rewritten mid-turn",
-			pre: "[" + msg("msg_a", "user", "ask", 1, 0, "") + "," +
-				msg("msg_b", "assistant", "OLD REPLY", 2, 3, "") + "," +
-				msg("msg_c", "user", "ask again", 4, 0, "") + "]",
-			post: "[" + msg("msg_sum", "assistant", "SUMMARY", 5, 5, `"summary":true,`) + "," +
-				msg("msg_c", "user", "ask again", 4, 0, "") + "," +
-				msg("msg_d", "assistant", "NEW REPLY", 6, 7, "") + "]",
+			// A compaction ran inside the turn. Its summary is not the turn's answer.
+			name: "a compaction during the turn",
+			pre:  ocPage("", ask("msg_a", 1), say("msg_b", "OLD REPLY", 2), done("msg_c", 3)),
+			post: ocPage("", ask("msg_a", 1), say("msg_b", "OLD REPLY", 2), done("msg_c", 3), ask("msg_d", 4),
+				ocMsg("msg_s", "compaction", 5, `"status":"completed","reason":"auto","summary":"SUMMARY"`),
+				say("msg_e", "NEW REPLY", 6), done("msg_f", 7)),
 			wantExit: 0, wantIn: "NEW REPLY", wantNotIn: []string{"OLD REPLY", "SUMMARY"},
 		},
 		{
-			// The turn added nothing. Checking the session's last assistant message would
-			// pass on the PREVIOUS turn's reply and report a silent empty success.
+			// The turn added nothing. Checking the session's last idle message would pass on
+			// the PREVIOUS turn's and report a silent empty success.
 			name:     "turn produced nothing",
-			pre:      "[" + msg("msg_a", "assistant", "PREVIOUS TURN", 1, 2, "") + "]",
-			post:     "[" + msg("msg_a", "assistant", "PREVIOUS TURN", 1, 2, "") + "]",
-			wantExit: 5, wantIn: "no-assistant-message-this-turn", wantNotIn: []string{"PREVIOUS TURN"},
+			pre:      ocPage("", say("msg_a", "PREVIOUS TURN", 1), done("msg_b", 2)),
+			post:     ocPage("", say("msg_a", "PREVIOUS TURN", 1), done("msg_b", 2)),
+			wantExit: 5, wantIn: "no-outcome-this-turn", wantNotIn: []string{"PREVIOUS TURN"},
 		},
 		{
-			// Compaction removed the anchor itself: creation time still bounds the turn.
-			name: "anchor compacted away",
-			pre:  "[" + msg("msg_gone", "user", "ask", 1, 0, "") + "]",
-			post: "[" + msg("msg_sum", "assistant", "SUMMARY", 1, 1, `"summary":true,`) + "," +
-				msg("msg_new", "assistant", "FALLBACK REPLY", future, future+1, "") + "]",
-			wantExit: 0, wantIn: "FALLBACK REPLY", wantNotIn: []string{"SUMMARY"},
+			// The anchor is gone from the history: creation time still bounds the turn.
+			name:     "anchor gone",
+			pre:      ocPage("", ask("msg_gone", 1)),
+			post:     ocPage("", say("msg_old", "OLD REPLY", 1), say("msg_new", "FALLBACK REPLY", future), done("msg_i", future+1)),
+			wantExit: 0, wantIn: "FALLBACK REPLY", wantNotIn: []string{"OLD REPLY"},
+		},
+		{
+			// The turn is longer than a page: the read follows the cursor back to the anchor.
+			name: "a turn longer than one page",
+			pre:  ocPage("", ask("msg_a", 1), say("msg_b", "OLD REPLY", 2), done("msg_c", 3)),
+			post: ocPage("older", say("msg_f", "SECOND PAGE TEXT", 6), done("msg_g", 7)),
+			pages: map[string]string{
+				"older": ocPage("oldest", done("msg_c", 3), ask("msg_d", 4), say("msg_e", "FIRST PAGE TEXT", 5)),
+			},
+			wantExit: 0, wantIn: "FIRST PAGE TEXT\n\nSECOND PAGE TEXT", wantNotIn: []string{"OLD REPLY"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -761,6 +828,11 @@ func TestOpenCodeTurnAnchorsOnMessageIdentity(t *testing.T) {
 			installOpenCodeTurnStubs(t, bin)
 			stubDir := t.TempDir()
 			writeSnapshots(t, stubDir, tc.pre, tc.post)
+			for cursor, page := range tc.pages {
+				if err := os.WriteFile(filepath.Join(stubDir, "page-"+cursor+".json"), []byte(page), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			out, exit := runScriptStdin(t, home, bin,
 				[]string{"STUB_DIR=" + stubDir, "STUB_RUN_EXIT=0"}, "do the thing\n",
 				"cs-opencode-turn", "--tmux", "stubtoken", "--uuid", openCodeTestSessionID)
@@ -795,7 +867,7 @@ func TestOpenCodeTurnGivesUpOnAWedgedRun(t *testing.T) {
 			// A run that never returns, on a session the server reports as idle.
 			writeStub(t, bin, "cs-opencode", "#!/bin/sh\nsleep 120\n")
 			stubDir := t.TempDir()
-			writeSnapshots(t, stubDir, "[]", "[]")
+			writeSnapshots(t, stubDir, ocPage(""), ocPage(""))
 			env := []string{"STUB_DIR=" + stubDir, "CS_OPENCODE_TIMEOUT=60", "CS_OPENCODE_STALL_SECS=0", tc.env}
 			out, exit := runScriptStdin(t, home, bin, env, "do the thing\n",
 				"cs-opencode-turn", "--tmux", "stubtoken", "--uuid", openCodeTestSessionID)
@@ -2141,57 +2213,47 @@ func TestClaudeWrapperRefusesForeignMCPServers(t *testing.T) {
 	}
 }
 
-// TestOpenCodeTurnStartsOneServerForANewSession: a new session is minted on the warm TUI's
-// own API, and no second server is ever started.
+// openCodeStatefulTmux is a tmux whose session exists only once new-session has run, with a
+// server window from then on and a TUI window once new-window has run, logging every call.
+const openCodeStatefulTmux = `#!/bin/sh
+echo "tmux $*" >> "$STUB_DIR/invocations"
+case "$1" in
+  has-session) [ -f "$STUB_DIR/.server_up" ] || exit 1 ;;
+  new-session) touch "$STUB_DIR/.server_up" ;;
+  new-window) touch "$STUB_DIR/.tui_up" ;;
+  list-windows)
+    [ -f "$STUB_DIR/.server_up" ] && echo server
+    [ -f "$STUB_DIR/.tui_up" ] && echo tui ;;
+  list-sessions) exit 0 ;;
+esac
+exit 0
+`
+
+// TestOpenCodeTurnStartsOneServerForANewSession: a new session is created on the server the
+// driver starts in its tmux session, and the TUI a human attaches to is opened on it.
 //
-// The driver used to boot a transient `opencode serve` on the same derived port purely to
-// mint a session id, kill it, and wait for the port before launching the TUI. A turn that
-// died inside that window left the transient server running, and nothing cleared it: a
-// restart kills the tmux session, and that process is not in one. It then answered every
-// health check while the TUI it shadowed rendered nothing, so the next turn attached to it
-// and ran in the directory it had been started in.
+// One server per token: a second one started beside it, and killed again, is what strands a
+// server on the port when a turn dies in between. It then answers every health check while no
+// window shows it, so the next turn attaches to it and runs in the directory it was started in.
 //
-// The contract is therefore stated as an absence — no `serve` — plus the two calls that
-// replace it: the session is minted with the caller's directory, and the TUI is navigated
-// to it so a human attaching sees the driven turn.
+// The contract is stated as what the driver ran: one tmux session whose window runs `serve` on
+// loopback, no `serve` anywhere else, the session created for the caller's directory, the TUI
+// opened on that session, and the prompt and the server password in no argv.
 func TestOpenCodeTurnStartsOneServerForANewSession(t *testing.T) {
 	skipUnlessLinux(t)
 	home, bin := agentHome(t, ".cs-opencode-remote")
 	stubDir := t.TempDir()
 	installOpenCodeTurnStubs(t, bin)
-	// Record every cs-opencode invocation, then behave as the shared stub does.
-	writeStub(t, bin, "cs-opencode", "#!/bin/sh\necho \"cs-opencode $*\" >> \"$STUB_DIR/invocations\"\n"+
-		"echo \"stub-response\"\nexit \"${STUB_RUN_EXIT:-0}\"\n")
-	// Stateful, so the port reads as free before the TUI is launched and as served after:
-	// a health probe that always succeeded would look like a squatter to reclaim_port.
-	writeStub(t, bin, "tmux", `#!/bin/sh
-echo "tmux $*" >> "$STUB_DIR/invocations"
-case "$1" in
-  has-session) [ -f "$STUB_DIR/.tui_up" ] || exit 1 ;;
-  new-session) touch "$STUB_DIR/.tui_up" ;;
-esac
-exit 0
-`)
-	// A curl that logs the request line it was given, so the mint and the navigation are
-	// observable. The final argument is the URL for every call the driver makes.
-	writeStub(t, bin, "curl", `#!/bin/sh
-for last; do :; done
-echo "curl $*" >> "$STUB_DIR/invocations"
-case "$last" in
-  */global/health) [ -f "$STUB_DIR/.tui_up" ] || exit 7; exit 0 ;;
-  */session/status) echo '{}'; exit 0 ;;
-  */session/*/message)
-    if [ ! -f "$STUB_DIR/.msg_called" ]; then touch "$STUB_DIR/.msg_called"; cat "$STUB_DIR/pre.json"; else cat "$STUB_DIR/message.json"; fi
-    exit 0 ;;
-esac
-printf '{"id":"%s"}\n' "`+openCodeTestSessionID+`"
-exit 0
-`)
-	writeSnapshots(t, stubDir, "[]",
-		`[{"info":{"role":"assistant","time":{"created":2,"completed":3}},"parts":[{"type":"text","text":"stub-response"}]}]`)
+	writeStub(t, bin, "tmux", openCodeStatefulTmux)
+	// The port reads as free before the server is started and as served after: a health probe
+	// that always succeeded would look like a squatter to reclaim_port.
+	writeStub(t, bin, "curl", openCodeAPIStub(`[ -f "$STUB_DIR/.server_up" ] || exit 7; echo '{"version":"2.2.5"}'; exit 0`))
+	writeStub(t, bin, "ss", "#!/bin/sh\nexit 0\n")
+	writeSnapshots(t, stubDir, ocPage(""), ocPage("",
+		ocMsg("msg_r", "assistant", 2, ocText("stub-response")), ocMsg("msg_i", "idle", 3, `"outcome":"succeeded"`)))
 
-	// No --uuid: this is the new-session path, the only one that used to mint. The workdir has
-	// to exist, because a session is bound to it.
+	// No --uuid: this is the new-session path. The workdir has to exist, because a session is
+	// bound to it.
 	workdir := t.TempDir()
 	out, exit := runScriptStdin(t, home, bin, []string{"STUB_DIR=" + stubDir}, "do the thing\n",
 		"cs-opencode-turn", "--tmux", "stubtoken", "--workdir", workdir)
@@ -2204,23 +2266,44 @@ exit 0
 	}
 	calls := string(logged)
 
-	// The absence that is the fix: no second server, on any port.
 	for line := range strings.SplitSeq(calls, "\n") {
 		if strings.HasPrefix(line, "cs-opencode ") && strings.Contains(line, " serve") {
-			t.Errorf("the driver started a second server, which is what strands one:\n  %s", line)
+			t.Errorf("the driver started a server outside its tmux session, which is what strands one:\n  %s", line)
 		}
 	}
 	if got := strings.Count(calls, "tmux new-session"); got != 1 {
-		t.Errorf("tmux new-session called %d times; the TUI is the only server, so exactly one", got)
+		t.Errorf("tmux new-session called %d times; want exactly one", got)
 	}
-	// Minted on the TUI's own API, bound to the directory the caller named rather than to
-	// whatever the TUI's cwd happened to be.
-	if !strings.Contains(calls, "/session?directory="+workdir) {
-		t.Errorf("the session was not minted for the caller's workdir:\n%s", calls)
+	if !strings.Contains(calls, "cs-opencode serve --hostname 127.0.0.1 --port ") {
+		t.Errorf("the tmux session does not run the server on loopback:\n%s", calls)
 	}
-	// Navigated, so the warm TUI shows the driven session instead of the home screen.
-	if !strings.Contains(calls, "/tui/select-session") {
-		t.Errorf("the TUI was never navigated to the new session:\n%s", calls)
+	// Created on the server's own API, bound to the directory the caller named rather than to
+	// whatever the server's cwd happened to be.
+	body, _ := os.ReadFile(filepath.Join(stubDir, "body"))
+	if !strings.Contains(string(body), `"directory": "`+workdir+`"`) {
+		t.Errorf("the session was not created for the caller's workdir: %s", body)
+	}
+	// Opened on the new session, so the warm TUI shows the driven turn.
+	if !strings.Contains(calls, "-n tui") || !strings.Contains(calls, "-s "+openCodeTestSessionID) {
+		t.Errorf("the TUI was never opened on the new session:\n%s", calls)
+	}
+	// The prompt reached run on its stdin, and neither it nor the password is in an argv.
+	if prompt, _ := os.ReadFile(filepath.Join(stubDir, "prompt")); string(prompt) != "do the thing\n" {
+		t.Errorf("run got %q on stdin, want the prompt", prompt)
+	}
+	pw, err := os.ReadFile(filepath.Join(home, ".cs-opencode", "server-password"))
+	if err != nil || len(pw) < 32 {
+		t.Fatalf("no server password was made: %q, %v", pw, err)
+	}
+	for _, secret := range []string{string(pw), "do the thing"} {
+		if strings.Contains(calls, secret) {
+			t.Errorf("%q reached an argv:\n%s", secret, calls)
+		}
+	}
+	for _, f := range []string{"server-password", "curlrc"} {
+		if m := mode(t, filepath.Join(home, ".cs-opencode", f)); m.Perm() != 0o600 {
+			t.Errorf("%s mode = %o, want 600", f, m.Perm())
+		}
 	}
 	covemit.Prove(t, "turn-driver-semantics", "opencode", "", "scripts")
 }
@@ -2230,19 +2313,19 @@ exit 0
 //
 // The port is a hash of the session token, so anything listening on it belongs to this
 // session. One that no tmux session stands behind is a turn that died before it could clean
-// up. It answers every health check, so without this the driver attaches to it and the turn
-// runs against a server nobody can see; and nothing else clears it, because a restart kills
-// a tmux session and this process is not in one.
+// up. Without this the driver attaches to it and the turn runs against a server nobody can
+// see, or its own server cannot bind; and nothing else clears it, because a restart kills a
+// tmux session and this process is not in one.
 //
 // The squatter is a real process, because `kill` is a shell builtin and a stub on PATH would
 // never run. The test asserts the driver signalled the pid that ss named, by watching that
-// process exit.
+// process exit. It does not answer the profile's password, as a server left by an older
+// password or an older opencode would not, and it is reclaimed all the same.
 func TestOpenCodeTurnReclaimsAStrandedServer(t *testing.T) {
 	skipUnlessLinux(t)
 	home, bin := agentHome(t, ".cs-opencode-remote")
 	stubDir := t.TempDir()
 	installOpenCodeTurnStubs(t, bin)
-	writeStub(t, bin, "cs-opencode", "#!/bin/sh\necho \"stub-response\"\nexit 0\n")
 
 	squatter := exec.Command("sleep", "120")
 	if err := squatter.Start(); err != nil {
@@ -2256,38 +2339,15 @@ func TestOpenCodeTurnReclaimsAStrandedServer(t *testing.T) {
 	t.Cleanup(func() { _ = squatter.Process.Kill() })
 	pid := squatter.Process.Pid
 
-	writeStub(t, bin, "tmux", `#!/bin/sh
-case "$1" in
-  has-session) [ -f "$STUB_DIR/.tui_up" ] || exit 1 ;;
-  new-session) touch "$STUB_DIR/.tui_up" ;;
-  list-sessions) exit 0 ;;
-esac
-exit 0
-`)
+	writeStub(t, bin, "tmux", openCodeStatefulTmux)
 	// ss names the squatter while it lives, and reports nothing once it is gone.
 	writeStub(t, bin, "ss", fmt.Sprintf(`#!/bin/sh
 kill -0 %d 2>/dev/null || exit 0
 echo 'LISTEN 0 512 127.0.0.1:21453 0.0.0.0:* users:(("opencode",pid=%d,fd=22))'
 `, pid, pid))
-	// The port answers while the squatter lives, and again once the TUI is up, which is what
-	// a real reclaim looks like from the driver's side.
-	writeStub(t, bin, "curl", fmt.Sprintf(`#!/bin/sh
-for last; do :; done
-case "$last" in
-  */global/health)
-    [ -f "$STUB_DIR/.tui_up" ] && exit 0
-    kill -0 %d 2>/dev/null && exit 0
-    exit 7 ;;
-  */session/status) echo '{}'; exit 0 ;;
-  */session/*/message)
-    if [ ! -f "$STUB_DIR/.msg_called" ]; then touch "$STUB_DIR/.msg_called"; cat "$STUB_DIR/pre.json"; else cat "$STUB_DIR/message.json"; fi
-    exit 0 ;;
-esac
-printf '{"id":"%%s"}\n' "%s"
-exit 0
-`, pid, openCodeTestSessionID))
-	writeSnapshots(t, stubDir, "[]",
-		`[{"info":{"role":"assistant","time":{"created":2,"completed":3}},"parts":[{"type":"text","text":"stub-response"}]}]`)
+	writeStub(t, bin, "curl", openCodeAPIStub(`[ -f "$STUB_DIR/.server_up" ] || exit 22; echo '{"version":"2.2.5"}'; exit 0`))
+	writeSnapshots(t, stubDir, ocPage(""), ocPage("",
+		ocMsg("msg_r", "assistant", 2, ocText("stub-response")), ocMsg("msg_i", "idle", 3, `"outcome":"succeeded"`)))
 
 	out, exit := runScriptStdin(t, home, bin, []string{"STUB_DIR=" + stubDir}, "do the thing\n",
 		"cs-opencode-turn", "--tmux", "stubtoken", "--workdir", t.TempDir())
@@ -2309,38 +2369,19 @@ exit 0
 // $HOME, and says so.
 //
 // opencode binds a session to the directory it is given, so a path that is not there fails
-// every prompt on that session with `FileSystem.realPath (…) ENOENT` rather than at launch.
-// The caller is not always in a position to know: cs-campaign asks every turn to run in
-// `/workspace`, which a Firecracker member does not have.
+// every prompt on that session rather than at launch. The caller is not always in a position
+// to know: cs-campaign asks every turn to run in `/workspace`, which a Firecracker member does
+// not have.
 func TestOpenCodeTurnFallsBackFromAMissingWorkdir(t *testing.T) {
 	skipUnlessLinux(t)
 	home, bin := agentHome(t, ".cs-opencode-remote")
 	stubDir := t.TempDir()
 	installOpenCodeTurnStubs(t, bin)
-	writeStub(t, bin, "cs-opencode", "#!/bin/sh\necho \"stub-response\"\nexit 0\n")
-	writeStub(t, bin, "tmux", `#!/bin/sh
-case "$1" in
-  has-session) [ -f "$STUB_DIR/.tui_up" ] || exit 1 ;;
-  new-session) touch "$STUB_DIR/.tui_up" ;;
-  list-sessions) exit 0 ;;
-esac
-exit 0
-`)
-	writeStub(t, bin, "curl", `#!/bin/sh
-for last; do :; done
-echo "curl $*" >> "$STUB_DIR/invocations"
-case "$last" in
-  */global/health) [ -f "$STUB_DIR/.tui_up" ] || exit 7; exit 0 ;;
-  */session/status) echo '{}'; exit 0 ;;
-  */session/*/message)
-    if [ ! -f "$STUB_DIR/.msg_called" ]; then touch "$STUB_DIR/.msg_called"; cat "$STUB_DIR/pre.json"; else cat "$STUB_DIR/message.json"; fi
-    exit 0 ;;
-esac
-printf '{"id":"%s"}\n' "`+openCodeTestSessionID+`"
-exit 0
-`)
-	writeSnapshots(t, stubDir, "[]",
-		`[{"info":{"role":"assistant","time":{"created":2,"completed":3}},"parts":[{"type":"text","text":"stub-response"}]}]`)
+	writeStub(t, bin, "tmux", openCodeStatefulTmux)
+	writeStub(t, bin, "curl", openCodeAPIStub(`[ -f "$STUB_DIR/.server_up" ] || exit 7; echo '{"version":"2.2.5"}'; exit 0`))
+	writeStub(t, bin, "ss", "#!/bin/sh\nexit 0\n")
+	writeSnapshots(t, stubDir, ocPage(""), ocPage("",
+		ocMsg("msg_r", "assistant", 2, ocText("stub-response")), ocMsg("msg_i", "idle", 3, `"outcome":"succeeded"`)))
 
 	out, exit := runScriptStdin(t, home, bin, []string{"STUB_DIR=" + stubDir}, "do the thing\n",
 		"cs-opencode-turn", "--tmux", "stubtoken", "--workdir", "/workspace")
@@ -2350,14 +2391,11 @@ exit 0
 	if !strings.Contains(out, "does not exist") {
 		t.Errorf("the fallback is never silent, because the turn then runs somewhere else:\n%s", out)
 	}
-	logged, err := os.ReadFile(filepath.Join(stubDir, "invocations"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The session must not be bound to the directory that is not there: opencode accepts it
-	// and then fails every prompt on that session.
-	if strings.Contains(string(logged), "directory=/workspace") {
-		t.Errorf("the session was bound to a directory that does not exist:\n%s", logged)
+	// The session is bound to $HOME, the directory the warning names, and never to the one
+	// that is not there: opencode accepts that one and then fails every prompt on it.
+	body, _ := os.ReadFile(filepath.Join(stubDir, "body"))
+	if strings.Contains(string(body), "/workspace") || !strings.Contains(string(body), `"directory": "`+home+`"`) {
+		t.Errorf("the session was not bound to $HOME: %s", body)
 	}
 	covemit.Prove(t, "turn-driver-semantics", "opencode", "", "scripts")
 }

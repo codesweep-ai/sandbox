@@ -553,19 +553,26 @@ func TestALaterTurnThatRewritesItsHandoffIsAHandOff(t *testing.T) {
 	}
 }
 
-// runEndedOpenCodeTurn drives one OpenCode turn whose last message carries the error errJSON,
-// as the stubbed API reports it, with the hook's ask on disk for this driver's session and
-// this turn. handoff is "fresh" (written after the ask), "stale" (written before it) or
-// "none". No floor is recorded, so the session started under the line.
-func runEndedOpenCodeTurn(t *testing.T, handoff, errJSON string) (home, out string, exit int) {
+// runEndedOpenCodeTurn drives one OpenCode turn that ended with outcome, as the stubbed API
+// reports it on the turn's idle message, with the error errJSON (or none), and with the hook's
+// ask on disk for this driver's session and this turn. handoff is "fresh" (written after the
+// ask), "stale" (written before it) or "none". No floor is recorded, so the session started
+// under the line.
+func runEndedOpenCodeTurn(t *testing.T, handoff, outcome, errJSON string) (home, out string, exit int) {
 	t.Helper()
 	skipUnlessLinux(t)
 	home, bin := agentHome(t, ".cs-opencode-remote")
 	installOpenCodeTurnStubs(t, bin)
 	writeStub(t, bin, "tmux", nestedTmux)
 	stub := t.TempDir()
-	writeSnapshots(t, stub, "[]", `[{"info":{"role":"user","time":{"created":1}}},`+
-		`{"info":{"role":"assistant","time":{"created":2},"error":`+errJSON+`},"parts":[{"type":"text","text":"handing off"}]}]`)
+	idle := fmt.Sprintf(`"outcome":%q`, outcome)
+	if errJSON != "" {
+		idle += `,"error":` + errJSON
+	}
+	writeSnapshots(t, stub, ocPage(""), ocPage("",
+		ocMsg("msg_u", "user", 1, `"text":"do the thing"`),
+		ocMsg("msg_a", "assistant", 2, ocText("handing off")),
+		ocMsg("msg_i", "idle", 3, idle)))
 	file := filepath.Join(stub, "handoff.md")
 	turns := filepath.Join(home, ".cs-turns")
 	if err := os.MkdirAll(turns, 0o700); err != nil {
@@ -595,15 +602,15 @@ func runEndedOpenCodeTurn(t *testing.T, handoff, errJSON string) (home, out stri
 	return home, out, exit
 }
 
-// TestAnOpenCodeTurnTheHookAbortedIsAHandOff: after the handoff is written, the OpenCode hook
-// ends a turn whose agent keeps making tool calls by aborting the session, and opencode then
-// records MessageAbortedError on the turn. With a fresh handoff after this turn's ask, that is
-// a hand-off the hook ended: exit 0, class handoff, the turn's text and session id printed. An
-// abort with no handoff, or one older than the ask, and any other error, stays a failed turn.
-func TestAnOpenCodeTurnTheHookAbortedIsAHandOff(t *testing.T) {
-	const aborted = `{"name":"MessageAbortedError","data":{"message":"Aborted"}}`
-	t.Run("an abort after a fresh handoff", func(t *testing.T) {
-		home, out, exit := runEndedOpenCodeTurn(t, "fresh", aborted)
+// TestAnOpenCodeTurnTheHookInterruptedIsAHandOff: after the handoff is written, the OpenCode
+// hook ends a turn whose agent keeps making tool calls by interrupting the session, and opencode
+// then records the turn's outcome as interrupted. With a fresh handoff after this turn's ask,
+// that is a hand-off the hook ended: exit 0, class handoff, the turn's text and session id
+// printed. An interrupt with no handoff, or one older than the ask, and a failed turn, stay
+// failed turns.
+func TestAnOpenCodeTurnTheHookInterruptedIsAHandOff(t *testing.T) {
+	t.Run("an interrupt after a fresh handoff", func(t *testing.T) {
+		home, out, exit := runEndedOpenCodeTurn(t, "fresh", "interrupted", "")
 		if exit != 0 {
 			t.Fatalf("exit=%d: the hook ended a turn that had handed off: %s", exit, out)
 		}
@@ -621,14 +628,14 @@ func TestAnOpenCodeTurnTheHookAbortedIsAHandOff(t *testing.T) {
 			t.Fatalf("turn log line %+v; want exit 0, class handoff", l)
 		}
 	})
-	for _, tc := range []struct{ name, handoff, err, class string }{
-		{"an abort with no handoff", "none", aborted, "other"},
-		{"an abort with a handoff older than the ask", "stale", aborted, "other"},
-		{"a provider error after a fresh handoff", "fresh",
-			`{"name":"APIError","data":{"message":"Too Many Requests","statusCode":429}}`, "throttled"},
+	for _, tc := range []struct{ name, handoff, outcome, err, class string }{
+		{"an interrupt with no handoff", "none", "interrupted", "", "other"},
+		{"an interrupt with a handoff older than the ask", "stale", "interrupted", "", "other"},
+		{"a provider error after a fresh handoff", "fresh", "failed",
+			`{"type":"provider.rate-limit","message":"Too Many Requests","status":429}`, "throttled"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			home, out, exit := runEndedOpenCodeTurn(t, tc.handoff, tc.err)
+			home, out, exit := runEndedOpenCodeTurn(t, tc.handoff, tc.outcome, tc.err)
 			if exit != 5 {
 				t.Fatalf("exit=%d; want 5, a failed turn: %s", exit, out)
 			}
@@ -643,8 +650,9 @@ func TestAnOpenCodeTurnTheHookAbortedIsAHandOff(t *testing.T) {
 	}
 }
 
-// nestedTmux plays tmux for the codex and opencode drivers: a session that is already up, a
-// ready screen, a pane in the session STUB_PANE_SESSION names, and, on the codex submit, the
+// nestedTmux plays tmux for the codex and opencode drivers: a session that is already up, with
+// opencode's server and TUI windows, a ready screen, a pane in the session STUB_PANE_SESSION
+// names, and, on the codex submit, the
 // turn's answer. The session ~/.cs-turns/driven names, cs-<family>-outer, is alive only when
 // STUB_DRIVEN_ALIVE is 1.
 const nestedTmux = `#!/bin/sh
@@ -654,6 +662,7 @@ case "$1" in
       *-outer) [ "$STUB_DRIVEN_ALIVE" = 1 ] || exit 1 ;;
     esac ;;
   display-message) echo "$STUB_PANE_SESSION" ;;
+  list-windows) printf 'server\ntui\n' ;;
   capture-pane) echo "gpt-5 default · /work" ;;
   send-keys)
     if [ -n "$STUB_ROLLOUT" ] && [ ! -f "$STUB_DIR/.submitted" ]; then
@@ -707,8 +716,10 @@ func runNestedTurn(t *testing.T, family string, where ...string) (home, own, out
 		own = "cs-opencode-stubtoken"
 		installOpenCodeTurnStubs(t, bin)
 		writeStub(t, bin, "tmux", nestedTmux)
-		writeSnapshots(t, stub, "[]", `[{"info":{"role":"user","time":{"created":1}}},`+
-			`{"info":{"role":"assistant","time":{"created":2,"completed":3}},"parts":[{"type":"text","text":"done"}]}]`)
+		writeSnapshots(t, stub, ocPage(""), ocPage("",
+			ocMsg("msg_u", "user", 1, `"text":"do the thing"`),
+			ocMsg("msg_a", "assistant", 2, ocText("done")),
+			ocMsg("msg_i", "idle", 3, `"outcome":"succeeded"`)))
 		args = []string{"--tmux", "stubtoken", "--uuid", openCodeTestSessionID}
 	}
 	turns := filepath.Join(home, ".cs-turns")

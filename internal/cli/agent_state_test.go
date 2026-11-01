@@ -15,6 +15,7 @@ const stateTmux = `#!/bin/sh
 echo "$*" >> "$STUB_DIR/calls"
 target=""; prev=""
 for a in "$@"; do [ "$prev" = "-t" ] && target="$a"; prev="$a"; done
+target="${target#=}"
 case "$1" in
   ls) for s in $SESSIONS; do echo "$s"; done; exit 0 ;;
   has-session) for s in $SESSIONS; do [ "$s" = "$target" ] && exit 0; done; exit 1 ;;
@@ -135,9 +136,10 @@ func TestStateAnswersForEverySessionOfAFamily(t *testing.T) {
 	}
 }
 
-// TestOpenCodeStateAsksTheServer: opencode's driver never reads a screen. It asks the TUI's
-// own server, where a session listed under /session/status is in a turn. --state asks the
-// same two questions, so a TUI whose server does not answer is unknown rather than idle.
+// TestOpenCodeStateAsksTheServer: opencode's driver never reads a screen. It asks the server it
+// started in the tmux session, where a session listed under /api/session/active is in a turn.
+// --state asks the same two questions, so a server that does not answer is unknown rather than
+// idle.
 func TestOpenCodeStateAsksTheServer(t *testing.T) {
 	skipUnlessLinux(t)
 	const other = "ses_0000000000000000000000other"
@@ -146,10 +148,13 @@ func TestOpenCodeStateAsksTheServer(t *testing.T) {
 		args                 []string
 		want                 string
 	}{
-		{"no turn listed", "ok", `{}`, nil, "idle"},
-		{"a turn listed", "ok", `{"` + openCodeTestSessionID + `":{"type":"busy"}}`, nil, "busy"},
-		{"the server does not answer", "down", `{}`, nil, "unknown"},
-		{"asked about one session, and another is busy", "ok", `{"` + other + `":{"type":"busy"}}`,
+		{"no turn listed", "ok", `{"data":{}}`, nil, "idle"},
+		{"a turn listed", "ok", `{"data":{"` + openCodeTestSessionID + `":{"type":"running"}}}`, nil, "busy"},
+		{"the server does not answer", "down", `{"data":{}}`, nil, "unknown"},
+		// Every path outside /api answers 200 with the web UI, so only the API's own answer
+		// says the server is there.
+		{"the port answers with a web page", "page", `{"data":{}}`, nil, "unknown"},
+		{"asked about one session, and another is busy", "ok", `{"data":{"` + other + `":{"type":"running"}}}`,
 			[]string{"--tmux", "a", "--uuid", openCodeTestSessionID}, "idle"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -158,8 +163,10 @@ func TestOpenCodeStateAsksTheServer(t *testing.T) {
 			writeStub(t, bin, "curl", `#!/bin/sh
 for a in "$@"; do url="$a"; done
 case "$url" in
-  */global/health) [ "$HEALTH" = ok ] && exit 0 || exit 7 ;;
-  */session/status) [ "$HEALTH" = ok ] || exit 7; printf '%s' "$STATUS"; exit 0 ;;
+  */api/info)
+    case "$HEALTH" in ok) echo '{"version":"2.2.5"}' ;; page) echo '<!doctype html>' ;; *) exit 7 ;; esac
+    exit 0 ;;
+  */api/session/active) [ "$HEALTH" = ok ] || exit 7; printf '%s' "$STATUS"; exit 0 ;;
 esac
 exit 22
 `)
