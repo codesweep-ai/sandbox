@@ -37,6 +37,10 @@
     {
       "date": "2026-09-28",
       "text": "Reopened. The first CI run with the Async engine, run 36512296950 on e24306f, stalled the same way. Its doctor step confirmed Async on the runner, and the serial log shows Firecracker using it on every drive. All eight probes still failed with ssh exit 255. That runner copied the 1.3 GiB base rootfs in about two and a half minutes, near 9 MB/s, so its disk was as slow as the local throttle. Async stays, since it removes the event-loop freeze reproduced here, but it is not the cause CI meets. The post-mortem still has no evidence from the host side, and that is the next step."
+    },
+    {
+      "date": "2026-11-03",
+      "text": "This failure happened three more times, and the post-mortem now has evidence from the host. CI run 40156749177 on 7ea098e failed this way on 2026-10-25. Run 41728191428 on 551200c failed its first two attempts, and its third passed. In each failure the outer microVM reached its ready marker, and all eight probes then failed with ssh exit 255. The host side of the post-mortem said that no firecracker process held the instance's run.json, and the VM's tap was down with no carrier. Firecracker's own log ends at the ready marker with no exit or panic line. So the guest did not go quiet while Firecracker kept running. The Firecracker process was gone, and nothing it wrote says why. The host had 15 GB of memory free and almost no pressure when the post-mortem ran.\n\n551200c moved the tier images, and the only change in the slim tier on the path of a nested create is crun 1.28 to 1.30. The same test passed locally on that image in 86 seconds, and it failed the same way on 2026-10-25 on the older tiers. Boot time does not separate the passes from the failures either: the failing attempt booted in 2m15s, and the passes took 3m14s and 3m12s. The next step is to find what ends the Firecracker process, starting with the runner's kernel log and the exit status of the process that runs it."
     }
   ],
   "links": []
