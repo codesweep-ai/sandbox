@@ -47,7 +47,42 @@ type Kind string
 const (
 	Login Kind = "login" // an agent's host sign-in
 	Key   Kind = "key"   // an LLM API key
+	// MeterLoan lends nothing. It reads its own sandbox's token count, on
+	// MeterPath, and every other use of it is refused (R153f).
+	MeterLoan Kind = "meter"
 )
+
+// MeterPath is where a sandbox reads its own token count. The lender answers it
+// itself, and nothing under its prefix is ever forwarded.
+const MeterPath = "/cs-sandbox/usage"
+
+// meterPrefix is the lender's own namespace: no provider has a path under it.
+const meterPrefix = "/cs-sandbox/"
+
+// MeterURLEnv and MeterTokenEnv are where a lent sandbox finds its meter: the
+// URL of its reading, and the meter loan to present. They are this tool's own
+// variables, because no client reads them: the turn drivers and the hand-off
+// hook do.
+const (
+	MeterURLEnv   = "CS_METER_URL"
+	MeterTokenEnv = "CS_METER_TOKEN"
+)
+
+// MintMeter fabricates a sandbox's meter loan.
+func MintMeter(sandbox string) (Loan, error) {
+	nonce, err := nonceHex()
+	if err != nil {
+		return Loan{}, err
+	}
+	tok := TokenPrefix + sandbox + "_meter_" + nonce
+	return Loan{Token: tok, Label: tok, Kind: MeterLoan}, nil
+}
+
+// MeterEnv is the environment a sandbox reads its meter by. base is the
+// lender's own address, never a recorder's: only the lender keeps the count.
+func MeterEnv(token, base string) []string {
+	return []string{MeterURLEnv + "=" + strings.TrimSuffix(base, "/") + MeterPath, MeterTokenEnv + "=" + token}
+}
 
 // Slot is one lendable credential: where the real one is read from, how it
 // travels, and the one upstream it is good for.
@@ -301,6 +336,10 @@ type Loan struct {
 	// whose directory holds it.
 	Group string `json:"-"`
 	Name  string `json:"-"`
+	// Meter names the creation of the sandbox the loan belongs to: MeterID
+	// over every loan its file holds. Filled in by the store, like Group and
+	// Name.
+	Meter string `json:"-"`
 }
 
 // loansFile is the per-instance record, written by create and removed with the
@@ -449,8 +488,9 @@ func (f *FileLoans) reload() {
 			if err != nil {
 				continue
 			}
+			meter := MeterID(loans)
 			for _, l := range loans {
-				l.Group, l.Name = g.Name(), n.Name()
+				l.Group, l.Name, l.Meter = g.Name(), n.Name(), meter
 				table[l.Token] = l
 			}
 		}

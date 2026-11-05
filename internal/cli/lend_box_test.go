@@ -104,23 +104,66 @@ func TestTheStagedCopyNeedsNoMountOfItsOwn(t *testing.T) {
 	if got := lenderMounts(lenderBoxArgv("n-lender", spec)); !slices.Equal(got, []string{"/home/dev/.cs-keys", "/root/n"}) {
 		t.Errorf("want exactly the credential and group mounts, got %v", got)
 	}
+	if got := lenderWritable(lenderBoxArgv("n-lender", spec)); !slices.Equal(got, []string{"/root/n/.lender/usage"}) {
+		t.Errorf("want the usage directory as the one writable mount, got %v", got)
+	}
 }
 
-// lenderMounts is the host side of every -v in a lender command, each of which
-// has to be read-only and mounted at its own path.
+// lenderMounts is the host side of every read-only -v in a lender command, each
+// of which has to be mounted at its own path. The one writable mount is
+// lenderWritable's.
 func lenderMounts(argv []string) []string {
 	var out []string
 	for i, a := range argv {
 		if a == "-v" && i+1 < len(argv) {
 			src, rest, _ := strings.Cut(argv[i+1], ":")
-			if rest != src+":ro" {
-				out = append(out, "NOT READ-ONLY AT ITS OWN PATH: "+argv[i+1])
-				continue
+			switch rest {
+			case src + ":ro":
+				out = append(out, src)
+			case src + ":rw":
+			default:
+				out = append(out, "NOT AT ITS OWN PATH: "+argv[i+1])
 			}
-			out = append(out, src)
 		}
 	}
 	return out
+}
+
+// lenderWritable is the host side of every writable -v in a lender command.
+func lenderWritable(argv []string) []string {
+	var out []string
+	for i, a := range argv {
+		if a == "-v" && i+1 < len(argv) {
+			if src, rest, _ := strings.Cut(argv[i+1], ":"); rest == src+":rw" {
+				out = append(out, src)
+			}
+		}
+	}
+	return out
+}
+
+// The lender's one writable mount is its group's usage directory (R153g). It
+// holds counters, and never the staged lender binary beside it: a lender that
+// could write that could carry a compromise into its next start.
+func TestTheLendersOnlyWritableMountIsItsUsageDirectory(t *testing.T) {
+	t.Setenv("CS_SANDBOX_AGENT_HOME", "")
+	home := lendHome(t)
+	spec := lendApp(t, home).lenderBox("team").Spec
+	argv := lenderBoxArgv("n-lender", spec)
+	w := lenderWritable(argv)
+	if want := lend.UsageDir(spec.InstDir, "team"); !slices.Equal(w, []string{want}) {
+		t.Fatalf("writable mounts = %v, want only %s", w, want)
+	}
+	if strings.HasPrefix(spec.Stage, w[0]+string(filepath.Separator)) || filepath.Dir(spec.Stage) == w[0] {
+		t.Errorf("the staged binary %s is under the writable mount %s", spec.Stage, w[0])
+	}
+	// Stacked on the group's read-only mount, so it comes after it: podman
+	// mounts in order.
+	ro := slices.Index(argv, spec.GroupDir+":"+spec.GroupDir+":ro")
+	rw := slices.Index(argv, w[0]+":"+w[0]+":rw")
+	if ro < 0 || rw < ro {
+		t.Errorf("the usage mount (at %d) does not follow the group mount (at %d)", rw, ro)
+	}
 }
 
 // The lender sees what it reads and nothing else of the home or the instances
@@ -200,7 +243,7 @@ func TestTheLendersMountSourcesAreMadeWhenMissing(t *testing.T) {
 	if err := b.mountSources(); err != nil {
 		t.Fatalf("mountSources: %v", err)
 	}
-	for _, d := range []string{keys, group} {
+	for _, d := range []string{keys, group, filepath.Join(group, ".lender", "usage")} {
 		fi, err := os.Stat(d)
 		if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
 			t.Errorf("%s was not made an owner-only directory: %v %v", d, fi, err)

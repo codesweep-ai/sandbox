@@ -51,6 +51,10 @@ type Config struct {
 	// is the operator's, like Origins: no part of a request can reach it.
 	Faults Faults
 
+	// Meter counts the tokens each sandbox's calls spend, and holds them to the
+	// sandbox's budget. Nil counts nothing.
+	Meter *Meter
+
 	// Now is the clock, for a test that has to cross an interval. Nil is the
 	// real one.
 	Now func() time.Time
@@ -69,10 +73,20 @@ type Stats struct {
 	Injected  int `json:"injected,omitempty"`
 	Answered  int `json:"answered,omitempty"` // backend calls the lender answered itself
 
+	// Metered are the lent calls the meter settled, and Estimated those of
+	// them whose usage it could not read. OverBudget are the calls a hard
+	// budget refused.
+	Metered    int `json:"metered,omitempty"`
+	Estimated  int `json:"estimated,omitempty"`
+	OverBudget int `json:"over_budget,omitempty"`
+
 	// Slots is what each slot's upstream answered, by slot id. Lent says a
 	// request went out, and this says what came back: a throttled key, a
 	// provider outage and a quiet fleet differ only here.
 	Slots map[string]Outcomes `json:"slots,omitempty"`
+
+	// Tokens is what each slot's calls were charged, by slot id.
+	Tokens map[string]Tokens `json:"tokens,omitempty"`
 }
 
 // Outcomes counts one slot's upstream answers by status class.
@@ -123,6 +137,9 @@ func New(cfg Config) *Server {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.Meter != nil && cfg.Meter.Log == nil {
+		cfg.Meter.Log = cfg.Log
+	}
 	return &Server{cfg: cfg}
 }
 
@@ -132,6 +149,7 @@ func (s *Server) Snapshot() Stats {
 	defer s.mu.Unlock()
 	st := s.stats
 	st.Slots = maps.Clone(s.stats.Slots)
+	st.Tokens = maps.Clone(s.stats.Tokens)
 	return st
 }
 
@@ -183,9 +201,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// A health check needs no loan: it is how `create` and `doctor` tell a
 	// listening lender from a port that merely answers.
+	//
+	// It also says what this lender enforces, so a create that sets a budget
+	// can tell a lender that meters from one older than the budget, which would
+	// ignore it and read as a test that passed.
 	if r.URL.Path == "/healthz" {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "service": "cs-sandbox lend"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "service": "cs-sandbox lend",
+			"features": nonNil(s.cfg.Meter.Features())})
 		return
 	}
 
@@ -232,6 +255,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"this loan was minted for another sandbox, and the lender honours it only from that sandbox's own address")
 		return
 	}
+	// The lender's own namespace, and the meter loan that reads it. Neither is
+	// ever forwarded, and neither reads a credential (R153f).
+	if loan.Kind == MeterLoan || strings.HasPrefix(r.URL.Path, meterPrefix) {
+		s.serveMeter(w, r, loan)
+		return
+	}
 	slot, ok := SlotByID(loan.Slot)
 	if !ok {
 		s.count(func(st *Stats) { st.Refused++ })
@@ -248,11 +277,38 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A lent path is lent as HTTP. A websocket carries every model call of a
+	// session inside one upgrade the meter cannot read, so a budget would not
+	// hold against it. OpenCode and Codex both carry OpenAI's Responses over a
+	// websocket, and fall back to HTTP when the upgrade is refused (R153d).
+	if r.Header.Get("Upgrade") != "" {
+		s.count(func(st *Stats) { st.Refused++ })
+		s.cfg.Log.Warn("refused: a websocket upgrade on a lent path",
+			slog.String("sandbox", loan.Name), slog.String("slot", slot.ID), slog.String("path", r.URL.Path))
+		writeError(w, http.StatusBadRequest, "websocket_refused",
+			"cs-sandbox lends a model API over HTTP only, so the lender can count what each call spends: send this call as an ordinary request")
+		return
+	}
+
 	// Before the credential is read or anything is dialled: an injected fault
 	// is the whole answer, and the provider is not called.
 	if s.cfg.Faults != nil {
 		if f, ok := s.cfg.Faults.Next(loan); ok {
 			s.inject(w, r, loan, f)
+			return
+		}
+	}
+
+	// A hard budget, once a type has reached its limit, refuses every billable
+	// call before the credential is read (R153h). A free call still goes.
+	sf := surfaceOf(r.Method, r.URL.Path)
+	if s.cfg.Meter != nil && sf != surfaceFree {
+		if sp, over := s.cfg.Meter.refusal(loan); over {
+			s.count(func(st *Stats) { st.Refused++; st.OverBudget++ })
+			s.cfg.Log.Warn("refused: the token budget is spent",
+				slog.String("sandbox", loan.Name), slog.String("slot", slot.ID), slog.String("type", sp.Type),
+				slog.Int64("used", sp.Used), slog.Int64("limit", sp.Limit))
+			writeError(w, SpentStatus, "budget_exhausted", spentMessage(loan.Name, sp))
 			return
 		}
 	}
@@ -280,16 +336,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.String("sandbox", loan.Name), slog.String("slot", slot.ID),
 		slog.String("loan", loan.logName()),
 		slog.String("method", r.Method), slog.String("path", r.URL.Path))
-	s.forward(w, r, loan, slot, secret, extra)
+	s.forward(w, r, loan, slot, secret, extra, sf)
 }
 
 // forward swaps the loan token for the real credential and proxies to the
 // slot's own upstream.
 //
-// The body is never read, parsed or rewritten: the swap is one header, so a
-// stream passes through byte for byte and a request shape this build has never
-// seen still works.
-func (s *Server) forward(w http.ResponseWriter, r *http.Request, loan Loan, slot Slot, secret string, extra map[string]string) {
+// The request body is never read, parsed or rewritten: the swap is one header,
+// so a request shape this build has never seen still works. The answer to a
+// model call is observed, and never changed (R153d). The meter reads the usage
+// in it as the copy runs, and every write is still flushed straight through.
+func (s *Server) forward(w http.ResponseWriter, r *http.Request, loan Loan, slot Slot, secret string, extra map[string]string, sf surface) {
+	metered := s.cfg.Meter != nil && sf != surfaceFree
+	c := newCall(loan, slot.ID, sf, r)
 	base, err := url.Parse(slot.Origin)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "bad_origin", "this slot's upstream is not a URL")
@@ -332,16 +391,29 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, loan Loan, slot
 			for _, h := range []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded"} {
 				pr.Out.Header.Del(h)
 			}
+			// A compressed answer cannot be read as it passes. Without the
+			// client's Accept-Encoding, the transport asks for gzip itself and
+			// decompresses, so the provider leg stays compressed and the client
+			// gets the same content without the encoding. Claude Code asks for
+			// gzip, so this is the difference between metering its calls and
+			// reading none of them.
+			if metered {
+				pr.Out.Header.Del("Accept-Encoding")
+			}
 		},
 		// -1 flushes each write straight through, which is what a token stream
 		// needs: the default buffering turns a token-by-token response into one
 		// that arrives in lumps.
 		FlushInterval: -1,
 		ErrorLog:      slog.NewLogLogger(s.cfg.Log.Handler(), slog.LevelError),
-		// The status and the headers, and never the body: the answer is looked at
-		// without being read, which is what keeps a stream byte for byte.
+		// The status and the headers. The body of a model call is replaced by one
+		// that reads its usage as the copy runs and changes nothing, which is what
+		// keeps a stream byte for byte.
 		ModifyResponse: func(resp *http.Response) error {
 			s.answered(loan, slot, resp, time.Since(start))
+			if metered {
+				s.observe(c, resp)
+			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -716,10 +788,20 @@ func (st Stats) Summary() string {
 	if st.Answered > 0 {
 		fmt.Fprintf(&out, " · answered %d", st.Answered)
 	}
+	if st.Metered > 0 {
+		fmt.Fprintf(&out, " · metered %d · estimated %d", st.Metered, st.Estimated)
+	}
+	if st.OverBudget > 0 {
+		fmt.Fprintf(&out, " · over budget %d", st.OverBudget)
+	}
 	for _, id := range slices.Sorted(maps.Keys(st.Slots)) {
 		o := st.Slots[id]
 		fmt.Fprintf(&out, "\n%s: ok %d · throttled %d · refused %d · 5xx %d · no answer %d",
 			id, o.OK, o.Throttled, o.Refused, o.Errors, o.Failed)
+		if t, ok := st.Tokens[id]; ok {
+			fmt.Fprintf(&out, " · tokens input %s · cached %s · output %s",
+				FormatTokens(t.Of(TypeInput)), FormatTokens(t.Of(TypeCached)), FormatTokens(t.Of(TypeOutput)))
+		}
 	}
 	return out.String()
 }

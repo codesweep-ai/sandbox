@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -127,8 +128,8 @@ func lenderBoxArgv(name string, s lenderBoxSpec) []string {
 		"-e", "CS_SANDBOX_AGENT_HOME=" + s.Home,
 		"-e", "CS_SANDBOX_INSTANCES_DIR=" + s.InstDir,
 	}
-	// Read-only, every one. The lender writes nothing: it reads a credential per
-	// request and a loan table that create and destroy own (R150, R151). And
+	// Read-only, every one but the last. The lender reads a credential per
+	// request, and a loan table and budgets that the CLI owns (R150, R151). And
 	// nothing else of the home or the instances root, so a lender bug cannot
 	// reach ~/.ssh, the tier keys or another group's loans (R150f).
 	for _, d := range append(slices.Clone(s.Reads), s.GroupDir) {
@@ -136,12 +137,49 @@ func lenderBoxArgv(name string, s lenderBoxSpec) []string {
 			a = append(a, "-v", d+":"+d+":ro")
 		}
 	}
+	// The one thing it writes: what its group's sandboxes have spent (R153g).
+	// Stacked on the read-only group mount, and never .lender itself, where the
+	// staged lender binary is: a lender that could write that could carry a
+	// compromise into its next start.
+	if u := s.usageDir(); u != "" {
+		a = append(a, "-v", u+":"+u+":rw")
+	}
 	entry := "cs-sandbox"
 	if s.Bin != "" {
 		entry = s.Stage
 	}
 	return append(a, "--entrypoint", entry, s.Image,
 		"lender", "--addr", lend.DefaultBind, "--callers", string(lend.CallersNetwork), "--group", s.Group)
+}
+
+// usageDir is the group's usage directory, the lender's one writable mount, or
+// "" for a spec with no group directory.
+func (s lenderBoxSpec) usageDir() string {
+	if s.GroupDir == "" {
+		return ""
+	}
+	return filepath.Join(s.GroupDir, ".lender", "usage")
+}
+
+// features is what the running lender says it enforces, asked through its own
+// loopback as waitReady asks. A lender older than token budgets answers with no
+// features, and a budget it would ignore is refused rather than set.
+func (b lenderBox) features(ctx context.Context) ([]string, error) {
+	res, err := b.Runner.Run(ctx, run.Opts{ReadOnly: true}, "podman", "exec", b.name(),
+		"curl", "-fsS", "-m", "5", "http://"+lend.ProbeAddr(lend.DefaultBind)+"/healthz")
+	if err != nil {
+		if d := strings.TrimSpace(res.Stderr); d != "" {
+			return nil, fmt.Errorf("asking the credential lender on %s what it enforces: %s", b.Spec.Network, d)
+		}
+		return nil, fmt.Errorf("asking the credential lender on %s what it enforces: %w", b.Spec.Network, err)
+	}
+	var h struct {
+		Features []string `json:"features"`
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &h); err != nil {
+		return nil, fmt.Errorf("the credential lender on %s answered /healthz with something that is not JSON: %w", b.Spec.Network, err)
+	}
+	return h.Features, nil
 }
 
 // canRead reports whether the running lender can read a path, asked from inside
@@ -257,7 +295,7 @@ func (b lenderBox) ensure(ctx context.Context) (string, error) {
 // sandbox in it.
 const (
 	lenderLayoutLabel = "cs-sandbox.lender-mounts"
-	lenderLayout      = "2" // the credential and group mounts (R150f), and --group (R152a)
+	lenderLayout      = "3" // the credential and group mounts (R150f), --group (R152a), and the usage mount (R153g)
 )
 
 // layout is the mount layout an existing box was created with, "" for one that
@@ -407,9 +445,11 @@ func (b lenderBox) stage() error {
 // directory, such as a dangling symlink, holds nothing the lender could read. It
 // is dropped from the mounts, and create's canRead names it if it is lent.
 func (b *lenderBox) mountSources() error {
-	if b.Spec.GroupDir != "" {
-		if err := os.MkdirAll(b.Spec.GroupDir, 0o700); err != nil {
-			return err
+	for _, d := range []string{b.Spec.GroupDir, b.Spec.usageDir()} {
+		if d != "" {
+			if err := os.MkdirAll(d, 0o700); err != nil {
+				return err
+			}
 		}
 	}
 	var kept []string
