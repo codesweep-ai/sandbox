@@ -3,17 +3,22 @@
   "title": "A lent sandbox has no token budget, so nothing stops an agent that keeps spending the host's credential",
   "type": "feature-idea",
   "severity": "med",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "user request (host): \"Implement the note now.\", for the design note on lending a token budget, reworked with the user on 2026-11-04",
   "opened": "2026-11-04",
-  "resolved": null,
+  "resolved": "2026-11-05",
   "stint": "token budget session, 2026-11-04",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "c8d1df2",
+      "501d2c1",
+      "cd9394d",
+      "ee36177"
+    ],
     "integrated": [],
-    "verified": null
+    "verified": "`make ci` passed at ee36177. In its replay tier each lent cell was metered exactly and none estimated, and Claude Code's gzip-asking cell read 21.6K new input and 17 output tokens, the cassette's own count. Live through this lender on Claude Code 2.1.312, Codex 0.165.0 and OpenCode 2.2.5, a soft output budget made each agent hand off, 248 to 426 tokens past its limit. The next turn was not sent, and a top-up let it run. A hard one held each agent to within 32 tokens of its limit, and each ended a turn on the 400 refusal at once."
   },
-  "resolution": null,
+  "resolution": "Each lent sandbox is now metered, and a token budget per type stops it. A soft budget asks the agent to hand off, and a hard one also has the lender refuse its calls. The cs-campaign repository holds a node whose budget is spent, under its record SAC-108.",
   "details": "The lender swaps a loan for the host's real credential and forwards the call. It counts nothing, so a sandbox can spend a lent login or key for as long as it runs. An agent stuck in a loop, or a fleet left overnight, has no limit but the provider's own.\n\nWanted: a budget per sandbox, in tokens of three types: new input, cached input and output. The lender reads the usage in every lent response and counts it per sandbox. The turn driver reads that count before it sends a prompt, and sends none once a type reaches its ask line. During a turn, the hand-off hook asks the agent to write its handoff and end its turn at the same line. A budget is soft by default. With `--hard`, the lender also refuses the sandbox's calls once a type reaches its limit.\n\nThe turn drivers report such an ending as a class of its own, `spent`, which cs-campaign must read as a hold. Otherwise it sends the node up its recovery ladder.",
   "notes": [
     {
