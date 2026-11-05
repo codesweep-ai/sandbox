@@ -50,6 +50,15 @@ func TestArmingAFaultWritesWhatTheLenderReads(t *testing.T) {
 	if got[1].Hang != "90s" || got[1].Slot != "openai" || got[1].Status != 0 {
 		t.Errorf("second fault = %+v", got[1])
 	}
+	if _, err := runRoot(t, app, "lender", "fault", "box", "--status", "429", "--header", "x-should-retry: false"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := lend.ReadFaults(state.Dir(app.InstDir, state.DefaultGroup, "box")); len(got) != 3 || got[2].Headers["x-should-retry"] != "false" {
+		t.Errorf("a fault armed with --header holds %+v", got[len(got)-1])
+	}
+	if _, err := runRoot(t, app, "lender", "fault", "box", "--status", "429", "--header", "no-colon"); err == nil {
+		t.Error("--header with no colon was accepted")
+	}
 	if calls := f.Rendered(); len(calls) != 0 {
 		t.Errorf("arming a fault ran something:\n%s", strings.Join(calls, "\n"))
 	}

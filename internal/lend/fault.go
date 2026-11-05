@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,6 +38,10 @@ type Fault struct {
 	// Status is the answer. Zero, with a Hang, drops the connection unanswered.
 	Status     int `json:"status,omitempty"`
 	RetryAfter int `json:"retry_after,omitempty"` // seconds, sent as Retry-After
+	// Headers are sent with the answer, for a provider signal a client reads
+	// from a header: whether to retry, say, which an SDK takes from
+	// x-should-retry.
+	Headers map[string]string `json:"headers,omitempty"`
 	// Hang is how long the call is held before it is answered or dropped.
 	Hang string `json:"hang,omitempty"`
 	// Body and ContentType replace the lender's own error body. A provider that
@@ -76,10 +82,27 @@ func (f Fault) Validate() error {
 			return fmt.Errorf("unknown slot %q", f.Slot)
 		}
 	}
+	for k, v := range f.Headers {
+		if !headerName.MatchString(k) || strings.ContainsAny(v, "\r\n") {
+			return fmt.Errorf("header %q is not one an answer can carry", k)
+		}
+		if framingHeaders[http.CanonicalHeaderKey(k)] {
+			return fmt.Errorf("header %s frames the answer, which the lender writes itself", k)
+		}
+	}
 	if len(f.Body) > MaxFaultBody {
 		return fmt.Errorf("the body is %d bytes, and a fault's is at most %d", len(f.Body), MaxFaultBody)
 	}
 	return nil
+}
+
+// headerName is a header's name, as HTTP spells a token.
+var headerName = regexp.MustCompile("^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
+
+// framingHeaders are written by the lender for the answer it sends, and a fault
+// that set one would describe a body it does not have.
+var framingHeaders = map[string]bool{
+	"Content-Length": true, "Transfer-Encoding": true, "Connection": true, "Content-Type": true, FaultHeader: true,
 }
 
 // ReadFaults returns the faults armed for the sandbox whose instance directory
@@ -200,6 +223,9 @@ func (s *Server) inject(w http.ResponseWriter, r *http.Request, loan Loan, f Fau
 		// A hang with no answer: the connection closes with nothing sent, which
 		// is what a provider that dropped the call looks like from the client.
 		panic(http.ErrAbortHandler)
+	}
+	for k, v := range f.Headers {
+		w.Header().Set(k, v)
 	}
 	w.Header().Set(FaultHeader, f.ID)
 	if f.RetryAfter > 0 {

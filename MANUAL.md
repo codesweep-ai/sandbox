@@ -701,7 +701,8 @@ reports each group's lender and says which one is dark.
 
 ```
 cs-sandbox lender fault <name> [--status N] [--count N] [--slot SLOT] [--retry-after SECS]
-                               [--hang DURATION] [--body-file FILE] [--content-type TYPE] [--clear]
+                               [--header NAME:VALUE] [--hang DURATION] [--body-file FILE]
+                               [--content-type TYPE] [--clear]
 ```
 
 Answers a sandbox's next lent model calls with a provider failure. The provider is not called. Use
@@ -725,6 +726,7 @@ lender reads it on the sandbox's next call. No lender is contacted or restarted.
 | `--count N` | How many calls to fail. Default 1. Traffic flows again once they are spent. |
 | `--slot SLOT` | Fail one borrowed credential's calls only. The default is every one the sandbox borrows. |
 | `--retry-after SECS` | Send a `Retry-After` header. |
+| `--header NAME:VALUE` | Send this header with the answer, such as `x-should-retry:false`, which an SDK reads to decide whether to retry. Repeatable. |
 | `--hang DURATION` | Hold each call this long first, such as `90s`. With no `--status`, the call is then dropped with nothing sent. |
 | `--body-file FILE` | Answer with this file as the body, at most 64 KiB. `--content-type` sets its type. |
 | `--clear` | Remove every fault armed on the sandbox. |
