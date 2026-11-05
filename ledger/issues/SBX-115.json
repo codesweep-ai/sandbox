@@ -27,6 +27,10 @@
     {
       "date": "2026-11-04",
       "text": "Measured live through this lender on Claude Code 2.1.312, Codex 0.165.0 and OpenCode 2.2.5. Each ended a turn on the 400 refusal at once, on a fresh session, partway through one, and inside a Claude Code sub-agent. A 429 marked not to retry ended them too, but Codex dropped its body and the marker with it, so the status stays 400. Under a soft output budget, each agent wrote its handoff and ended its turn 248 to 426 output tokens past the limit. Its next turn was not sent, and a top-up let it run. Under a hard one, Claude Code handed off below the limit, and the lender refused Codex and OpenCode 21 and 32 tokens past it. OpenCode tries OpenAI's Responses over a websocket first, so the lender now refuses the upgrade, and OpenCode falls back to HTTP. Claude Code runs a sub-agent in the background, which keeps spending after the driven turn ends."
+    },
+    {
+      "date": "2026-11-04",
+      "text": "The work is committed on the branch token-budget, in five commits. Commit b490b59 files this record, and c8d1df2 lets a fault carry headers. Commit 501d2c1 is the lender's meter and budget. Commit cd9394d adds the CLI's commands, and ee36177 the stop inside the sandbox. `make ci` passed at ee36177 and recorded it as a local build. cs-campaign's half is SAC-108 there. Close this once the branch is on main."
     }
   ],
   "links": [
