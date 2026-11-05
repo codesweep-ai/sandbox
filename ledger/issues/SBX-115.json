@@ -1,0 +1,36 @@
+{
+  "id": "SBX-115",
+  "title": "A lent sandbox has no token budget, so nothing stops an agent that keeps spending the host's credential",
+  "type": "feature-idea",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "user request (host): \"Implement the note now.\", for the design note on lending a token budget, reworked with the user on 2026-11-04",
+  "opened": "2026-11-04",
+  "resolved": null,
+  "stint": "token budget session, 2026-11-04",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "The lender swaps a loan for the host's real credential and forwards the call. It counts nothing, so a sandbox can spend a lent login or key for as long as it runs. An agent stuck in a loop, or a fleet left overnight, has no limit but the provider's own.\n\nWanted: a budget per sandbox, in tokens of three types: new input, cached input and output. The lender reads the usage in every lent response and counts it per sandbox. The turn driver reads that count before it sends a prompt, and sends none once a type reaches its ask line. During a turn, the hand-off hook asks the agent to write its handoff and end its turn at the same line. A budget is soft by default. With `--hard`, the lender also refuses the sandbox's calls once a type reaches its limit.\n\nThe turn drivers report such an ending as a class of its own, `spent`, which cs-campaign must read as a hold. Otherwise it sends the node up its recovery ladder.",
+  "notes": [
+    {
+      "date": "2026-11-04",
+      "text": "Fireworks counts its cached tokens inside `prompt_tokens`. Three identical calls to kimi-k3 on the host's key kept `prompt_tokens` at 8,851 while `cached_tokens` went from 0 to 8,850, and `total_tokens` stayed prompt plus completion. So the meter subtracts them, as it does for OpenAI."
+    },
+    {
+      "date": "2026-11-04",
+      "text": "Built on 2026-11-04 and not yet committed, in the lender, the CLI, the turn drivers and the hand-off hook. `make ci` passed on the uncommitted tree. In the replay tier every lent cell now has to be metered, and each was read exactly, with none estimated. Claude Code's cell, whose client asks for gzip, read 21.6K new input and 17 output tokens, which is the cassette's own count. The live measurements are still to run, among them the refusal status on the current agents."
+    },
+    {
+      "date": "2026-11-04",
+      "text": "Measured live through this lender on Claude Code 2.1.312, Codex 0.165.0 and OpenCode 2.2.5. Each ended a turn on the 400 refusal at once, on a fresh session, partway through one, and inside a Claude Code sub-agent. A 429 marked not to retry ended them too, but Codex dropped its body and the marker with it, so the status stays 400. Under a soft output budget, each agent wrote its handoff and ended its turn 248 to 426 output tokens past the limit. Its next turn was not sent, and a top-up let it run. Under a hard one, Claude Code handed off below the limit, and the lender refused Codex and OpenCode 21 and 32 tokens past it. OpenCode tries OpenAI's Responses over a websocket first, so the lender now refuses the upgrade, and OpenCode falls back to HTTP. Claude Code runs a sub-agent in the background, which keeps spending after the driven turn ends."
+    }
+  ],
+  "links": [
+    "SBX-047",
+    "SBX-105"
+  ]
+}
