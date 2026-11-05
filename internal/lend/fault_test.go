@@ -166,3 +166,28 @@ func TestTheFaultsFileIsOwnerOnlyAndGoesWhenEmpty(t *testing.T) {
 		t.Errorf("clearing left the file behind: %v", err)
 	}
 }
+
+// TestAFaultCanCarryHeaders: a client reads some signals from a header and not
+// from the status, such as an SDK deciding whether to retry. A header that frames
+// the answer is the lender's to write, and a fault that set one is refused.
+func TestAFaultCanCarryHeaders(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	defer up.Close()
+	inst, call := faultedServer(t, up.URL)
+	f := Fault{ID: "h1", Count: 1, Status: 429, Headers: map[string]string{"x-should-retry": "false"}}
+	if err := WriteFaults(inst, []Fault{f}); err != nil {
+		t.Fatal(err)
+	}
+	resp, _, err := call()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("X-Should-Retry") != "false" || resp.Header.Get(FaultHeader) != "h1" {
+		t.Errorf("answered %d with %v", resp.StatusCode, resp.Header)
+	}
+	for _, bad := range []map[string]string{{"Content-Length": "1"}, {"x bad": "1"}, {"x-ok": "a\r\nb"}} {
+		if err := (Fault{Count: 1, Status: 429, Headers: bad}).Validate(); err == nil {
+			t.Errorf("a fault with headers %v was accepted", bad)
+		}
+	}
+}

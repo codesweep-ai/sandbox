@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -22,6 +23,7 @@ import (
 func newLenderFaultCmd(app *App) *cobra.Command {
 	var f lend.Fault
 	var bodyFile string
+	var headers []string
 	var clearAll bool
 	cmd := &cobra.Command{
 		Use:   "fault <name>",
@@ -71,6 +73,16 @@ func newLenderFaultCmd(app *App) *cobra.Command {
 			if f.Slot != "" && !slices.Contains(slots, f.Slot) {
 				return fmt.Errorf("%s does not borrow %s; it borrows %s", Ref(in), f.Slot, strings.Join(slots, ", "))
 			}
+			for _, h := range headers {
+				k, v, ok := strings.Cut(h, ":")
+				if !ok || strings.TrimSpace(k) == "" {
+					return fmt.Errorf("--header %q: use NAME:VALUE, as in x-should-retry:false", h)
+				}
+				if f.Headers == nil {
+					f.Headers = map[string]string{}
+				}
+				f.Headers[strings.TrimSpace(k)] = strings.TrimSpace(v)
+			}
 			if bodyFile != "" {
 				body, err := os.ReadFile(bodyFile)
 				if err != nil {
@@ -97,6 +109,7 @@ func newLenderFaultCmd(app *App) *cobra.Command {
 	cmd.Flags().IntVar(&f.Count, "count", 1, "how many calls to fail before traffic flows again")
 	cmd.Flags().StringVar(&f.Slot, "slot", "", "fail one borrowed credential's calls only (default: every one the sandbox borrows)")
 	cmd.Flags().IntVar(&f.RetryAfter, "retry-after", 0, "send a Retry-After header of this many seconds")
+	cmd.Flags().StringArrayVar(&headers, "header", nil, "send this header with the answer: NAME:VALUE, such as x-should-retry:false (repeatable)")
 	cmd.Flags().StringVar(&f.Hang, "hang", "", "hold each call this long first, such as 90s; with no --status the call is then dropped unanswered")
 	cmd.Flags().StringVar(&bodyFile, "body-file", "", "answer with this file as the body, for a provider that reports a failure inside a 200 stream")
 	cmd.Flags().StringVar(&f.ContentType, "content-type", "", "the Content-Type of --body-file (default application/json)")
@@ -110,7 +123,12 @@ func describeFault(f lend.Fault) string {
 		parts = append(parts, "hang "+f.Hang)
 	}
 	if f.Status != 0 {
-		parts = append(parts, fmt.Sprintf("answer %d", f.Status))
+		var a strings.Builder
+		fmt.Fprintf(&a, "answer %d", f.Status)
+		for _, k := range slices.Sorted(maps.Keys(f.Headers)) {
+			fmt.Fprintf(&a, " with %s: %s", k, f.Headers[k])
+		}
+		parts = append(parts, a.String())
 	} else {
 		parts = append(parts, "drop the connection")
 	}
