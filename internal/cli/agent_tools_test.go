@@ -86,7 +86,10 @@ func runScript(t *testing.T, home, bin string, name string, args ...string) (str
 func runScriptStdin(t *testing.T, home, bin string, extraEnv []string, stdin, name string, args ...string) (string, int) {
 	t.Helper()
 	cmd := exec.Command(agentTool(name), args...)
-	cmd.Env = append(append(os.Environ(), "HOME="+home, "PATH="+bin+":/usr/bin:/bin"), extraEnv...)
+	// A run inside a lent sandbox inherits its meter, and a script under test would read the real
+	// lender. A test that wants a meter names one in extraEnv, which comes later and wins.
+	cmd.Env = append(append(os.Environ(), "HOME="+home, "PATH="+bin+":/usr/bin:/bin",
+		"CS_METER_URL=", "CS_METER_TOKEN="), extraEnv...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
@@ -720,6 +723,16 @@ func TestOpenCodeTurnCompletionSemantics(t *testing.T) {
 	}
 	unauthorized := `{"type":"provider.auth","message":"Invalid API key provided","status":401}`
 	throttled := `{"type":"provider.rate-limit","message":"Rate limit exceeded","status":429,"retryAfterMs":6500}`
+	// The lender's refusal under a hard token budget. OpenCode 2.2.5 records it as
+	// provider.invalid-request, measured on 2026-11-04 against a live lender, and the same body as
+	// a 429 as provider.rate-limit, which the driver otherwise reads as a throttle. OpenCode's own
+	// budget kind is held too, for a later version that maps the body to it. Only the marker in
+	// the message decides, and a malformed request, a 400 as well, stays other.
+	const refusal = `"message":"cs-sandbox token budget spent: sandbox web has used 2.00M of its 2.00M output tokens. The operator can raise it on the host.","status":400`
+	budgetSpent := `{"type":"provider.invalid-request",` + refusal + `}`
+	budgetKind := `{"type":"provider.budget-limit",` + refusal + `}`
+	budgetThrottle := `{"type":"provider.rate-limit",` + strings.Replace(refusal, `"status":400`, `"status":429`, 1) + `}`
+	badRequest := `{"type":"provider.invalid-request","message":"max_tokens: 0 is below the minimum of 1","status":400}`
 
 	for _, tc := range []struct {
 		name, page, runExit string
@@ -732,6 +745,10 @@ func TestOpenCodeTurnCompletionSemantics(t *testing.T) {
 		{"provider-error", ocPage("", user, ocMsg("msg_r", "assistant", 2, `"content":[],"error":`+unauthorized),
 			idle("failed", unauthorized)), "1", 5, "failure class=unauthorized retry_after=-"},
 		{"provider-error-despite-exit-0", ocPage("", user, idle("failed", unauthorized)), "0", 5, "failure class=unauthorized retry_after=-"},
+		{"token-budget-spent", ocPage("", user, idle("failed", budgetSpent)), "0", 5, "failure class=spent retry_after=-"},
+		{"token-budget-spent-as-a-budget-kind", ocPage("", user, idle("failed", budgetKind)), "0", 5, "failure class=spent retry_after=-"},
+		{"token-budget-spent-as-a-throttle", ocPage("", user, idle("failed", budgetThrottle)), "0", 5, "failure class=spent retry_after=-"},
+		{"malformed-request", ocPage("", user, idle("failed", badRequest)), "0", 5, "failure class=other retry_after=-"},
 		// The wait opencode asks for travels as milliseconds, and a caller is told whole seconds.
 		{"throttled", ocPage("", user, idle("failed", throttled)), "1", 5, "failure class=throttled retry_after=7"},
 		// A step that failed mid-stream and was retried leaves run exiting 1 on a turn that
@@ -769,7 +786,7 @@ func TestOpenCodeTurnCompletionSemantics(t *testing.T) {
 				t.Fatalf("turn log says exit %d; the driver exited %d", line.exit, tc.wantExit)
 			}
 			if strings.Contains(tc.wantInOut, "failure class=") {
-				wantTurnLogAgrees(t, home, "opencode", 5, tc.wantInOut)
+				wantTurnLogAgrees(t, home, "opencode", tc.wantInOut)
 			} else if line.class != "-" {
 				t.Fatalf("turn log names class %q for a turn no provider refused", line.class)
 			}
@@ -1293,6 +1310,12 @@ func TestClaudeTurnReportsAProviderFailure(t *testing.T) {
 			5, "failure class=unauthorized retry_after=-"},
 		{"context too long", entry("invalid_request", 400, "Prompt is too long · the request is ~250000 tokens (limit 200000)"),
 			5, "failure class=context retry_after=-"},
+		// The lender's refusal under a hard token budget, in the shape Claude Code 2.1.258 recorded
+		// it. Only the marker tells it apart from the malformed request below: both are 400s.
+		{"token budget spent", entry("unknown", 400, "API Error: 400 cs-sandbox token budget spent: sandbox web has used 2.00M of its 2.00M output tokens. The operator can raise it on the host."),
+			5, "failure class=spent retry_after=-"},
+		{"a malformed request", entry("unknown", 400, "API Error: 400 max_tokens: 0 is below the minimum of 1"),
+			5, "failure class=other retry_after=-"},
 		// Claude Code retries by itself. An error it got past is not the turn's outcome.
 		{"an error the turn recovered from", entry("server_error", 529, "API Error: 529 Overloaded.") + "\n" +
 			`{"type":"assistant","message":{"content":[{"type":"text","text":"RECOVERED ANSWER"}]}}`,
@@ -1326,7 +1349,7 @@ func TestClaudeTurnReportsAProviderFailure(t *testing.T) {
 				t.Fatalf("output missing %q: %s", tc.wantIn, out)
 			}
 			if tc.wantExit == 5 {
-				wantTurnLogAgrees(t, home, "claude", 5, tc.wantIn)
+				wantTurnLogAgrees(t, home, "claude", tc.wantIn)
 			}
 			covemit.Prove(t, "turn-driver-semantics", "claude", "", "scripts")
 		})
@@ -1784,6 +1807,14 @@ func TestCodexTurnReportsAProviderFailure(t *testing.T) {
 		{"no provider answered",
 			`{"message":"stream disconnected before completion: error sending request for url (http://cs-lender:2500/responses)","codex_error_info":"other"}`,
 			"failure class=unreachable retry_after=-"},
+		// The lender's refusal under a hard token budget, in the shape codex 0.152.1 recorded it:
+		// the whole body as the message, and no status, so the marker is all there is.
+		{"token budget spent",
+			`{"message":"{\"error\":{\"type\":\"budget_exhausted\",\"source\":\"cs-sandbox lend\",\"message\":\"cs-sandbox token budget spent: sandbox web has used 1.00G of its 1.00G cached-input tokens. The operator can raise it on the host.\"}}\n","codex_error_info":"other"}`,
+			"failure class=spent retry_after=-"},
+		{"a malformed request",
+			`{"message":"{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Unsupported value: 'reasoning.effort' does not support 'max' with this model.\"}}\n","codex_error_info":"other"}`,
+			"failure class=other retry_after=-"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, bin := agentHome(t, ".cs-codex-remote")
@@ -1833,7 +1864,7 @@ exit 0
 			}
 			// The same class and wait are left on this machine, for a caller that was not the one
 			// that started the turn.
-			wantTurnLogAgrees(t, home, "codex", 5, tc.wantLine)
+			wantTurnLogAgrees(t, home, "codex", tc.wantLine)
 			covemit.Prove(t, "turn-driver-semantics", "codex", "", "scripts")
 		})
 	}

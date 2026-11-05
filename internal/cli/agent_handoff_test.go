@@ -3,10 +3,15 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -407,8 +412,9 @@ func TestTheContextHookPointsAtTheHandoffAfterACompaction(t *testing.T) {
 // the test says the agent obeyed, and the marker that ends the turn. Each turn appends to the
 // record, so a second turn with the same STUB_DIR is a later turn of a session kept alive.
 // The session ~/.cs-turns/driven names, cs-<family>-outer, is alive only when
-// STUB_DRIVEN_ALIVE is 1.
+// STUB_DRIVEN_ALIVE is 1. Every call is logged in $STUB_DIR/invocations.
 const handoffTmux = `#!/bin/sh
+[ -n "$STUB_DIR" ] && echo "tmux $*" >> "$STUB_DIR/invocations"
 case "$1" in
   new-session) : > "$STUB_DIR/alive" ;;
   has-session)
@@ -654,8 +660,9 @@ func TestAnOpenCodeTurnTheHookInterruptedIsAHandOff(t *testing.T) {
 // opencode's server and TUI windows, a ready screen, a pane in the session STUB_PANE_SESSION
 // names, and, on the codex submit, the
 // turn's answer. The session ~/.cs-turns/driven names, cs-<family>-outer, is alive only when
-// STUB_DRIVEN_ALIVE is 1.
+// STUB_DRIVEN_ALIVE is 1. Every call is logged in $STUB_DIR/invocations.
 const nestedTmux = `#!/bin/sh
+[ -n "$STUB_DIR" ] && echo "tmux $*" >> "$STUB_DIR/invocations"
 case "$1" in
   has-session)
     case "$3" in
@@ -683,18 +690,47 @@ exit 0
 // that keeps its line reports a hand-off. It returns the session this driver drives.
 func runNestedTurn(t *testing.T, family string, where ...string) (home, own, out string, exit int) {
 	t.Helper()
+	stub := t.TempDir()
+	home, bin, own, env, args := turnWorld(t, family, stub)
+	handoff := filepath.Join(stub, "handoff.md")
+	env = append(append(env, "CS_HANDOFF_TOKENS=60000", "CS_HANDOFF_FILE="+handoff), where...)
+	turns := filepath.Join(home, ".cs-turns")
+	if err := os.MkdirAll(turns, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(turns, "driven"), []byte("cs-"+family+"-outer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().Unix() + 300
+	ask := fmt.Sprintf(`{"session":%q,"sid":"x","tokens":70000,"h":60000,"at":%d}`, own, at)
+	if err := os.WriteFile(filepath.Join(turns, "handoff-ask"), []byte(ask), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(handoff, []byte("done: a; next: b\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Unix(at+300, 0)
+	if err := os.Chtimes(handoff, later, later); err != nil {
+		t.Fatal(err)
+	}
+	out, exit = runScriptStdin(t, home, bin, env, "do the thing\n", "cs-"+family+"-turn", args...)
+	return home, own, out, exit
+}
+
+// turnWorld lays out one turn of the family's driver that runs to its end with a plain answer:
+// the stubbed tmux and agent, and OpenCode's stubbed server API, all keeping their files in
+// stub. It returns the session the driver drives, and the environment and arguments it runs
+// with. Nothing is on disk under ~/.cs-turns yet.
+func turnWorld(t *testing.T, family, stub string) (home, bin, own string, env, args []string) {
+	t.Helper()
 	// OpenCode's turn reads its session over the stubbed API, so it needs no record on disk.
-	var bin string
 	if family == "opencode" {
 		skipUnlessLinux(t)
 		home, bin = agentHome(t, ".cs-opencode-remote")
 	} else {
 		home, bin = handoffHome(t, family, 1_000)
 	}
-	stub := t.TempDir()
-	handoff := filepath.Join(stub, "handoff.md")
-	env := append([]string{"CS_HANDOFF_TOKENS=60000", "CS_HANDOFF_FILE=" + handoff, "STUB_DIR=" + stub}, where...)
-	var args []string
+	env = []string{"STUB_DIR=" + stub}
 	switch family {
 	case "claude":
 		const uuid = "11111111-2222-3333-4444-555555555555"
@@ -722,27 +758,7 @@ func runNestedTurn(t *testing.T, family string, where ...string) (home, own, out
 			ocMsg("msg_i", "idle", 3, `"outcome":"succeeded"`)))
 		args = []string{"--tmux", "stubtoken", "--uuid", openCodeTestSessionID}
 	}
-	turns := filepath.Join(home, ".cs-turns")
-	if err := os.MkdirAll(turns, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(turns, "driven"), []byte("cs-"+family+"-outer\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	at := time.Now().Unix() + 300
-	ask := fmt.Sprintf(`{"session":%q,"sid":"x","tokens":70000,"h":60000,"at":%d}`, own, at)
-	if err := os.WriteFile(filepath.Join(turns, "handoff-ask"), []byte(ask), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(handoff, []byte("done: a; next: b\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	later := time.Unix(at+300, 0)
-	if err := os.Chtimes(handoff, later, later); err != nil {
-		t.Fatal(err)
-	}
-	out, exit = runScriptStdin(t, home, bin, env, "do the thing\n", "cs-"+family+"-turn", args...)
-	return home, own, out, exit
+	return home, bin, own, env, args
 }
 
 // TestADriverStartedInsideTheDrivenSessionHasNoLine: an agent can start a driver of its own
@@ -1092,5 +1108,539 @@ func TestTheClaudeHookCountsOnlyThePreviewOfASavedOutput(t *testing.T) {
 	saved["persistedOutputSize"] = 30_911
 	if out := runHook(t, home, bin, "claude", env, claudeBash(home, "toolu_catn", "cat -n f01.txt", saved)); out != "" {
 		t.Fatalf("a saved output was counted whole: the hook said %q", out)
+	}
+}
+
+// The tests below hold the token budget's half that runs in the sandbox. A lent sandbox carries
+// the lender's meter as CS_METER_URL, with the loan CS_METER_TOKEN, and the turn drivers and the
+// hook read the sandbox's count there. The lender is played by a test server.
+
+// meterToken is the loan the meter answers. A reading made with any other gets a 401.
+const meterToken = "cs-meter-test-loan"
+
+// Readings in the lender's shape. The soft budget limits cached-input tokens to 1G, and
+// readingSpent is past it. readingHardAsk is a hard budget of 2M output tokens, past its ask line
+// at 95% and not yet at its limit. readingTwoTypes has two types past their limits.
+const (
+	readingUnder    = `{"sandbox":"web","hard":false,"ask_at":1.0,"limits":{"cached":1000000000},"used":{"input":4812004,"cached":512000000,"output":1702113},"ask":[],"spent":[],"calls":1200,"estimated":0,"refused":0,"applied":true}`
+	readingSpent    = `{"sandbox":"web","hard":false,"ask_at":1.0,"limits":{"cached":1000000000},"used":{"input":4812004,"cached":1000412330,"output":1702113},"ask":["cached"],"spent":["cached"],"calls":2318,"estimated":3,"refused":0,"applied":true}`
+	readingHardAsk  = `{"sandbox":"web","hard":true,"ask_at":0.95,"limits":{"output":2000000},"used":{"input":120000,"cached":9000000,"output":1920000},"ask":["output"],"spent":[],"calls":400,"estimated":0,"refused":0,"applied":true}`
+	readingTwoTypes = `{"sandbox":"web","hard":false,"ask_at":1.0,"limits":{"input":20000000,"output":5000000},"used":{"input":20100000,"cached":0,"output":5000200},"ask":["input","output"],"spent":["input","output"],"calls":900,"estimated":0,"refused":0,"applied":true}`
+	readingNoBudget = `{"sandbox":"web","hard":false,"ask_at":1.0,"limits":{},"used":{"input":1200,"cached":90000,"output":3000},"ask":[],"spent":[],"calls":40,"estimated":0,"refused":0,"applied":true}`
+)
+
+// meterAnswer is one answer of the meter: an HTTP status and a body.
+type meterAnswer struct {
+	status int
+	body   string
+}
+
+func answer(body string) meterAnswer { return meterAnswer{http.StatusOK, body} }
+
+// meter is the lender's meter as a test serves it. It gives its answers in order, repeats the
+// last one, and counts the readings it answered.
+type meter struct {
+	url     string
+	mu      sync.Mutex
+	answers []meterAnswer
+	served  int
+}
+
+func newMeter(t *testing.T, answers ...meterAnswer) *meter {
+	t.Helper()
+	m := &meter{answers: answers}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/cs-sandbox/usage" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+meterToken {
+			http.Error(w, "not a loan of this sandbox", http.StatusUnauthorized)
+			return
+		}
+		m.mu.Lock()
+		a := m.answers[min(m.served, len(m.answers)-1)]
+		m.served++
+		m.mu.Unlock()
+		w.WriteHeader(a.status)
+		_, _ = io.WriteString(w, a.body)
+	}))
+	t.Cleanup(srv.Close)
+	m.url = srv.URL + "/cs-sandbox/usage"
+	return m
+}
+
+// set makes the meter give a from now on.
+func (m *meter) set(a meterAnswer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.answers = []meterAnswer{a}
+}
+
+func (m *meter) readings() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.served
+}
+
+// env is what a lent sandbox gives its agents: the meter and its loan. A proxy the test run
+// inherited would stand between the scripts and the test server, so there is none.
+func (m *meter) env() []string {
+	return []string{"CS_METER_URL=" + m.url, "CS_METER_TOKEN=" + meterToken, "http_proxy=", "HTTP_PROXY="}
+}
+
+// budgetAsk is the record the hook leaves in ~/.cs-turns/budget-ask for the driver.
+type budgetAsk struct {
+	Session string           `json:"session"`
+	Sid     string           `json:"sid"`
+	Types   []string         `json:"types"`
+	Used    map[string]int64 `json:"used"`
+	Limits  map[string]int64 `json:"limits"`
+	At      float64          `json:"at"`
+}
+
+func readBudgetAsk(t *testing.T, home string) budgetAsk {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(home, ".cs-turns", "budget-ask"))
+	if err != nil {
+		t.Fatalf("the hook recorded no budget ask: %v", err)
+	}
+	var rec budgetAsk
+	if err := json.Unmarshal(b, &rec); err != nil {
+		t.Fatalf("the budget ask record reads %s: %v", b, err)
+	}
+	return rec
+}
+
+// typeWord is a token type as cs-campaign reads it from a spent turn's reason.
+var typeWord = regexp.MustCompile(`\b(input|cached|output)\b`)
+
+// wantReasonNames holds a spent turn's reason to the types that ran out. cs-campaign reads the
+// type from the reason, cut at 240 characters, by the bare words input, cached and output. A
+// reason that named any other type, as "cached-input" or the reading's JSON would, misleads it.
+func wantReasonNames(t *testing.T, reason string, types ...string) {
+	t.Helper()
+	got := map[string]bool{}
+	for _, w := range typeWord.FindAllString(reason[:min(len(reason), 240)], -1) {
+		got[w] = true
+	}
+	ok := len(got) == len(types)
+	for _, ty := range types {
+		ok = ok && got[ty]
+	}
+	if !ok {
+		t.Fatalf("the reason %q names the types %v; want %v alone", reason, got, types)
+	}
+}
+
+// promptSent says whether a driver handed its stubs the prompt: pasted into the TUI for Claude
+// Code and Codex, and sent with `run` for OpenCode.
+func promptSent(family, calls string) bool {
+	if family == "opencode" {
+		return strings.Contains(calls, "cs-opencode run")
+	}
+	return strings.Contains(calls, "tmux paste-buffer")
+}
+
+// TestADriverSendsNothingOnceTheBudgetAsks: before it sends a prompt, a lent sandbox's turn
+// driver asks the lender for the sandbox's count. Past the ask line it sends nothing and starts
+// no session, says which types ran out and by how much, and reports class spent with exit 5.
+// Only the operator can raise a budget, so the caller is told not to send again. A lender that
+// gives no reading does not stop the turn, which runs after one warning: a soft budget fails open.
+func TestADriverSendsNothingOnceTheBudgetAsks(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer meterAnswer
+		exit   int
+		said   string
+		types  []string
+	}{
+		{"a type past its limit", answer(readingSpent), 5,
+			"turn not sent, token budget spent: cached at 1.00G of its 1.00G limit; the operator raises it on the host",
+			[]string{"cached"}},
+		// A hard budget asks at 95% of its limit, so that the hand-off fits below it.
+		{"a hard budget at its ask line", answer(readingHardAsk), 5,
+			"turn not sent, token budget at its ask line: output at 1.92M of its 2.00M limit; the operator raises it on the host",
+			[]string{"output"}},
+		{"two types past their limits", answer(readingTwoTypes), 5,
+			"turn not sent, token budget spent: input at 20.10M of its 20.00M limit, output at 5.00M of its 5.00M limit; the operator raises it on the host",
+			[]string{"input", "output"}},
+		{"under the ask line", answer(readingUnder), 0, "", nil},
+		{"a lender that fails", meterAnswer{http.StatusServiceUnavailable, `{"error":"restarting"}`}, 0,
+			"no reading of the token budget (the lender answered 503); the turn runs without one", nil},
+		{"an answer that is not a reading", answer("<html>sign in</html>"), 0,
+			"no reading of the token budget (the answer is not a reading); the turn runs without one", nil},
+	} {
+		for _, family := range []string{"claude", "codex", "opencode"} {
+			t.Run(tc.name+"/"+family, func(t *testing.T) {
+				m := newMeter(t, tc.answer)
+				stub := t.TempDir()
+				home, bin, _, env, args := turnWorld(t, family, stub)
+				out, exit := runScriptStdin(t, home, bin, append(env, m.env()...), "do the thing\n", "cs-"+family+"-turn", args...)
+				if exit != tc.exit {
+					t.Fatalf("exit=%d, want %d: %s", exit, tc.exit, out)
+				}
+				if n := m.readings(); n != 1 {
+					t.Fatalf("the driver took %d readings for one turn; want one, before the prompt", n)
+				}
+				if tc.said != "" && !strings.Contains(out, "cs-"+family+"-turn: "+tc.said) {
+					t.Fatalf("the driver did not say %q: %s", tc.said, out)
+				}
+				calls, _ := os.ReadFile(filepath.Join(stub, "invocations"))
+				if tc.exit == 5 {
+					if !strings.Contains(out, "cs-"+family+"-turn: failure class=spent retry_after=-") {
+						t.Fatalf("the driver did not report the class a caller acts on: %s", out)
+					}
+					wantTurnLogAgrees(t, home, family, "failure class=spent retry_after=-")
+					wantReasonNames(t, lastTurnLine(t, home, family).reason, tc.types...)
+					if len(calls) != 0 {
+						t.Fatalf("a turn the budget held back reached the agent's session:\n%s", calls)
+					}
+					return
+				}
+				if !promptSent(family, string(calls)) {
+					t.Fatalf("the turn ran, but the prompt never reached the agent:\n%s\n%s", calls, out)
+				}
+				if tc.said == "" && strings.Contains(out, "token budget") {
+					t.Fatalf("a reading under the ask line was reported: %s", out)
+				}
+				if l := lastTurnLine(t, home, family); l.exit != 0 || l.class != "-" {
+					t.Fatalf("turn log line %+v; want a plain exit-0 turn", l)
+				}
+			})
+		}
+	}
+}
+
+// runAskedTurn drives one turn of the family's driver to its end in a lent sandbox whose budget
+// is under its ask line when the turn starts. The hook's asks are on disk for this driver's
+// session: "budget-ask" or "handoff-ask", dated during the turn, or with ":earlier" before it
+// began. The handoff file is newer than every ask. outcome is how the OpenCode turn ended.
+func runAskedTurn(t *testing.T, family, outcome string, asks ...string) (home, out string, exit int) {
+	t.Helper()
+	stub := t.TempDir()
+	home, bin, own, env, args := turnWorld(t, family, stub)
+	if family == "opencode" {
+		writeSnapshots(t, stub, ocPage(""), ocPage("",
+			ocMsg("msg_u", "user", 1, `"text":"do the thing"`),
+			ocMsg("msg_a", "assistant", 2, ocText("done")),
+			ocMsg("msg_i", "idle", 3, fmt.Sprintf(`"outcome":%q`, outcome))))
+	}
+	turns := filepath.Join(home, ".cs-turns")
+	if err := os.MkdirAll(turns, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	for _, a := range asks {
+		file, _, earlier := strings.Cut(a, ":")
+		at := now + 300
+		if earlier {
+			at = now - 600
+		}
+		body := fmt.Sprintf(`{"session":%q,"sid":"x","tokens":70000,"h":60000,"at":%d}`, own, at)
+		if file == "budget-ask" {
+			body = fmt.Sprintf(`{"session":%q,"sid":"x","types":["cached"],"used":{"cached":1000412330},"limits":{"cached":1000000000},"at":%d}`, own, at)
+		}
+		if err := os.WriteFile(filepath.Join(turns, file), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handoff := filepath.Join(stub, "handoff.md")
+	if err := os.WriteFile(handoff, []byte("done: a; next: b\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Unix(now+600, 0)
+	if err := os.Chtimes(handoff, later, later); err != nil {
+		t.Fatal(err)
+	}
+	m := newMeter(t, answer(readingUnder))
+	env = append(append(env, "CS_HANDOFF_TOKENS=60000", "CS_HANDOFF_FILE="+handoff), m.env()...)
+	out, exit = runScriptStdin(t, home, bin, env, "do the thing\n", "cs-"+family+"-turn", args...)
+	return home, out, exit
+}
+
+// wantAskedTurn holds a turn that ended well to the class it ended with, and to what the driver
+// said about it on stderr and in its turn log. An empty said is a plain turn, no hand-off.
+func wantAskedTurn(t *testing.T, family, home, out string, exit int, class, said string) {
+	t.Helper()
+	if exit != 0 {
+		t.Fatalf("exit=%d: a hand-off is a turn that ended well: %s", exit, out)
+	}
+	l := lastTurnLine(t, home, family)
+	if l.exit != 0 || l.class != class || l.retry != "-" {
+		t.Fatalf("turn log line %+v; want exit 0, class %s", l, class)
+	}
+	if said == "" {
+		if strings.Contains(out, "handoff at") || strings.Contains(out, "handoff on") {
+			t.Fatalf("a plain turn was reported as a hand-off: %s", out)
+		}
+		return
+	}
+	if !strings.Contains(out, "cs-"+family+"-turn: "+said) || !strings.Contains(l.reason, said) {
+		t.Fatalf("the driver did not say %q: %s (turn log %+v)", said, out, l)
+	}
+	// Every budget ask these tests record is for cached-input tokens.
+	if class == "spent" {
+		wantReasonNames(t, l.reason, "cached")
+	}
+}
+
+// TestATurnThatHandedOffOnTheBudgetIsSpent: a turn the agent ended by handing off, as the hook
+// asked it to on the budget in that session and that turn, is class spent on an exit-0 line,
+// and the driver names the types that ran out. It is spent even when the context line asked in
+// the same turn, because a fresh session on the handoff would not be sent its prompt either. A
+// context hand-off in the same lent sandbox is still class handoff, and a budget ask from an
+// earlier turn is not this turn's.
+func TestATurnThatHandedOffOnTheBudgetIsSpent(t *testing.T) {
+	const onTheBudget = "handoff on the token budget: cached at 1.00G of its 1.00G limit; the operator raises it on the host"
+	for _, tc := range []struct {
+		name        string
+		asks        []string
+		class, said string
+	}{
+		{"the budget asked", []string{"budget-ask"}, "spent", onTheBudget},
+		{"the context line asked", []string{"handoff-ask"}, "handoff", "handoff at 70000 tokens, over the line of 60000"},
+		{"both lines asked", []string{"handoff-ask", "budget-ask"}, "spent", onTheBudget},
+		{"the budget asked in an earlier turn", []string{"budget-ask:earlier"}, "-", ""},
+	} {
+		for _, family := range []string{"claude", "codex", "opencode"} {
+			t.Run(tc.name+"/"+family, func(t *testing.T) {
+				home, out, exit := runAskedTurn(t, family, "succeeded", tc.asks...)
+				wantAskedTurn(t, family, home, out, exit, tc.class, tc.said)
+			})
+		}
+	}
+	// OpenCode's hook ends a turn that goes on after the handoff by interrupting the session, and
+	// OpenCode records that turn as interrupted.
+	t.Run("an OpenCode turn the hook interrupted", func(t *testing.T) {
+		home, out, exit := runAskedTurn(t, "opencode", "interrupted", "budget-ask")
+		wantAskedTurn(t, "opencode", home, out, exit, "spent", onTheBudget+"; the hook ended the turn")
+		if !strings.Contains(out, "__CS_OPENCODE_SESSION_ID__ "+openCodeTestSessionID) {
+			t.Fatalf("the session id is missing, and the next turn needs it: %s", out)
+		}
+	})
+}
+
+// TestAClaudeTurnTheBudgetEndsIsSpent: the whole path on Claude Code. The budget is under its ask
+// line when the driver sends the prompt, and runs out during the turn. The hook asks on the next
+// tool call, in its own words, the agent writes its handoff, and the driver reports the turn as
+// class spent. The sandbox has no context line, so the budget line runs on its own.
+func TestAClaudeTurnTheBudgetEndsIsSpent(t *testing.T) {
+	home, bin := handoffHome(t, "claude", 1_000)
+	stub := t.TempDir()
+	handoff := filepath.Join(t.TempDir(), "handoff.md")
+	m := newMeter(t, answer(readingUnder), answer(readingSpent))
+	out, exit := driveHandoffTurn(t, home, bin, stub, "obeys", append(m.env(), "CS_HANDOFF_FILE="+handoff)...)
+	wantAskedTurn(t, "claude", home, out, exit, "spent", "handoff on the token budget: cached at 1.00G of its 1.00G limit; the operator raises it on the host")
+	said, _ := os.ReadFile(filepath.Join(stub, "hook1.out"))
+	if !strings.Contains(string(said), "[budget] This sandbox has used its cached-input token budget.") ||
+		!strings.Contains(string(said), handoff) {
+		t.Fatalf("past the ask line the hook said %q, not the budget's ask", said)
+	}
+	if rec := readBudgetAsk(t, home); rec.Session != "cs-claude-11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("the budget ask names session %q, not the one the driver drove", rec.Session)
+	}
+	// One reading before the prompt, and one for each of the turn's two tool calls.
+	if n := m.readings(); n != 3 {
+		t.Fatalf("%d readings; want 3", n)
+	}
+}
+
+// TestAClaudeSessionRefusedBeforeItsFirstTurnStartsFresh: cs-claude-remote records a new
+// session's id before its first turn, and sends every later turn for that id. The driver chooses
+// between starting Claude Code with --session-id and with --resume itself, by whether the
+// session's record exists. A first turn the budget refused left no record and started nothing,
+// so the next turn starts the session fresh rather than resuming one with no history.
+func TestAClaudeSessionRefusedBeforeItsFirstTurnStartsFresh(t *testing.T) {
+	home, bin := handoffHome(t, "claude", 1_000)
+	stub := t.TempDir()
+	m := newMeter(t, answer(readingSpent))
+	env := append(m.env(), "CS_HANDOFF_FILE="+filepath.Join(stub, "handoff.md"))
+	if out, exit := driveHandoffTurn(t, home, bin, stub, "ignores", env...); exit != 5 {
+		t.Fatalf("exit=%d; the budget refuses the first turn: %s", exit, out)
+	}
+	m.set(answer(readingUnder))
+	if out, exit := driveHandoffTurn(t, home, bin, stub, "ignores", env...); exit != 0 {
+		t.Fatalf("exit=%d once the budget was raised: %s", exit, out)
+	}
+	calls, _ := os.ReadFile(filepath.Join(stub, "invocations"))
+	if !strings.Contains(string(calls), "cs-claude --session-id 11111111-2222-3333-4444-555555555555") ||
+		strings.Contains(string(calls), "--resume") {
+		t.Fatalf("the turn after a refused first turn did not start its session fresh:\n%s", calls)
+	}
+}
+
+// TestTheHookAsksOnTheBudgetThenEndsTheTurn: the budget line runs the context line's hand-off on
+// the lender's reading. Under the ask line, and on a reading that fails, nothing is said. Past
+// it, the budget's own ask rides on every tool result until the handoff file is newer than the
+// first ask, then the agent is told once more to end its turn, and after two more tool calls the
+// hook ends the turn itself. The ask is recorded apart from a context ask, for the driver. A
+// sub-agent's tool call is skipped before any reading is taken.
+func TestTheHookAsksOnTheBudgetThenEndsTheTurn(t *testing.T) {
+	for _, family := range []string{"claude", "codex"} {
+		t.Run(family, func(t *testing.T) {
+			home, bin := handoffHome(t, family, 50_000)
+			m := newMeter(t, answer(readingUnder))
+			handoff := filepath.Join(home, "work", "handoff.md")
+			env := append(m.env(), "CS_HANDOFF_FILE="+handoff)
+			sub := postTool(family)
+			sub["agent_id"] = "a1b2c3"
+			if out := runHook(t, home, bin, family, env, sub); out != "" || m.readings() != 0 {
+				t.Fatalf("a sub-agent's tool call was read or asked: %q, %d readings", out, m.readings())
+			}
+			if out := runHook(t, home, bin, family, env, postTool(family)); out != "" {
+				t.Fatalf("under the ask line the hook said %q", out)
+			}
+			m.set(meterAnswer{http.StatusServiceUnavailable, "restarting"})
+			if out := runHook(t, home, bin, family, env, postTool(family)); out != "" {
+				t.Fatalf("with no reading the hook said %q", out)
+			}
+			m.set(answer(readingSpent))
+			for i := range 2 {
+				out := runHook(t, home, bin, family, env, postTool(family))
+				for _, want := range []string{`"hookEventName": "PostToolUse"`, "additionalContext",
+					"[budget] This sandbox has used its cached-input token budget.",
+					"Write your handoff to " + handoff, "end your turn"} {
+					if !strings.Contains(out, want) {
+						t.Fatalf("call %d past the ask line: the hook said %q, without %q", i+1, out, want)
+					}
+				}
+			}
+			rec := readBudgetAsk(t, home)
+			if rec.Sid != handoffSession(family) || len(rec.Types) != 1 || rec.Types[0] != "cached" ||
+				rec.Used["cached"] != 1_000_412_330 || rec.Limits["cached"] != 1_000_000_000 || rec.At == 0 {
+				t.Fatalf("the budget ask record reads %+v", rec)
+			}
+			if _, err := os.Stat(filepath.Join(home, ".cs-turns", "handoff-ask")); err == nil {
+				t.Fatalf("the budget's ask was recorded as a context ask")
+			}
+			writeHandoffFile(t, home, time.Now())
+			for i := range 2 {
+				if out := runHook(t, home, bin, family, env, postTool(family)); !strings.Contains(out, "[budget] Your handoff is written. End your turn now.") {
+					t.Fatalf("call %d after the handoff: the hook said %q, not the nudge", i+1, out)
+				}
+			}
+			if out := runHook(t, home, bin, family, env, postTool(family)); !strings.Contains(out, `"continue": false`) ||
+				!strings.Contains(out, "token budget") {
+				t.Fatalf("after two more tool calls the hook said %q; it ends the turn itself", out)
+			}
+		})
+	}
+}
+
+// TestTheBudgetAskWinsAndHasNoFloor: where the context line and the budget line would both ask on
+// one tool call, the agent reads the budget's ask, because a fresh session on a context hand-off
+// would not be sent its prompt either. The budget line has no floor: a session whose first
+// reading is already past the ask line is asked at once. The ask is the caller's sentence when
+// it gives one, with the types and the handoff file filled in.
+func TestTheBudgetAskWinsAndHasNoFloor(t *testing.T) {
+	for _, family := range []string{"claude", "codex"} {
+		t.Run(family+"/both lines over", func(t *testing.T) {
+			home, bin := handoffHome(t, family, 50_000)
+			m := newMeter(t, answer(readingUnder))
+			env := append(handoffEnv(home), m.env()...)
+			if out := runHook(t, home, bin, family, env, postTool(family)); out != "" {
+				t.Fatalf("under both lines the hook said %q", out)
+			}
+			writeHandoffRecord(t, home, family, 61_000)
+			m.set(answer(readingSpent))
+			if out := runHook(t, home, bin, family, env, postTool(family)); !strings.Contains(out, "[budget]") || strings.Contains(out, "[context]") {
+				t.Fatalf("over both lines the hook said %q; want the budget's ask alone", out)
+			}
+		})
+		t.Run(family+"/past the ask line at the first reading", func(t *testing.T) {
+			home, bin := handoffHome(t, family, 50_000)
+			m := newMeter(t, answer(readingTwoTypes))
+			env := append(m.env(), "CS_HANDOFF_FILE=/work/h.md", "CS_BUDGET_ASK=Out of {types}; write {h} and stop.")
+			if out := runHook(t, home, bin, family, env, postTool(family)); !strings.Contains(out, "Out of new-input and output; write /work/h.md and stop.") {
+				t.Fatalf("a session first read past the ask line was not asked in the caller's words: %q", out)
+			}
+		})
+	}
+}
+
+// TestTheBudgetLineStartsNoInterpreterWithNoBudget: a lent sandbox with no budget still has a
+// meter, so the hook would start Python on every tool call only to learn that nothing can ask.
+// The lender's no-budget answer is kept for 30 s instead. While it is fresh, a hook with no
+// context line exits in the shell, and one with a line asks the lender nothing. Once it is
+// stale, the next tool call reads again.
+func TestTheBudgetLineStartsNoInterpreterWithNoBudget(t *testing.T) {
+	for _, family := range []string{"claude", "codex"} {
+		t.Run(family, func(t *testing.T) {
+			home, bin := handoffHome(t, family, 50_000)
+			m := newMeter(t, answer(readingNoBudget))
+			if out := runHook(t, home, bin, family, m.env(), postTool(family)); out != "" {
+				t.Fatalf("with no budget the hook said %q", out)
+			}
+			none := filepath.Join(home, ".cs-turns", "budget-none")
+			if _, err := os.Stat(none); err != nil {
+				t.Fatalf("the no-budget answer was not kept: %v", err)
+			}
+			if out := runHook(t, home, bin, family, append(handoffEnv(home), m.env()...), postTool(family)); out != "" {
+				t.Fatalf("under the context line, with no budget, the hook said %q", out)
+			}
+			if n := m.readings(); n != 1 {
+				t.Fatalf("%d readings while the no-budget answer was fresh; want the first one alone", n)
+			}
+			// A python3 that leaves a mark says whether the hook started one.
+			started := filepath.Join(home, "python-started")
+			writeStub(t, bin, "python3", "#!/bin/sh\n: > "+started+"\n")
+			runHook(t, home, bin, family, m.env(), postTool(family))
+			if _, err := os.Stat(started); err == nil {
+				t.Fatalf("the hook started an interpreter while the no-budget answer was fresh")
+			}
+			if err := os.WriteFile(none, fmt.Appendf(nil, "%d\n", time.Now().Unix()-31), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runHook(t, home, bin, family, m.env(), postTool(family))
+			if _, err := os.Stat(started); err != nil {
+				t.Fatalf("a no-budget answer 31 s old still kept the interpreter from starting")
+			}
+		})
+	}
+}
+
+// TestEveryDriverAnswersWhetherTheBudgetWouldSendATurn: --budget is the question cs-campaign
+// asks a node held on a spent budget, so a raised budget is tried at once rather than after its
+// wait. It answers from one reading, names only the types at their ask line, and starts nothing:
+// no session, no tmux, no line in the turn log.
+func TestEveryDriverAnswersWhetherTheBudgetWouldSendATurn(t *testing.T) {
+	for _, d := range []struct{ driver, prefix string }{
+		{"cs-claude-turn", ".cs-claude-remote"},
+		{"cs-codex-turn", ".cs-codex-remote"},
+		{"cs-opencode-turn", ".cs-opencode-remote"},
+	} {
+		for _, c := range []struct {
+			name   string
+			answer *meterAnswer
+			want   string
+		}{
+			{"no meter", nil, "off"},
+			{"under its limits", &meterAnswer{http.StatusOK, readingUnder}, "ok"},
+			{"no budget", &meterAnswer{http.StatusOK, readingNoBudget}, "ok"},
+			{"a soft budget spent", &meterAnswer{http.StatusOK, readingSpent}, "ask cached"},
+			{"a hard budget at its ask line", &meterAnswer{http.StatusOK, readingHardAsk}, "ask output"},
+			{"two types spent", &meterAnswer{http.StatusOK, readingTwoTypes}, "ask input,output"},
+			{"a lender that cannot answer", &meterAnswer{http.StatusServiceUnavailable, ""}, "none"},
+			{"an answer that is not a reading", &meterAnswer{http.StatusOK, `{"ok":true}`}, "none"},
+		} {
+			t.Run(d.driver+"/"+c.name, func(t *testing.T) {
+				home, bin := agentHome(t, d.prefix)
+				writeStub(t, bin, "tmux", "#!/bin/sh\necho tmux \"$@\" >> \"$HOME/tmux.calls\"\nexit 1\n")
+				var env []string
+				if c.answer != nil {
+					env = newMeter(t, *c.answer).env()
+				}
+				out, code := runScriptStdin(t, home, bin, env, "", d.driver, "--budget")
+				if code != 0 || strings.TrimSpace(out) != c.want {
+					t.Fatalf("--budget = %q (exit %d), want %q", out, code, c.want)
+				}
+				for _, f := range []string{"tmux.calls", filepath.Join(".cs-turns", strings.TrimPrefix(strings.TrimSuffix(d.driver, "-turn"), "cs-")+".log")} {
+					if _, err := os.Stat(filepath.Join(home, f)); err == nil {
+						t.Errorf("--budget wrote %s: a question must start and log nothing", f)
+					}
+				}
+			})
+		}
 	}
 }

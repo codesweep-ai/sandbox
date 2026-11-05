@@ -25,6 +25,7 @@
 #
 #        cs-claude-turn --state [--uuid <uuid>]
 #        cs-claude-turn --context [--uuid <uuid>]
+#        cs-claude-turn --budget
 #
 # --state says whether Claude Code is in a turn right now, whoever started the turn, and
 # starts or wakes nothing. It prints one line and exits 0: busy, idle, blocked (a screen that
@@ -39,12 +40,23 @@
 # latest model call carried. Claude Code does not record its window, so window is "-". With no
 # --uuid it answers for the newest record. Like --state it starts nothing and writes nothing.
 #
+# --budget takes one reading of the sandbox's token budget (CS_METER_URL) and says whether a turn
+# would be sent. It prints one line and exits 0: "ok", "ask <types>" when a type is at its ask
+# line, the types by their bare names and comma-separated, "none" when no reading could be taken,
+# or "off" when the sandbox has no meter. Like --state it starts nothing and writes nothing.
+# cs-campaign asks it of a node held on a spent budget, so a raised budget is tried at once.
+#
 # Exit codes: 0 ok, 2 turn timed out, 3 launch/setup failure, 5 turn failed (the provider ended
-# it with an error), 1 usage/other. 5 matches cs-codex-turn and cs-opencode-turn, and stays clear
-# of cs-claude-remote's 4 (session busy).
+# it with an error, or the token budget kept it from being sent), 1 usage/other. 5 matches
+# cs-codex-turn and cs-opencode-turn, and stays clear of cs-claude-remote's 4 (session busy).
 #
 # A failed turn prints the provider's message on stderr, then one line a caller can parse:
-#   cs-claude-turn: failure class=<throttled|capacity|unauthorized|context|unreachable|other> retry_after=<secs|->
+#   cs-claude-turn: failure class=<throttled|capacity|unauthorized|context|unreachable|spent|other> retry_after=<secs|->
+#
+# spent is the sandbox's token budget, where the lender has a meter for it (CS_METER_URL). It
+# ends a turn three ways: exit 5 when a type was already at its ask line and nothing was sent,
+# exit 5 when the lender refused a call under a hard budget, and exit 0 when the agent handed
+# off as the context hook asked it to on the budget.
 
 set -uo pipefail
 
@@ -62,6 +74,7 @@ PROJECTS="$HOME/.cs-claude/projects"
 LABEL=""             # human label, used only in diagnostics
 STATE_ONLY=false
 CONTEXT_ONLY=false
+BUDGET_ONLY=false
 
 # The turn log. Every turn end appends one line here, on the machine the agent runs on, so a
 # harness that asks this machine about this agent can learn how its last turn ended:
@@ -105,22 +118,103 @@ trap 'record_turn_end "$?"' EXIT
 # and nowhere else in this driver.
 HANDOFF_DIR="$HOME/.cs-turns"
 TURN_START=0
-# handoff_end prints the tokens at the ask when THIS turn ended because the agent handed off:
-# the hook asked in the session this driver drives, during this turn, and the handoff file is
-# newer than the ask. Anything else fails, and the turn is reported as whatever it was.
-handoff_end() {
-    [[ -n "${CS_HANDOFF_TOKENS:-}" && "${CS_HANDOFF_TOKENS}" != 0 && -f "$HANDOFF_DIR/handoff-ask" ]] || return 1
-    python3 - "$HANDOFF_DIR/handoff-ask" "$TMUX_SESSION" "$TURN_START" "${CS_HANDOFF_FILE:-$HANDOFF_DIR/handoff.md}" <<'PY'
+# Set when this driver was started from inside the driven session (below).
+NESTED=false
+# asked_end <ask file> prints what the hook asked about when THIS turn ended because the agent
+# handed off as it asked: the hook asked in the session this driver drives, during this turn,
+# and the handoff file is newer than the ask. That is the tokens at a context ask (handoff-ask),
+# or the types that ran out at a budget ask (budget-ask), each by its bare name with the figures
+# the hook recorded. Anything else fails, and the turn is reported as whatever it was.
+asked_end() {
+    ! $NESTED && [[ -f "$HANDOFF_DIR/$1" ]] || return 1
+    python3 - "$HANDOFF_DIR/$1" "$TMUX_SESSION" "$TURN_START" "${CS_HANDOFF_FILE:-$HANDOFF_DIR/handoff.md}" <<'PY'
 import json, os, sys
+def fmt(n):
+    if not isinstance(n, (int, float)):
+        return "?"
+    for size, unit in ((1e9, "G"), (1e6, "M"), (1e3, "K")):
+        if n >= size:
+            return "%.2f%s" % (n / size, unit)
+    return str(int(n))
 try:
     ask = json.load(open(sys.argv[1]))
     at = float(ask.get("at") or 0)
     if ask.get("session") == sys.argv[2] and at >= float(sys.argv[3]) \
             and os.path.getmtime(os.path.expanduser(sys.argv[4])) >= at:
-        print(ask.get("tokens", "-")); sys.exit(0)
+        if isinstance(ask.get("types"), list):
+            used = ask.get("used") if isinstance(ask.get("used"), dict) else {}
+            limits = ask.get("limits") if isinstance(ask.get("limits"), dict) else {}
+            num = lambda v: isinstance(v, (int, float))
+            print(", ".join("%s at %s of its %s limit" % (t, fmt(used[t]), fmt(limits[t]))
+                            if num(used.get(t)) and num(limits.get(t)) else str(t)
+                            for t in ask["types"]) or "-")
+        else:
+            print(ask.get("tokens", "-"))
+        sys.exit(0)
 except Exception:
     pass
 sys.exit(1)
+PY
+}
+# The turn ended on the context line's ask, or on the budget line's.
+handoff_end() { [[ -n "${CS_HANDOFF_TOKENS:-}" && "${CS_HANDOFF_TOKENS}" != 0 ]] && asked_end handoff-ask; }
+spent_end() { [[ -n "${CS_METER_URL:-}" ]] && asked_end budget-ask; }
+
+# The token budget. A lent sandbox can carry CS_METER_URL, where the lender answers with this
+# sandbox's token count and budget, and CS_METER_TOKEN, the loan the reading is made with. The
+# lender sees every call the sandbox makes, so the count is the sandbox's, not this session's.
+# Unset, the sandbox has no meter, and nothing about the budget runs.
+#
+# budget_check takes one reading and prints one line: "ask <what>" when a type is at its ask
+# line, "none <why>" when there is no reading, and "ok" otherwise. <what> names each type that ran
+# out by its bare name, input, cached or output, and no other: cs-campaign reads the type from
+# the turn's reason, and a line that named all three would send it to the wrong one. A reading
+# is a 200 within about 3 s whose body is the lender's JSON. Anything else is none, and the turn
+# runs through it: under a soft budget, a lender that cannot answer must not stop the work.
+budget_check() {
+    python3 - <<'PY' 2>/dev/null || echo "none the reading could not be taken"
+import json, os, urllib.error, urllib.request
+def fmt(n):
+    if not isinstance(n, (int, float)):
+        return "?"
+    for size, unit in ((1e9, "G"), (1e6, "M"), (1e3, "K")):
+        if n >= size:
+            return "%.2f%s" % (n / size, unit)
+    return str(int(n))
+req = urllib.request.Request(os.environ["CS_METER_URL"],
+                             headers={"Authorization": "Bearer " + os.environ.get("CS_METER_TOKEN", "")})
+try:
+    with urllib.request.urlopen(req, timeout=3) as r:
+        status, body = r.status, r.read()
+except urllib.error.HTTPError as e:
+    status, body = e.code, b""
+except Exception as e:
+    print("none %s" % (getattr(e, "reason", None) or e))
+    raise SystemExit(0)
+if status != 200:
+    print("none the lender answered %s" % status)
+    raise SystemExit(0)
+try:
+    doc = json.loads(body)
+    limits, ask = doc["limits"], doc["ask"]
+except Exception:
+    doc, limits, ask = None, None, None
+if not isinstance(limits, dict) or not isinstance(ask, list):
+    print("none the answer is not a reading")
+    raise SystemExit(0)
+ask = [t for t in ask if isinstance(t, str)]
+if not ask:
+    print("ok")
+    raise SystemExit(0)
+used = doc.get("used") if isinstance(doc.get("used"), dict) else {}
+spent = doc.get("spent") if isinstance(doc.get("spent"), list) else []
+what = ", ".join("%s at %s of its %s limit" % (t, fmt(used.get(t)), fmt(limits.get(t))) for t in ask)
+# Under a hard budget the ask line is below the limit, so a type can be asked about before it is spent.
+state = "spent" if all(t in spent for t in ask) else "at its ask line"
+if os.environ.get("BUDGET_PROBE") == "1":
+    print("ask " + ",".join(ask))
+    raise SystemExit(0)
+print("ask token budget %s: %s; the operator raises it on the host" % (state, what))
 PY
 }
 # handoff_fields is what --context adds to a reading when a line is set: the line, and
@@ -153,9 +247,11 @@ while [[ $# -gt 0 ]]; do
         --state)    STATE_ONLY=true; shift ;;
         # --context is a question, not a turn, so it takes the same no-turn path as --state.
         --context)  STATE_ONLY=true; CONTEXT_ONLY=true; shift ;;
+        # --budget is a question too, and takes the same no-turn path.
+        --budget)  STATE_ONLY=true; BUDGET_ONLY=true; shift ;;
         -h|--help)
             trap - EXIT
-            sed -n '2,47p' "$0"; exit 0 ;;
+            sed -n '2,52p' "$0"; exit 0 ;;
         *) err "unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -165,6 +261,17 @@ if [[ -z "$UUID" ]] && ! $STATE_ONLY; then
 fi
 if [[ -n "$UUID" ]] && ! [[ "$UUID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
     err "--uuid '$UUID' is not a valid UUID"; exit 1
+fi
+
+# --budget answers from one reading and goes no further: no session, no turn log, no tmux.
+if $BUDGET_ONLY; then
+    [[ -n "${CS_METER_URL:-}" ]] || { echo off; exit 0; }
+    budget="$(BUDGET_PROBE=1 budget_check)"
+    case "$budget" in
+        ok|"ask "*) echo "$budget" ;;
+        *) echo none ;;
+    esac
+    exit 0
 fi
 # TIMEOUT reaches here from --timeout or the env default, and 0 legitimately means
 # "wait indefinitely". Bash arithmetic reads a non-numeric value as 0, so without
@@ -495,15 +602,18 @@ ensure_session() {
 
 # --- run one turn ---------------------------------------------------------
 
-# A driver the agent starts from inside the driven session runs with no line. Left on, it would
-# name its own session in ~/.cs-turns/driven, and the hook would then skip the one driven here.
+# A driver the agent starts from inside the driven session runs with no line, and the hook's
+# budget line never asks its session either. Left on, it would name its own session in
+# ~/.cs-turns/driven, and the hook would then skip the one driven here. It still reads the budget
+# before its turn, because the budget is the sandbox's and its calls spend it too.
 # A TMUX_PANE in some other session changes nothing: a shell can carry one from elsewhere. A
 # driver started over ssh has no pane, so cs-claude-remote passes the session it was run from as
 # CS_PARENT_TMUX_SESSION.
 # A nested driver writes its turn-log line to a log of its own, because the harness reads the
 # last lines of the main log as the driven session's turns. The path is set before any turn
 # could end, so even a failed start lands there.
-if [[ -n "${CS_HANDOFF_TOKENS:-}" && "${CS_HANDOFF_TOKENS}" != 0 && -f "$HANDOFF_DIR/driven" ]]; then
+if [[ -f "$HANDOFF_DIR/driven" ]] &&
+    { [[ -n "${CS_HANDOFF_TOKENS:-}" && "${CS_HANDOFF_TOKENS}" != 0 ]] || [[ -n "${CS_METER_URL:-}" ]]; }; then
     driven_session=""; read -r driven_session < "$HANDOFF_DIR/driven" 2>/dev/null || true
     nested_in=""
     if [[ -n "${TMUX_PANE:-}" ]]; then
@@ -525,8 +635,23 @@ if [[ -n "${CS_HANDOFF_TOKENS:-}" && "${CS_HANDOFF_TOKENS}" != 0 && -f "$HANDOFF
     if [[ -n "$nested_in" ]]; then
         err "started inside the driven session $nested_in: this one has no hand-off line"
         unset CS_HANDOFF_TOKENS CS_HANDOFF_FILE CS_HANDOFF_ASK
+        NESTED=true
         [[ -n "${CS_TURN_LOG:-}" ]] || TURN_LOG="$HOME/.cs-turns/claude-nested.log"
     fi
+fi
+
+# A sandbox whose token budget is at its ask line sends nothing: no tokens are spent, and the
+# session is left as it was, not even started or resumed. Only the operator can raise the
+# budget, so the class says not to send again.
+if [[ -n "${CS_METER_URL:-}" ]]; then
+    budget="$(budget_check)"
+    case "$budget" in
+        "ask "*)
+            err "turn not sent, ${budget#ask }"
+            err "failure class=spent retry_after=-"
+            exit 5 ;;
+        "none "*) err "no reading of the token budget (${budget#none }); the turn runs without one" ;;
+    esac
 fi
 
 ensure_session || exit $?
@@ -537,7 +662,7 @@ wait_ready || exit $?
 # Name the session this turn drives, for the context hook: a CLI session the agent starts
 # itself is another one, and is never asked to hand off over this agent's file.
 TURN_START="$(date +%s)"
-if [[ -n "${CS_HANDOFF_TOKENS:-}" ]]; then
+if ! $NESTED && [[ -n "${CS_HANDOFF_TOKENS:-}${CS_METER_URL:-}" ]]; then
     { mkdir -p "$HANDOFF_DIR" && printf '%s\n' "$TMUX_SESSION" > "$HANDOFF_DIR/driven"; } 2>/dev/null || true
 fi
 
@@ -667,7 +792,11 @@ parts = [b.get("text", "") for b in (last.get("message") or {}).get("content") o
          if isinstance(b, dict) and b.get("type") == "text"]
 msg = " ".join(" ".join(parts).split()) or "provider error"
 kind, status, low = last.get("error") or "", last.get("apiErrorStatus"), msg.lower()
-if kind == "rate_limit" or status == 429:
+if "cs-sandbox token budget spent" in low:
+    # The lender refused the call because this sandbox has used a hard token budget. It answers
+    # with a 400, which a malformed request gets too, so only the marker in its message says so.
+    cls = "spent"
+elif kind == "rate_limit" or status == 429:
     cls = "throttled"
 elif kind == "authentication_failed" or status in (401, 403):
     cls = "unauthorized"
@@ -704,8 +833,14 @@ if [[ -n "$FAILURE" ]]; then
 fi
 
 # A turn the agent ended by handing off, as the context hook asked it to in this session and
-# this turn, is reported as one: exit 0, class handoff. A refused turn never reaches here.
-if t="$(handoff_end)"; then
+# this turn, is reported as one: exit 0, class handoff. One that ended on the budget's ask is
+# class spent, even when the context line asked in the same turn too: the budget holds back the
+# next turn, and a fresh session started on the handoff would not be sent its prompt either. A
+# refused turn never reaches here.
+if t="$(spent_end)"; then
+    TURN_CLASS="spent"
+    err "handoff on the token budget: $t; the operator raises it on the host"
+elif t="$(handoff_end)"; then
     TURN_CLASS="handoff"
     err "handoff at $t tokens, over the line of $CS_HANDOFF_TOKENS"
 fi

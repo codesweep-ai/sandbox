@@ -239,6 +239,54 @@ counts only an ask made in its own turn.
 Compaction stays on as a safety net. After one, the hook tells the agent to read its handoff
 file, if there is one, before carrying on.
 
+## Stopping at the token budget
+
+A sandbox can borrow its agent's credential from the cs-sandbox credential lender on the host,
+and the operator can give such a sandbox a token budget. The lender counts every call the sandbox
+makes, in three types: new-input, cached-input and output tokens. Its meter reaches the sandbox
+with the loan:
+
+- `CS_METER_URL` — where the lender answers with this sandbox's count and budget. Unset, the
+  sandbox has no meter, and nothing below happens.
+- `CS_METER_TOKEN` — the loan the reading is made with.
+- `CS_BUDGET_ASK` — the sentence the agent reads once the budget asks; `{types}` and `{h}`, the
+  handoff file, are filled in. The default names the budget, the types and the file.
+
+Each limited type has an ask line: its limit under a soft budget, and 95% of it under a hard one.
+Past it, the sandbox is asked to stop, at two points.
+
+Before it sends a prompt, the driver takes a reading. When a type is past its ask line, it sends
+nothing, and starts or resumes no session. It prints the lender's figures on stderr, then
+`cs-claude-turn: failure class=spent retry_after=-`, and exits `5`. When the lender gives no
+reading, the turn runs after one warning on stderr: a lender that cannot answer does not stop work.
+
+During a turn, `cs-context-hook` takes a reading after each tool call of the session this driver
+drives, with the same skips as at a context line. Past the ask line, it runs the same ask, nudge
+and stop, in its own words. It asks at once, even a session whose first reading is already past
+the line. When both lines would ask on one tool call, the agent reads the budget's ask. A turn
+driver the agent starts from inside the driven session still reads the budget before its turn,
+and the hook never asks its session.
+
+A turn that ended this way is a budget hand-off, and the driver says so: exit `0`, one line on
+stderr (`cs-claude-turn: handoff on the token budget: <type> at <used> of its <limit> limit; …`),
+and class `spent` in the turn log. That line, and the one for a turn not sent, name each type
+that ran out by its bare name, `input`, `cached` or `output`, and no other type. It is read as one under the same conditions as a context
+hand-off, and it is `spent` even when the context line asked in the same turn.
+
+To ask whether a turn would be sent, without sending one, run `cs-claude-turn --budget` on the agent's
+machine. It takes one reading and prints one line, and always exits 0: `ok`, `ask <types>` with
+the types at their ask line comma-separated, `none` when the lender gives no reading, or `off`
+when the sandbox has no meter. It starts nothing and writes nothing, so a caller holding a
+session on a spent budget can ask it every few minutes and try again as soon as it says `ok`.
+
+Under a hard budget, the lender also refuses the sandbox's calls once a type reaches its limit.
+That ends a turn partway through, with exit `5` and class `spent`.
+
+Whichever way the budget stopped it, do not send the prompt again: only the operator can raise the
+budget, on the host. The session is still alive, and after a budget hand-off its handoff is
+written. Once the budget is raised, a session that handed off can start fresh on its handoff, and
+any other carries on where it stopped.
+
 ## How the last turn ended
 
 Every turn end appends one line to `~/.cs-turns/claude.log`, on the machine the agent runs on:
@@ -248,6 +296,7 @@ Every turn end appends one line to `~/.cs-turns/claude.log`, on the machine the 
 1789000000 5 throttled 12.5 turn failed: Rate limit reached. Please try again in 12.5s.
 1789000420 0 - - -
 1789000900 0 handoff - handoff at 61240 tokens, over the line of 60000
+1789001500 5 spent - turn not sent, token budget spent: cached at 1.00G of its 1.00G limit; the operator raises it on the host
 ```
 
 The class and the wait are the ones on the `failure class=` line. That line goes to whoever
@@ -257,7 +306,9 @@ older failure is known to be over. `--state`, `--help` and a usage error are not
 nothing. A driver that was killed writes nothing, so a missing line means the ending is not known.
 A turn that ended well has `-` for its reason, or `dismissed a dialog: <its text>` when the driver
 refused a one-time dialog on the way. A turn the agent ended by handing off has class `handoff`
-on an exit-0 line ("Handing off at a context line").
+on an exit-0 line ("Handing off at a context line"), or `spent` when it handed off on the token
+budget ("Stopping at the token budget"). A turn that ran without a budget reading has the
+driver's warning as its reason.
 The file keeps between 200 and 400 lines. `CS_TURN_LOG` names another path.
 
 ## Exit codes
@@ -268,7 +319,7 @@ A turn surfaces the remote driver's exit status:
 - `2` — turn timed out (`--timeout`) **or** the stall watchdog tripped (`CS_CLAUDE_STALL_SECS`).
 - `3` — launch/setup failure, including screens that need a human: the remote Claude is at an **OAuth sign-in** or **first-run onboarding** wizard (attach with `--attach <name>` to complete it), or is wedged on a **tool-approval prompt** (the warm session is meant to run with permissions skipped — attach to inspect). A dialog the driver does not know fails the turn at once, and the message quotes the screen, so it says what a person has to answer.
 - `4` — the session is **busy**: a live turn holds the lock and it could not be acquired within `CS_CLAUDE_LOCK_WAIT`. The error prints the lock directory, which is what to remove if you are certain the process holding it is not a turn.
-- `5` — the turn **failed**: the provider ended it with an error, such as a rate limit, an overloaded API, a rejected credential or a prompt that is too long. It is not a finished turn, and the text Claude shows for it ("API Error: …") is not a reply.
+- `5` — the turn **failed**: the provider ended it with an error, such as a rate limit, an overloaded API, a rejected credential or a prompt that is too long. It is not a finished turn, and the text Claude shows for it ("API Error: …") is not a reply. With class `spent`, the token budget stopped it, and no turn may have run at all.
 - `1` — usage or other error.
 
 A failed turn prints the provider's message on stderr, then one line to parse:
@@ -277,7 +328,7 @@ A failed turn prints the provider's message on stderr, then one line to parse:
 cs-claude-turn: failure class=throttled retry_after=-
 ```
 
-`class` is `throttled`, `capacity`, `unauthorized`, `context`, `unreachable` or `other`. `unreachable`
+`class` is `throttled`, `capacity`, `unauthorized`, `context`, `unreachable`, `spent` or `other`. `unreachable`
 means no provider answered at all, as when the network is down, and a caller waits it out as it
 does a throttle. `retry_after` is the wait
 in seconds when the message names one, and `-` when it does not. After `throttled` or `capacity`,
@@ -291,6 +342,12 @@ the prompt again to the same session at once, without a back-off.
 After `unauthorized`, do not send it again. The provider rejected the credential, and waiting does
 not fix that. Claude Code retries a rejected credential for about three minutes by itself, so the
 driver ends its TUI and reports the turn within seconds. The next turn resumes the same conversation.
+
+After `spent`, do not send it again either. With exit `5`, no turn ran because the sandbox's token
+budget was past its ask line, or the cs-sandbox credential lender refused a call under a hard
+budget. With exit `0`, the agent handed off on the budget's ask. Only the operator can raise the
+budget, on the host. The session is still alive, and after a budget hand-off its handoff is
+written ("Stopping at the token budget").
 
 ## Interpreting user intent
 

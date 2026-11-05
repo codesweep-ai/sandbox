@@ -112,19 +112,20 @@ if [ -n "${OPENCODE_BASE_URL:-}${OPENAI_BASE_URL:-}${ANTHROPIC_BASE_URL:-}" ] ||
   fi
 fi
 
-# The context hook is an OpenCode plugin. A member with no hand-off line has no use for it, so it
-# is kept out of the profile's plugins directory and linked in here only when CS_HANDOFF_TOKENS
-# names a line, and a member with no line starts exactly as it would without the feature. The
-# link stays once made: the plugin registers nothing without the line, and a start with no line
-# after one with it costs nothing new. A missing source is reported, not fatal: the agent still
-# runs, without the hook.
-if [ -n "${CS_HANDOFF_TOKENS:-}" ] && [ "${CS_HANDOFF_TOKENS}" != 0 ]; then
+# The context hook is an OpenCode plugin. A member with no hand-off line and no token budget meter
+# has no use for it, so it is kept out of the profile's plugins directory and linked in here only
+# when CS_HANDOFF_TOKENS names a line or CS_METER_URL names the lender's meter, as a lent sandbox
+# does. A member with neither starts exactly as it would without the feature. The link stays once
+# made: the plugin registers nothing without either, and a start with neither after one with them
+# costs nothing new. A missing source is reported, not fatal: the agent still runs, without the
+# hook.
+if { [ -n "${CS_HANDOFF_TOKENS:-}" ] && [ "${CS_HANDOFF_TOKENS}" != 0 ]; } || [ -n "${CS_METER_URL:-}" ]; then
   _hook="$HOME/.local/share/cs-opencode/plugins/cs-context-hook.ts"
   if [ -f "$_hook" ]; then
     mkdir -p "$OC_DIR/plugins" 2>/dev/null && ln -sfn "$_hook" "$OC_DIR/plugins/cs-context-hook.ts" 2>/dev/null \
-      || echo "cs-opencode: could not link the context hook into $OC_DIR/plugins; the hand-off line will not be asked" >&2
+      || echo "cs-opencode: could not link the context hook into $OC_DIR/plugins; neither the hand-off line nor the budget will be asked" >&2
   else
-    echo "cs-opencode: no context hook at $_hook; the hand-off line will not be asked" >&2
+    echo "cs-opencode: no context hook at $_hook; neither the hand-off line nor the budget will be asked" >&2
   fi
   unset _hook
 fi
