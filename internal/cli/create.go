@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/lend"
@@ -47,6 +48,9 @@ type createFlags struct {
 	inheritAPIKey     []string
 	lendAPIKey        []string
 	blockSideCalls    bool
+	tokenBudget       string
+	hardBudget        bool
+	askAt             string
 	gitIdentity       string
 	cpus, mem, disk   int
 	pids              int
@@ -92,6 +96,13 @@ func newCreateCmd(app *App) *cobra.Command {
 			" — the sandbox gets a loan token, the key stays on the host (repeatable, comma-separated)")
 	fl.BoolVar(&f.blockSideCalls, "block-side-calls", true,
 		"refuse the sandbox a direct route to the hosts the lender fronts, so an agent cannot reach one around its loan")
+	fl.StringVar(&f.tokenBudget, "token-budget", "",
+		"limit what a lent sandbox spends, per token type: input=N,cached=N,output=N (any of them; K, M and G are decimal); "+
+			"the agent is asked to stop at a limit")
+	fl.BoolVar(&f.hardBudget, "hard", false,
+		"make every --token-budget limit a ceiling: the lender refuses the sandbox's calls once a type reaches its limit")
+	fl.StringVar(&f.askAt, "ask-at", "",
+		"where a --hard budget asks the agent to stop, as a share of each limit (default 95%)")
 	fl.StringVar(&f.gitIdentity, "git-identity", "host",
 		"whose name and address the sandbox commits as: host (your own git identity) | none | \"Name <address>\"")
 	fl.IntVar(&f.cpus, "cpus", 4, "firecracker: vCPUs; podman: a CPU cap, applied only when given")
@@ -190,6 +201,13 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	}
 	if app.exists(f.group, name) {
 		return fmt.Errorf("sandbox %q already exists in group %q", name, f.group)
+	}
+
+	// A token budget limits what a lender meters, so it needs one: a budget on a
+	// sandbox that holds its own key would look like a boundary it is not.
+	budget, err := createBudget(f)
+	if err != nil {
+		return err
 	}
 
 	// Resolve directory-sharing specs against the host.
@@ -301,6 +319,13 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	if err != nil {
 		return err
 	}
+	// Asked of the lender resolveLoans just ensured, which is the one that will
+	// meter this sandbox: one older than token budgets would ignore the file.
+	if !budget.Empty() {
+		if err := app.checkLenderEnforces(ctx, f.group, budget.Hard); err != nil {
+			return err
+		}
+	}
 	if injected, err = mergeLoanEnv(injected, plan.env, plan.consumed); err != nil {
 		return err
 	}
@@ -353,6 +378,14 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		if err := lend.WriteLoans(state.Dir(app.InstDir, f.group, name), plan.loans); err != nil {
 			return fmt.Errorf("record this sandbox's loans: %w", err)
 		}
+		if !budget.Empty() {
+			if err := lend.WriteBudget(state.Dir(app.InstDir, f.group, name), budget); err != nil {
+				return fmt.Errorf("record this sandbox's token budget: %w", err)
+			}
+		}
+		// A record left by a sandbox of this group that is gone. The new one's
+		// is named after its own loans, so it starts at zero either way (R155c).
+		app.sweepUsage(f.group)
 		// After the loan is on disk, not before: the renewer derives what to keep
 		// alive from the loan records, so starting it any earlier gives its first
 		// tick nothing to find.
@@ -401,6 +434,10 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 	for _, n := range plan.notes {
 		fmt.Fprintf(out, "  %s\n", n)
 	}
+	if !budget.Empty() {
+		fmt.Fprintf(out, "  token budget: %s (%s; `cs-sandbox usage %s` shows what it has spent)\n",
+			budgetText(budget), budgetMode(budget), name)
+	}
 	for _, sn := range snaps {
 		fmt.Fprintf(out, "  snapshot: %s -> ~/%s (read-only, frozen at create)\n", sn.HostPath, sn.Name)
 	}
@@ -411,6 +448,36 @@ func runCreate(ctx context.Context, app *App, name string, f *createFlags, cmd *
 		fmt.Fprintf(out, "  repo:     ~/%s on branch %s\n", rc.Dir, rc.Branch)
 	}
 	return nil
+}
+
+// createBudget reads create's budget flags into the budget to record, or an
+// empty one when none was asked for.
+func createBudget(f *createFlags) (lend.Budget, error) {
+	if f.tokenBudget == "" {
+		if f.hardBudget || f.askAt != "" {
+			return lend.Budget{}, errors.New("--hard and --ask-at shape a --token-budget, and none was given")
+		}
+		return lend.Budget{}, nil
+	}
+	if len(f.lendAgentLogin)+len(f.lendAPIKey) == 0 {
+		return lend.Budget{}, errors.New("--token-budget limits what the lender meters, and this sandbox borrows nothing: " +
+			"add --lend-agent-login or --lend-api-key")
+	}
+	limits, err := parseTokenBudget("--token-budget", f.tokenBudget)
+	if err != nil {
+		return lend.Budget{}, err
+	}
+	b := lend.Budget{Limits: limits, Hard: f.hardBudget}
+	if f.askAt != "" {
+		if !f.hardBudget {
+			return lend.Budget{}, errors.New("--ask-at moves a hard budget's ask line: a soft budget asks at each limit; add --hard")
+		}
+		if b.AskAt, err = parseAskAt(f.askAt); err != nil {
+			return lend.Budget{}, err
+		}
+	}
+	b.Record(time.Now(), "create: "+budgetText(b)+", "+budgetMode(b))
+	return b, nil
 }
 
 // newEngine builds the engine f names. The flags it needs were validated by the

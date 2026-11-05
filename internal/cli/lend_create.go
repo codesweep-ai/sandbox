@@ -247,6 +247,18 @@ func (app *App) resolveLoans(ctx context.Context, f *createFlags, name, injected
 		plan.notes = append(plan.notes, credentialClockNotes(s, home, keysDir)...)
 	}
 
+	// The meter loan, which lends nothing. It is how the sandbox reads its own
+	// token count, so its turn driver and hand-off hook can stop near a budget
+	// (R153f). Minted for every lent sandbox, so a budget set later still has
+	// something inside to act on it. Its address is the lender's own, never a
+	// recorder's: only the lender keeps the count.
+	meter, err := lend.MintMeter(name)
+	if err != nil {
+		return nil, err
+	}
+	plan.loans = append(plan.loans, meter)
+	plan.env = append(plan.env, lend.MeterEnv(meter.Token, guestBase)...)
+
 	// The half of an agent's traffic a base URL does not govern. Without this a
 	// sandbox's agent reaches api.anthropic.com on its own, is refused there
 	// because it holds no credential that host accepts, and reports itself
@@ -742,7 +754,10 @@ func loanSlots(instDir, group, name string) []string {
 	}
 	out := make([]string, 0, len(loans))
 	for _, l := range loans {
-		out = append(out, l.Slot)
+		// The meter loan borrows nothing, so it is no credential to list.
+		if l.Kind != lend.MeterLoan {
+			out = append(out, l.Slot)
+		}
 	}
 	sort.Strings(out)
 	return out
