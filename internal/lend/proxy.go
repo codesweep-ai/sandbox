@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"net/url"
 	"path"
@@ -16,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -355,6 +357,16 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, loan Loan, slot
 		return
 	}
 	start := time.Now()
+	// A call can cost tokens only once its whole request has gone out, which the
+	// transport reports from a goroutine of its own. ModifyResponse and
+	// ErrorHandler both run on this one, so replied needs no lock.
+	var sent atomic.Bool
+	var replied bool
+	if metered {
+		r = r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
+			WroteRequest: func(i httptrace.WroteRequestInfo) { sent.Store(i.Err == nil) },
+		}))
+	}
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(base)
@@ -410,6 +422,7 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, loan Loan, slot
 		// that reads its usage as the copy runs and changes nothing, which is what
 		// keeps a stream byte for byte.
 		ModifyResponse: func(resp *http.Response) error {
+			replied = true
 			s.answered(loan, slot, resp, time.Since(start))
 			if metered {
 				s.observe(c, resp)
@@ -422,6 +435,10 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, loan Loan, slot
 			s.trouble(slot.ID, "failing", slog.Any("err", err))
 			s.cfg.Log.Error("upstream failed", slog.String("sandbox", loan.Name), slog.String("slot", slot.ID),
 				slog.String("origin", slot.Origin), slog.Any("err", err))
+			// A 101 the proxy then rejects also lands here, already settled.
+			if sent.Load() && !replied {
+				s.unanswered(c)
+			}
 			writeError(w, http.StatusBadGateway, "upstream_error", "the upstream request failed: "+err.Error())
 		},
 	}

@@ -2,9 +2,12 @@ package lend
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // meteredLender is a lender for one sandbox, g/box, borrowing openai in front
@@ -21,6 +25,7 @@ import (
 // written in a real instances root.
 type meteredLender struct {
 	root, inst  string
+	lender      *Server
 	srv         *httptest.Server
 	lent, meter Loan
 	calls       atomic.Int32
@@ -31,7 +36,7 @@ type meteredLender struct {
 func newMeteredLender(t *testing.T) *meteredLender {
 	t.Helper()
 	m := &meteredLender{stream: cassetteFile(t, "codex-login-lent", "resp", 3)}
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	m.over(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.calls.Add(1)
 		if r.Method == http.MethodGet {
 			_, _ = io.WriteString(w, `{"models":[]}`)
@@ -48,8 +53,21 @@ func newMeteredLender(t *testing.T) *meteredLender {
 		}
 		_, _ = w.Write(m.stream)
 	}))
+	return m
+}
+
+// over starts the lender in front of a stand-in provider with this handler.
+func (m *meteredLender) over(t *testing.T, provider http.Handler) {
+	t.Helper()
+	up := httptest.NewServer(provider)
 	t.Cleanup(up.Close)
-	withSlots(t, Slot{ID: "openai", Kind: Key, Origin: up.URL, Header: "authorization", Prefix: "Bearer ",
+	m.at(t, up.URL)
+}
+
+// at starts the lender in front of whatever is at this origin.
+func (m *meteredLender) at(t *testing.T, origin string) {
+	t.Helper()
+	withSlots(t, Slot{ID: "openai", Kind: Key, Origin: origin, Header: "authorization", Prefix: "Bearer ",
 		AuthEnvs: []string{"OPENAI_API_KEY"}, BaseEnv: "OPENAI_BASE_URL", read: keyReader("openai"), where: keyPath("openai")})
 	m.root = t.TempDir()
 	m.inst = filepath.Join(m.root, "g", "box")
@@ -61,7 +79,6 @@ func newMeteredLender(t *testing.T) *meteredLender {
 	id := MeterID([]Loan{m.lent, m.meter})
 	m.lent.Meter, m.meter.Meter = id, id
 	m.srv = m.start(t)
-	return m
 }
 
 // start is a lender process over the same instances root, as a restart is.
@@ -69,9 +86,9 @@ func (m *meteredLender) start(t *testing.T) *httptest.Server {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	home := hostProfile(t)
-	s := New(Config{Home: home, KeysDir: KeysDir(home), Callers: CallersAny, Log: log,
+	m.lender = New(Config{Home: home, KeysDir: KeysDir(home), Callers: CallersAny, Log: log,
 		Loans: fixedLoans{m.lent.Token: m.lent, m.meter.Token: m.meter}, Meter: NewMeter(m.root, "", log)})
-	srv := httptest.NewServer(s)
+	srv := httptest.NewServer(m.lender)
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -227,6 +244,138 @@ func TestAHardBudgetRefusesOnceATypeIsSpent(t *testing.T) {
 	m.budget(t, Budget{Limits: map[string]int64{TypeOutput: 1000}, Hard: true})
 	if code, _ := m.do(t, http.MethodPost, "/v1/responses", m.lent); code != http.StatusOK {
 		t.Errorf("after a top-up the next call answered %d", code)
+	}
+}
+
+// TestACallThatGetsNoAnswerIsCharged: the provider read the whole request, so it
+// may have spent tokens on it, whichever side gave up before the headers. Each is
+// charged once, as an estimate, and a hard budget then holds.
+func TestACallThatGetsNoAnswerIsCharged(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cancel bool // the client gives up, rather than the provider dropping the call
+	}{
+		{name: "the provider dropped the connection"},
+		{name: "the client gave up waiting", cancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &meteredLender{}
+			var received atomic.Int32
+			held := make(chan struct{})
+			m.over(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				if received.Add(1) == 1 {
+					close(held)
+				}
+				if !tc.cancel {
+					panic(http.ErrAbortHandler)
+				}
+				<-r.Context().Done()
+			}))
+			m.budget(t, Budget{Limits: map[string]int64{TypeOutput: 1}, Hard: true})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, m.srv.URL+"/v1/responses", strings.NewReader(strings.Repeat("x", 4500)))
+			req.Header.Set("Authorization", "Bearer "+m.lent.Token)
+			if tc.cancel {
+				go func() { <-held; cancel() }()
+			}
+			if resp, err := http.DefaultTransport.RoundTrip(req); err == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode != http.StatusBadGateway {
+					t.Errorf("the client saw %d, want 502", resp.StatusCode)
+				}
+			}
+			m.until(t, func(st Stats) bool { return st.Metered == 1 })
+
+			rd := m.reading(t)
+			if rd.Calls != 1 || rd.Estimated != 1 || rd.Used[TypeInput] != 1000 || rd.Used[TypeOutput] != estimateOutput {
+				t.Errorf("reading = %+v, want one estimated call of 1000 input and %d output", rd, estimateOutput)
+			}
+			if code, _ := m.do(t, http.MethodPost, "/v1/responses", m.lent); code != SpentStatus {
+				t.Errorf("the next call answered %d, want the budget's %d", code, SpentStatus)
+			}
+			if received.Load() != 1 {
+				t.Errorf("the provider received %d calls, want the first alone", received.Load())
+			}
+		})
+	}
+}
+
+// until waits for the lender's counters to say this, because a client that gives
+// up has its answer before the lender has finished with the call.
+func (m *meteredLender) until(t *testing.T, done func(Stats) bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if done(m.lender.Snapshot()) {
+			return
+		}
+	}
+	t.Fatalf("the lender's counters never got there: %+v", m.lender.Snapshot())
+}
+
+// TestACallThatNeverWentOutIsFree: a provider cannot spend tokens on a request it
+// never had, and an agent retries these, so an outage must not spend a budget.
+func TestACallThatNeverWentOutIsFree(t *testing.T) {
+	failedThenFree := func(t *testing.T, m *meteredLender) {
+		t.Helper()
+		m.until(t, func(st Stats) bool { return st.Slots["openai"].Failed == 1 })
+		if rd := m.reading(t); rd.Calls != 0 || rd.Estimated != 0 || rd.Used[TypeInput] != 0 || rd.Used[TypeOutput] != 0 {
+			t.Errorf("reading = %+v, want nothing charged", rd)
+		}
+	}
+
+	t.Run("nothing listens", func(t *testing.T) {
+		gone := httptest.NewServer(http.NotFoundHandler())
+		gone.Close()
+		m := &meteredLender{}
+		m.at(t, gone.URL)
+		if code, _ := m.do(t, http.MethodPost, "/v1/responses", m.lent); code != http.StatusBadGateway {
+			t.Errorf("the client saw %d, want 502", code)
+		}
+		failedThenFree(t, m)
+	})
+
+	// The upload stops partway, so the provider holds a request it cannot act on.
+	t.Run("the client left partway through its request", func(t *testing.T) {
+		m := &meteredLender{}
+		arrived := make(chan struct{})
+		m.over(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			close(arrived)
+			_, _ = io.Copy(io.Discard, r.Body)
+		}))
+		conn, err := net.Dial("tcp", m.srv.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		_, _ = fmt.Fprintf(conn, "POST /v1/responses HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\nContent-Length: 4500\r\n\r\nhello", m.lent.Token)
+		<-arrived
+		_ = conn.Close()
+		failedThenFree(t, m)
+	})
+}
+
+// TestAnAnswerTheProxyRejectsIsChargedOnce: an upstream that switches protocols
+// unasked is estimated when its 101 arrives, and the proxy then fails the call.
+func TestAnAnswerTheProxyRejectsIsChargedOnce(t *testing.T) {
+	m := &meteredLender{}
+	m.over(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: nonsense\r\n\r\n")
+	}))
+	if code, _ := m.do(t, http.MethodPost, "/v1/responses", m.lent); code != http.StatusBadGateway {
+		t.Errorf("the client saw %d, want 502", code)
+	}
+	if rd := m.reading(t); rd.Calls != 1 || rd.Estimated != 1 {
+		t.Errorf("reading = %+v, want the call charged exactly once", rd)
 	}
 }
 

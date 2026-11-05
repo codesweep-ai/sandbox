@@ -992,10 +992,13 @@ OpenAI's Responses over a websocket, which holds every call of a session inside 
 lender cannot read. Refused, they send the same calls as ordinary requests.*
 
 **R153e.** A lent call whose usage is not read **MUST** be charged an estimate, by type, and **MUST** be
-counted as estimated. The estimate **MUST** come from the request's length and **MUST NOT** come from
-the answer's. Only a request on an exact free list may be charged nothing. *An answer's size says
-nothing of its cost: a Responses stream echoes its instructions and tools before its first token. A
-client that aborts just before the final usage arrives already has every token it paid for.*
+counted as estimated. That includes a request written whole that got no answer. The estimate **MUST**
+come from the request's length and **MUST NOT** come from the answer's. Only a request on an exact free
+list, a request never written whole, and an answer with an error status may be charged nothing. *An
+answer's size says nothing of its cost: a Responses stream echoes its instructions and tools before its
+first token. A client that aborts just before the final usage arrives already has every token it paid
+for. A provider can start work on a request as soon as it has read it, whether or not an answer comes
+back. It cannot start on one it never received.*
 
 **R153f.** The lender **MUST** answer a sandbox's request for its own counts and limits, on one path,
 and only with that sandbox's meter loan from its address. That answer **MUST NOT** be forwarded or read

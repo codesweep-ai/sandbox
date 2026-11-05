@@ -31,6 +31,14 @@ func (s *Server) observe(c call, resp *http.Response) {
 		settle: func(r reading, complete bool) { s.settled(c, r, status, complete) }}
 }
 
+// unanswered charges a call that went out whole and got no answer: the client
+// gave up first, or the upstream dropped it. The provider may have spent tokens
+// on it, so it is charged as any unread call is (R153e). It has no status.
+func (s *Server) unanswered(c call) {
+	s.cfg.Meter.begin(c)
+	s.settled(c, reading{}, 0, false)
+}
+
 // settled charges a call and says so: one line a call, beside the line its
 // answer already has (R153a).
 func (s *Server) settled(c call, r reading, status int, complete bool) {
