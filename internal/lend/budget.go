@@ -233,6 +233,14 @@ type UsageRow struct {
 	Estimated int64 `json:"estimated"`
 }
 
+// Applies says whether the limits the lender last read are these.
+func (u Usage) Applies(b Budget) bool {
+	if u.Applied == nil {
+		return b.Empty() && !b.Hard
+	}
+	return u.Applied.Hard == b.Hard && u.Applied.AskAt == b.AskAt && maps.Equal(u.Applied.Limits, b.Limits)
+}
+
 // Total is every row added up.
 func (u Usage) Total() Tokens {
 	var t Tokens
@@ -387,8 +395,9 @@ func (m *Meter) open(loan Loan) *book {
 }
 
 // budgetOf re-reads the sandbox's budget when the file has changed. Every
-// rename makes a new file, so a top-up applies from the next call. Called with
-// mu held.
+// rename makes a new file, so a top-up applies from the next call. A budget it
+// has not applied before goes straight to the usage record, because a reading can
+// stop a sandbox and leave no call to settle and write it. Called with mu held.
 func (m *Meter) budgetOf(loan Loan, b *book) Budget {
 	path := filepath.Join(m.Dir, loan.Group, loan.Name, BudgetFile)
 	fi, err := os.Stat(path)
@@ -400,12 +409,14 @@ func (m *Meter) budgetOf(loan Loan, b *book) Budget {
 		b.budget, b.budgetErr = ReadBudget(filepath.Dir(path))
 		b.budgetSeen = fi
 	}
-	applied := b.budget
-	applied.History = nil
-	if applied.Empty() && !applied.Hard {
-		b.usage.Applied = nil
-	} else {
+	if !b.usage.Applies(b.budget) {
+		applied := b.budget
+		applied.History = nil
 		b.usage.Applied = &applied
+		if applied.Empty() && !applied.Hard {
+			b.usage.Applied = nil
+		}
+		m.write(b)
 	}
 	return b.budget
 }

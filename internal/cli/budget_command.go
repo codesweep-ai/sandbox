@@ -195,17 +195,8 @@ func (app *App) countOf(in *state.Instance) (sandboxCount, error) {
 	case !errors.Is(err, os.ErrNotExist):
 		return sandboxCount{}, err
 	}
-	c.Applied = sameBudget(c.Usage.Applied, c.Budget)
+	c.Applied = c.Usage.Applies(c.Budget)
 	return c, nil
-}
-
-// sameBudget says whether the limits the lender last read are the ones the file
-// holds now.
-func sameBudget(applied *lend.Budget, b lend.Budget) bool {
-	if applied == nil {
-		return b.Empty() && !b.Hard
-	}
-	return applied.Hard == b.Hard && applied.AskAt == b.AskAt && maps.Equal(applied.Limits, b.Limits)
 }
 
 // writeCount is `usage` for one sandbox.
@@ -225,7 +216,7 @@ func writeCount(out io.Writer, c sandboxCount, detail bool) {
 	fmt.Fprintln(out, strings.Join(head, " "))
 	if !c.Budget.Empty() && !c.Applied {
 		if c.Metered {
-			fmt.Fprintln(out, "  not yet applied: the lender has not read this budget since it changed, and reads it on the sandbox's next call")
+			fmt.Fprintln(out, "  not yet applied: the lender has not read this budget since it changed, and reads it when the sandbox next calls a model or checks its count")
 		} else {
 			fmt.Fprintln(out, "  not yet applied: the lender has metered no call of this sandbox since it was created")
 		}

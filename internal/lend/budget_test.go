@@ -451,6 +451,73 @@ func TestARateLimitInAStreamSpendsNothing(t *testing.T) {
 	})
 }
 
+// TestAReadingRecordsTheBudgetItApplied: a reading can stop a sandbox with no call
+// left to settle, so the host has to learn of the budget from the reading itself.
+// A driver reads before every turn and a hook after every tool call, so a reading
+// that changes nothing writes nothing.
+func TestAReadingRecordsTheBudgetItApplied(t *testing.T) {
+	record := func(m *meteredLender) string { return UsagePath(m.root, "g", "box", m.lent.Meter) }
+	for _, tc := range []struct {
+		name string
+		call bool // a call settles before the budget changes, so the record exists
+	}{
+		{name: "before any call"},
+		{name: "lowered after a call", call: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMeteredLender(t)
+			if tc.call {
+				m.do(t, http.MethodPost, "/v1/responses", m.lent)
+			}
+			soft := Budget{Limits: map[string]int64{TypeOutput: 0}}
+			m.budget(t, soft)
+			if rd := m.reading(t); !slices.Equal(rd.Spent, []string{TypeOutput}) {
+				t.Fatalf("the reading spent %v, want output", rd.Spent)
+			}
+			u, err := ReadUsage(record(m))
+			if err != nil {
+				t.Fatalf("the usage record after a reading: %v", err)
+			}
+			if !u.Applies(soft) {
+				t.Errorf("the record applies %+v, want the budget the reading just used", u.Applied)
+			}
+
+			before, err := os.Stat(record(m))
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.reading(t)
+			after, err := os.Stat(record(m))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !os.SameFile(before, after) {
+				t.Errorf("a reading that changed nothing rewrote the record")
+			}
+
+			// A top-up reaches the host the same way, and clearing the budget does too.
+			raised := Budget{Limits: map[string]int64{TypeOutput: 1_000_000}}
+			m.budget(t, raised)
+			m.reading(t)
+			if u, err := ReadUsage(record(m)); err != nil || !u.Applies(raised) {
+				t.Errorf("after a top-up the record applies %+v (%v)", u.Applied, err)
+			}
+			m.budget(t, Budget{})
+			m.reading(t)
+			if u, err := ReadUsage(record(m)); err != nil || u.Applied != nil {
+				t.Errorf("after the budget went the record applies %+v (%v)", u.Applied, err)
+			}
+		})
+	}
+
+	// A sandbox with no budget has nothing to report, and gets no record for a read.
+	m := newMeteredLender(t)
+	m.reading(t)
+	if _, err := os.Stat(record(m)); !os.IsNotExist(err) {
+		t.Errorf("a reading with no budget and no call wrote a record: %v", err)
+	}
+}
+
 // TestTheMeterLoanReadsAndLendsNothing: the lender's own namespace is never
 // forwarded, and a meter loan never reaches a provider.
 func TestTheMeterLoanReadsAndLendsNothing(t *testing.T) {
