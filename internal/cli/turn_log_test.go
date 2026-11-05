@@ -59,13 +59,14 @@ func lastTurnLine(t *testing.T, home, family string) turnLine {
 }
 
 // wantTurnLogAgrees holds the log to the line the driver printed for its caller,
-// "failure class=<c> retry_after=<r>": two tellings of one turn must not differ.
-func wantTurnLogAgrees(t *testing.T, home, family string, exit int, classLine string) {
+// "failure class=<c> retry_after=<r>": two tellings of one turn must not differ. Every driver
+// exits 5 on a turn that prints that line.
+func wantTurnLogAgrees(t *testing.T, home, family, classLine string) {
 	t.Helper()
 	l := lastTurnLine(t, home, family)
 	want := fmt.Sprintf("failure class=%s retry_after=%s", l.class, l.retry)
-	if l.exit != exit || !strings.Contains(classLine, want) {
-		t.Fatalf("turn log says exit=%d %q; the caller was told exit=%d %q", l.exit, want, exit, classLine)
+	if l.exit != 5 || !strings.Contains(classLine, want) {
+		t.Fatalf("turn log says exit=%d %q; the caller was told exit=5 %q", l.exit, want, classLine)
 	}
 	if l.reason == "-" || l.reason == "" {
 		t.Fatalf("turn log gives no reason for a turn the provider refused: %+v", l)

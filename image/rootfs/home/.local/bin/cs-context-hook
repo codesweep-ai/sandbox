@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# cs-context-hook — ask an agent to hand off when its context crosses a line.
+# cs-context-hook — ask an agent to hand off when its context crosses a line, or when the
+# sandbox's token budget runs out.
 #
 # usage: cs-context-hook <claude|codex>     (stdin: the CLI's hook event, as JSON)
 #
 # Wired as a post-tool and a session-start hook in the image's Claude Code settings and in
-# Codex's managed hooks file. It does nothing unless CS_HANDOFF_TOKENS is set, and that test
-# runs here in the shell, before any interpreter starts, so a member with no line set pays
-# nothing per tool call. OpenCode has the same behaviour as a plugin, cs-context-hook.ts.
+# Codex's managed hooks file. It has two lines, the context line (CS_HANDOFF_TOKENS) and the
+# budget line (CS_METER_URL), and does nothing unless one of them is set. That test runs here in
+# the shell, before any interpreter starts, so a member with neither pays nothing per tool call.
+# OpenCode has the same behaviour as a plugin, cs-context-hook.ts.
 #
 # Environment:
 #   CS_HANDOFF_TOKENS  the line, in tokens of context. Unset or 0: off.
@@ -15,8 +17,15 @@
 #   CS_HANDOFF_ASK     the sentence appended to a tool result over the line; {tokens} and {h}
 #                      are filled in. The default names no task and no file: what a handoff
 #                      holds is the agent's instructions' business, not this hook's.
+#   CS_METER_URL       where the lender answers with this sandbox's token count and budget,
+#                      which a lent sandbox carries. Unset: the budget line is off.
+#   CS_METER_TOKEN     the loan the reading is made with, sent as a bearer token.
+#   CS_BUDGET_ASK      the sentence appended to a tool result once the budget asks; {types}
+#                      (the token types that ran out) and {h} (the handoff file) are filled in.
+#                      The default names the budget, the types and the file, because a lent
+#                      sandbox's agent may have no instructions about a handoff at all.
 #
-# What it does, on the main agent's post-tool event:
+# What the context line does, on the main agent's post-tool event:
 #   - reads the context the next model call will carry: the latest call's, plus an estimate
 #     of what follows it (below);
 #   - over the line, appends the ask to the tool result on every call until the handoff file
@@ -44,9 +53,32 @@
 # agent started itself is never asked to hand off over the agent's own file.
 #
 # After a compaction (session-start with source "compact") it tells the agent to read its
-# handoff file, if there is one, before carrying on.
+# handoff file, if there is one, before carrying on. That belongs to the context line.
+#
+# The budget line. On the same post-tool events, with the same skips, it asks the lender for
+# this sandbox's count (GET CS_METER_URL, about 3 s at most). Once the reading's `ask` names a
+# token type, it runs the context line's ask, nudge and stop, in its own words, with its own
+# state, and records the ask in ~/.cs-turns/budget-ask, from which the driver reports the turn
+# as class `spent`. Where both lines would speak on one event, the budget line does: a fresh
+# session on a context hand-off would not be sent its prompt either. It differs in three ways:
+#   - no floor. The driver sends no turn past the ask line, so a driven session starts under it,
+#     and one whose first reading is already past it is asked at once;
+#   - it reads the lender, not the agent's record. The count is the sandbox's: every session,
+#     sub-agent and script;
+#   - a reading that says the sandbox has no budget is kept in ~/.cs-turns/budget-none, which
+#     holds the epoch it was written at. While it is under 30 s old and no context line is set,
+#     the shell exits before any interpreter starts, so a lent sandbox with no budget pays one
+#     file read per tool call.
+# A reading that fails says nothing: the turn goes on, and the tool call never fails.
 
-[[ -n "${CS_HANDOFF_TOKENS:-}" && "${CS_HANDOFF_TOKENS}" != 0 ]] || exit 0
+line=false; [[ -n "${CS_HANDOFF_TOKENS:-}" && "${CS_HANDOFF_TOKENS}" != 0 ]] && line=true
+$line || [[ -n "${CS_METER_URL:-}" ]] || exit 0
+if ! $line; then
+    # Builtins only: read and printf, not stat or date.
+    none=""; { read -r none < "$HOME/.cs-turns/budget-none"; } 2>/dev/null
+    printf -v now '%(%s)T' -1
+    [[ "$none" =~ ^[0-9]+$ ]] && (( now - none >= 0 && now - none < 30 )) && exit 0
+fi
 [[ "${1:-}" == claude || "${1:-}" == codex ]] || { echo "cs-context-hook: usage: cs-context-hook <claude|codex>" >&2; exit 0; }
 
 # The event arrives on stdin, so the program goes in as an argument rather than a heredoc.
@@ -60,11 +92,16 @@ state_path = os.path.join(turns, "handoff-state.json")
 lock_path = os.path.join(turns, "handoff-state.lock")
 ask_path = os.path.join(turns, "handoff-ask")
 floor_path = os.path.join(turns, "handoff-floor")
+budget_ask_path = os.path.join(turns, "budget-ask")
+none_path = os.path.join(turns, "budget-none")
 driven_path = os.path.join(turns, "driven")
 handoff = os.path.expanduser(os.environ.get("CS_HANDOFF_FILE") or os.path.join(turns, "handoff.md"))
 try:
-    H = int(os.environ["CS_HANDOFF_TOKENS"])
+    H = int(os.environ.get("CS_HANDOFF_TOKENS") or 0)
 except ValueError:
+    H = 0
+METER = os.environ.get("CS_METER_URL") or ""
+if H <= 0 and not METER:
     sys.exit(0)
 HARDSTOP_AFTER = 2
 # Characters of JSON per token, for what the hook estimates rather than reads. Fitted on
@@ -83,6 +120,15 @@ ASK = os.environ.get("CS_HANDOFF_ASK") or (
 NUDGE = "[context] Your handoff is written. End your turn now."
 REREAD = ("[context] Your context was just compacted. If " + handoff +
           " exists, read it before carrying on.")
+BUDGET_ASK = os.environ.get("CS_BUDGET_ASK") or (
+    "[budget] This sandbox has used its {types} token budget. "
+    "Write your handoff to {h}, as your instructions describe, then end your turn.")
+BUDGET_NUDGE = "[budget] Your handoff is written. End your turn now."
+# The reading waits this long for the lender, and a no-budget answer is kept this long.
+METER_SECS = 3
+NONE_SECS = 30
+# The lender's names for the token types, as its own messages spell them.
+NAMES = {"input": "new-input", "cached": "cached-input", "output": "output"}
 
 def emit(event, text):
     print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}))
@@ -206,6 +252,72 @@ def claude_reading(inp, st):
     st["pending"] = dict(list(keep.items())[-50:])
     return tokens
 
+def meter_reading():
+    """The lender's reading of this sandbox's budget, or None. A reading is a 200 within
+    METER_SECS whose body is a JSON object with `limits` (an object, empty for no budget) and
+    `ask` (a list); anything else is no reading."""
+    import urllib.request
+    req = urllib.request.Request(METER, headers={"Authorization": "Bearer " + os.environ.get("CS_METER_TOKEN", "")})
+    try:
+        with urllib.request.urlopen(req, timeout=METER_SECS) as r:
+            if r.status != 200:
+                return None
+            doc = json.loads(r.read())
+    except Exception:
+        return None
+    if not isinstance(doc, dict) or not isinstance(doc.get("limits"), dict) or not isinstance(doc.get("ask"), list):
+        return None
+    return doc
+
+def no_budget_known():
+    """True while the lender's last answer, under NONE_SECS old, was that there is no budget."""
+    try:
+        with open(none_path) as f:
+            at = int(f.readline().strip())
+    except (OSError, ValueError):
+        return False
+    return 0 <= time.time() - at < NONE_SECS
+
+def type_names(types):
+    names = [NAMES.get(t, t) for t in types]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+def driven_session():
+    try:
+        return open(driven_path).read().strip()
+    except OSError:
+        return ""
+
+def new_turn(s, turn):
+    """A line's ask belongs to the turn it was made in. In a later turn the line asks again,
+    because the driver counts only an ask made in its own turn."""
+    if s.get("asked_at") is not None and turn is not None and turn > s["asked_at"]:
+        s.pop("asked_at", None)
+        s.pop("after_fresh", None)
+
+def step(s, record, ask, nudge, stop_reason):
+    """One event of a line that is over: the ask until the handoff file is newer than the first
+    ask, then the nudge, then the stop after HARDSTOP_AFTER more tool calls. s is that line's own
+    state, and record(at) files its first ask for the driver."""
+    asked = s.get("asked_at")
+    try:
+        fresh = asked is not None and os.path.getmtime(handoff) >= asked
+    except OSError:
+        fresh = False
+    if not fresh:
+        if asked is None:
+            s["asked_at"] = time.time()
+            record(s["asked_at"])
+        return ("ctx", ask)
+    s["after_fresh"] = s.get("after_fresh", 0) + 1
+    if s["after_fresh"] > HARDSTOP_AFTER:
+        # Codex does not end the turn on this: it reads continue: false as advice and works on
+        # to a normal task_complete (probe finding 50). It has ended its turn on the nudge in
+        # every asked session (finding 43), so on Codex the hand-off rests on the ask and the
+        # nudge, not on this stop.
+        return ("stop", stop_reason)
+    return ("ctx", nudge)
+
 def load_state():
     try:
         with open(state_path) as f:
@@ -214,9 +326,13 @@ def load_state():
         return {}
 
 def save_json(path, data):
-    tmp = path + ".tmp"
+    save_text(path, json.dumps(data))
+
+def save_text(path, text):
+    # budget-none is written outside the lock, so each writer has a temporary file of its own.
+    tmp = "%s.%d.tmp" % (path, os.getpid())
     with open(tmp, "w") as f:
-        json.dump(data, f)
+        f.write(text)
     os.replace(tmp, path)
 
 def main():
@@ -227,7 +343,7 @@ def main():
     ev = inp.get("hook_event_name")
     sid = inp.get("session_id") or ""
     if ev == "SessionStart":
-        if inp.get("source") == "compact":
+        if H > 0 and inp.get("source") == "compact":
             emit(ev, REREAD)
         return
     if ev != "PostToolUse" or not sid:
@@ -237,20 +353,49 @@ def main():
     if not driven_here():
         return
     os.makedirs(turns, exist_ok=True)
+    # The lender is asked before the lock is taken, so tool calls that run side by side wait on
+    # their own readings and not on each other's.
+    reading = meter_reading() if METER and not no_budget_known() else None
+    if reading is not None and not reading["limits"]:
+        save_text(none_path, "%d\n" % time.time())
+    asks = [t for t in reading["ask"] if isinstance(t, str)] if reading is not None else []
+    if H <= 0 and not asks:
+        return
     # Claude Code runs a response's tool calls side by side, and their hooks with them. Each
     # one reads and writes the state, so they take turns.
     with open(lock_path, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        out = decide(inp, sid)
+        out = decide(inp, sid, reading, asks)
     if out and out[0] == "ctx":
         emit(ev, out[1])
     elif out:
         stop(out[1])
 
-def decide(inp, sid):
-    """Takes the reading and keeps the state. Returns what to tell the agent, or None."""
+def decide(inp, sid, reading, asks):
+    """Takes the context reading, runs both lines and keeps their state. Returns what to tell
+    the agent, or None: the budget line's word when it has one, else the context line's."""
     state = load_state()
     st = state.setdefault(sid, {})
+    turn = turn_started()
+    out = context_line(inp, sid, st, turn) if H > 0 else None
+    if asks:
+        bt = st.setdefault("budget", {})
+        new_turn(bt, turn)
+        used, limits = reading.get("used") if isinstance(reading.get("used"), dict) else {}, reading["limits"]
+        record = lambda at: save_json(budget_ask_path, {
+            "session": driven_session(), "sid": sid, "types": asks,
+            "used": {t: used.get(t) for t in asks}, "limits": {t: limits.get(t) for t in asks}, "at": at})
+        out = step(bt, record, BUDGET_ASK.replace("{types}", type_names(asks)).replace("{h}", handoff),
+                   BUDGET_NUDGE, "the token budget is spent and the handoff is written, so the turn ends here")
+    # Sessions come and go; keep the state small.
+    if len(state) > 50:
+        for old in list(state)[:-50]:
+            del state[old]
+    save_json(state_path, state)
+    return out
+
+def context_line(inp, sid, st, turn):
+    """The context line's word on this event, or None. Its state is st's own keys."""
     if fam == "claude" and inp.get("transcript_path"):
         tokens = claude_reading(inp, st)
     else:
@@ -259,48 +404,18 @@ def decide(inp, sid):
             tokens += result_size(inp.get("tool_response") or "")
     if tokens is None:
         return None
-    turn = turn_started()
-    if st.get("asked_at") is not None and turn is not None and turn > st["asked_at"]:
-        st.pop("asked_at", None)
-        st.pop("after_fresh", None)
+    new_turn(st, turn)
     if "first" not in st:
         st["first"] = tokens
         if tokens >= H:
             st["floor"] = tokens
             save_json(floor_path, {"session": sid, "tokens": tokens, "h": H, "at": time.time()})
-    out = None
-    if "floor" not in st and tokens >= H:
-        asked = st.get("asked_at")
-        try:
-            fresh = asked is not None and os.path.getmtime(handoff) >= asked
-        except OSError:
-            fresh = False
-        if not fresh:
-            if asked is None:
-                st["asked_at"] = time.time()
-                try:
-                    session = open(driven_path).read().strip()
-                except OSError:
-                    session = ""
-                save_json(ask_path, {"session": session, "sid": sid, "tokens": tokens,
-                                     "h": H, "at": st["asked_at"]})
-            out = ("ctx", ASK.replace("{tokens}", str(tokens)).replace("{h}", str(H)))
-        else:
-            st["after_fresh"] = st.get("after_fresh", 0) + 1
-            if st["after_fresh"] > HARDSTOP_AFTER:
-                # Codex does not end the turn on this: it reads continue: false as advice and
-                # works on to a normal task_complete (probe finding 50). It has ended its turn
-                # on the nudge in every asked session (finding 43), so on Codex the hand-off
-                # rests on the ask and the nudge, not on this stop.
-                out = ("stop", "the handoff is written, so the turn ends here")
-            else:
-                out = ("ctx", NUDGE)
-    # Sessions come and go; keep the state small.
-    if len(state) > 50:
-        for old in list(state)[:-50]:
-            del state[old]
-    save_json(state_path, state)
-    return out
+    if "floor" in st or tokens < H:
+        return None
+    record = lambda at: save_json(ask_path, {"session": driven_session(), "sid": sid, "tokens": tokens,
+                                             "h": H, "at": at})
+    return step(st, record, ASK.replace("{tokens}", str(tokens)).replace("{h}", str(H)),
+                NUDGE, "the handoff is written, so the turn ends here")
 
 try:
     main()

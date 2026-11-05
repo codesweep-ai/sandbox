@@ -204,8 +204,9 @@ machine:
 In a sandbox, `cs-sandbox create --env` sets them, and they reach OpenCode and its plugins. The
 hook is a plugin here, because OpenCode has no command hooks. It ships at
 `~/.local/share/cs-opencode/plugins/cs-context-hook.ts`, and `cs-opencode` links it into
-`~/.cs-opencode/plugins/` when it starts OpenCode with a line set. With no line the profile holds
-no plugin, so a session with no line starts exactly as it would without the hook. The plugin runs
+`~/.cs-opencode/plugins/` when it starts OpenCode with a line or a token budget meter set
+("Stopping at the token budget"). With neither, the profile holds no plugin, so such a session
+starts exactly as it would without the hook. The plugin runs
 in the server the turn driver starts, which takes these variables from the driver's environment.
 
 Over the line, the plugin appends the ask to every tool result until the handoff file is newer
@@ -242,6 +243,55 @@ counts only an ask made in its own turn.
 Compaction stays on as a safety net. When OpenCode compacts, the plugin has the summary end by
 pointing at the handoff file, so the agent reads it before carrying on.
 
+## Stopping at the token budget
+
+A sandbox can borrow its agent's credential from the cs-sandbox credential lender on the host,
+and the operator can give such a sandbox a token budget. The lender counts every call the sandbox
+makes, in three types: new-input, cached-input and output tokens. Its meter reaches the sandbox
+with the loan:
+
+- `CS_METER_URL` — where the lender answers with this sandbox's count and budget. Unset, the
+  sandbox has no meter, and nothing below happens.
+- `CS_METER_TOKEN` — the loan the reading is made with.
+- `CS_BUDGET_ASK` — the sentence the agent reads once the budget asks; `{types}` and `{h}`, the
+  handoff file, are filled in. The default names the budget, the types and the file.
+
+Each limited type has an ask line: its limit under a soft budget, and 95% of it under a hard one.
+Past it, the sandbox is asked to stop, at two points.
+
+Before it sends a prompt, the driver takes a reading. When a type is past its ask line, it sends
+nothing, and starts no server and no session. It prints the lender's figures on stderr, then
+`cs-opencode-turn: failure class=spent retry_after=-`, and exits `5`. When the lender gives no
+reading, the turn runs after one warning on stderr: a lender that cannot answer does not stop work.
+
+During a turn, the plugin takes a reading after each tool result of the session this driver
+drives, with the same skips as at a context line. Past the ask line, it runs the same ask, nudge
+and interrupt, in its own words. It asks at once, even a session whose first reading is already
+past the line. When both lines would ask on one tool result, the agent reads the budget's ask. A
+turn driver the agent starts from inside the driven session still reads the budget before its
+turn, and the plugin never asks its session.
+
+A turn that ended this way is a budget hand-off, and the driver says so: exit `0`, one line on
+stderr (`cs-opencode-turn: handoff on the token budget: <type> at <used> of its <limit> limit; …`),
+and class `spent` in the turn log. That line, and the one for a turn not sent, name each type
+that ran out by its bare name, `input`, `cached` or `output`, and no other type. It is read as
+one under the same conditions as a context hand-off, and it is `spent` even when the context line
+asked in the same turn.
+
+To ask whether a turn would be sent, without sending one, run `cs-opencode-turn --budget` on the agent's
+machine. It takes one reading and prints one line, and always exits 0: `ok`, `ask <types>` with
+the types at their ask line comma-separated, `none` when the lender gives no reading, or `off`
+when the sandbox has no meter. It starts nothing and writes nothing, so a caller holding a
+session on a spent budget can ask it every few minutes and try again as soon as it says `ok`.
+
+Under a hard budget, the lender also refuses the sandbox's calls once a type reaches its limit.
+That ends a turn partway through, with exit `5` and class `spent`.
+
+Whichever way the budget stopped it, do not send the prompt again: only the operator can raise the
+budget, on the host. The session is still alive, and after a budget hand-off its handoff is
+written. Once the budget is raised, a session that handed off can start fresh on its handoff, and
+any other carries on where it stopped.
+
 ## How the last turn ended
 
 Every turn end appends one line to `~/.cs-turns/opencode.log`, on the machine the agent runs on:
@@ -251,6 +301,7 @@ Every turn end appends one line to `~/.cs-turns/opencode.log`, on the machine th
 1789000000 5 throttled 12.5 turn failed: Rate limit reached. Please try again in 12.5s.
 1789000420 0 - - -
 1789000900 0 handoff - handoff at 61240 tokens, over the line of 60000
+1789001500 5 spent - turn not sent, token budget spent: cached at 1.00G of its 1.00G limit; the operator raises it on the host
 ```
 
 The class and the wait are the ones on the `failure class=` line. That line goes to whoever
@@ -259,14 +310,16 @@ own machine, as `--state` is. Read the last line: a turn that ended well is reco
 older failure is known to be over. `--state`, `--help` and a usage error are not turns and write
 nothing. A driver that was killed writes nothing, so a missing line means the ending is not known.
 The file keeps between 200 and 400 lines. `CS_TURN_LOG` names another path. A turn the agent
-ended by handing off has class `handoff` on an exit-0 line ("Handing off at a context line").
+ended by handing off has class `handoff` on an exit-0 line ("Handing off at a context line"), or
+`spent` when it handed off on the token budget ("Stopping at the token budget"). A turn that ran
+without a budget reading has the driver's warning as its reason.
 
 ## Exit codes
 
 - `0` turn completed · `2` timed out or stalled · `3` launch/setup failure · `4` session busy
   (another turn holds the lock) · `5` turn failed (client error, or a provider error recorded on
-  the session — read from the session's own record, whatever the client exited with) ·
-  `1` usage/other.
+  the session — read from the session's own record, whatever the client exited with — or, with
+  class `spent`, the token budget stopped it) · `1` usage/other.
 
 `0`–`4` mean the same thing here as in the `cs-claude-remote` / `cs-codex-remote` families; `5`
 is the one opencode adds, because only opencode can run a turn to completion and still have
@@ -274,11 +327,19 @@ failed.
 
 When a provider refused the turn, exit `5` comes with one line a caller can parse, the same one
 `cs-codex-turn` and `cs-claude-turn` print:
-`cs-opencode-turn: failure class=<throttled|capacity|unauthorized|context|unreachable|other> retry_after=<secs|->`.
+`cs-opencode-turn: failure class=<throttled|capacity|unauthorized|context|unreachable|spent|other> retry_after=<secs|->`.
 The class is read from the kind of error OpenCode records and the HTTP status it keeps, and from
 the message when both are silent. `retry_after` is the wait the provider asked for, in whole
 seconds. A turn that failed for another reason, such as one with no recorded outcome, prints no
 class.
+
+`spent` from a refused call is read from the message first, before the kind and the status. The
+lender's refusal is a 400, as a malformed request is, and OpenCode may file it under its own
+budget kind, which is otherwise a throttle. After `spent`, do not send the prompt again. With exit
+`5`, no turn ran because the sandbox's token budget was past its ask line, or the cs-sandbox
+credential lender refused a call under a hard budget. With exit `0`, the agent handed off on the
+budget's ask. Only the operator can raise the budget, on the host. The session is still alive,
+and after a budget hand-off its handoff is written ("Stopping at the token budget").
 
 Do not confuse these with the `-s` status codes. These are the codes **this command** exits with
 after driving a turn; `cs-opencode-remote-output <name> -s` has its own, unrelated scale

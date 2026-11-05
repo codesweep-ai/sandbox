@@ -252,6 +252,54 @@ counts only an ask made in its own turn.
 Compaction stays on as a safety net. After one, the hook tells the agent to read its handoff
 file, if there is one, before carrying on.
 
+## Stopping at the token budget
+
+A sandbox can borrow its agent's credential from the cs-sandbox credential lender on the host,
+and the operator can give such a sandbox a token budget. The lender counts every call the sandbox
+makes, in three types: new-input, cached-input and output tokens. Its meter reaches the sandbox
+with the loan:
+
+- `CS_METER_URL` — where the lender answers with this sandbox's count and budget. Unset, the
+  sandbox has no meter, and nothing below happens.
+- `CS_METER_TOKEN` — the loan the reading is made with.
+- `CS_BUDGET_ASK` — the sentence the agent reads once the budget asks; `{types}` and `{h}`, the
+  handoff file, are filled in. The default names the budget, the types and the file.
+
+Each limited type has an ask line: its limit under a soft budget, and 95% of it under a hard one.
+Past it, the sandbox is asked to stop, at two points.
+
+Before it sends a prompt, the driver takes a reading. When a type is past its ask line, it sends
+nothing, and starts or resumes no session. It prints the lender's figures on stderr, then
+`cs-codex-turn: failure class=spent retry_after=-`, and exits `5`. When the lender gives no
+reading, the turn runs after one warning on stderr: a lender that cannot answer does not stop work.
+
+During a turn, `cs-context-hook` takes a reading after each tool call of the session this driver
+drives, with the same skips as at a context line. Past the ask line, it runs the same ask, nudge
+and stop, in its own words, and Codex takes the stop as advice there too. It asks at once, even a
+session whose first reading is already past the line. When both lines would ask on one tool call,
+the agent reads the budget's ask. A turn driver the agent starts from inside the driven session
+still reads the budget before its turn, and the hook never asks its session.
+
+A turn that ended this way is a budget hand-off, and the driver says so: exit `0`, one line on
+stderr (`cs-codex-turn: handoff on the token budget: <type> at <used> of its <limit> limit; …`),
+and class `spent` in the turn log. That line, and the one for a turn not sent, name each type
+that ran out by its bare name, `input`, `cached` or `output`, and no other type. It is read as one under the same conditions as a context
+hand-off, and it is `spent` even when the context line asked in the same turn.
+
+To ask whether a turn would be sent, without sending one, run `cs-codex-turn --budget` on the agent's
+machine. It takes one reading and prints one line, and always exits 0: `ok`, `ask <types>` with
+the types at their ask line comma-separated, `none` when the lender gives no reading, or `off`
+when the sandbox has no meter. It starts nothing and writes nothing, so a caller holding a
+session on a spent budget can ask it every few minutes and try again as soon as it says `ok`.
+
+Under a hard budget, the lender also refuses the sandbox's calls once a type reaches its limit.
+That ends a turn partway through, with exit `5` and class `spent`.
+
+Whichever way the budget stopped it, do not send the prompt again: only the operator can raise the
+budget, on the host. The session is still alive, and after a budget hand-off its handoff is
+written. Once the budget is raised, a session that handed off can start fresh on its handoff, and
+any other carries on where it stopped.
+
 ## How the last turn ended
 
 Every turn end appends one line to `~/.cs-turns/codex.log`, on the machine the agent runs on:
@@ -261,6 +309,7 @@ Every turn end appends one line to `~/.cs-turns/codex.log`, on the machine the a
 1789000000 5 throttled 12.5 turn failed: Rate limit reached. Please try again in 12.5s.
 1789000420 0 - - -
 1789000900 0 handoff - handoff at 61240 tokens, over the line of 60000
+1789001500 5 spent - turn not sent, token budget spent: cached at 1.00G of its 1.00G limit; the operator raises it on the host
 ```
 
 The class and the wait are the ones on the `failure class=` line. That line goes to whoever
@@ -272,14 +321,17 @@ The file keeps between 200 and 400 lines. `CS_TURN_LOG` names another path.
 
 A turn that ended well has `-` for its reason, or `answered a dialog: <its text>` when the driver
 declined a newer model on the way. A turn the agent ended by handing off has class `handoff` on
-an exit-0 line ("Handing off at a context line").
+an exit-0 line ("Handing off at a context line"), or `spent` when it handed off on the token
+budget ("Stopping at the token budget"). A turn that ran without a budget reading has the
+driver's warning as its reason.
 
 ## Exit codes
 
 - `0` turn completed · `2` timed out or stalled · `3` launch/setup failure (e.g. the remote
   codex needs interactive sign-in — run `cs-codex login` there, or a dialog the driver does not
   know, whose message quotes the screen) · `4` session busy (another turn
-  holds the lock) · `5` turn failed (the provider ended it with an error) · `1` usage/other.
+  holds the lock) · `5` turn failed (the provider ended it with an error, or with class `spent`,
+  the token budget stopped it) · `1` usage/other.
 
 A failed turn is not a finished one with an empty reply. The provider refused it, for a rate limit,
 a model at capacity, an expired credential or a context that is too long. The driver prints the
@@ -289,7 +341,7 @@ provider's message on stderr, then one line to parse:
 cs-codex-turn: failure class=throttled retry_after=12.52
 ```
 
-`class` is `throttled`, `capacity`, `unauthorized`, `context`, `unreachable` or `other`. `unreachable`
+`class` is `throttled`, `capacity`, `unauthorized`, `context`, `unreachable`, `spent` or `other`. `unreachable`
 means no provider answered at all, as when the network is down, and a caller waits it out as it
 does a throttle. `retry_after` is the wait
 in seconds when the provider's message names one, and `-` when it does not. After `throttled` or
@@ -299,6 +351,12 @@ not restart it: a restart sends the whole context again into the same limit.
 After `unauthorized`, do not send it again. The provider rejected the credential, and waiting does
 not fix that. Codex retries a rejected credential for minutes by itself, so the driver stops it and
 reports the turn within seconds. The session stays up for the next turn.
+
+After `spent`, do not send it again either. With exit `5`, no turn ran because the sandbox's token
+budget was past its ask line, or the cs-sandbox credential lender refused a call under a hard
+budget. With exit `0`, the agent handed off on the budget's ask. Only the operator can raise the
+budget, on the host. The session is still alive, and after a budget hand-off its handoff is
+written ("Stopping at the token budget").
 
 ## Interpreting user intent
 
