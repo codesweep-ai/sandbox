@@ -163,7 +163,15 @@ type reading struct {
 	seen   bool // some usage was read
 	final  bool // the call's last usage was read
 	failed bool // the stream reported an error of its own
+	output bool // the model's answer had begun
 	over   bool // an event was too large to read
+}
+
+// outputEvent says whether an event of this name is part of the model's answer.
+// A stream's own bookkeeping comes before these, and a provider that refuses a
+// call inside a stream sends none of them.
+func outputEvent(name string) bool {
+	return strings.HasPrefix(name, "content_block_") || strings.HasPrefix(name, "response.output_")
 }
 
 // usageScan reads usage out of an answer as it streams past. It frames SSE per
@@ -291,6 +299,7 @@ func (u *usageScan) endLine() {
 	switch u.field {
 	case 'e':
 		u.event = string(v)
+		u.r.output = u.r.output || outputEvent(u.event)
 	case 'd':
 		if !u.over {
 			if u.lines > 0 {
@@ -439,6 +448,8 @@ func (r *reading) anthropicEvent(data []byte) {
 		r.anthropic(ev.Usage, true)
 	case "error":
 		r.failed = true
+	default:
+		r.output = r.output || outputEvent(ev.Type)
 	}
 }
 
@@ -507,6 +518,8 @@ func (r *reading) responsesEvent(data []byte) {
 		}
 	case "error":
 		r.failed = true
+	default:
+		r.output = r.output || outputEvent(ev.Type)
 	}
 }
 
@@ -544,9 +557,10 @@ func (r *reading) chat(u *chatUsage) {
 // when the client asked for it with stream_options.include_usage.
 func (r *reading) chatChunk(data []byte) {
 	var c struct {
-		Model string          `json:"model"`
-		Usage *chatUsage      `json:"usage"`
-		Error json.RawMessage `json:"error"`
+		Model   string          `json:"model"`
+		Usage   *chatUsage      `json:"usage"`
+		Error   json.RawMessage `json:"error"`
+		Choices json.RawMessage `json:"choices"`
 	}
 	if json.Unmarshal(data, &c) != nil {
 		return
@@ -560,6 +574,28 @@ func (r *reading) chatChunk(data []byte) {
 	if c.Usage != nil {
 		r.chat(c.Usage)
 	}
+	r.output = r.output || chatOutput(c.Choices)
+}
+
+// chatOutput says whether a chunk's choices hold any of the model's answer. The
+// first chunk names only the role, and any field of a delta can come empty. It
+// reads every other field as output, reasoning and tool calls included, and is
+// decoded apart so a shape it does not know costs no chunk its usage.
+func chatOutput(choices json.RawMessage) bool {
+	var cs []struct {
+		Delta map[string]json.RawMessage `json:"delta"`
+	}
+	if json.Unmarshal(choices, &cs) != nil {
+		return false
+	}
+	for _, c := range cs {
+		for k, v := range c.Delta {
+			if k != "role" && string(v) != `""` && string(v) != "null" && string(v) != "[]" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // anyAnswer reads a JSON answer, or an event of a surface with no reader of its
@@ -673,8 +709,9 @@ func larger(seen, est Tokens) Tokens {
 
 // charge decides what a settled call costs (R153e). Only the final usage is a
 // reading. Anything less is charged at least the estimate, by type, and counted
-// as estimated, because an unread call is never free.
-func charge(r reading, status int, complete bool, est Tokens) (Tokens, bool) {
+// as estimated, because an unread call is never free. A provider's refusal is
+// the exception, and costs what it reported.
+func charge(r reading, status int, est Tokens) (Tokens, bool) {
 	switch {
 	case status >= 400:
 		// A refusal carries no usage, as a rule, and costs nothing.
@@ -684,10 +721,11 @@ func charge(r reading, status int, complete bool, est Tokens) (Tokens, bool) {
 		return Tokens{}, false
 	case r.final:
 		return r.Tokens, false
-	case r.failed && complete:
-		// The stream reported its own error and ended: what it reported, which
-		// for Anthropic includes message_start's prompt counts.
-		return r.Tokens, true
+	case r.failed && !r.output:
+		// A refusal inside a 200, which is how a rate limit can arrive, and an
+		// agent retries it. It costs what a 429 does, or message_start's prompt
+		// counts on Anthropic, whether or not the client stayed to the end.
+		return r.Tokens, r.seen
 	case !r.seen:
 		// Completed with no usage recognised, or the client went away before
 		// any arrived.
@@ -706,8 +744,7 @@ type meteredBody struct {
 	io.ReadCloser
 	scan   *usageScan
 	once   sync.Once
-	eof    bool
-	settle func(r reading, complete bool)
+	settle func(r reading)
 }
 
 func (b *meteredBody) Read(p []byte) (int, error) {
@@ -716,7 +753,6 @@ func (b *meteredBody) Read(p []byte) (int, error) {
 		b.scan.Write(p[:n])
 	}
 	if err == io.EOF {
-		b.eof = true
 		b.finish()
 	}
 	return n, err
@@ -732,5 +768,5 @@ func (b *meteredBody) Close() error {
 }
 
 func (b *meteredBody) finish() {
-	b.once.Do(func() { b.settle(b.scan.done(), b.eof) })
+	b.once.Do(func() { b.settle(b.scan.done()) })
 }

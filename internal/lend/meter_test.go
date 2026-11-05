@@ -129,7 +129,7 @@ func TestTheCassettesReadAsTheProviderCounted(t *testing.T) {
 			body := cassetteFile(t, cassette, "resp", c.Seq)
 			if c.Status >= 400 {
 				// A refusal carries no usage, and is charged nothing.
-				got, est := charge(scanAll(sf, body, len(body)), c.Status, true, Tokens{Output: 1})
+				got, est := charge(scanAll(sf, body, len(body)), c.Status, Tokens{Output: 1})
 				if got != (Tokens{}) || est {
 					t.Errorf("%s/%d: a %d was charged %+v (estimated %v)", cassette, c.Seq, c.Status, got, est)
 				}
@@ -284,15 +284,14 @@ func TestAnUnreadCallIsNeverFree(t *testing.T) {
 		t.Errorf("the estimate split %+v, want half of the prompt cached, as the slot's last call was", est)
 	}
 	for _, cc := range []struct {
-		name     string
-		r        reading
-		complete bool
+		name string
+		r    reading
 	}{
-		{"the client went away before response.completed", scanAll(surfaceResponses, cut, 512), false},
-		{"the stream completed with no usage recognised", scanAll(surfaceResponses, []byte("event: x\ndata: {}\n\n"), 512), true},
-		{"the answer was not a stream or JSON", scanAll(surfaceOther, []byte("<html>"), 512), true},
+		{"the client went away before response.completed", scanAll(surfaceResponses, cut, 512)},
+		{"the stream completed with no usage recognised", scanAll(surfaceResponses, []byte("event: x\ndata: {}\n\n"), 512)},
+		{"the answer was not a stream or JSON", scanAll(surfaceOther, []byte("<html>"), 512)},
 	} {
-		got, estimated := charge(cc.r, 200, cc.complete, est)
+		got, estimated := charge(cc.r, 200, est)
 		if !estimated || got != est {
 			t.Errorf("%s: charged %+v (estimated %v), want the estimate %+v", cc.name, got, estimated, est)
 		}
@@ -306,7 +305,7 @@ func TestAnUnreadCallIsNeverFree(t *testing.T) {
 		t.Fatalf("a stream cut before message_delta read %+v", seen)
 	}
 	small := Tokens{Input: 10, Output: estimateOutput}
-	got, estimated := charge(seen, 200, false, small)
+	got, estimated := charge(seen, 200, small)
 	if !estimated || got.CacheRead != 15272 || got.Of(TypeInput) != 4968 || got.Output != estimateOutput {
 		t.Errorf("an abort after message_start charged %+v, want message_start's prompt and the output estimate", got)
 	}
@@ -318,9 +317,97 @@ func TestAStreamThatReportedItsOwnErrorIsChargedWhatItReported(t *testing.T) {
 	body := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-5\",\"usage\":{\"input_tokens\":7," +
 		"\"cache_read_input_tokens\":900,\"output_tokens\":1}}}\n\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\n\n"
 	r := scanAll(surfaceMessages, []byte(body), 5)
-	got, estimated := charge(r, 200, true, Tokens{Input: 99999})
+	got, estimated := charge(r, 200, Tokens{Input: 99999})
 	if !r.failed || !estimated || got != (Tokens{Input: 7, CacheRead: 900, Output: 1}) {
 		t.Errorf("charged %+v (estimated %v, failed %v), want message_start's counts", got, estimated, r.failed)
+	}
+}
+
+// TestAFailedStreamIsChargedByWhetherTheModelAnswered: once output has begun, a
+// stream that fails with no final usage may have cost anything, and is estimated.
+// One that fails first is the provider's refusal, and costs what it reported. The
+// recorded streams are here because their own event names decide it.
+func TestAFailedStreamIsChargedByWhetherTheModelAnswered(t *testing.T) {
+	const (
+		failed     = "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"r\",\"usage\":null}}\n\n"
+		anError    = "event: error\ndata: {\"type\":\"error\",\"message\":\"boom\"}\n\n"
+		overloaded = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\n\n"
+		chatError  = "data: {\"error\":{\"message\":\"boom\"}}\n\n"
+		bookkeep   = "event: response.created\ndata: {\"type\":\"response.created\"}\n\nevent: response.in_progress\ndata: {\"type\":\"response.in_progress\"}\n\n"
+		delta      = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"
+		bareDelta  = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"
+		start      = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"m\",\"usage\":{\"input_tokens\":7,\"cache_read_input_tokens\":900,\"output_tokens\":1}}}\n\n"
+		ping       = "event: ping\ndata: {\"type\":\"ping\"}\n\n"
+		block      = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hi\"}}\n\n"
+	)
+	throttle, err := os.ReadFile("../../test/faults/openai-rate-limit.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	codex := upTo(t, cassetteFile(t, "codex-login-lent", "resp", 3), "event: response.completed")
+	codexSetup := upTo(t, codex, "event: response.output_item.added")
+	claude := upTo(t, cassetteFile(t, "claude-login-shared", "resp", 3), "event: message_delta")
+	claudeSetup := upTo(t, claude, "event: content_block_start")
+	chat := bytes.SplitAfter(cassetteFile(t, "opencode-fireworks-lent", "resp", 1), []byte("\n\n"))
+
+	est := Tokens{Input: 1000, Output: estimateOutput}
+	reported := Tokens{Input: 7, CacheRead: 900, Output: 1}
+	for _, tc := range []struct {
+		name      string
+		sf        surface
+		body      string
+		want      Tokens
+		estimated bool
+	}{
+		{"a rate limit in a Responses stream", surfaceResponses, string(throttle), Tokens{}, false},
+		{"a Responses stream failing during its bookkeeping", surfaceResponses, bookkeep + failed, Tokens{}, false},
+		{"the recorded Responses bookkeeping, then a failure", surfaceResponses, string(codexSetup) + failed, Tokens{}, false},
+		{"a Responses error event before any output", surfaceResponses, bookkeep + anError, Tokens{}, false},
+		{"Responses output, then a failure", surfaceResponses, bookkeep + delta + failed, est, true},
+		{"Responses output, then an error event", surfaceResponses, bookkeep + delta + anError, est, true},
+		{"Responses output with no event names, then a failure", surfaceResponses, bareDelta + "data: {\"type\":\"response.failed\"}\n\n", est, true},
+		{"the recorded Responses stream, then a failure", surfaceResponses, string(codex) + failed, est, true},
+		{"Anthropic refusing before message_start", surfaceMessages, overloaded, Tokens{}, false},
+		{"Anthropic refusing after message_start", surfaceMessages, start + ping + overloaded, reported, true},
+		{"Anthropic output, then an error", surfaceMessages, start + block + overloaded,
+			Tokens{Input: 1000, CacheRead: 900, Output: estimateOutput}, true},
+		{"chat refusing at once", surfaceChat, chatError, Tokens{}, false},
+		{"the recorded chat role chunk, then an error", surfaceChat, string(chat[0]) + chatError, Tokens{}, false},
+		{"an empty chat delta, then an error", surfaceChat, "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":null}}]}\n\n" + chatError, Tokens{}, false},
+		{"recorded chat reasoning, then an error", surfaceChat, string(chat[0]) + string(chat[1]) + chatError, est, true},
+		{"chat content, then an error", surfaceChat, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" + chatError, est, true},
+		{"a chat tool call, then an error", surfaceChat, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0}]}}]}\n\n" + chatError, est, true},
+	} {
+		// Split anywhere, as a stream arrives. Whether the client stayed to the
+		// end makes no difference: the call is settled from these bytes alone.
+		got, estimated := charge(scanAll(tc.sf, []byte(tc.body), 5), 200, est)
+		if got != tc.want || estimated != tc.estimated {
+			t.Errorf("%s: charged %+v (estimated %v), want %+v (estimated %v)", tc.name, got, estimated, tc.want, tc.estimated)
+		}
+	}
+
+	// A recorded Anthropic stream keeps the prompt counts it reported.
+	for _, tc := range []struct {
+		name   string
+		body   []byte
+		output int64
+	}{
+		{"its bookkeeping", claudeSetup, 1},
+		{"its output", claude, estimateOutput},
+	} {
+		got, estimated := charge(scanAll(surfaceMessages, append(bytes.Clone(tc.body), overloaded...), 5), 200, est)
+		if !estimated || got.CacheRead != 15272 || got.Of(TypeInput) != 4968 || got.Output != tc.output {
+			t.Errorf("a recorded Anthropic stream failing after %s charged %+v, want its prompt counts and %d output", tc.name, got, tc.output)
+		}
+	}
+}
+
+// TestAChatChunkOfAnUnknownShapeKeepsItsUsage: reading the answer's start must not
+// cost a chunk the usage it carries.
+func TestAChatChunkOfAnUnknownShapeKeepsItsUsage(t *testing.T) {
+	r := scanAll(surfaceChat, []byte("data: {\"choices\":\"none\",\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n"), 5)
+	if !r.final || r.Input != 10 || r.Output != 2 || r.output {
+		t.Errorf("read %+v (final %v, output %v), want the chunk's usage and no output", r.Tokens, r.final, r.output)
 	}
 }
 

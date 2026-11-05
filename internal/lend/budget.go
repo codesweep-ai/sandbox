@@ -445,7 +445,7 @@ func (m *Meter) begin(c call) {
 }
 
 // settle charges a call, and says what it charged.
-func (m *Meter) settle(c call, r reading, status int, complete bool) (Tokens, bool, string) {
+func (m *Meter) settle(c call, r reading, status int) (Tokens, bool, string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	b := m.open(c.loan)
@@ -457,7 +457,7 @@ func (m *Meter) settle(c call, r reading, status int, complete bool) (Tokens, bo
 			slog.String("sandbox", c.loan.Name), slog.String("slot", c.slot),
 			slog.Bool("encoded", c.encoded), slog.Int64("prompt_tokens", est.prompt()))
 	}
-	t, estimated := charge(r, status, complete, est)
+	t, estimated := charge(r, status, est)
 	if !estimated && r.final {
 		if p := t.prompt(); p > 0 {
 			b.share[c.slot] = float64(t.CacheRead) / float64(p)

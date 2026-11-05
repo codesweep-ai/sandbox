@@ -24,11 +24,11 @@ func (s *Server) observe(c call, resp *http.Response) {
 	m.begin(c)
 	status := resp.StatusCode
 	if status == http.StatusSwitchingProtocols || resp.Body == nil || resp.Body == http.NoBody {
-		s.settled(c, reading{}, status, true)
+		s.settled(c, reading{}, status)
 		return
 	}
 	resp.Body = &meteredBody{ReadCloser: resp.Body, scan: newScan(c.surface),
-		settle: func(r reading, complete bool) { s.settled(c, r, status, complete) }}
+		settle: func(r reading) { s.settled(c, r, status) }}
 }
 
 // unanswered charges a call that went out whole and got no answer: the client
@@ -36,13 +36,13 @@ func (s *Server) observe(c call, resp *http.Response) {
 // on it, so it is charged as any unread call is (R153e). It has no status.
 func (s *Server) unanswered(c call) {
 	s.cfg.Meter.begin(c)
-	s.settled(c, reading{}, 0, false)
+	s.settled(c, reading{}, 0)
 }
 
 // settled charges a call and says so: one line a call, beside the line its
 // answer already has (R153a).
-func (s *Server) settled(c call, r reading, status int, complete bool) {
-	t, estimated, model := s.cfg.Meter.settle(c, r, status, complete)
+func (s *Server) settled(c call, r reading, status int) {
+	t, estimated, model := s.cfg.Meter.settle(c, r, status)
 	s.count(func(st *Stats) {
 		st.Metered++
 		if estimated {

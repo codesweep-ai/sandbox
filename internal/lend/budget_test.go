@@ -379,6 +379,78 @@ func TestAnAnswerTheProxyRejectsIsChargedOnce(t *testing.T) {
 	}
 }
 
+// TestAStreamThatFailsMidAnswerSpendsTheBudget: output then a failure with no
+// usage is estimated, so a hard budget holds against a run of them.
+func TestAStreamThatFailsMidAnswerSpendsTheBudget(t *testing.T) {
+	m := newMeteredLender(t)
+	m.stream = []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n" +
+		"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"usage\":null}}\n\n")
+	m.budget(t, Budget{Limits: map[string]int64{TypeOutput: 1}, Hard: true})
+	if code, body := m.do(t, http.MethodPost, "/v1/responses", m.lent); code != http.StatusOK || body != string(m.stream) {
+		t.Fatalf("the client got %d and %q, want the provider's answer", code, body)
+	}
+	if rd := m.reading(t); rd.Estimated != 1 || rd.Used[TypeOutput] != estimateOutput {
+		t.Errorf("reading = %+v, want one call estimated at %d output", rd, estimateOutput)
+	}
+	if code, _ := m.do(t, http.MethodPost, "/v1/responses", m.lent); code != SpentStatus {
+		t.Errorf("the next call answered %d, want the budget's %d", code, SpentStatus)
+	}
+}
+
+// TestARateLimitInAStreamSpendsNothing: codex retries this form, 22 requests for
+// one call, so a charge here would spend a budget on calls that produced nothing.
+// That holds for a client that stops reading at the failure, as well as for one
+// that reads to the end.
+func TestARateLimitInAStreamSpendsNothing(t *testing.T) {
+	throttle, err := os.ReadFile("../../test/faults/openai-rate-limit.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits := Budget{Limits: map[string]int64{TypeInput: 1, TypeOutput: 1}, Hard: true}
+	free := func(t *testing.T, m *meteredLender, calls int64) {
+		t.Helper()
+		rd := m.reading(t)
+		if rd.Calls != calls || rd.Estimated != 0 || rd.Refused != 0 || rd.Used[TypeInput] != 0 || rd.Used[TypeOutput] != 0 {
+			t.Errorf("reading = %+v, want %d calls charged nothing", rd, calls)
+		}
+	}
+
+	t.Run("read to the end", func(t *testing.T) {
+		m := newMeteredLender(t)
+		m.stream = throttle
+		m.budget(t, limits)
+		for range 22 {
+			if code, _ := m.do(t, http.MethodPost, "/v1/responses", m.lent); code != http.StatusOK {
+				t.Fatalf("a throttled call answered %d, want the provider's 200", code)
+			}
+		}
+		free(t, m, 22)
+	})
+
+	t.Run("the client left at the failure", func(t *testing.T) {
+		m := &meteredLender{}
+		m.over(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			_, _ = w.Write(throttle)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}))
+		m.budget(t, limits)
+		req, _ := http.NewRequest(http.MethodPost, m.srv.URL+"/v1/responses", strings.NewReader("{}"))
+		req.Header.Set("Authorization", "Bearer "+m.lent.Token)
+		resp, err := http.DefaultTransport.RoundTrip(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.ReadFull(resp.Body, make([]byte, len(throttle))); err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		m.until(t, func(st Stats) bool { return st.Metered == 1 })
+		free(t, m, 1)
+	})
+}
+
 // TestTheMeterLoanReadsAndLendsNothing: the lender's own namespace is never
 // forwarded, and a meter loan never reaches a provider.
 func TestTheMeterLoanReadsAndLendsNothing(t *testing.T) {

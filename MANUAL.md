@@ -823,10 +823,12 @@ stopped group too. With no name it lists every lent sandbox.
 | `--json` | Print the budget and the lender's record as JSON. |
 
 A call whose usage the lender could not read is never free. It is charged an estimate from its
-request's length, and `usage` counts it as estimated. That covers a stream the client aborted, a
-request the provider received and never answered, an answer in a shape this build does not know, and
-a websocket. A request that never reached the provider costs nothing. A budget it has not read since
-it changed is reported as `not yet applied`.
+request's length, and `usage` counts it as estimated. That covers a stream the client aborted, and a
+stream that failed after the model began answering. It also covers a request the provider received and
+never answered, an answer in a shape this build does not know, and a websocket. A request that never
+reached the provider costs nothing. A call the provider refused costs only what it reported. A provider refuses
+with an error status, or with an error inside a stream before any output, as a rate limit can. A budget
+the lender has not read since it changed is reported as `not yet applied`.
 
 `budget` changes the budget, and the lender applies it from the sandbox's next call. With no flag it
 prints what `usage` prints for that sandbox.
