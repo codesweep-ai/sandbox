@@ -1,0 +1,16 @@
+{
+  "id": "SBX-117",
+  "title": "A stream that fails after the model began answering is charged little or nothing against a token budget",
+  "type": "defect",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "code review of the token budget, reproduced and widened by session agent",
+  "opened": "2026-11-05",
+  "resolved": null,
+  "stint": "token budget review fixes, 2026-11-05",
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "The meter charges only the usage a stream reported when that stream ends in its own error. The test used a hard output limit of 1 and five streams of output deltas that end in `response.failed` with null usage. The meter read 5 calls, 5 estimated and 0 tokens, and none was refused. An `error` event in its place gave the same result. Anthropic's `message_start`, then 3,000 deltas, then an `error` event charged 1 output token. The same bytes cost the full estimate when the client left before the stream ended.\n\nA rate limit takes the same path. It arrives as `response.failed` inside a 200, before any output, and Codex sends 22 requests before it fails one such call. Charging each the estimate would cost about 224K input and 180K output on a 46 KB request, for a call that produced nothing. So the charge has to depend on whether output began.",
+  "notes": [],
+  "links": ["SBX-115", "SBX-054"]
+}

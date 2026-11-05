@@ -1,0 +1,16 @@
+{
+  "id": "SBX-118",
+  "title": "The host can report a token budget as not yet applied while the budget is already stopping the sandbox",
+  "type": "defect",
+  "severity": "low",
+  "status": "in-progress",
+  "foundBy": "code review of the token budget, reproduced by session agent",
+  "opened": "2026-11-05",
+  "resolved": null,
+  "stint": "token budget review fixes, 2026-11-05",
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "A sandbox's reading of its token count applies the budget in the lender's memory and does not write that to the usage record. `cs-sandbox usage`, `inspect` and `ls` decide whether a budget is applied from that record alone.\n\nA soft output limit lowered below what was already used made the reading report output as spent, which stops the turn driver. The record still held no applied budget, so `usage` kept printing `not yet applied`, with no next call coming to clear it. A sandbox with no calls yet had no record at all. Enforcement is not affected, but the report tells the operator the budget is not in force when it is.",
+  "notes": [],
+  "links": ["SBX-115"]
+}

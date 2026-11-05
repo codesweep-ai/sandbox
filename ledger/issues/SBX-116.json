@@ -1,0 +1,16 @@
+{
+  "id": "SBX-116",
+  "title": "A lent call that fails before its response headers is never charged, so it escapes a hard token budget",
+  "type": "defect",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "code review of the token budget, reproduced by session agent",
+  "opened": "2026-11-05",
+  "resolved": null,
+  "stint": "token budget review fixes, 2026-11-05",
+  "evidence": { "commits": [], "integrated": [], "verified": null },
+  "resolution": null,
+  "details": "The lender starts metering a lent call when its response headers arrive. A call that fails earlier runs the reverse proxy's error handler, which charges nothing.\n\nThe test used a stand-in provider and a hard output limit of 1. Five calls the provider received and then dropped left the meter at 0 calls and 0 tokens, and none was refused. Five calls the client cancelled while the provider worked did the same. A client with a short timeout on a long non-streaming call can therefore keep spending, if the provider bills such a call. That breaks R153e, which charges an estimate for any call whose usage is not read.\n\nThe same handler also runs for a call that never left the host. In this host's lender logs, 568 of 578 such failures were DNS or dial errors. The logs are mostly rehearsal runs, so the ratio is not a production figure. It does show that charging every failure would spend a budget during an outage, so the charge has to depend on whether the request went out.",
+  "notes": [],
+  "links": ["SBX-115"]
+}
