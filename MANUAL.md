@@ -32,6 +32,8 @@ cs-sandbox agent-login <agent> <name>  cs-sandbox install-agent-tools [dir]
 cs-sandbox agent-tools [--json]        cs-sandbox install-agent-clis [dir]
 cs-sandbox lender [--addr ADDR]         cs-sandbox renewer
 cs-sandbox lender fault <name> [--status N] [--count N] [--hang D] [--clear]
+cs-sandbox usage [name] [--detail] [--json]
+cs-sandbox budget <name> [--set T=N] [--add T=N] [--clear[=T]] [--hard [--ask-at P%]] [--soft]
 cs-sandbox completion bash|zsh|fish|powershell
 cs-sandbox version [--images]
 
@@ -84,6 +86,9 @@ Firecracker where the host has KVM, and to Podman otherwise.
 | `--inherit-agent-login AGENT` | Copy a host agent login in: `claude`, `codex` or `opencode`. The sandbox then holds the real credential. For OpenCode that is every sign-in `cs-opencode auth export` prints on the host, which the sandbox imports the first time `cs-opencode` starts. Repeatable and comma-separated. |
 | `--inherit-api-key PROVIDER` | Copy an LLM API key in from `~/.cs-keys/<provider>`: `anthropic`, `openai` or `fireworks`. Repeatable and comma-separated. |
 | `--block-side-calls` | Refuse the sandbox a direct route to the hosts the lender fronts. Default true, and only meaningful with a loan. |
+| `--token-budget T=N,…` | Limit what a lent sandbox spends, per token type: `input`, `cached` and `output`, as in `input=20M,cached=1G,output=5M`. A type left out has no limit. See [A token budget](#a-token-budget). Needs a `--lend-…` flag. |
+| `--hard` | Make every `--token-budget` limit a ceiling: the lender refuses the sandbox's calls once a type reaches its limit. |
+| `--ask-at P%` | Where a `--hard` budget asks the agent to stop, as a share of each limit. Default `95%`. |
 | `--git-identity WHO` | Whose name and address the sandbox commits as. `host` (the default) is your own git identity. `"Name <address>"` names another. `none` sets none, and git then refuses to commit until one is set inside. Use one of the last two for a run whose sessions are recorded or published. |
 | `--yolo` | Drop the agents' approval prompts *and* the rules behind them. The sandbox is the boundary. |
 | `--solo` | Withhold the group's SSH key, so this agent sandbox can reach no peer while staying reachable itself. Agent type only. |
@@ -692,6 +697,9 @@ when you want to watch what it is doing.
 | `--group GROUP` | The group whose network the lender is on. Required with `--callers network`, where a loan is honoured only from its own sandbox's address in that group. |
 | `--origin SLOT=URL` | Send one slot's traffic somewhere else, such as a gateway or a recorder in front of the provider. Repeatable. |
 
+The lender lends a model API over HTTP only. It refuses a websocket upgrade on a lent path, and
+Codex and OpenCode then send the same calls as ordinary requests, which the lender can meter.
+
 Run this way the port is open to the network the host is on, and the lender refuses every caller that
 is not this host. The lender `create` starts needs none of that. It sits inside the group's network,
 where its callers are the sandboxes on that bridge. Nothing else can route to it. `cs-sandbox doctor`
@@ -757,6 +765,90 @@ the lender's log says what an agent sent.
 An injected answer carries an `X-Cs-Sandbox-Fault` header, and the lender logs each one. The lender
 counts served calls in memory, so restarting a lender serves an armed fault again from the start.
 Destroying the sandbox removes its faults.
+
+### A token budget
+
+```
+cs-sandbox create <name> --lend-… --token-budget input=N,cached=N,output=N [--hard [--ask-at P%]]
+cs-sandbox usage [name] [--detail] [--json]
+cs-sandbox budget <name> [--set T=N,…] [--add T=N,…] [--clear[=T,…]] [--hard [--ask-at P%]] [--soft]
+```
+
+A **token budget** limits what a lent sandbox spends, across all its sessions and agents. The lender
+reads the usage the provider reports in every answer it forwards, and counts it per sandbox in three
+**token types**:
+
+| Type | What it counts |
+|---|---|
+| `input` | New input: the prompt tokens the provider processed without a cache hit, including those it wrote to the cache. |
+| `cached` | Cached input: the prompt tokens read back from the cache. |
+| `output` | Output, reasoning included. |
+
+Each type has its own limit, and a type the budget leaves out has none. The counts are the
+provider's own, so a budget limits tokens and not money: a token of a larger model costs more for the
+same count. On a long agent session cached input is nearly all of the total, so size each type on
+its own. K, M and G are decimal: `1G` is 1,000,000,000.
+
+Every lent sandbox is metered, with a budget or without. Once a type reaches its **ask line**, two
+things happen inside the sandbox:
+
+- the turn driver (`cs-claude-turn`, `cs-codex-turn`, `cs-opencode-turn`) starts no new turn, and
+  reports the class `spent`;
+- during a turn, the hand-off hook asks the agent to write its handoff and stop, as it does at a
+  context line, and ends the turn itself if the agent carries on.
+
+A budget is **soft** by default, and its ask line is each limit. The sandbox can spend past a limit
+by what it uses before its turn ends. That is a few calls, plus whatever a running sub-agent, a CLI
+the agent started or a script spends meanwhile. `usage` says how far past each spent type went.
+
+A **hard** budget, with `--hard`, asks at 95% of each limit, so the handoff fits below it. Once a type
+reaches the limit itself, the lender refuses the sandbox's billable calls with a `400` whose message
+starts `cs-sandbox token budget spent:` and names the type. It refuses them before any credential is
+read. The overshoot is then the calls already in flight. A free call still goes, such as
+`GET /models` or Anthropic's token counter.
+
+```bash
+cs-sandbox create web --lend-agent-login claude --token-budget input=20M,cached=1G,output=5M
+cs-sandbox usage web
+cs-sandbox budget web --add cached=250M
+cs-sandbox create ci --lend-api-key openai --token-budget cached=200M,output=2M --hard
+```
+
+`usage` reads the budget and the lender's record and asks the lender nothing, so it answers for a
+stopped group too. With no name it lists every lent sandbox.
+
+| Flag | Meaning |
+|---|---|
+| `--detail` | Add the finer buckets per row: uncached input and cache writes apart, the 5m/1h split of the writes, and reasoning. |
+| `--json` | Print the budget and the lender's record as JSON. |
+
+A call whose usage the lender could not read is never free. It is charged an estimate from its
+request's length, and `usage` counts it as estimated. That covers a stream the client aborted, an
+answer in a shape this build does not know, and a websocket. A budget it has not read since it
+changed is reported as `not yet applied`.
+
+`budget` changes the budget, and the lender applies it from the sandbox's next call. With no flag it
+prints what `usage` prints for that sandbox.
+
+| Flag | Meaning |
+|---|---|
+| `--set T=N,…` | Set limits. A limit below what is already spent exhausts that type at once. |
+| `--add T=N,…` | Raise limits by this much. The type must already have one. |
+| `--clear[=T,…]` | Remove every limit, or the limits named. Write the types after `=`. |
+| `--hard` | Make every limit a ceiling. |
+| `--soft` | Make the budget soft again. |
+| `--ask-at P%` | Where a hard budget asks the agent to stop. Default `95%`. |
+
+A budget belongs to one creation of a sandbox. `destroy` and `rm` print what it spent and remove its
+record, and a sandbox created again under the same name starts at zero. A budget needs a lender that
+meters, and `create` and `budget` refuse one older than token budgets with the command that
+replaces it: `cs-sandbox start` on any sandbox of the group. A sandbox created before token budgets
+is still metered and refused under `--hard`, but nothing inside it can read its count, so no agent is
+asked to stop.
+
+The lender counts only the calls that pass through it. A key handed in with `--inherit-api-key` or `--env` is
+spent outside it. So are web search, image generation and anything else billed on a meter other than
+tokens.
 
 ### The renewer
 
@@ -841,6 +933,8 @@ no key the other side would accept.
 | `~/.ssh/known_hosts.cs-sandbox` | Sandbox host keys, kept out of your own `known_hosts` and keyed by `<name>.<group>` rather than by port. |
 | `~/.cs-keys/<provider>` | An LLM API key this host will lend or copy in. One file per provider, holding the key alone. Secret. |
 | `$XDG_DATA_HOME/cs-sandbox/instances/<group>/<name>/loans.json` | What one sandbox borrows, and the token it borrows with. Secret, and removed with the sandbox. |
+| `$XDG_DATA_HOME/cs-sandbox/instances/<group>/<name>/budget.json` | One sandbox's token budget, and the changes made to it. Removed with the sandbox. |
+| `$XDG_DATA_HOME/cs-sandbox/instances/<group>/.lender/usage/` | What each of the group's lent sandboxes has spent, one record per creation. The lender writes it, and it is the one directory the lender may write. |
 
 No sandbox state lives in the source tree.
 

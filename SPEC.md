@@ -887,6 +887,17 @@ having been read that way, because the lender's own loopback is not it.
 injected answer **MUST NOT** reach an upstream or read a credential, and **MUST** be marked as injected.
 *A fault is for testing what drives a sandbox, so it is the operator's in the way an upstream is.*
 
+**R147c.** A token budget **MUST** be a file the host writes in the instance directory, and **MUST** go
+when that directory is removed. No part of a request **MUST** set, change or clear one. A change,
+including a switch between soft and hard, **MUST** apply from the sandbox's next call or reading.
+*A budget is the operator's, per sandbox and changeable at any time, which is what a fault is too.*
+
+**R147d.** A token budget **MUST** limit each token type on its own: new input, cached input and
+output. A type it does not limit **MUST** be unlimited. The counts it is held to **MUST** be the
+provider's own, and **MUST NOT** pass through a price. *On a long agent session cached input is nearly
+all of the tokens, so one total measures little more than context size times calls, and hides output
+and new input. A price needs a table someone keeps right per model, and the counts need none.*
+
 **R148.** A credential the lender did not mint **MUST** be refused, and **MUST NOT** be forwarded anywhere.
 
 **R149.** A lent credential **MUST NOT** be written into the sandbox, its seed, its environment, or the
@@ -920,7 +931,7 @@ instance roots are lending it. *There is one login per host to renew, and concur
 rotation R150b is about.*
 
 **R150f.** The lender's container **MUST** mount only what the lender reads, read-only and at the host's
-own paths. That is the directory each slot's credential is kept in, and its own group's directory
+own paths, and its group's usage directory (R153g). That is the directory each slot's credential is kept in, and its own group's directory
 under the instances root. It **MUST NOT** mount a credential as a file. A lender container created
 with other mounts **MUST** be replaced rather than adopted, so the rule reaches groups that already
 exist. *A lender bug then reaches no
@@ -954,19 +965,58 @@ which hosts it refused.
 
 **R153a.** The lender **MUST** log what an upstream answered each call: the sandbox, the slot, the status
 and the time to the response headers. For a 429 or a 5xx it **MUST** add the provider's `Retry-After` and
-rate-limit headers. It **MUST NOT** log a body, or any other header. *A throttled key, a provider outage
+rate-limit headers. It **MUST NOT** log a body, or any other header. It **MUST** also log what each
+metered call was charged once it settles: the tokens by type, whether they were estimated, and the
+model, which it reads from the answer. *A throttled key, a provider outage
 and a quiet fleet are told apart by the answer and by nothing else, and the lender is the one place
 that sees every answer.*
 
 **R153b.** Removing a lender **MUST** first copy its log to the host, outside the instances root. *The log
 is read after a run went wrong, which is usually after its group is gone. The host writes the copy,
-because the lender's own mounts are read-only.*
+because the lender writes nothing but its usage directory.*
 
 **R153c.** `start` **MUST** bring up the group's lender before a sandbox that holds a loan, and **MUST**
 fail when it cannot. `start` on a sandbox that is already running **MUST** change nothing else. `ls` and
 `doctor` **MUST** name a lent sandbox whose lender is not running, and the command that brings it back.
 *A loan routes all of a sandbox's HTTPS through the lender, so one without it has lost git and its
 package managers too, and from the inside that reads as a proxy name that does not resolve.*
+
+**R153d.** The lender **MUST** meter every lent call from the usage in its answer. It **MUST NOT**
+parse, buffer or change a request body, and **MUST NOT** change an answer's content. It **MUST**
+forward an answer whose usage it cannot read. On a model path it **MUST** drop the client's
+`Accept-Encoding`, so the answer can be read as it passes. It **MUST** refuse a websocket upgrade on a
+lent path, before any credential is read. *The usage in an answer is the provider's
+own count, for this call, attributed to the loan that spent it. A usage API counts per key or per
+organization, late, and does not exist for the subscription logins. OpenCode and Codex both carry
+OpenAI's Responses over a websocket, which holds every call of a session inside one upgrade the
+lender cannot read. Refused, they send the same calls as ordinary requests.*
+
+**R153e.** A lent call whose usage is not read **MUST** be charged an estimate, by type, and **MUST** be
+counted as estimated. The estimate **MUST** come from the request's length and **MUST NOT** come from
+the answer's. Only a request on an exact free list may be charged nothing. *An answer's size says
+nothing of its cost: a Responses stream echoes its instructions and tools before its first token. A
+client that aborts just before the final usage arrives already has every token it paid for.*
+
+**R153f.** The lender **MUST** answer a sandbox's request for its own counts and limits, on one path,
+and only with that sandbox's meter loan from its address. That answer **MUST NOT** be forwarded or read
+a credential. A meter loan **MUST** lend nothing, and **MUST** be minted for every lent sandbox. *It is
+how the turn driver and the hand-off hook inside the sandbox stop near the limit, on the count that
+only the lender holds.*
+
+**R153g.** The lender's only writable mount **MUST** be its group's usage directory. That directory
+**MUST** hold nothing but usage records, and **MUST NOT** contain the lender's binary. *The meter is
+new attack surface in a process that holds real credentials. The records it writes are counters, and
+the CLI reads them with a size cap, as a record a compromised lender could have written.*
+
+**R153h.** Under a hard budget, once any limited type's consumption reaches its limit, the lender
+**MUST** refuse the sandbox's next billable call before any credential is read. A call on the free
+list, and the reading of R153f, **MUST** still be answered. The refusal **MUST** use a status these
+agents do not retry. Its message **MUST** begin with a fixed marker, and **MUST** name the type that ran out.
+It **MUST NOT** contain words the turn drivers read as another class, and **MUST** address the operator.
+The overshoot **MUST** be bounded by the calls in flight when the type ran out. *Claude Code, Codex and
+OpenCode each end a turn on a 400 at once, with no retry of their own, inside a sub-agent too. A 429
+marked not to retry ends it too, but Codex then drops the body, and the marker with it. A 400 is also
+what a malformed request gets, so a driver tells the two apart by the marker alone.*
 
 **R154.** `create` **MUST** fail before anything is provisioned when a lend flag names a credential this
 host cannot supply. The failure **MUST** name the file it looked for, and the command that creates one.
@@ -980,6 +1030,30 @@ separately when renewing it stops being possible. A renewer that is running and 
 window in which renewing works, so the two clocks fail on different days and have different remedies:
 one is waited out, the other needs a person to sign in. A renewer that has stopped reporting is the
 worst of the three states, because every other signal about it still reads as healthy.*
+
+**R155b.** `create` **MUST** report the token budget it sets. `usage` **MUST** report consumption by type
+against each limit, by slot and model, how much of it was estimated, and how far a spent type went
+past its limit. `inspect` **MUST** show consumption against each limit. A budget the lender has not
+applied **MUST** be reported as not applied, and a budget **MUST** be refused against a running lender
+that does not meter.
+
+**R155c.** A sandbox created again under the same name, after `destroy` or `rm`, **MUST** start its
+consumption at zero. *A budget belongs to one creation. The usage record is named after the loans,
+which are minted once per creation.*
+
+**R155d.** A usage record whose sandbox no longer exists **MUST** be removed.
+
+**R155e.** A turn driver **MUST NOT** start a turn in a sandbox past the ask line of any limited type,
+and **MUST** report it as `spent`, never as `other`. It **MUST** report the hard limit's refusal as `spent`
+too. *A caller that does not know the class sends the node up its recovery ladder, which a spent budget
+refuses at every rung.*
+
+**R155f.** Once a limited type reaches its ask line, the hand-off hook **MUST** ask the driven agent to
+write its handoff and stop. It **MUST** end the turn itself if the agent carries on. The driver
+**MUST** report that turn as `spent`, never as `handoff`. A soft budget's ask line **MUST** be its limit,
+and a hard budget's **MUST** be below it. *The hook stops a turn at a tool boundary with its handoff
+written, where a refusal can only cut it partway. Under a hard budget the handoff has to fit under the
+ceiling.*
 
 R144 is the decision the rest of this section rests on, and it is about durability rather than
 about what works. A gateway variable would work today for both agents. The file is chosen because a
@@ -1009,8 +1083,9 @@ clobbered by a create-time snapshot. A lent one is a placeholder, so a sandbox t
 after a failed refresh would lose its loan for good, and re-installing it each boot costs nothing.
 
 R146 is the whole mechanism, and it needs one header. Nothing signs the body, so the swap rewrites
-a single value and reads nothing else. No request is parsed, a stream passes through byte for byte, and an unfamiliar request
-shape still works. The shape has to be restored on this side, because an OAuth login travels with
+a single value and parses nothing of the request. An unfamiliar request shape therefore still works. A model call's
+answer is read as it streams past, for the usage in it (R153d), and every byte still reaches the
+client unchanged. The shape has to be restored on this side, because an OAuth login travels with
 headers an API key does not. A sandbox holding a token cannot know which it stands for.
 
 R147 keeps this from becoming a way to steal a credential. A caller that could name its own upstream

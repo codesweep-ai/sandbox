@@ -55,8 +55,11 @@ type inspectItem struct {
 	EnvCredentials []string `json:"envcredentials,omitempty"`
 	// Loans are the credentials this sandbox borrows rather than holds: the
 	// slot names only, because the tokens are secrets and this output is not.
-	Loans     []string `json:"loans,omitempty"`
-	Snapshots []string `json:"snapshots,omitempty"`
+	Loans []string `json:"loans,omitempty"`
+	// Tokens is what a lent sandbox has spent by type, against its budget
+	// when it has one, as the lender recorded it.
+	Tokens    *tokenView `json:"tokens,omitempty"`
+	Snapshots []string   `json:"snapshots,omitempty"`
 	// Repos is the reason this command exists: each --repo checkout with the
 	// branch it commits to and that `fetch` lands on in the host source repo.
 	Repos []inspectRepo `json:"repos,omitempty"`
@@ -112,6 +115,11 @@ func (a *App) inspectOne(ctx context.Context, in *state.Instance) inspectItem {
 	for _, rc := range in.RepoClones {
 		item.Repos = append(item.Repos, inspectRepo{Dir: rc.Dir, Source: rc.Source, Branch: rc.Branch})
 	}
+	if len(item.Loans) > 0 {
+		if c, err := a.countOf(in); err == nil {
+			item.Tokens = viewOf(c)
+		}
+	}
 	return item
 }
 
@@ -152,6 +160,13 @@ func writeInspectTable(out io.Writer, item inspectItem) error {
 	}
 	if len(item.Loans) > 0 {
 		row("LOANS", strings.Join(item.Loans, ", ")+" (borrowed; the credentials stay on the host)")
+	}
+	if t := item.Tokens; t != nil {
+		if len(t.Limits) > 0 {
+			row("BUDGET", t.budgetLine())
+		} else {
+			row("TOKENS", t.usedLine())
+		}
 	}
 	if len(item.ImageStores) > 0 {
 		row("IMAGE STORES", strings.Join(item.ImageStores, ", "))

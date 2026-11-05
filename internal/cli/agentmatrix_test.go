@@ -839,7 +839,40 @@ func runAgentCase(t *testing.T, r *run.Exec, host hostenv.Host, c liveCase, prox
 		t.Fatalf("the model did not answer through this credential.\ncommand: %s\noutput:\n%s\n%s\n%s",
 			c.run(c), tail(got, 900), said.Diag, reachedRecorder(t, r, host, c, name))
 	}
+	// Every call a lent cell makes goes through the lender, so the lender must
+	// have read what each one cost from its answer (R153d). Claude Code asks for
+	// gzip, so its cells are also what proves a compressed answer is read.
+	if c.lent {
+		wantMetered(t, name)
+	}
 	return got
+}
+
+// wantMetered waits for the lender's record of a lent cell to hold a call it
+// read rather than estimated, with output in it. A call settles when its stream
+// ends, which can land a moment after the agent has printed its answer.
+func wantMetered(t *testing.T, name string) {
+	t.Helper()
+	var said string
+	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(250 * time.Millisecond) {
+		out, err := execRoot(t, "usage", ref(name), "--json")
+		var counts []sandboxCount
+		if err == nil && json.Unmarshal([]byte(out), &counts) == nil && len(counts) == 1 {
+			u := counts[0].Usage
+			if u.Calls > u.Estimated && u.Total().Of(lend.TypeOutput) > 0 {
+				step(t, "the lender metered %d call(s), %d of them estimated: %s",
+					u.Calls, u.Estimated, viewOf(counts[0]).usedLine())
+				return
+			}
+		}
+		said = out
+		if err != nil {
+			said = err.Error()
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the lender read no call this lent cell made; usage said:\n%s", said)
+		}
+	}
 }
 
 // reachedRecorder asks the guest what it can see of the recorder, for a turn

@@ -354,8 +354,8 @@ func TestDryRunMintsNothingAndStartsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a dry run should still resolve the plan: %v", err)
 	}
-	if len(plan.loans) != 1 {
-		t.Fatalf("the plan should still describe the loan, got %d", len(plan.loans))
+	if lent := lentLoans(plan.loans); len(lent) != 1 {
+		t.Fatalf("the plan should still describe the loan, got %d", len(lent))
 	}
 	if fake, ok := app.Runner.(*run.Fake); ok && fake.Contains("podman run") {
 		t.Errorf("a dry run started the lender container:\n%s", strings.Join(fake.Rendered(), "\n"))
@@ -415,8 +415,14 @@ func TestALentSlotTakesTheBaseURLTheCallerNamed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if len(plan.loans) != 1 || plan.loans[0].Origin != upstream {
-		t.Fatalf("loan origin = %q, want %q", plan.loans[0].Origin, upstream)
+	lent := lentLoans(plan.loans)
+	if len(lent) != 1 || lent[0].Origin != upstream {
+		t.Fatalf("loans = %+v, want one with origin %q", lent, upstream)
+	}
+	// The meter is read from the lender itself, never the recorder: only the
+	// lender keeps the count.
+	if !slices.Contains(plan.env, lend.MeterURLEnv+"=http://"+lend.GuestName+":2500"+lend.MeterPath) {
+		t.Errorf("the sandbox's meter is not the lender:\n%s", strings.Join(plan.env, "\n"))
 	}
 	// The sandbox is pointed at the lender, and the variable it was given is
 	// the one it would have had without any of this.
@@ -639,5 +645,51 @@ func TestALenderInUseIsNotStoppedAsIdle(t *testing.T) {
 	app.stopLenderIfIdle(context.Background(), state.DefaultGroup)
 	if !fake.Contains("podman rm") {
 		t.Fatalf("an idle lender was left running:\n%s", strings.Join(fake.Rendered(), "\n"))
+	}
+}
+
+// lentLoans leaves out the meter loan, which every lent sandbox holds beside
+// the loans that lend something.
+func lentLoans(loans []lend.Loan) []lend.Loan {
+	var out []lend.Loan
+	for _, l := range loans {
+		if l.Kind != lend.MeterLoan {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// Every lent sandbox holds one meter loan, which lends nothing: it reads the
+// sandbox's own token count, so a budget set after create still has something
+// inside the sandbox to act on it (R153f). It is minted per creation like the
+// rest, and its token reaches the sandbox only through the seeded environment.
+func TestALentSandboxHoldsAMeterLoanThatLendsNothing(t *testing.T) {
+	app := lendApp(t, lendHome(t))
+	app.Exec = &run.Exec{DryRun: true}
+	plan, err := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{"anthropic"}}, "box", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meters []lend.Loan
+	for _, l := range plan.loans {
+		if l.Kind == lend.MeterLoan {
+			meters = append(meters, l)
+		}
+	}
+	if len(meters) != 1 || meters[0].Slot != "" || !strings.HasPrefix(meters[0].Token, lend.TokenPrefix+"box_meter_") {
+		t.Fatalf("meter loans = %+v, want one that names no slot", meters)
+	}
+	if !slices.Contains(plan.env, lend.MeterTokenEnv+"="+meters[0].Token) {
+		t.Errorf("the meter loan is not in the sandbox's environment:\n%s", strings.Join(plan.env, "\n"))
+	}
+	if got := loanSlots(app.InstDir, "default", "box"); len(got) != 0 {
+		t.Errorf("a sandbox with no loan record lists %v", got)
+	}
+	again, _ := app.resolveLoans(context.Background(), &createFlags{lendAPIKey: []string{"anthropic"}}, "box", "")
+	for _, l := range again.loans {
+		if l.Token == meters[0].Token {
+			t.Error("a second create minted the same meter loan")
+		}
 	}
 }

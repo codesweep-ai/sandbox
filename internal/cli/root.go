@@ -377,6 +377,8 @@ func newRootCmd(app *App) *cobra.Command {
 	root.AddCommand(newAgentToolsCmd(app))
 	root.AddCommand(newHostRouteCmd(app))
 	root.AddCommand(newLenderCmd(app))
+	root.AddCommand(newUsageCmd(app))
+	root.AddCommand(newBudgetCmd(app))
 	root.AddCommand(newRenewerCmd(app))
 	for _, c := range newInstanceCmds(app) {
 		root.AddCommand(c)
@@ -490,6 +492,9 @@ type lsItem struct {
 	HeldKeys       []string `json:"heldkeys,omitempty"`
 	EnvCredentials []string `json:"envcredentials,omitempty"`
 	Loans          []string `json:"loans,omitempty"`
+	// Tokens is what a lent sandbox has spent, against its budget when it has
+	// one.
+	Tokens *tokenView `json:"tokens,omitempty"`
 	// LenderDown is true when this sandbox borrows a credential and its group's
 	// lender is not running. Every HTTPS request it makes goes through that
 	// lender, so it is cut off from more than its model until one is back.
@@ -506,14 +511,20 @@ func runLsJSON(ctx context.Context, app *App, out io.Writer) error {
 	items := make([]lsItem, 0, len(insts))
 	for _, in := range insts {
 		loans := loanSlots(app.InstDir, in.Group, in.Name)
-		items = append(items, lsItem{
+		item := lsItem{
 			Ref: engine.Qualify(in), Name: in.Name, Group: in.Group,
 			Status: status[engine.Qualify(in)], Created: in.Created, Type: in.Type,
 			Engine: in.Engine, Network: state.NetworkName(in.Group),
 			Yolo: in.Yolo, Solo: in.Solo,
 			AgentLogins: in.AgentLogins, HeldKeys: in.HeldKeys, EnvCredentials: in.EnvCredentials,
 			Loans: loans, LenderDown: len(loans) > 0 && down[in.Group],
-		})
+		}
+		if len(loans) > 0 {
+			if c, err := app.countOf(in); err == nil {
+				item.Tokens = viewOf(c)
+			}
+		}
+		items = append(items, item)
 	}
 	for _, o := range app.engineDeps().Orphans(ctx) {
 		// An orphan's internal name is already the qualified ref, so split it
@@ -570,7 +581,28 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 	// question a listing of agent sandboxes is most often scanned for. A key
 	// passed in as a plain environment variable is held too, and the column
 	// says so rather than leaving the weakest posture looking like none.
-	fmt.Fprintln(tw, "GROUP\tNAME\tSTATUS\tAGE\tTYPE\tENGINE\tYOLO\tSOLO\tCREDS")
+	// BUDGET only when some sandbox has one: the fullest type's share, which is
+	// the one that stops it first.
+	budgets := map[string]string{}
+	for _, in := range insts {
+		if len(loanSlots(app.InstDir, in.Group, in.Name)) == 0 {
+			continue
+		}
+		if c, err := app.countOf(in); err == nil && !c.Budget.Empty() {
+			budgets[engine.Qualify(in)] = viewOf(c).fullest()
+		}
+	}
+	budgetCol, budgetHead := func(string) string { return "" }, ""
+	if len(budgets) > 0 {
+		budgetHead = "\tBUDGET"
+		budgetCol = func(ref string) string {
+			if b, ok := budgets[ref]; ok {
+				return "\t" + b
+			}
+			return "\t-"
+		}
+	}
+	fmt.Fprintln(tw, "GROUP\tNAME\tSTATUS\tAGE\tTYPE\tENGINE\tYOLO\tSOLO\tCREDS"+budgetHead)
 	for _, in := range insts {
 		loans := loanSlots(app.InstDir, in.Group, in.Name)
 		c := creds(slices.Concat(in.AgentLogins, in.HeldKeys), in.EnvCredentials, loans)
@@ -578,16 +610,16 @@ func runLs(ctx context.Context, app *App, out interface{ Write([]byte) (int, err
 			c += " (" + lenderDown + ")"
 			cutOff = true
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s%s\n",
 			in.Group, in.Name, status[engine.Qualify(in)], age(in.Created, time.Now()), in.Type, in.Engine,
-			yn(in.Yolo), yn(in.Solo), c)
+			yn(in.Yolo), yn(in.Solo), c, budgetCol(engine.Qualify(in)))
 	}
 	// Leftovers last, under the sandboxes that still exist. Only the columns the
 	// data itself answers for are filled in; the rest went with the state record.
 	for _, o := range orphans {
 		name, group := SplitRef(o.Name)
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			group, name, engine.StatusRemoved, age(o.SinceRFC3339(), time.Now()), "-", o.Engine, "-", "-", "-")
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s%s\n",
+			group, name, engine.StatusRemoved, age(o.SinceRFC3339(), time.Now()), "-", o.Engine, "-", "-", "-", budgetCol(""))
 	}
 	if err := tw.Flush(); err != nil {
 		return err

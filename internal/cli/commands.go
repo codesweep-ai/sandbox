@@ -111,9 +111,11 @@ func newDestroyCmd(app *App) *cobra.Command {
 				return nil
 			}
 			forward.KillAll(app.InstDir, in.Group, in.Name)
+			spent, record := app.finalCount(in)
 			if err := e.Remove(cmd.Context(), in.Name, true); err != nil {
 				return err
 			}
+			app.dropCount(in.Group, record)
 			// The loan record went with the instance directory, so the lender
 			// stops honouring this sandbox's token. Stop this group's lender too
 			// once no sandbox in the group holds one.
@@ -123,6 +125,9 @@ func newDestroyCmd(app *App) *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "destroyed %s\n", args[0])
+			if spent != "" {
+				fmt.Fprintln(cmd.OutOrStdout(), spent)
+			}
 			// `create --group` makes a group when it needs one, so the person who
 			// typed it never made this group and nothing told them it outlives its
 			// sandboxes. Said rather than done: a group somebody made with
@@ -203,9 +208,11 @@ func newRmCmd(app *App) *cobra.Command {
 				return err
 			}
 			forward.KillAll(app.InstDir, in.Group, in.Name)
+			spent, record := app.finalCount(in)
 			if err := e.Remove(cmd.Context(), in.Name, false); err != nil {
 				return err
 			}
+			app.dropCount(in.Group, record)
 			app.stopLenderIfIdle(cmd.Context(), in.Group)
 			app.refreshHostRoute(cmd) // unpublish the name if host-route is on
 			if err := app.syncSSHConfig(); err != nil {
@@ -216,6 +223,11 @@ func newRmCmd(app *App) *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"removed %s — kept its data; recreate with the same name (and the same --repo/--snapshot) to reuse it, or 'cs-sandbox destroy %s -f' to delete it\n",
 				args[0], args[0])
+			if spent != "" {
+				// The data is kept and the count is not: a budget belongs to one
+				// creation, and the next one starts at zero (R155c).
+				fmt.Fprintln(cmd.OutOrStdout(), spent+"; a sandbox created again under this name starts at zero")
+			}
 			return nil
 		},
 	}
