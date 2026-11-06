@@ -1,7 +1,11 @@
 {
   "recommendedBy": "session agent, after the reliability session of 2026-09-28",
-  "updated": "2026-10-19",
+  "updated": "2026-11-05",
   "items": [
+    {
+      "id": "SBX-119",
+      "why": "One base rootfs slot per image repository: a build pinned to another tag rewrites the disk every other build boots from. On 2026-11-05 that stopped three sessions on a shared host for an hour."
+    },
     {
       "id": "SBX-047",
       "why": "Two fleets on one key still fight for it, and a bare 429 ends a codex turn at once. Only the lender can pace or absorb that."

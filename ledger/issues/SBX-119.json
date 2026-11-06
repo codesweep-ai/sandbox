@@ -1,0 +1,20 @@
+{
+  "id": "SBX-119",
+  "title": "Two tags of one image share one base rootfs slot, so any build's create rewrites the disk every other build boots from",
+  "type": "defect",
+  "severity": "critical",
+  "status": "open",
+  "foundBy": "user report (host): Rishi Vaish, 2026-11-05, after a second session's create broke every staging on a shared host: \"how do we not have the isolation we need?\"",
+  "opened": "2026-11-05",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`Cache.BaseRootfs` (internal/fcdisk/fcdisk.go) keys the cached base rootfs by image REPOSITORY, not by the reference: `base-rootfs-ghcr.io-codesweep-ai-sandbox.ext4` is one file for every tag of `ghcr.io/codesweep-ai/sandbox`. Its own comment says what follows: \"Two tags of one repository still share a slot and rebuild in place when the stamp says the content moved.\" So two cs-sandbox builds pinned to different tags, both correct by their own pins, fight over one 32 GiB file: whichever runs `create` last rewrites it, silently, for everyone.\n\nWhat happened on 2026-11-05 (host with several agent sessions, each repo carrying its own pinned `tools/cs-sandbox`): a session in one repo built cs-sandbox v0.0.0-20260915174144-601626e43f70 (its image tag of the same date) and ran `tools/cs-sandbox create probe-sbx --group podcast ...` at 22:08:12Z. The create found the shared slot stamped with another tag's content and rebuilt it in place from the 09-15 image (and replaced vmlinux.elf, initrd and modules.tar: kernel 6.19.10 for 7.2.5). From that moment every sandbox staging of the other sessions, which pin v0.0.0-20261025044344-a0df4c558d44, was refused by their own pre-flight image check: the 09-15 image carries no python3 `jsonschema` and its /tmp entries are root-owned. Three sessions' work stopped for an hour; a paid run about to start would have died at its first staging. The host was repaired by a pinned-binary create, which rebuilt the slot back (11 s), and the other repo repinned to the same tag.\n\nPinning callers does not cover this: the pin decides what each caller asks for, and the slot decides what every caller gets. The fix belongs where the shared state lives.\n\nTwo fixes, either closes it; the first is the isolation the design lacks, the second is the loud failure that should exist regardless:\n1. Key the base rootfs by the whole reference (tag or digest): `base-rootfs-<repository>-<tag>.ext4`, one slot per image version in use. A create then finds exactly the rootfs its image made or builds its own, and never rewrites another's. Cost: one sparse 32 GiB file per version in use (5.9 GiB allocated for the shipped image); `cs-sandbox rm --prune` or a doctor hint can drop slots no instance references.\n2. Refuse to rebuild a base rootfs in place when its stamp names another image and any instance on the host was created from that slot (or always, without an explicit `cs-sandbox build`): print which image owns it and stop. A stray build then fails on its own create instead of breaking everyone else's.\n\nA regression test: two Cache users with different tags of one repository; after both create, each boots the rootfs of its own image (stamp equals its image id), and the first's stamp is unchanged by the second's create.",
+  "notes": [],
+  "links": []
+}
