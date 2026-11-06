@@ -397,6 +397,55 @@ func TestEnsureKernelGivesEachNameItsOwnBytes(t *testing.T) {
 	}
 }
 
+// TestEnsureKernelUnsharesALinkedPair: a cache an earlier build left with the
+// unkeyed names hard-linked to the keyed set's files gets a copy of its own at
+// each unkeyed name the next time this build ensures its set. The keyed files
+// keep the inodes their sandboxes booted, and a run.json naming the unkeyed
+// paths still resolves to the keyed set.
+func TestEnsureKernelUnsharesALinkedPair(t *testing.T) {
+	c := Cache{Dir: t.TempDir()}
+	bc := kernelBuildConfig(t, DefaultKVerPin)
+	if err := c.ensureKernel(context.Background(), &kernelBuild{run.NewFake(), "7.2.5-200.fc44.x86_64"}, bc); err != nil {
+		t.Fatal(err)
+	}
+	set, top := c.KernelSetFor(bc), c.UnkeyedKernelSet()
+	inodes := map[string]os.FileInfo{}
+	for _, f := range kernelSetFiles {
+		_ = os.Remove(filepath.Join(top.Dir, f))
+		if err := os.Link(filepath.Join(set.Dir, f), filepath.Join(top.Dir, f)); err != nil {
+			t.Fatal(err)
+		}
+		inodes[f], _ = os.Stat(filepath.Join(set.Dir, f))
+	}
+
+	r := run.NewFake()
+	if err := c.ensureKernel(context.Background(), r, bc); err != nil {
+		t.Fatalf("ensure over a linked pair = %v, want nil", err)
+	}
+	if len(r.Calls) != 0 {
+		t.Errorf("the ensure ran %d commands, want none: %s", len(r.Calls), r)
+	}
+	for _, f := range kernelSetFiles {
+		a, _ := os.Stat(filepath.Join(top.Dir, f))
+		b, _ := os.Stat(filepath.Join(set.Dir, f))
+		if a == nil || b == nil || os.SameFile(a, b) {
+			t.Errorf("%s is still one file at both names", f)
+			continue
+		}
+		if !os.SameFile(b, inodes[f]) {
+			t.Errorf("the keyed set's %s was replaced, want it kept as its sandboxes booted it", f)
+		}
+		x, _ := os.ReadFile(filepath.Join(top.Dir, f))
+		y, _ := os.ReadFile(filepath.Join(set.Dir, f))
+		if string(x) != string(y) {
+			t.Errorf("the unkeyed %s holds %q, want the keyed set's bytes %q", f, x, y)
+		}
+	}
+	if k, ok := c.KeyedSetOf(c.Kernel(), c.Initrd()); !ok || k.Dir != set.Dir {
+		t.Errorf("KeyedSetOf(unkeyed) = %v %v after unsharing, want the keyed set", k, ok)
+	}
+}
+
 // TestSameFilesComparesBytes: two sets hold the same kernel where their files
 // are one file or carry the same bytes, and not where the bytes differ at the
 // same length.

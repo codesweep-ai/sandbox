@@ -281,6 +281,7 @@ func (c Cache) offerUnkeyed(set KernelSet) {
 	if set.Dir == top.Dir {
 		return
 	}
+	c.unshareUnkeyed(set)
 	for _, f := range kernelSetFiles {
 		if _, err := os.Lstat(filepath.Join(top.Dir, f)); err == nil {
 			return
@@ -296,6 +297,26 @@ func (c Cache) offerUnkeyed(set KernelSet) {
 		if err := top.writeStamp(s, set.stamp(s)); err != nil {
 			return
 		}
+	}
+}
+
+// unshareUnkeyed gives each unkeyed name a copy of its own where an earlier
+// build left it one file with set's. Only set's own names are touched, one
+// set at a time as a build next ensures it. The keyed file keeps its inode,
+// which is what that set's sandboxes boot, and the unkeyed name gets the same
+// bytes under a new one.
+func (c Cache) unshareUnkeyed(set KernelSet) {
+	top := c.UnkeyedKernelSet()
+	for _, f := range kernelSetFiles {
+		a, err := os.Lstat(filepath.Join(top.Dir, f))
+		if err != nil {
+			continue
+		}
+		b, err := os.Lstat(filepath.Join(set.Dir, f))
+		if err != nil || !os.SameFile(a, b) {
+			continue
+		}
+		_ = placeFile(filepath.Join(set.Dir, f), filepath.Join(top.Dir, f))
 	}
 }
 
