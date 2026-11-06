@@ -73,15 +73,24 @@ const legacyBaseRootfs = "base-rootfs.ext4"
 // create naming the full image without a word. Keyed, that create finds no
 // rootfs for the image it asked for and says so.
 //
-// Keyed by REPOSITORY rather than by the whole reference, so a host keeps one
-// per image variant — three, here — instead of one per version ever built. Two
-// tags of one repository still share a slot and rebuild in place when the stamp
-// says the content moved, which is what the single file always did.
+// Keyed by the WHOLE reference, tag or digest included, so two cs-sandbox
+// builds pinned to different versions of one image each boot their own disk. A
+// key of the repository alone gave them one file, and whichever ran create last
+// rebuilt it in place under the other (SBX-116). The price is one sparse file
+// per version in use; doctor lists them and says which nothing was made from.
 func (c Cache) BaseRootfs(image string) string {
 	if image == "" {
 		return filepath.Join(c.Dir, legacyBaseRootfs)
 	}
 	return filepath.Join(c.Dir, "base-rootfs-"+imageSlot(image)+".ext4")
+}
+
+// repositoryBaseRootfs is where a cache written before the reference keying
+// kept this image's rootfs: one file per repository, shared by every tag of it.
+// ensureBaseRootfs adopts it where its stamp says it came from the image being
+// asked for, and otherwise leaves it to the older builds still reading it.
+func (c Cache) repositoryBaseRootfs(image string) string {
+	return filepath.Join(c.Dir, "base-rootfs-"+repositorySlot(image)+".ext4")
 }
 
 // BaseRootfsBytes is what one image's base rootfs actually occupies: its
@@ -91,7 +100,11 @@ func (c Cache) BaseRootfs(image string) string {
 // reporting the figure wants to know. Zero when it cannot be read, in which case
 // the caller omits the figure rather than printing a nought.
 func (c Cache) BaseRootfsBytes(image string) int64 {
-	fi, err := os.Stat(c.BaseRootfs(image))
+	return allocatedBytes(c.BaseRootfs(image))
+}
+
+func allocatedBytes(path string) int64 {
+	fi, err := os.Stat(path)
 	if err != nil {
 		return 0
 	}
@@ -101,39 +114,97 @@ func (c Cache) BaseRootfsBytes(image string) int64 {
 	return fi.Size()
 }
 
-// imageSlot is the filename key for one image: its repository, with the tag or
-// digest dropped and whatever a filename cannot carry replaced.
+// imageSlot is the filename key for one image: the whole reference, with
+// whatever a filename cannot carry replaced. A digest stands in for the tag
+// where the reference carries one, since it is what names the content, and an
+// untagged reference is podman's :latest, so the two spellings share a slot.
 //
 // A readable name rather than a hash of one, because these files are gigabytes
 // and somebody clearing space has to see which is which. It falls back to a hash
 // only where the name cannot serve: an empty result, or one long enough to
 // threaten the 255-byte limit once the prefix and suffix are on it.
 func imageSlot(image string) string {
-	repo := image
+	repo, version := splitReference(image)
+	// 200 leaves room for "base-rootfs-" and ".stamp" under the 255-byte limit,
+	// and holds a registry path with a whole sha256 digest on it.
+	return slug(image, 200, repo, version)
+}
+
+// repositorySlot is the key the cache used before imageSlot took the version
+// in: the repository alone, under the length limit it had then. Only adoption
+// reads it.
+func repositorySlot(image string) string {
+	repo, _ := splitReference(image)
+	return slug(image, 100, repo)
+}
+
+// splitReference cuts an image reference into its repository and the part that
+// names one version of it: the digest where there is one, else the tag, else
+// latest.
+func splitReference(image string) (repo, version string) {
+	repo = image
 	if at := strings.IndexByte(repo, '@'); at >= 0 {
-		repo = repo[:at] // ref@sha256:…
+		repo, version = repo[:at], repo[at+1:] // ref@sha256:…
 	}
 	// The tag separator is the last colon AFTER the last slash. A registry may
 	// carry a port (myreg:5000/img), and cutting at that colon instead would file
 	// every image on that host under the registry's own name.
 	if colon := strings.LastIndexByte(repo, ':'); colon > strings.LastIndexByte(repo, '/') {
+		if version == "" {
+			version = repo[colon+1:]
+		}
 		repo = repo[:colon]
 	}
-	var b strings.Builder
-	for _, r := range repo {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('-')
-		}
+	if version == "" {
+		version = "latest"
 	}
-	slot := strings.Trim(b.String(), "-")
-	if slot == "" || len(slot) > 100 {
+	return repo, version
+}
+
+// slug joins parts with "-" once each is filesystem-safe, or hashes image where
+// that cannot serve: a part with nothing usable in it, or a result over max.
+func slug(image string, maxLen int, parts ...string) string {
+	clean := make([]string, 0, len(parts))
+	for _, p := range parts {
+		var b strings.Builder
+		for _, r := range p {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_':
+				b.WriteRune(r)
+			default:
+				b.WriteByte('-')
+			}
+		}
+		clean = append(clean, strings.Trim(b.String(), "-"))
+	}
+	s := strings.Join(clean, "-")
+	if clean[0] == "" || len(s) > maxLen {
 		sum := sha256.Sum256([]byte(image))
 		return hex.EncodeToString(sum[:])[:16]
 	}
-	return slot
+	return s
+}
+
+// RootfsSlot is one base rootfs the cache holds.
+type RootfsSlot struct {
+	Path    string // the ext4 file
+	Image   string // the reference its stamp names; "" when the stamp predates recording it
+	ImageID string // the image id its stamp names; "" when it has no readable stamp
+	Bytes   int64  // allocated, not apparent: see BaseRootfsBytes
+}
+
+// BaseRootfsSlots lists every base rootfs in the cache, keyed or not, with the
+// image its stamp says it was built from. A host running several cs-sandbox
+// versions keeps one per version, and this is how somebody clearing space finds
+// out which they are.
+func (c Cache) BaseRootfsSlots() []RootfsSlot {
+	paths, _ := filepath.Glob(filepath.Join(c.Dir, "base-rootfs*.ext4"))
+	slots := make([]RootfsSlot, 0, len(paths))
+	for _, p := range paths {
+		id, ref := stampOwner(c.readStamp(strings.TrimSuffix(filepath.Base(p), ".ext4") + ".stamp"))
+		slots = append(slots, RootfsSlot{Path: p, Image: ref, ImageID: id, Bytes: allocatedBytes(p)})
+	}
+	return slots
 }
 
 // RootfsImage is the file beside an instance's rootfs that records the id of

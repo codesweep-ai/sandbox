@@ -16,7 +16,7 @@ const testImage = "ghcr.io/codesweep-ai/sandbox-slim:v1"
 // the code does would pass however the keying changed.
 func slotFor(t *testing.T, cache string) string {
 	t.Helper()
-	return filepath.Join(cache, "base-rootfs-ghcr.io-codesweep-ai-sandbox-slim.ext4")
+	return filepath.Join(cache, "base-rootfs-ghcr.io-codesweep-ai-sandbox-slim-v1.ext4")
 }
 
 // TestBaseRootfsCheckReportsAMissingRootfs: the case that reached a user, whose

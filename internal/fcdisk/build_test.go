@@ -780,28 +780,35 @@ func writeFile(t *testing.T, p string) {
 	}
 }
 
-// TestImageSlot: the filename key is the repository, with the tag or digest
-// dropped — so two variants never share a file, and two tags of one variant
-// always do.
+// TestImageSlot: the filename key is the whole reference, so two variants
+// never share a file and neither do two versions of one variant.
 func TestImageSlot(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
 	for _, tc := range []struct{ image, want string }{
-		{"localhost/sandbox-slim:ci", "localhost-sandbox-slim"},
-		{"localhost/sandbox-slim-agents:ci", "localhost-sandbox-slim-agents"},
-		{"ghcr.io/codesweep-ai/sandbox:v0.1.0", "ghcr.io-codesweep-ai-sandbox"},
-		{"ghcr.io/codesweep-ai/sandbox-slim:v0.1.0", "ghcr.io-codesweep-ai-sandbox-slim"},
+		{"localhost/sandbox-slim:ci", "localhost-sandbox-slim-ci"},
+		{"localhost/sandbox-slim-agents:ci", "localhost-sandbox-slim-agents-ci"},
+		{"ghcr.io/codesweep-ai/sandbox:v0.1.0", "ghcr.io-codesweep-ai-sandbox-v0.1.0"},
+		{"ghcr.io/codesweep-ai/sandbox-slim:v0.1.0", "ghcr.io-codesweep-ai-sandbox-slim-v0.1.0"},
 		// A build of the same version made on this host, which has to keep a
 		// rootfs of its own rather than stand in for the published one's.
-		{"localhost/codesweep-ai/sandbox:v0.1.0", "localhost-codesweep-ai-sandbox"},
+		{"localhost/codesweep-ai/sandbox:v0.1.0", "localhost-codesweep-ai-sandbox-v0.1.0"},
 		// A registry port is not a tag: cutting at that colon would file every
 		// image on the host under the registry's own name.
-		{"myreg:5000/team/img:v2", "myreg-5000-team-img"},
-		{"ghcr.io/x/y@sha256:" + strings.Repeat("a", 64), "ghcr.io-x-y"},
-		// Untagged is already the repository.
-		{"localhost/sandbox-slim", "localhost-sandbox-slim"},
+		{"myreg:5000/team/img:v2", "myreg-5000-team-img-v2"},
+		// The digest names the content, so it is the key wherever it is given.
+		{"ghcr.io/x/y@" + digest, "ghcr.io-x-y-sha256-" + strings.Repeat("a", 64)},
+		{"ghcr.io/x/y:v1@" + digest, "ghcr.io-x-y-sha256-" + strings.Repeat("a", 64)},
+		// Untagged is podman's :latest, and shares its slot.
+		{"localhost/sandbox-slim", "localhost-sandbox-slim-latest"},
+		{"localhost/sandbox-slim:latest", "localhost-sandbox-slim-latest"},
 	} {
 		if got := imageSlot(tc.image); got != tc.want {
 			t.Errorf("imageSlot(%q) = %q, want %q", tc.image, got, tc.want)
 		}
+	}
+	// The key a cache used before the version was in it, which adoption reads.
+	if got := repositorySlot("ghcr.io/codesweep-ai/sandbox:v0.1.0"); got != "ghcr.io-codesweep-ai-sandbox" {
+		t.Errorf("repositorySlot = %q, want the repository alone", got)
 	}
 	// A name that cannot serve as one falls back to a hash rather than to a path
 	// that collides or cannot be written.
@@ -814,8 +821,8 @@ func TestImageSlot(t *testing.T) {
 }
 
 // TestBaseRootfsIsPerImage: the whole point. Two image variants get two files,
-// two tags of one variant share one, and the pre-keying name is still what an
-// empty image resolves to.
+// so do two tags of one variant, and the pre-keying name is still what an empty
+// image resolves to.
 func TestBaseRootfsIsPerImage(t *testing.T) {
 	c := Cache{Dir: t.TempDir()}
 	slim := c.BaseRootfs("localhost/sandbox-slim:ci")
@@ -826,8 +833,8 @@ func TestBaseRootfsIsPerImage(t *testing.T) {
 			t.Errorf("two image variants share one rootfs: %s", pair[0])
 		}
 	}
-	if a, b := c.BaseRootfs("ghcr.io/x/y:v1"), c.BaseRootfs("ghcr.io/x/y:v2"); a != b {
-		t.Errorf("two tags of one repository took separate files: %s and %s", a, b)
+	if a, b := c.BaseRootfs("ghcr.io/x/y:v1"), c.BaseRootfs("ghcr.io/x/y:v2"); a == b {
+		t.Errorf("two tags of one repository share one file: %s", a)
 	}
 	if got, want := c.BaseRootfs(""), filepath.Join(c.Dir, legacyBaseRootfs); got != want {
 		t.Errorf("BaseRootfs(\"\") = %s, want the pre-keying name %s", got, want)
@@ -896,8 +903,8 @@ func TestEnsureBaseRootfsAdoptsLegacyRootfs(t *testing.T) {
 	if !isExt4(c.BaseRootfs(img)) {
 		t.Error("no rootfs under the image's own name after adoption")
 	}
-	if got := c.readStamp(baseRootfsStampName(img)); got != cur {
-		t.Errorf("adopted stamp = %q, want %q", got, cur)
+	if got, want := c.readStamp(baseRootfsStampName(img)), cur+"|"+img; got != want {
+		t.Errorf("adopted stamp = %q, want %q", got, want)
 	}
 	// Adoption is a rename, so no filesystem was made — by either build path.
 	for _, marker := range []string{"podman unshare", "podman export", "mke2fs"} {
@@ -1198,5 +1205,71 @@ func TestKernelFetchStepVerifies(t *testing.T) {
 	// a warning on the container's stderr never reaches anyone on a passing build.
 	if !strings.Contains(step, kojiSumsFile) {
 		t.Errorf("fallback does not record the digests for reporting:\n%s", step)
+	}
+}
+
+// TestBuildReplacesAnotherImagesRootfs: the refusal a create gets has a way
+// out, and it is the explicit build the refusal names. That build rebuilds the
+// slot for the image it was asked about and stamps it as that image's.
+func TestBuildReplacesAnotherImagesRootfs(t *testing.T) {
+	const img = "ghcr.io/x/y:v2"
+	c := Cache{Dir: t.TempDir()}
+	bc, _ := slotBuild(t, img, "sha256:mine")
+	_, theirs := slotBuild(t, "ghcr.io/x/y-v2:latest", "sha256:0ther")
+	writeExt4(t, c.BaseRootfs(img))
+	if err := c.writeStamp(baseRootfsStampName(img), theirs+"|ghcr.io/x/y-v2:latest"); err != nil {
+		t.Fatal(err)
+	}
+	r := run.NewFake().OnStdout("image inspect", "sha256:mine")
+	if err := c.ensureBaseRootfs(context.Background(), r, bc); !errors.Is(err, ErrBaseRootfsOwned) {
+		t.Fatalf("create = %v, want ErrBaseRootfsOwned", err)
+	}
+	bc.Replace = true
+	if err := c.ensureBaseRootfs(context.Background(), r, bc); err != nil {
+		t.Fatalf("build = %v, want it to replace the rootfs", err)
+	}
+	if !r.Contains("mke2fs") {
+		t.Errorf("build did not rebuild the rootfs; got %s", r)
+	}
+	if _, ref := stampOwner(c.readStamp(baseRootfsStampName(img))); ref != img {
+		t.Errorf("rebuilt stamp names %q, want %q", ref, img)
+	}
+}
+
+// TestRootfsSlotsNameTheirImages: the listing doctor prints from. Each slot
+// says which image its stamp names, whether the stamp records the reference or
+// only the id, and an unstamped one says nothing rather than guessing.
+func TestRootfsSlotsNameTheirImages(t *testing.T) {
+	c := Cache{Dir: t.TempDir()}
+	writeExt4(t, c.BaseRootfs("ghcr.io/x/y:v1"))
+	if err := c.writeStamp(baseRootfsStampName("ghcr.io/x/y:v1"), "sha256:aaaa|k|fedora|i|32G|ghcr.io/x/y:v1"); err != nil {
+		t.Fatal(err)
+	}
+	writeExt4(t, c.repositoryBaseRootfs("ghcr.io/x/y:v1"))
+	if err := c.writeStamp("base-rootfs-ghcr.io-x-y.stamp", "sha256:bbbb|k|fedora|i|32G"); err != nil {
+		t.Fatal(err)
+	}
+	writeExt4(t, c.BaseRootfs(""))
+
+	got := map[string]RootfsSlot{}
+	for _, s := range c.BaseRootfsSlots() {
+		got[filepath.Base(s.Path)] = s
+	}
+	for name, want := range map[string]RootfsSlot{
+		"base-rootfs-ghcr.io-x-y-v1.ext4": {Image: "ghcr.io/x/y:v1", ImageID: "sha256:aaaa"},
+		"base-rootfs-ghcr.io-x-y.ext4":    {ImageID: "sha256:bbbb"},
+		"base-rootfs.ext4":                {},
+	} {
+		s, ok := got[name]
+		if !ok {
+			t.Errorf("no slot listed for %s; got %v", name, got)
+			continue
+		}
+		if s.Image != want.Image || s.ImageID != want.ImageID || s.Bytes <= 0 {
+			t.Errorf("%s = %+v, want image %q, id %q and its size", name, s, want.Image, want.ImageID)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("listed %d slots, want 3: %v", len(got), got)
 	}
 }

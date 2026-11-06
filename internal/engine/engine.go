@@ -101,6 +101,9 @@ type Deps struct {
 	// Bars draws the in-place progress bars a build shows for its long steps.
 	// nil draws none, which is what tests and a non-terminal caller get.
 	Bars *progress.Reporter
+	// ReplaceBaseRootfs lets Prepare rebuild a base rootfs whose stamp names
+	// another image. `build` sets it; a create leaves it off and is refused.
+	ReplaceBaseRootfs bool
 	// DryRun mirrors the CLI's --dry-run, which prints external commands instead
 	// of running them. An engine has to know: with nothing actually started,
 	// persisting the instance and then waiting for it to answer would leave a
