@@ -76,7 +76,7 @@ const legacyBaseRootfs = "base-rootfs.ext4"
 // Keyed by the WHOLE reference, tag or digest included, so two cs-sandbox
 // builds pinned to different versions of one image each boot their own disk. A
 // key of the repository alone gave them one file, and whichever ran create last
-// rebuilt it in place under the other (SBX-116). The price is one sparse file
+// rebuilt it in place under the other (SBX-119). The price is one sparse file
 // per version in use; doctor lists them and says which nothing was made from.
 func (c Cache) BaseRootfs(image string) string {
 	if image == "" {

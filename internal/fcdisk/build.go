@@ -1105,7 +1105,7 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 	// references came to one filename, or an older cs-sandbox wrote it under a
 	// key that now collides. Rebuilding it here would change what the other's
 	// next create boots without a word to whoever runs it, which is what one
-	// slot per repository did to every staging on a shared host (SBX-116). Only
+	// slot per repository did to every staging on a shared host (SBX-119). Only
 	// an explicit build replaces it.
 	if other && exists(rootfs) && !bc.Replace {
 		return &ownedRootfsError{path: rootfs, owner: owner, image: bc.Image}

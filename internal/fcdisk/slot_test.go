@@ -27,7 +27,7 @@ func slotBuild(t *testing.T, image, imgid string) (BuildConfig, string) {
 	return bc, baseRootfsStamp(imgid, "", "fedora", hex.EncodeToString(sum[:])[:12], 0)
 }
 
-// TestTwoTagsOfOneRepositoryKeepTheirOwnRootfs is SBX-116. Two cs-sandbox
+// TestTwoTagsOfOneRepositoryKeepTheirOwnRootfs is SBX-119. Two cs-sandbox
 // builds pinned to two tags of one image shared one base rootfs, and the second
 // one's create rebuilt it in place under the first: every sandbox the first
 // made after that booted the other image. Each now has a file and a stamp of its
@@ -160,7 +160,7 @@ func TestEnsureBaseRootfsRefusesAnotherImagesRootfs(t *testing.T) {
 			r := run.NewFake().OnStdout("image inspect", "sha256:mine")
 			err := c.ensureBaseRootfs(context.Background(), r, bc)
 			if err == nil {
-				t.Fatal("rebuilt another image's rootfs in place, which is SBX-116")
+				t.Fatal("rebuilt another image's rootfs in place, which is SBX-119")
 			}
 			for _, want := range []string{rootfs, tc.owner, img, "CS_SANDBOX_IMAGE=" + img + " cs-sandbox build"} {
 				if !strings.Contains(err.Error(), want) {
