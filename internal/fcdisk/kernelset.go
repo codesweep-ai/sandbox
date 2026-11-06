@@ -1,6 +1,7 @@
 package fcdisk
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -99,20 +100,51 @@ func (k KernelSet) clear() {
 	}
 }
 
-// SameFiles reports whether two sets name the same kernel and initramfs on disk,
-// as the unkeyed set's names do once they are links to a keyed set's files.
+// SameFiles reports whether two sets hold the same kernel and initramfs: the
+// same bytes, as the unkeyed names do once they carry a copy of a keyed set's
+// files, or one file, as an earlier build's hard links left them.
 func (k KernelSet) SameFiles(o KernelSet) bool {
-	for _, p := range [][2]string{{k.Kernel(), o.Kernel()}, {k.Initrd(), o.Initrd()}} {
-		a, err := os.Stat(p[0])
-		if err != nil {
+	return sameBytes(k.Kernel(), o.Kernel()) && sameBytes(k.Initrd(), o.Initrd())
+}
+
+// sameBytes reports whether the files at a and b hold the same bytes. Files of
+// different lengths never do, so only a likely match is read through.
+func sameBytes(a, b string) bool {
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	if os.SameFile(fa, fb) {
+		return true
+	}
+	if fa.Size() != fb.Size() {
+		return false
+	}
+	ra, err := os.Open(a)
+	if err != nil {
+		return false
+	}
+	defer ra.Close()
+	rb, err := os.Open(b)
+	if err != nil {
+		return false
+	}
+	defer rb.Close()
+	bufA, bufB := make([]byte, 1<<20), make([]byte, 1<<20)
+	for {
+		na, errA := io.ReadFull(ra, bufA)
+		nb, errB := io.ReadFull(rb, bufB)
+		if na != nb || !bytes.Equal(bufA[:na], bufB[:nb]) {
 			return false
 		}
-		b, err := os.Stat(p[1])
-		if err != nil || !os.SameFile(a, b) {
-			return false
+		if errA != nil || errB != nil {
+			return atEnd(errA) && atEnd(errB)
 		}
 	}
-	return true
 }
 
 // rebuildReason reports why the set cannot serve bc, or "" when it can. It only
@@ -192,7 +224,7 @@ func (c Cache) KernelSets() []KernelSet {
 }
 
 // KeyedSetOf is the keyed set whose files a run.json naming the unkeyed kernel
-// and initrd actually boots, where those names are links to one. A sandbox made
+// and initrd actually boots, where those names hold one's bytes. A sandbox made
 // before keyed sets names the unkeyed paths, and pointing it at the keyed set
 // on its next start keeps it on the kernel it booted, whatever an older build
 // later writes at the top of the cache.
@@ -211,9 +243,8 @@ func (c Cache) KeyedSetOf(kernel, initrd string) (KernelSet, bool) {
 
 // adoptKernelSet takes the unkeyed set into bc's keyed set where its stamps say
 // it is exactly what bc would build, and reports whether it did. Its files are
-// linked rather than moved, so the unkeyed names stay what they were for the
-// older builds still reading them, and the link costs no space. A set built
-// from anything else is left alone.
+// copied rather than moved, so the unkeyed names stay what they were for the
+// older builds still reading them. A set built from anything else is left alone.
 func (c Cache) adoptKernelSet(set KernelSet, bc BuildConfig) bool {
 	top := c.UnkeyedKernelSet()
 	if set.Dir == top.Dir || top.rebuildReason(bc) != "" {
@@ -242,10 +273,9 @@ func (c Cache) adoptKernelSet(set KernelSet, bc BuildConfig) bool {
 // Anything already there is left alone: it is what an older build, or the
 // sandboxes it made, boot.
 //
-// The files are links and the stamps are copies, which is what keeps the keyed
-// set safe from an older build. One that rebuilds removes the three file names
-// before writing new files, so the keyed set keeps its own, but it writes its
-// stamps in place, through any link.
+// The files and the stamps are copies, so nothing an older build writes at the
+// unkeyed names, by replacing a file or by writing in place, reaches the keyed
+// set.
 func (c Cache) offerUnkeyed(set KernelSet) {
 	top := c.UnkeyedKernelSet()
 	if set.Dir == top.Dir {
@@ -269,16 +299,19 @@ func (c Cache) offerUnkeyed(set KernelSet) {
 	}
 }
 
-// placeFile gives dst the content of src as a hard link, or as a copy on a
-// filesystem that cannot link. A symlink at src is followed, so dst never
-// depends on a name somebody else may replace.
+// atEnd reports whether a read through io.ReadFull stopped at the end of its
+// file rather than on a failure.
+func atEnd(err error) bool { return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) }
+
+// placeFile gives dst a copy of src that dst alone owns, so a write to either
+// name never reaches the other, even one made in place. It clones src where the
+// filesystem has reflinks, which share blocks until one side writes, and copies
+// it in full elsewhere. The copy is made under a temporary name and renamed onto
+// dst, so a reader of dst sees the old file or the whole new one. A symlink at
+// src is followed, so dst never depends on a name somebody else may replace.
 func placeFile(src, dst string) error {
 	if real, err := filepath.EvalSymlinks(src); err == nil {
 		src = real
-	}
-	_ = os.Remove(dst)
-	if err := os.Link(src, dst); err == nil {
-		return nil
 	}
 	in, err := os.Open(src)
 	if err != nil {
@@ -290,10 +323,12 @@ func placeFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		_ = os.Remove(tmp)
-		return err
+	if cloneFile(out, in) != nil {
+		if _, err := io.Copy(out, in); err != nil {
+			_ = out.Close()
+			_ = os.Remove(tmp)
+			return err
+		}
 	}
 	if err := out.Close(); err != nil {
 		_ = os.Remove(tmp)

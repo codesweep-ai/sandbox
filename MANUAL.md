@@ -438,8 +438,8 @@ sets no sandbox boots, leaving out this build's own. The next create that needs 
 it again. `build` ends by saying how many other kernel sets the cache holds.
 
 A sandbox boots the kernel set its create named in its `run.json`. A sandbox made before kernel sets
-existed names the files at the top of the cache. Where those are links to a kept set, its next start
-names that set instead, so it keeps the kernel its disk was made for.
+existed names the files at the top of the cache. Where those hold the same kernel and initrd as a kept
+set, its next start names that set instead, so it keeps the kernel its disk was made for.
 
 `create` refuses with `holds the guest kernel set of … and create will not rebuild a kernel set other
 sandboxes may boot in place` when a finished set under its own name was built from another pin or

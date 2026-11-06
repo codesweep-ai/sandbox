@@ -110,9 +110,9 @@ func setDiskIOEngine(idir string) error {
 }
 
 // pinKernelSet points a run.json that names the unkeyed kernel and initrd at
-// the keyed set those names are links to, and leaves every other run.json as it
+// the keyed set holding the same bytes, and leaves every other run.json as it
 // is. A sandbox made before keyed sets names the unkeyed paths, so this runs at
-// each launch, one sandbox at a time: it boots the same files it did, and keeps
+// each launch, one sandbox at a time: it boots the same kernel it did, and keeps
 // booting them after an older build rewrites the top of the cache.
 func pinKernelSet(idir string, c fcdisk.Cache) error {
 	path := filepath.Join(idir, "run.json")

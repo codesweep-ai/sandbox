@@ -177,7 +177,7 @@ func baseRootfsSlots(d Deps) []Check {
 // several cs-sandbox builds run collects one per kernel any of them pinned.
 // "Boots" is read off each sandbox's run.json, which is what a start feeds to
 // firecracker. A run.json naming the unkeyed paths boots whichever keyed set
-// those names link to, and its next start names that set itself. The unkeyed
+// holds the same bytes, and its next start names that set itself. The unkeyed
 // set is never offered: older builds read it. Neither is this build's own set,
 // nor one with no kver stamp, since unknown is not unused.
 func kernelSets(d Deps) []Check {
@@ -188,10 +188,8 @@ func kernelSets(d Deps) []Check {
 	sets := c.KernelSets()
 	top := c.UnkeyedKernelSet()
 	linked := ""
-	for _, k := range sets {
-		if top.SameFiles(k) {
-			linked = k.Dir
-		}
+	if k, ok := c.KeyedSetOf(top.Kernel(), top.Initrd()); ok {
+		linked = k.Dir
 	}
 	boots, topNamed := map[string]int{}, 0
 	if d.InstDir != "" {

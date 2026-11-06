@@ -1539,7 +1539,8 @@ to another kernel replaced it for all of them. A stopped sandbox then started on
 modules were not built for, and every other build's next create rebuilt its rootfs for that kernel.
 Keyed, each build boots and builds against its own set, and a sandbox's `run.json` keeps naming the
 set it was made with. The set at the top of the cache stays where older builds look for it. Adoption
-links its files rather than moving them, so those builds see the same files they wrote.
+copies its files rather than moving them, so those builds see the same files they wrote. Each name
+owns its bytes, so a build that writes one in place changes no other build's kernel.
 
 **R169.** A microVM's disks **MUST** use Firecracker's Async block engine where the kernel is 5.12 or
 later and an io_uring can be set up, and the Sync engine elsewhere. The engine **MUST** be chosen at

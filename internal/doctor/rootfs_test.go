@@ -280,7 +280,7 @@ func TestKernelSetsListsEverySet(t *testing.T) {
 	set := func(name, kver, pin string) string {
 		dir := filepath.Join(cache, "kernels", name)
 		for _, f := range []string{"vmlinux.elf", "initrd.img", "modules.tar"} {
-			write(filepath.Join(dir, f), f)
+			write(filepath.Join(dir, f), f+" of "+name)
 		}
 		if kver != "" {
 			write(filepath.Join(dir, "kver"), kver+"\n")

@@ -208,9 +208,9 @@ func TestEnsureKernelLeavesAnotherVersionsUnkeyedSet(t *testing.T) {
 }
 
 // TestEnsureKernelOffersAFreshCacheItsSet: on a cache with no unkeyed set, the
-// set a build makes is also linked at the unkeyed names, so an older build on
-// the host finds a kernel where it always has. The stamps there are copies,
-// since an older build writes its stamps in place, through any link.
+// set a build makes is also copied to the unkeyed names, so an older build on
+// the host finds a kernel where it always has. The stamps there are copies of
+// their own too, since an older build writes its stamps in place.
 func TestEnsureKernelOffersAFreshCacheItsSet(t *testing.T) {
 	c := Cache{Dir: t.TempDir()}
 	bc := kernelBuildConfig(t, DefaultKVerPin)
@@ -275,7 +275,7 @@ func TestEnsureKernelRefusesAFinishedSetOfOtherInputs(t *testing.T) {
 }
 
 // TestKeyedSetOf: a run.json naming the unkeyed paths boots whichever keyed set
-// those names link to, and nothing else is a keyed set's.
+// holds the same bytes, and nothing else is a keyed set's.
 func TestKeyedSetOf(t *testing.T) {
 	c := Cache{Dir: t.TempDir()}
 	bc := kernelBuildConfig(t, DefaultKVerPin)
@@ -292,5 +292,136 @@ func TestKeyedSetOf(t *testing.T) {
 	}
 	if _, ok := c.KeyedSetOf(k.Kernel(), k.Initrd()); ok {
 		t.Error("a run.json already naming a keyed set was resolved again")
+	}
+}
+
+// TestPlaceFileGivesAnIndependentCopy is SBX-121. A hard link let a write in
+// place through one name change the other's bytes, so one build's kernel could
+// change under another's. Each name owns its bytes, whether the filesystem
+// clones the file or it is copied in full, and the copy keeps content and mode.
+func TestPlaceFileGivesAnIndependentCopy(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		clone func(dst, src *os.File) error
+	}{
+		{"clone where the filesystem can", cloneFile},
+		{"full copy where it cannot", func(*os.File, *os.File) error { return errors.ErrUnsupported }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func(old func(dst, src *os.File) error) { cloneFile = old }(cloneFile)
+			cloneFile = tc.clone
+
+			dir := t.TempDir()
+			src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+			if err := os.WriteFile(src, []byte("vmlinux.elf of 7.2.5"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(dst, []byte("what was there"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := placeFile(src, dst); err != nil {
+				t.Fatalf("placeFile = %v", err)
+			}
+			a, _ := os.Stat(src)
+			b, err := os.Stat(dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if os.SameFile(a, b) {
+				t.Fatal("placeFile left src and dst one file")
+			}
+			if data, _ := os.ReadFile(dst); string(data) != "vmlinux.elf of 7.2.5" {
+				t.Errorf("dst holds %q, want src's bytes", data)
+			}
+			if b.Mode() != a.Mode() {
+				t.Errorf("dst mode = %v, want %v", b.Mode(), a.Mode())
+			}
+
+			// A binary that writes in place, O_TRUNC on the existing path,
+			// changes only the name it wrote.
+			for _, w := range [][2]string{{dst, src}, {src, dst}} {
+				text := "rewritten in place through " + filepath.Base(w[0])
+				if err := os.WriteFile(w[0], []byte(text), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if data, _ := os.ReadFile(w[1]); string(data) == text {
+					t.Errorf("a write in place to %s reached %s", filepath.Base(w[0]), filepath.Base(w[1]))
+				}
+			}
+			if _, err := os.Stat(dst + ".tmp"); err == nil {
+				t.Error("placeFile left its temporary file behind")
+			}
+		})
+	}
+}
+
+// TestEnsureKernelGivesEachNameItsOwnBytes: the keyed set and the unkeyed
+// names hold copies, whether the unkeyed set was adopted or offered, so a
+// write in place at the top of the cache never reaches the set this build
+// boots, and the other way round.
+func TestEnsureKernelGivesEachNameItsOwnBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, c Cache, bc BuildConfig) run.Runner
+	}{
+		{"adopted", func(t *testing.T, c Cache, bc BuildConfig) run.Runner {
+			stampUnkeyed(t, c, bc, "7.2.5-200.fc44.x86_64")
+			return run.NewFake()
+		}},
+		{"offered", func(t *testing.T, c Cache, bc BuildConfig) run.Runner {
+			return &kernelBuild{run.NewFake(), "7.2.5-200.fc44.x86_64"}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Cache{Dir: t.TempDir()}
+			bc := kernelBuildConfig(t, DefaultKVerPin)
+			if err := c.ensureKernel(context.Background(), tc.setup(t, c, bc), bc); err != nil {
+				t.Fatalf("ensure = %v, want nil", err)
+			}
+			set, top := c.KernelSetFor(bc), c.UnkeyedKernelSet()
+			for _, f := range kernelSetFiles {
+				a, _ := os.Stat(filepath.Join(top.Dir, f))
+				b, _ := os.Stat(filepath.Join(set.Dir, f))
+				if a == nil || b == nil || os.SameFile(a, b) {
+					t.Errorf("%s at the top and in the keyed set are one file", f)
+				}
+			}
+			want, _ := os.ReadFile(set.Kernel())
+			if err := os.WriteFile(top.Kernel(), []byte("an older build's kernel"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := os.ReadFile(set.Kernel()); string(got) != string(want) {
+				t.Errorf("a write in place at the top changed the keyed set's kernel to %q", got)
+			}
+		})
+	}
+}
+
+// TestSameFilesComparesBytes: two sets hold the same kernel where their files
+// are one file or carry the same bytes, and not where the bytes differ at the
+// same length.
+func TestSameFilesComparesBytes(t *testing.T) {
+	put := func(dir, kernel, initrd string) KernelSet {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for f, v := range map[string]string{"vmlinux.elf": kernel, "initrd.img": initrd} {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte(v), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return KernelSet{Dir: dir}
+	}
+	root := t.TempDir()
+	a := put(filepath.Join(root, "a"), "kernel 7.2.5", "initrd A")
+	if !a.SameFiles(put(filepath.Join(root, "b"), "kernel 7.2.5", "initrd A")) {
+		t.Error("two copies of one kernel and initrd do not read as the same set")
+	}
+	if a.SameFiles(put(filepath.Join(root, "c"), "kernel 6.1.9", "initrd A")) {
+		t.Error("kernels of the same length and other bytes read as the same")
+	}
+	if a.SameFiles(put(filepath.Join(root, "d"), "kernel 7.2.5", "initrd B")) {
+		t.Error("initrds of the same length and other bytes read as the same")
 	}
 }
