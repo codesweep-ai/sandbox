@@ -1,0 +1,30 @@
+{
+  "id": "SBX-121",
+  "title": "The top-level kernel files are hard links to a keyed set's, so a binary writing one in place changes both",
+  "type": "defect",
+  "severity": "med",
+  "status": "in-progress",
+  "foundBy": "Rishi, 2026-11-06, reviewing SBX-120's hard links: he chose copies, so each name owns its bytes whatever other binaries do",
+  "opened": "2026-11-06",
+  "resolved": null,
+  "stint": "coordinator session, 2026-11-06, Rishi's word",
+  "evidence": {
+    "commits": [
+      "65c28df",
+      "deafba5"
+    ],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "SBX-120 gave each kernel build its own guest kernel set under `kernels/`. It put the same `vmlinux.elf`, `initrd.img` and `modules.tar` at the top of the cache as hard links, so older binaries still find them there. A hard link is safe only while every binary replaces those files by removing the name first. A binary that opens the existing path with O_TRUNC and writes into it changes the file behind both names. One build's kernel would then change under another build's sandboxes on their next start.\n\nThe fix gives each name a file of its own: a reflink clone where the filesystem has them, and a full copy elsewhere.",
+  "notes": [
+    {
+      "date": "2026-11-06",
+      "text": "Commit 65c28df makes `placeFile` clone the file through FICLONE, or copy it in full through a temporary file and a rename. It never links. Adoption and the offer to the top of the cache both go through it. A copy has its own inode, so the check that a run.json naming the top-level paths boots a keyed set now compares bytes. It still accepts one file under both names, so a cache SBX-120 left keeps resolving. Doctor uses that same check.\n\nCommit deafba5 unshares a linked pair the next time its build uses it. When a build next ensures its own set and finds a top-level name that is one file with the set's, it copies the set's file over that name. The keyed file keeps its inode, which its sandboxes boot, and the top-level name gets the same bytes. Nothing is done in bulk, no other build's set is touched, and no instance's files are touched. I chose this because it is a few lines, it runs under the artifact lock, and the rename is atomic for any reader.\n\nThe four new tests fail against the linking `placeFile` of 56757cd and pass with the change. On ext4 each copy costs the full size of the set, since ext4 has no reflinks. CI must still show the smoke and integration tiers booting a set placed by copy, since this host ran unit tests and static checks only."
+    }
+  ],
+  "links": [
+    "SBX-120"
+  ]
+}
