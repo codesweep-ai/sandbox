@@ -411,9 +411,15 @@ prints the remedy for anything missing.
 On a Firecracker host it also asks whether the base rootfs exists for the image the report is
 about. That artifact is the one prerequisite `create` does not supply for itself. The Firecracker binary
 is fetched on first use and the tier keys are made on first create; the rootfs comes from
-`cs-sandbox build` and from nothing else. The cache holds one per image, so this is where `--slim`
-earns its place. A host that has built the shipped rootfs and never the slim one is ready for the
-first and cannot boot the second. Only a report naming the right image says so.
+`cs-sandbox build` and from nothing else. The cache holds one per image version, so this is where
+`--slim` earns its place. A host that has built the shipped rootfs and never the slim one is ready
+for the first and cannot boot the second. Only a report naming the right image says so.
+
+`create` refuses with `holds the base rootfs of … and create will not rebuild another image's disk
+in place` when the file its image keys to was built from a different image. That happens only where
+two image references come to one filename, or where an older `cs-sandbox` wrote the file. The
+message ends with the `cs-sandbox build` that replaces it with your image's rootfs. Run it only when
+nothing still boots the other image, because that image's next create then refuses in turn.
 
 Two of its checks are about identity rather than presence. The agent tools on your `PATH` are
 compared byte for byte against the ones this build ships. A host that installed them from another

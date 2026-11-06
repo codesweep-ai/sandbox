@@ -576,10 +576,10 @@ func (a *App) useLocalBuild(ctx context.Context) bool {
 // It calls Prepare unconditionally rather than only where Verify complains, and
 // that is the point. Verify asks whether the artifacts are THERE; only Prepare
 // asks whether they are the ones this image needs. A base rootfs is kept per
-// image REPOSITORY (R124), so an upgrade that moves the tag leaves a filesystem
-// that exists, mounts, and carries the previous image — which Verify passes and
-// a sandbox then boots. That reached a user: a create from a freshly pulled
-// image gave them a guest whose cs-sandbox reported the version before it.
+// image reference (R124), and a tag that moves under that reference leaves a
+// filesystem that exists, mounts, and carries the previous image — which Verify
+// passes and a sandbox then boots. That reached a user: a create from a freshly
+// pulled image gave them a guest whose cs-sandbox reported the version before it.
 //
 // Prepare is the one place that decides what current means, and it is the same
 // call `build` makes. Where everything already matches it does nothing but

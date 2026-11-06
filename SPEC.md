@@ -149,7 +149,7 @@ Images are not reproducible. A local build under the published name would pass f
 made, and a host holding one would keep it once CI published the real one. Asking the registry
 before the local name is what moves every host to CI's image as soon as it exists. No committed
 file names either image, since the binary works the name out from its own version, so a local one
-never blocks a push. The Firecracker cache keeps a base rootfs per image repository (R124), and the
+never blocks a push. The Firecracker cache keeps a base rootfs per image reference (R124), and the
 two names differ there.
 
 **R167.** `build` **MUST** install each `cs-` tool at the version R8 pins, and `cs-sandbox` at its
@@ -1484,7 +1484,9 @@ a single device-letter cursor in that same order.
 | `/dev/vdc…` | repo disks, then snapshots, then image stores | read-only |
 
 **R124.** Each sandbox's root disk **MUST** be a `cp --reflink=auto` copy of the base rootfs built
-from that sandbox's image, and the cache **MUST** hold one base rootfs per image.
+from that sandbox's image. The cache **MUST** hold one base rootfs per image reference, tag or
+digest included. `create` **MUST NOT** rebuild a base rootfs whose stamp names another image, and
+**MUST** refuse instead, naming that image, the one asked for, and the `build` that replaces it.
 
 **R125.** `--disk` **MUST** be grow-only, **MUST** apply to a kept disk, and **MUST** be a no-op when the disk
 already has that much.
@@ -1516,8 +1518,14 @@ never noticed: it checks that the disk is a filesystem, not which image it came 
 that had built the slim rootfs served it to a sandbox asking for the shipped image, silently.
 Kept per image, that sandbox finds no rootfs under the name it asked for and is told to build one.
 `doctor` reports the same gap for the image it is asked about, before a create reaches it.
-The key is the repository rather than the whole reference, so a host holds one per variant instead
-of one per version it has ever built.
+The key is the whole reference because the hosts this runs on are shared, and each project there
+pins its own `cs-sandbox` and so its own image tag. With one file per repository, whichever of them
+ran `create` last rebuilt that file in place, and every other project's next sandbox booted an image
+its pin never named. Keyed by reference, each create finds the rootfs its own image made or builds
+its own. A host pays one sparse file per version in use, and `doctor` lists them with the command
+that drops those no sandbox was made from. The refusal covers what the key cannot: two references
+that come to one filename, or a file an older `cs-sandbox` wrote. Rebuilding there would change
+another image's disk without telling whoever boots it, so only a `build`, asked for by name, may.
 
 **R169.** A microVM's disks **MUST** use Firecracker's Async block engine where the kernel is 5.12 or
 later and an io_uring can be set up, and the Sync engine elsewhere. The engine **MUST** be chosen at

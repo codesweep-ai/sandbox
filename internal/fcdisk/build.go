@@ -224,6 +224,9 @@ type BuildConfig struct {
 	KVerPin      string // pinned fedora kernel-core NVR (CS_SANDBOX_FC_KVER); "" = latest
 	RootfsGB     int    // base rootfs size in GiB (default 32)
 	FCVersion    string // firecracker release tag (default v1.17.0)
+	// Replace lets this build rebuild a base rootfs whose stamp names another
+	// image. Only an explicit `cs-sandbox build` sets it; a create refuses.
+	Replace bool
 }
 
 // Defaulted returns a copy with empty fields filled from the defaults.
@@ -1003,6 +1006,62 @@ func baseRootfsStampName(image string) string {
 	return "base-rootfs-" + imageSlot(image) + ".stamp"
 }
 
+// stampFields is how many "|"-separated fields baseRootfsStamp writes. The
+// stamp file carries the image reference after them, so a slot can say whose it
+// is; a stamp from before that ends where the content does.
+const stampFields = 5
+
+// stampOwner reads the image id and the reference a base rootfs stamp names.
+// Either is "" where the stamp does not carry it.
+func stampOwner(stamp string) (id, ref string) {
+	f := strings.SplitN(stamp, "|", stampFields+1)
+	if len(f) > stampFields {
+		ref = f[stampFields]
+	}
+	return f[0], ref
+}
+
+// stampContent is a stamp without the reference: what freshness is judged on.
+func stampContent(stamp string) string {
+	if f := strings.SplitN(stamp, "|", stampFields+1); len(f) > stampFields {
+		return strings.Join(f[:stampFields], "|")
+	}
+	return stamp
+}
+
+// ownedByAnother reports whether a slot's stamp names an image other than the
+// one asked for: another reference where it records one, else another image id.
+// An empty stamp names nobody.
+//
+// The same reference with a new id is not another image. That is a tag that
+// moved, and the slot is that reference's to rebuild (R162).
+func ownedByAnother(stamp, image, imgid string) (owner string, other bool) {
+	id, ref := stampOwner(stamp)
+	switch {
+	case stamp == "":
+		return "", false
+	case ref != "":
+		return ref, ref != image
+	case id != "" && imgid != "" && id != imgid:
+		return "image " + id, true
+	}
+	return "", false
+}
+
+// ErrBaseRootfsOwned is what a create gets instead of rebuilding a base rootfs
+// in place for an image other than the one that made it. errors.Is matches it.
+var ErrBaseRootfsOwned = errors.New("base rootfs owned by another image")
+
+type ownedRootfsError struct{ path, owner, image string }
+
+func (e *ownedRootfsError) Error() string {
+	return fmt.Sprintf("fc: %s holds the base rootfs of %s, not of %s, and create will not rebuild "+
+		"another image's disk in place; to replace it with one built from %s, run:  CS_SANDBOX_IMAGE=%s cs-sandbox build",
+		e.path, e.owner, e.image, e.image, e.image)
+}
+
+func (e *ownedRootfsError) Is(target error) bool { return target == ErrBaseRootfsOwned }
+
 // ensureBaseRootfs builds/refreshes the base rootfs ext4 when the stamp (see
 // baseRootfsStamp) changed or the disk is missing. The filesystem is written
 // from the image's own mounted tree (baseRootfsMountedScript), falling back to
@@ -1030,32 +1089,29 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 	}
 	cur := baseRootfsStamp(imgid, kver, bc.Kernel, inithash, bc.RootfsGB)
 	rootfs, stamp := c.BaseRootfs(bc.Image), baseRootfsStampName(bc.Image)
+	// What the stamp file holds: the content, then whose it is.
+	written := cur
+	if bc.Image != "" {
+		written += "|" + bc.Image
+	}
+	have := c.readStamp(stamp)
+	owner, other := ownedByAnother(have, bc.Image, imgid)
 	// The stamp alone is not enough: it can vouch for a placeholder left by an
 	// interrupted build, so require the disk to actually be a filesystem.
-	if exists(rootfs) && isExt4(rootfs) && c.readStamp(stamp) == cur {
+	if exists(rootfs) && isExt4(rootfs) && stampContent(have) == cur && !other {
 		return nil
 	}
-	// A cache filled before the rootfs was kept per image holds one unkeyed file.
-	// Where its stamp says it came from THIS image, take it: a rename costs
-	// nothing, and the rebuild it saves costs minutes and several gigabytes. One
-	// built from some other image is left where it is — this cannot say which, and
-	// deleting somebody's cache to tidy up is not this function's business. The
-	// line below says it is there so the space can be reclaimed deliberately.
-	if legacy := filepath.Join(c.Dir, legacyBaseRootfs); rootfs != legacy && exists(legacy) {
-		switch {
-		case isExt4(legacy) && c.readStamp(legacyBaseRootfsStamp) == cur:
-			if err := os.Rename(legacy, rootfs); err == nil {
-				if err := c.writeStamp(stamp, cur); err == nil {
-					_ = os.Remove(c.stampPath(legacyBaseRootfsStamp))
-					c.say("adopted the cached base filesystem for %s", bc.Image)
-					return nil
-				}
-				// Stamped nothing over a moved file: the next run rebuilds, which is
-				// the harmless direction. Fall through and build now instead.
-			}
-		default:
-			c.say("note: %s was built for another image and is no longer read; remove it to reclaim the space", legacy)
-		}
+	// The slot is this reference's own, so another image's stamp on it means two
+	// references came to one filename, or an older cs-sandbox wrote it under a
+	// key that now collides. Rebuilding it here would change what the other's
+	// next create boots without a word to whoever runs it, which is what one
+	// slot per repository did to every staging on a shared host (SBX-116). Only
+	// an explicit build replaces it.
+	if other && exists(rootfs) && !bc.Replace {
+		return &ownedRootfsError{path: rootfs, owner: owner, image: bc.Image}
+	}
+	if adopted := c.adoptBaseRootfs(bc.Image, rootfs, stamp, cur, written); adopted {
+		return nil
 	}
 	if bc.Image == "" || bc.InitPath == "" {
 		return errors.New("fc: base rootfs missing/stale and cannot build (need image + init path)")
@@ -1118,7 +1174,52 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 	} else {
 		c.say("built the base sandbox filesystem in %s", time.Since(start).Round(time.Second))
 	}
-	return c.writeStamp(stamp, cur)
+	return c.writeStamp(stamp, written)
+}
+
+// adoptBaseRootfs takes over a rootfs an older cache kept under another name,
+// where its stamp says it came from THIS image, and reports whether it did: a
+// rename costs nothing, and the rebuild it saves costs minutes and several
+// gigabytes. Two older names are looked at, the single unkeyed file and the one
+// shared by every tag of this image's repository.
+//
+// One built from some other image is left where it is. The unkeyed file is read
+// by nothing any more, so a line says it can go; the repository-keyed one is
+// still what older cs-sandbox builds of that repository boot, and doctor lists
+// it with the rest.
+func (c Cache) adoptBaseRootfs(image, rootfs, stamp, cur, written string) bool {
+	if image == "" {
+		return false
+	}
+	for _, old := range []struct{ path, stamp string }{
+		{c.repositoryBaseRootfs(image), "base-rootfs-" + repositorySlot(image) + ".stamp"},
+		{filepath.Join(c.Dir, legacyBaseRootfs), legacyBaseRootfsStamp},
+	} {
+		if old.path == rootfs || !exists(old.path) {
+			continue
+		}
+		if !isExt4(old.path) || stampContent(c.readStamp(old.stamp)) != cur {
+			if old.stamp == legacyBaseRootfsStamp {
+				c.say("note: %s was built for another image and is no longer read; remove it to reclaim the space", old.path)
+			}
+			continue
+		}
+		// Drop this slot's stamp first: a stamp left over a renamed-in disk must
+		// never vouch for it before the new one is written.
+		_ = os.Remove(c.stampPath(stamp))
+		if err := os.Rename(old.path, rootfs); err != nil {
+			continue
+		}
+		if err := c.writeStamp(stamp, written); err != nil {
+			// Stamped nothing over a moved file: the next run rebuilds, which is
+			// the harmless direction.
+			return false
+		}
+		_ = os.Remove(c.stampPath(old.stamp))
+		c.say("adopted the cached base filesystem for %s", image)
+		return true
+	}
+	return false
 }
 
 // errNoOverlayMount reports the one failure of the mounted build that belongs to

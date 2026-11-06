@@ -93,6 +93,7 @@ func (fe *Firecracker) buildConfig() fcdisk.BuildConfig {
 		InitramfsSrc: assets.GuestInitramfsSrcPath(fe.d.AssetDir, fe.d.FCCache),
 		Kernel:       kernel,
 		FCVersion:    os.Getenv("CS_SANDBOX_FC_VERSION"),
+		Replace:      fe.d.ReplaceBaseRootfs,
 	}
 	if v := os.Getenv("CS_SANDBOX_FC_KVER"); v != "" {
 		bc.KVerPin = v

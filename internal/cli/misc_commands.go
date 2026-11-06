@@ -172,6 +172,9 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim bool, localMo
 		// unless --quiet) rather than the verbose-only per-command progress sink.
 		d := app.engineDeps()
 		d.Progress = app.phase
+		// A build is asked for by name, so it may replace a base rootfs that
+		// another image's stamp is on, where a create refuses to.
+		d.ReplaceBaseRootfs = true
 		if err := engine.NewFirecracker(d).Prepare(cmd.Context()); err != nil {
 			return err
 		}
