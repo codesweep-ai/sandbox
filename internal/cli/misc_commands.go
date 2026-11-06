@@ -178,8 +178,34 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim bool, localMo
 		if err := engine.NewFirecracker(d).Prepare(cmd.Context()); err != nil {
 			return err
 		}
+		if note := otherRootfsNote(fcdisk.Cache{Dir: app.FCCache}, app.Image); note != "" {
+			app.phase(note)
+		}
 	}
 	return nil
+}
+
+// otherRootfsNote says how much the cache holds in base rootfs for images other
+// than this one, or nothing when it holds none. The cache keeps one per image
+// version (R124), so a host where several cs-sandbox builds run collects them,
+// and doctor is where they are listed with the command that drops the unused.
+func otherRootfsNote(c fcdisk.Cache, image string) string {
+	own := c.BaseRootfs(image)
+	n, total := 0, int64(0)
+	for _, s := range c.BaseRootfsSlots() {
+		if s.Path != own {
+			n++
+			total += s.Bytes
+		}
+	}
+	if n == 0 {
+		return ""
+	}
+	what := "1 base rootfs for another image version"
+	if n > 1 {
+		what = fmt.Sprintf("%d base rootfs for other image versions", n)
+	}
+	return fmt.Sprintf("the cache also holds %s (%.1f GiB); cs-sandbox doctor --engine firecracker lists them, and which no sandbox was made from", what, float64(total)/(1<<30))
 }
 
 // pullImage fetches the image this binary is named for, reporting whether it

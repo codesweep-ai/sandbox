@@ -192,3 +192,69 @@ func TestEveryBuildHintComesFromBuildHint(t *testing.T) {
 		}
 	}
 }
+
+// TestBaseRootfsSlotsListsEverySlot: a host running several cs-sandbox builds
+// keeps a base rootfs per image version, gigabytes each, and this is the only
+// place that names them. Each slot says whose it is and whether a sandbox here
+// was made from it, and the drop command offers exactly the ones nothing was:
+// never this report's own image, never one a sandbox came from, and never one
+// whose image is unknown.
+func TestBaseRootfsSlotsListsEverySlot(t *testing.T) {
+	cache, inst := t.TempDir(), t.TempDir()
+	write := func(p, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// This report's image, with no sandbox made from it yet.
+	write(slotFor(t, cache), "ext4")
+	write(filepath.Join(cache, "base-rootfs-ghcr.io-codesweep-ai-sandbox-slim-v1.stamp"), "sha256:own|k|fedora|i|32G|"+testImage+"\n")
+	// Another version, which one sandbox was made from.
+	used := filepath.Join(cache, "base-rootfs-ghcr.io-codesweep-ai-sandbox-v2.ext4")
+	write(used, "ext4")
+	write(filepath.Join(cache, "base-rootfs-ghcr.io-codesweep-ai-sandbox-v2.stamp"), "sha256:used|k|fedora|i|32G|ghcr.io/codesweep-ai/sandbox:v2\n")
+	write(filepath.Join(inst, "default", "box", "rootfs.image"), "sha256:used\n")
+	// The one-per-repository file an older build wrote, which nothing was made from.
+	stale := filepath.Join(cache, "base-rootfs-ghcr.io-codesweep-ai-sandbox.ext4")
+	write(stale, "ext4")
+	write(filepath.Join(cache, "base-rootfs-ghcr.io-codesweep-ai-sandbox.stamp"), "sha256:stale|k|fedora|i|32G\n")
+	// No stamp at all.
+	unknown := filepath.Join(cache, "base-rootfs.ext4")
+	write(unknown, "ext4")
+
+	checks := baseRootfsSlots(Deps{FCCache: cache, InstDir: inst, Image: testImage})
+	var all []string
+	for _, c := range checks {
+		if c.Status != HM {
+			t.Errorf("%q is %v, want HM: a slot is never a problem in itself", c.Message, c.Status)
+		}
+		all = append(all, c.Message)
+	}
+	text := strings.Join(all, "\n")
+	for _, want := range []string{
+		"base-rootfs-ghcr.io-codesweep-ai-sandbox-slim-v1.ext4: " + testImage + ", no sandbox made from it",
+		"base-rootfs-ghcr.io-codesweep-ai-sandbox-v2.ext4: ghcr.io/codesweep-ai/sandbox:v2, 1 sandbox made from it",
+		"base-rootfs-ghcr.io-codesweep-ai-sandbox.ext4: image sha256:stale, no sandbox made from it",
+		"base-rootfs.ext4: image unknown",
+		"GiB allocated",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("listing lacks %q:\n%s", want, text)
+		}
+	}
+	if len(checks) != 5 {
+		t.Fatalf("got %d lines, want one per slot and one drop command:\n%s", len(checks), text)
+	}
+	drop := checks[len(checks)-1].Message
+	_, cmd, ok := strings.Cut(drop, "rm -f ")
+	if !ok {
+		t.Fatalf("last line carries no drop command: %s", drop)
+	}
+	if want := stale + " " + strings.TrimSuffix(stale, ".ext4") + ".stamp"; cmd != want {
+		t.Errorf("drop command removes %q, want only the unused slot and its stamp: %q", cmd, want)
+	}
+}
