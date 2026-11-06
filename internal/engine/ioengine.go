@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/codesweep-ai/sandbox/internal/fcconfig"
+	"github.com/codesweep-ai/sandbox/internal/fcdisk"
 )
 
 // The Firecracker block engine a microVM's disks run on.
@@ -105,5 +106,24 @@ func setDiskIOEngine(idir string) error {
 	}
 	engine, _ := DiskIOEngine()
 	cfg.SetIOEngine(engine)
+	return cfg.WriteFile(path)
+}
+
+// pinKernelSet points a run.json that names the unkeyed kernel and initrd at
+// the keyed set those names are links to, and leaves every other run.json as it
+// is. A sandbox made before keyed sets names the unkeyed paths, so this runs at
+// each launch, one sandbox at a time: it boots the same files it did, and keeps
+// booting them after an older build rewrites the top of the cache.
+func pinKernelSet(idir string, c fcdisk.Cache) error {
+	path := filepath.Join(idir, "run.json")
+	cfg, err := fcconfig.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	k, ok := c.KeyedSetOf(cfg.BootSource.KernelImagePath, cfg.BootSource.InitrdPath)
+	if !ok {
+		return nil
+	}
+	cfg.BootSource.KernelImagePath, cfg.BootSource.InitrdPath = k.Kernel(), k.Initrd()
 	return cfg.WriteFile(path)
 }

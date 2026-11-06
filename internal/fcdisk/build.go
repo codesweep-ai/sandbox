@@ -225,7 +225,8 @@ type BuildConfig struct {
 	RootfsGB     int    // base rootfs size in GiB (default 32)
 	FCVersion    string // firecracker release tag (default v1.17.0)
 	// Replace lets this build rebuild a base rootfs whose stamp names another
-	// image. Only an explicit `cs-sandbox build` sets it; a create refuses.
+	// image, or a kernel set whose stamps name other inputs. Only an explicit
+	// `cs-sandbox build` sets it; a create refuses.
 	Replace bool
 }
 
@@ -295,15 +296,28 @@ func isExt4(p string) bool {
 // for a create naming the shipped one, and the microVM booted a filesystem
 // nobody asked for. Now the miss is named, and it names the image.
 func (c Cache) VerifyArtifacts(image string) error {
+	return c.VerifyArtifactsFor(BuildConfig{Image: image})
+}
+
+// VerifyArtifactsFor is VerifyArtifacts for one build, which also names the
+// kernel set it boots (KernelSetFor). The unkeyed set still satisfies it where
+// the build's own is absent, which is what a create's prepare adopts or builds
+// before the boot, and what a dry run is told about.
+func (c Cache) VerifyArtifactsFor(bc BuildConfig) error {
+	image := bc.Image
 	rootfs := c.BaseRootfs(image)
 	what := "base rootfs"
 	if image != "" {
 		what += " for " + image
 	}
+	kset := c.KernelSetFor(bc)
+	if !exists(kset.Kernel()) || !exists(kset.Initrd()) {
+		kset = c.UnkeyedKernelSet()
+	}
 	for _, a := range []struct{ path, what string }{
 		{c.FirecrackerBin(), "firecracker binary"},
-		{c.Kernel(), "guest kernel"},
-		{c.Initrd(), "guest initrd"},
+		{kset.Kernel(), "guest kernel"},
+		{kset.Initrd(), "guest initrd"},
 		{rootfs, what},
 	} {
 		if !exists(a.path) {
@@ -362,7 +376,7 @@ func (c Cache) sayArtifactsReady(bc BuildConfig) {
 	if v := c.readStamp("fc-version"); v != "" {
 		parts = append(parts, "firecracker "+v)
 	}
-	if k := c.readStamp("kver"); k != "" {
+	if k := c.KernelSetFor(bc).KVer(); k != "" {
 		parts = append(parts, "guest kernel "+k)
 	}
 	if b := c.BaseRootfsBytes(bc.Image); b > 0 {
@@ -697,29 +711,11 @@ func (c Cache) fcWantDigest(ctx context.Context, r run.Runner, bc BuildConfig, a
 	return "", false, fmt.Errorf("fc: no checksum found in %s.sha256.txt", tgz)
 }
 
-// kernelRebuildReason reports why the cached fedora guest kernel must be
-// (re)built for bc, or "" when the cache is fresh and can be reused. It only
-// governs fedora mode (bc.Kernel != "host"); host mode is handled in
-// ensureKernel. The pinned-NVR check is what forces a rebuild after
-// CS_SANDBOX_FC_KVER / DefaultKVerPin changes.
+// kernelRebuildReason reports why bc's kernel set (KernelSetFor) must be built,
+// or "" when it is fresh and can be reused. It only governs fedora mode; host
+// mode is handled in ensureKernel.
 func (c Cache) kernelRebuildReason(bc BuildConfig) string {
-	switch {
-	case c.readStamp("kernel-mode") != "fedora":
-		return "kernel mode is not fedora"
-	case !exists(c.Kernel()):
-		return "vmlinux.elf missing"
-	case !exists(c.Initrd()):
-		return "initrd.img missing"
-	case !exists(filepath.Join(c.Dir, "modules.tar")):
-		return "modules.tar missing"
-	case !exists(c.stampPath("kver")):
-		return "kver stamp missing"
-	case c.readStamp("kver-pin") != bc.KVerPin:
-		return "pinned kernel NVR changed"
-	case c.readStamp("initramfs-src") != initramfsStamp(bc):
-		return "initramfs builder changed"
-	}
-	return ""
+	return c.KernelSetFor(bc).rebuildReason(bc)
 }
 
 // initramfsBuilder is bumped whenever the initramfs *assembly* changes in a way
@@ -744,6 +740,11 @@ func initramfsStamp(bc BuildConfig) string {
 // plus modules.tar in fedora mode). Only the fedora mode BUILD is supported (the
 // default); host mode falls back to an actionable error if the artifacts are
 // missing, since it would need the host's own /boot.
+//
+// A fedora build reads and writes its own keyed set (KernelSetFor) and no
+// other. It adopts the unkeyed set where that is exactly what it would build,
+// and it refuses to rebuild a finished set of its key in place unless bc.Replace
+// says an explicit build asked.
 func (c Cache) ensureKernel(ctx context.Context, r run.Runner, bc BuildConfig) error {
 	if bc.Kernel == "host" {
 		// Host-kernel mode is never built here — it would have to lift vmlinuz out
@@ -756,8 +757,24 @@ func (c Cache) ensureKernel(ctx context.Context, r run.Runner, bc BuildConfig) e
 	}
 	// Fedora mode: rebuild when the mode flipped, any artifact is missing, the
 	// pinned kernel NVR changed, or the initramfs source changed.
-	if c.kernelRebuildReason(bc) == "" {
+	set := c.KernelSetFor(bc)
+	if set.rebuildReason(bc) == "" {
+		c.offerUnkeyed(set)
 		return nil
+	}
+	if c.adoptKernelSet(set, bc) {
+		return nil
+	}
+	// A finished set under this key that names other inputs is another build's,
+	// or was edited by hand. Rebuilding it would change what that build's
+	// sandboxes boot on their next start, so only an explicit build replaces it.
+	if set.complete() && !bc.Replace {
+		return &ownedKernelError{
+			dir:  set.Dir,
+			have: kernelInputs(set.Mode(), set.Pin(), set.stamp("initramfs-src")),
+			want: kernelInputs("fedora", bc.KVerPin, initramfsStamp(bc)),
+			pin:  bc.KVerPin,
+		}
 	}
 	if bc.Image == "" {
 		return errors.New("fc: guest kernel artifacts missing/stale and no image available to build them")
@@ -766,19 +783,24 @@ func (c Cache) ensureKernel(ctx context.Context, r run.Runner, bc BuildConfig) e
 		return errors.New("fc: guest kernel artifacts missing/stale and no initramfs source available to build them")
 	}
 	c.say("building the guest kernel (this can take a few minutes)…")
-	for _, f := range []string{"vmlinux.elf", "initrd.img", "modules.tar", "kver"} {
-		_ = os.Remove(c.stampPath(f))
-	}
-	if err := c.buildFedoraBootArtifacts(ctx, r, bc); err != nil {
+	if err := os.MkdirAll(set.Dir, 0o755); err != nil {
 		return err
 	}
-	if err := c.writeStamp("kernel-mode", "fedora"); err != nil {
+	set.clear()
+	if err := c.buildFedoraBootArtifacts(ctx, r, bc, set.Dir); err != nil {
 		return err
 	}
-	if err := c.writeStamp("initramfs-src", initramfsStamp(bc)); err != nil {
+	if err := set.writeStamp("kernel-mode", "fedora"); err != nil {
 		return err
 	}
-	return c.writeStamp("kver-pin", bc.KVerPin)
+	if err := set.writeStamp("initramfs-src", initramfsStamp(bc)); err != nil {
+		return err
+	}
+	if err := set.writeStamp("kver-pin", bc.KVerPin); err != nil {
+		return err
+	}
+	c.offerUnkeyed(set)
+	return nil
 }
 
 // initramfsBuildScript assembles initrd.img: a static init compiled from
@@ -813,8 +835,8 @@ done
 // buildFedoraBootArtifacts builds everything a microVM boots from, short of the
 // rootfs: the Fedora guest kernel (vmlinux.elf), the initramfs that mounts root
 // (initrd.img), and the guest's module tree (modules.tar + kver). All in a
-// throwaway container from the image.
-func (c Cache) buildFedoraBootArtifacts(ctx context.Context, r run.Runner, bc BuildConfig) error {
+// throwaway container from the image, copied out into dir.
+func (c Cache) buildFedoraBootArtifacts(ctx context.Context, r run.Runner, bc BuildConfig, dir string) error {
 	fetch, fetchEnv, err := kernelFetchStep(parseKernelPin(bc.KVerPin))
 	if err != nil {
 		return err
@@ -850,17 +872,17 @@ echo "$KVER" > /artifacts/kver`
 		_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fckbuild")
 		return fmt.Errorf("fc: Fedora kernel build failed: %w", err)
 	}
-	_, cpErr := r.Run(ctx, run.Opts{}, "podman", "cp", "fckbuild:/artifacts/.", c.Dir+"/")
+	_, cpErr := r.Run(ctx, run.Opts{}, "podman", "cp", "fckbuild:/artifacts/.", dir+"/")
 	_, _ = r.Run(ctx, run.Opts{}, "podman", "rm", "-f", "fckbuild")
 	if cpErr != nil {
 		return fmt.Errorf("fc: copying kernel artifacts: %w", cpErr)
 	}
 	for _, f := range []string{"vmlinux.elf", "initrd.img", "modules.tar", "kver"} {
-		if fi, err := os.Stat(c.stampPath(f)); err != nil || fi.Size() == 0 {
+		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || fi.Size() == 0 {
 			return fmt.Errorf("fc: Fedora kernel build produced no %s", f)
 		}
 	}
-	c.reportUnpinnedKoji()
+	c.reportUnpinnedKoji(dir)
 	return nil
 }
 
@@ -868,8 +890,8 @@ echo "$KVER" > /artifacts/kver`
 // committed, so the pin can be turned into a verified one by pasting them into
 // kojiDigests. The file is only written on that path; its absence means the
 // download was checked against a committed digest and there is nothing to say.
-func (c Cache) reportUnpinnedKoji() {
-	path := c.stampPath(kojiSumsFile)
+func (c Cache) reportUnpinnedKoji(dir string) {
+	path := filepath.Join(dir, kojiSumsFile)
 	sums, err := os.ReadFile(path)
 	if err != nil {
 		return
@@ -1067,7 +1089,10 @@ func (e *ownedRootfsError) Is(target error) bool { return target == ErrBaseRootf
 // from the image's own mounted tree (baseRootfsMountedScript), falling back to
 // the export path on a host that cannot make the merged mount.
 func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfig) error {
-	kver := c.readStamp("kver")
+	// The kernel the disk's modules are for is the one this build boots: its own
+	// set's, never whichever set another build last wrote at the top of the cache.
+	kset := c.KernelSetFor(bc)
+	kver := kset.KVer()
 	if bc.Kernel == "host" && kver == "" {
 		kver = run.Output(ctx, r, "uname", "-r")
 	}
@@ -1142,7 +1167,7 @@ func (c Cache) ensureBaseRootfs(ctx context.Context, r run.Runner, bc BuildConfi
 	// the host's /lib/modules/<kver>.
 	modTar := ""
 	if bc.Kernel != "host" {
-		modTar = filepath.Join(c.Dir, "modules.tar")
+		modTar = kset.Modules()
 	}
 	// The bar watches the filesystem being written grow towards the image it is
 	// being written from, because mke2fs reports nothing while it copies. Its

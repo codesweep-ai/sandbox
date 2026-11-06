@@ -45,7 +45,12 @@ func (fe *Firecracker) Prepare(ctx context.Context) error {
 // Verify confirms the cached artifacts a microVM boots from are present, so
 // create fails cleanly (pointing at build) rather than mid-boot.
 func (fe *Firecracker) Verify(ctx context.Context) error {
-	return fe.cache().VerifyArtifacts(fe.d.Image)
+	return fe.cache().VerifyArtifactsFor(fe.buildConfig())
+}
+
+// KernelSet is the guest kernel set this build boots its microVMs from.
+func (fe *Firecracker) KernelSet() fcdisk.KernelSet {
+	return fe.cache().KernelSetFor(fe.buildConfig())
 }
 
 // fabric builds the fcnet.Fabric from Deps.
@@ -285,10 +290,13 @@ func (fe *Firecracker) Create(ctx context.Context, s CreateSpec) (inst *state.In
 	}
 
 	// --- run.json ---
+	// The kernel is named by its keyed set, so a stop and start boots the kernel
+	// this sandbox's disk was made for, whatever another build puts in the cache.
+	kset := fe.KernelSet()
 	vsock := filepath.Join(idir, state.SockVsock)
 	removeVsock(idir)
 	cfg := fcconfig.Build(fcconfig.Spec{
-		KernelPath: fe.cache().Kernel(), InitrdPath: fe.cache().Initrd(),
+		KernelPath: kset.Kernel(), InitrdPath: kset.Initrd(),
 		RootfsPath: rootfs, SeedPath: seedImg,
 		TapName: fe.fabric().TapName(ip), MAC: fcnet.GuestMAC(ip), VsockPath: vsock,
 		VCPUs: s.CPUs, MemMiB: s.MemMiB,
@@ -365,6 +373,9 @@ func (fe *Firecracker) launch(ctx context.Context, name string, inst *state.Inst
 		return err
 	}
 	if err := fab.FwdUp(idir, inst.Port, inst.FCIP, d.SSHBind); err != nil {
+		return err
+	}
+	if err := pinKernelSet(idir, fe.cache()); err != nil {
 		return err
 	}
 	if err := setDiskIOEngine(idir); err != nil {

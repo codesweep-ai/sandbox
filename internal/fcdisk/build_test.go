@@ -212,22 +212,29 @@ func TestKernelRebuildReason(t *testing.T) {
 	}
 	bc := BuildConfig{Kernel: "fedora", KVerPin: pin, InitramfsSrc: src}
 
-	fresh := func(t *testing.T) Cache {
+	// The set this build boots is its own keyed one, so that is where a fresh
+	// cache keeps it.
+	type keyed struct {
+		Cache
+		set KernelSet
+	}
+	fresh := func(t *testing.T) keyed {
 		c := Cache{Dir: t.TempDir()}
-		writeFile(t, c.Kernel())
-		writeFile(t, c.Initrd())
-		writeFile(t, filepath.Join(c.Dir, "modules.tar"))
+		set := c.KernelSetFor(bc)
+		writeFile(t, set.Kernel())
+		writeFile(t, set.Initrd())
+		writeFile(t, set.Modules())
 		for k, v := range map[string]string{
 			"kver":          pin + ".x86_64",
 			"kernel-mode":   "fedora",
 			"kver-pin":      pin,
 			"initramfs-src": initramfsStamp(bc),
 		} {
-			if err := c.writeStamp(k, v); err != nil {
+			if err := set.writeStamp(k, v); err != nil {
 				t.Fatal(err)
 			}
 		}
-		return c
+		return keyed{c, set}
 	}
 
 	// Fresh cache -> reuse.
@@ -237,7 +244,7 @@ func TestKernelRebuildReason(t *testing.T) {
 
 	// Pin change -> rebuild (the DefaultKVerPin/CS_SANDBOX_FC_KVER regression).
 	c := fresh(t)
-	if err := c.writeStamp("kver-pin", "7.1.4-202.fc44"); err != nil {
+	if err := c.set.writeStamp("kver-pin", "7.1.4-202.fc44"); err != nil {
 		t.Fatal(err)
 	}
 	if r := c.kernelRebuildReason(bc); r == "" {
@@ -246,7 +253,7 @@ func TestKernelRebuildReason(t *testing.T) {
 
 	// Missing artifact -> rebuild.
 	c = fresh(t)
-	if err := os.Remove(c.Kernel()); err != nil {
+	if err := os.Remove(c.set.Kernel()); err != nil {
 		t.Fatal(err)
 	}
 	if r := c.kernelRebuildReason(bc); r == "" {
@@ -255,7 +262,7 @@ func TestKernelRebuildReason(t *testing.T) {
 
 	// Wrong kernel-mode stamp -> rebuild.
 	c = fresh(t)
-	if err := c.writeStamp("kernel-mode", "host"); err != nil {
+	if err := c.set.writeStamp("kernel-mode", "host"); err != nil {
 		t.Fatal(err)
 	}
 	if r := c.kernelRebuildReason(bc); r == "" {

@@ -1488,6 +1488,13 @@ from that sandbox's image. The cache **MUST** hold one base rootfs per image ref
 digest included. `create` **MUST NOT** rebuild a base rootfs whose stamp names another image, and
 **MUST** refuse instead, naming that image, the one asked for, and the `build` that replaces it.
 
+**R124b.** Each sandbox **MUST** boot the guest kernel set its own build pins: the kernel, the initrd
+and the module tree its base rootfs was built against. The cache **MUST** hold one kernel set per
+kernel pin and initrd source, and a sandbox's `run.json` **MUST** name its set's own files. `create`
+**MUST NOT** rebuild a finished kernel set whose stamps name other inputs, and **MUST** refuse
+instead. Older builds read the kernel set at the top of the cache. A build **MUST** adopt it where it
+is the set that build would make, and **MUST** otherwise leave it as it is.
+
 **R125.** `--disk` **MUST** be grow-only, **MUST** apply to a kept disk, and **MUST** be a no-op when the disk
 already has that much.
 
@@ -1526,6 +1533,13 @@ its own. A host pays one sparse file per version in use, and `doctor` lists them
 that drops those no sandbox was made from. The refusal covers what the key cannot: two references
 that come to one filename, or a file an older `cs-sandbox` wrote. Rebuilding there would change
 another image's disk without telling whoever boots it, so only a `build`, asked for by name, may.
+
+R124b gives the kernel a key for the same reason. One kernel set shared by every build meant a build pinned
+to another kernel replaced it for all of them. A stopped sandbox then started on a kernel its disk's
+modules were not built for, and every other build's next create rebuilt its rootfs for that kernel.
+Keyed, each build boots and builds against its own set, and a sandbox's `run.json` keeps naming the
+set it was made with. The set at the top of the cache stays where older builds look for it. Adoption
+links its files rather than moving them, so those builds see the same files they wrote.
 
 **R169.** A microVM's disks **MUST** use Firecracker's Async block engine where the kernel is 5.12 or
 later and an io_uring can be set up, and the Sync engine elsewhere. The engine **MUST** be chosen at

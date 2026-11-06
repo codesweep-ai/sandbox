@@ -52,11 +52,12 @@ func (c Cache) FirecrackerBin() string { return filepath.Join(c.Dir, "bin", "fir
 // so report it as unknown rather than assuming the current pin.
 func (c Cache) FirecrackerVersion() string { return c.readStamp("fc-version") }
 
-// Kernel is the cached vmlinux.elf path.
-func (c Cache) Kernel() string { return filepath.Join(c.Dir, "vmlinux.elf") }
+// Kernel is the unkeyed set's vmlinux.elf, which older builds and host mode
+// boot. A fedora build boots its own keyed set: see KernelSetFor.
+func (c Cache) Kernel() string { return c.UnkeyedKernelSet().Kernel() }
 
-// Initrd is the cached initrd.img path.
-func (c Cache) Initrd() string { return filepath.Join(c.Dir, "initrd.img") }
+// Initrd is the unkeyed set's initrd.img: see Kernel.
+func (c Cache) Initrd() string { return c.UnkeyedKernelSet().Initrd() }
 
 // legacyBaseRootfs is the single unkeyed rootfs a cache written before this held.
 // ensureBaseRootfs adopts it where its stamp says it came from the image being
