@@ -3,19 +3,27 @@
   "title": "The guest kernel, initrd and modules are one shared set per cache, so a build pinned to another kernel still replaces them for every other build",
   "type": "defect",
   "severity": "high",
-  "status": "open",
+  "status": "in-progress",
   "foundBy": "session agent, while building SBX-119 on 2026-11-06; the incident of 2026-11-05 also swapped the kernel",
   "opened": "2026-11-06",
   "resolved": null,
-  "stint": null,
+  "stint": "coordinator session, 2026-11-06, Rishi's word",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "a067fd8",
+      "16cd7ad"
+    ],
     "integrated": [],
     "verified": null
   },
   "resolution": null,
   "details": "SBX-119 gave every image version its own base rootfs. The guest kernel did not get the same treatment. One `vmlinux.elf`, one `initrd.img`, one `modules.tar` and one `kver` stamp live at the top of the cache, shared by every build on the host. A build pinned to another kernel version replaces all four on its first create. On 2026-11-05 that is what happened beside the rootfs rewrite: kernel 6.19.10 replaced 7.2.5 for every other session.\n\nTwo effects follow. First, a running sandbox keeps its loaded kernel, but a stop and start boots the new one against a rootfs whose modules were built for the old one. Second, `kver` is part of every rootfs stamp, so a kernel swap also forces a silent rebuild of every same-image rootfs on its next create.\n\nThe fix mirrors SBX-119: key the kernel set by its version, `vmlinux-<kver>.elf` and friends, with each rootfs stamp naming the kernel it was built for. A create then boots the kernel its rootfs expects, and no build replaces another's. Doctor lists the kernel sets beside the rootfs slots.",
-  "notes": [],
+  "notes": [
+    {
+      "date": "2026-11-06",
+      "text": "Commits a067fd8 and 16cd7ad key the guest kernel set by its build inputs. Each fedora build boots `kernels/<kver>-fedora-<hash>/`, where the hash covers the kernel pin and the initramfs source. Its base rootfs takes kver and modules.tar from that set, and its run.json names that set's files. A create adopts a matching top-level set, leaves another version's alone, and refuses to rebuild a finished set of other inputs. Doctor lists the sets with the rm that drops the unused ones, and build counts the others.\n\nRishi's four conditions hold as follows. Condition (a) holds because adoption hard-links the top-level vmlinux.elf, initrd.img and modules.tar rather than moving them, so older builds still find those files. A fresh cache gets links there too, with copied stamps; TestEnsureKernelAdoptsTheUnkeyedSet and TestEnsureKernelOffersAFreshCacheItsSet show both. Condition (b) holds because no instance is edited in bulk. A run.json naming the top-level paths still resolves, and its next start names the keyed set behind them (TestPinKernelSetMovesOneSandboxAtItsStart). Condition (c) holds because no flag, verb or stamp changes meaning. The set keeps its four stamps under their old names and formats, and the rootfs stamp keeps its fields (TestTwoKernelPinsKeepTheirOwnSets). Condition (d) holds because a host with one build boots its adopted top-level set, the same bytes as before. The unchanged TestEnsureKernelReusesFreshCache shows that set reused with no command run.\n\nThe new tests fail when KernelSetFor returns the shared set, when the refusal is removed, or when the launch pin is removed. They do not compile at 14d57dc. CI must still show the smoke and integration tiers booting from `kernels/`, since this host ran unit tests and static checks only."
+    }
+  ],
   "links": [
     "SBX-119"
   ]
