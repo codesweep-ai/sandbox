@@ -1,0 +1,22 @@
+{
+  "id": "SBX-120",
+  "title": "The guest kernel, initrd and modules are one shared set per cache, so a build pinned to another kernel still replaces them for every other build",
+  "type": "defect",
+  "severity": "high",
+  "status": "open",
+  "foundBy": "session agent, while building SBX-119 on 2026-11-06; the incident of 2026-11-05 also swapped the kernel",
+  "opened": "2026-11-06",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "SBX-119 gave every image version its own base rootfs. The guest kernel did not get the same treatment. One `vmlinux.elf`, one `initrd.img`, one `modules.tar` and one `kver` stamp live at the top of the cache, shared by every build on the host. A build pinned to another kernel version replaces all four on its first create. On 2026-11-05 that is what happened beside the rootfs rewrite: kernel 6.19.10 replaced 7.2.5 for every other session.\n\nTwo effects follow. First, a running sandbox keeps its loaded kernel, but a stop and start boots the new one against a rootfs whose modules were built for the old one. Second, `kver` is part of every rootfs stamp, so a kernel swap also forces a silent rebuild of every same-image rootfs on its next create.\n\nThe fix mirrors SBX-119: key the kernel set by its version, `vmlinux-<kver>.elf` and friends, with each rootfs stamp naming the kernel it was built for. A create then boots the kernel its rootfs expects, and no build replaces another's. Doctor lists the kernel sets beside the rootfs slots.",
+  "notes": [],
+  "links": [
+    "SBX-119"
+  ]
+}

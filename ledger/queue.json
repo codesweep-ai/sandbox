@@ -1,10 +1,10 @@
 {
   "recommendedBy": "session agent, after the reliability session of 2026-09-28",
-  "updated": "2026-11-05",
+  "updated": "2026-11-06",
   "items": [
     {
-      "id": "SBX-119",
-      "why": "One base rootfs slot per image repository: a build pinned to another tag rewrites the disk every other build boots from. On 2026-11-05 that stopped three sessions on a shared host for an hour."
+      "id": "SBX-120",
+      "why": "The shared kernel set is the half of the 2026-11-05 incident that SBX-119 left open. A build pinned to another kernel still replaces it for everyone."
     },
     {
       "id": "SBX-047",
