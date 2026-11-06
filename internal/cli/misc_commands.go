@@ -181,6 +181,9 @@ func runBuild(cmd *cobra.Command, app *App, engines []string, slim bool, localMo
 		if note := otherRootfsNote(fcdisk.Cache{Dir: app.FCCache}, app.Image); note != "" {
 			app.phase(note)
 		}
+		if note := otherKernelNote(fcdisk.Cache{Dir: app.FCCache}, engine.NewFirecracker(d).KernelSet()); note != "" {
+			app.phase(note)
+		}
 	}
 	return nil
 }
@@ -206,6 +209,27 @@ func otherRootfsNote(c fcdisk.Cache, image string) string {
 		what = fmt.Sprintf("%d base rootfs for other image versions", n)
 	}
 	return fmt.Sprintf("the cache also holds %s (%.1f GiB); cs-sandbox doctor --engine firecracker lists them, and which no sandbox was made from", what, float64(total)/(1<<30))
+}
+
+// otherKernelNote says how many guest kernel sets the cache holds besides own,
+// or nothing when it holds none. The cache keeps one per kernel build input
+// (R124b), and doctor lists them with the command that drops the unused.
+func otherKernelNote(c fcdisk.Cache, own fcdisk.KernelSet) string {
+	n, total := 0, int64(0)
+	for _, k := range c.KernelSets() {
+		if k.Dir != own.Dir {
+			n++
+			total += k.Bytes()
+		}
+	}
+	if n == 0 {
+		return ""
+	}
+	what := "1 other guest kernel set"
+	if n > 1 {
+		what = fmt.Sprintf("%d other guest kernel sets", n)
+	}
+	return fmt.Sprintf("the cache also holds %s (%.0f MiB); cs-sandbox doctor --engine firecracker lists them, and which no sandbox boots", what, float64(total)/(1<<20))
 }
 
 // pullImage fetches the image this binary is named for, reporting whether it

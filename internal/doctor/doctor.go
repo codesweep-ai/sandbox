@@ -70,7 +70,10 @@ type Deps struct {
 	FCVersionPin   string // release the build pins to (CS_SANDBOX_FC_VERSION / the default)
 	FCVersionCache string // release actually cached (fc-version stamp); "" = unknown
 	FCCache        string // artifact cache: the reflink source (base-rootfs.ext4)
-	InstDir        string // instances root: the reflink destination
+	// KernelSet is the folder of the guest kernel set this build boots, which the
+	// kernel set listing never offers for removal. "" offers none it cannot judge.
+	KernelSet string
+	InstDir   string // instances root: the reflink destination
 
 	// Lend is what the CLI found out about credential lending on this host.
 	Lend LendState
@@ -278,6 +281,7 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		// exists at all is the question that decides whether create runs.
 		fg.add(baseRootfsCheck(d))
 		fg.Checks = append(fg.Checks, baseRootfsSlots(d)...)
+		fg.Checks = append(fg.Checks, kernelSets(d)...)
 		fg.add(reflinkCheck(ctx, d))
 		r.addGroup(fg)
 		// Directly after the engine's own section, so they read as a continuation

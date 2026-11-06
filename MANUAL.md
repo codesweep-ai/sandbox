@@ -428,6 +428,24 @@ two image references come to one filename, or where an older `cs-sandbox` wrote 
 message ends with the `cs-sandbox build` that replaces it with your image's rootfs. Run it only when
 nothing still boots the other image, because that image's next create then refuses in turn.
 
+It lists the guest kernel sets beside them. A kernel set is the guest kernel, the initramfs that
+mounts root, and the kernel's modules, kept under `kernels/` in the cache. The cache holds one per
+kernel pin and initramfs source, so two builds pinned to different kernels never replace each
+other's. Each line names the set, its kernel release, its mode and pin, what it occupies, and how
+many sandboxes boot it. One more line covers the set at the top of the cache, which older
+`cs-sandbox` builds read and which is never offered for removal. The last line is an `rm -rf` of the
+sets no sandbox boots, leaving out this build's own. The next create that needs a dropped set builds
+it again. `build` ends by saying how many other kernel sets the cache holds.
+
+A sandbox boots the kernel set its create named in its `run.json`. A sandbox made before kernel sets
+existed names the files at the top of the cache. Where those are links to a kept set, its next start
+names that set instead, so it keeps the kernel its disk was made for.
+
+`create` refuses with `holds the guest kernel set of … and create will not rebuild a kernel set other
+sandboxes may boot in place` when a finished set under its own name was built from another pin or
+initramfs. That happens only where the set was edited by hand. The message ends with the
+`cs-sandbox build` that replaces it.
+
 Two of its checks are about identity rather than presence. The agent tools on your `PATH` are
 compared byte for byte against the ones this build ships. A host that installed them from another
 build runs a harness the source does not describe, and nothing else would say so. Every sibling

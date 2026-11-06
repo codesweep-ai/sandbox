@@ -7,6 +7,7 @@ import (
 
 	assets "github.com/codesweep-ai/sandbox"
 	"github.com/codesweep-ai/sandbox/internal/doctor"
+	enginepkg "github.com/codesweep-ai/sandbox/internal/engine"
 	"github.com/codesweep-ai/sandbox/internal/fcdisk"
 	"github.com/spf13/cobra"
 )
@@ -94,6 +95,11 @@ func newDoctorCmd(app *App) *cobra.Command {
 				BundledTools: bundled,
 				Version:      buildVersion(),
 				ToolPins:     pins,
+			}
+			// Only on a cache that exists: finding the set's key reads the guest
+			// initramfs source, which an installed binary writes into the cache.
+			if _, err := os.Stat(fc.Dir); err == nil {
+				d.KernelSet = enginepkg.NewFirecracker(app.engineDeps()).KernelSet().Dir
 			}
 			rep := doctor.Diagnose(cmd.Context(), engine, d)
 			printReport(cmd.OutOrStdout(), rep)

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codesweep-ai/sandbox/internal/fcconfig"
 	"github.com/codesweep-ai/sandbox/internal/run"
 )
 
@@ -256,5 +257,88 @@ func TestBaseRootfsSlotsListsEverySlot(t *testing.T) {
 	}
 	if want := stale + " " + strings.TrimSuffix(stale, ".ext4") + ".stamp"; cmd != want {
 		t.Errorf("drop command removes %q, want only the unused slot and its stamp: %q", cmd, want)
+	}
+}
+
+// TestKernelSetsListsEverySet: a host running several cs-sandbox builds keeps a
+// guest kernel set per kernel, and this is the only place that names them. Each
+// set says its kernel, its mode and how many sandboxes boot it. A run.json on
+// the unkeyed paths counts for the set those names link to. The drop command
+// offers exactly the sets nothing boots: never this report's own, never the one
+// the unkeyed names link to, and never one with no stamp.
+func TestKernelSetsListsEverySet(t *testing.T) {
+	cache, inst := t.TempDir(), t.TempDir()
+	write := func(p, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set := func(name, kver, pin string) string {
+		dir := filepath.Join(cache, "kernels", name)
+		for _, f := range []string{"vmlinux.elf", "initrd.img", "modules.tar"} {
+			write(filepath.Join(dir, f), f)
+		}
+		if kver != "" {
+			write(filepath.Join(dir, "kver"), kver+"\n")
+			write(filepath.Join(dir, "kernel-mode"), "fedora\n")
+			write(filepath.Join(dir, "kver-pin"), pin+"\n")
+		}
+		return dir
+	}
+	bootsFrom := func(name, dir string) {
+		cfg := fcconfig.Build(fcconfig.Spec{KernelPath: filepath.Join(dir, "vmlinux.elf"), InitrdPath: filepath.Join(dir, "initrd.img")})
+		if err := os.MkdirAll(filepath.Join(inst, "default", name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.WriteFile(filepath.Join(inst, "default", name, "run.json")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	own := set("7.2.5-200.fc44.x86_64-fedora-aaaaaaaa", "7.2.5-200.fc44.x86_64", "koji:7.2.5-200.fc44")
+	used := set("7.2.6-200.fc44.x86_64-fedora-bbbbbbbb", "7.2.6-200.fc44.x86_64", "koji:7.2.6-200.fc44")
+	linked := set("6.19.10-300.fc44.x86_64-fedora-cccccccc", "6.19.10-300.fc44.x86_64", "6.19.10-300.fc44")
+	unused := set("6.18.1-200.fc44.x86_64-fedora-dddddddd", "6.18.1-200.fc44.x86_64", "6.18.1-200.fc44")
+	set("unknown", "", "")
+	// The unkeyed names link to one set, and a sandbox made before keyed sets names them.
+	for _, f := range []string{"vmlinux.elf", "initrd.img"} {
+		if err := os.Link(filepath.Join(linked, f), filepath.Join(cache, f)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(cache, "kver"), "6.19.10-300.fc44.x86_64\n")
+	bootsFrom("old", cache)
+	bootsFrom("box", used)
+
+	checks := kernelSets(Deps{FCCache: cache, InstDir: inst, KernelSet: own})
+	var all []string
+	for _, c := range checks {
+		if c.Status != HM {
+			t.Errorf("%q is %v, want HM: a kernel set is never a problem in itself", c.Message, c.Status)
+		}
+		all = append(all, c.Message)
+	}
+	text := strings.Join(all, "\n")
+	for _, want := range []string{
+		"guest kernel set 7.2.5-200.fc44.x86_64-fedora-aaaaaaaa: kernel 7.2.5-200.fc44.x86_64 (fedora, pin koji:7.2.5-200.fc44), no sandbox boots it",
+		"guest kernel set 7.2.6-200.fc44.x86_64-fedora-bbbbbbbb: kernel 7.2.6-200.fc44.x86_64 (fedora, pin koji:7.2.6-200.fc44), 1 sandbox boots it",
+		"guest kernel set 6.19.10-300.fc44.x86_64-fedora-cccccccc: kernel 6.19.10-300.fc44.x86_64 (fedora, pin 6.19.10-300.fc44), 1 sandbox boots it",
+		"guest kernel set unknown: kernel unknown (no stamp)",
+		"guest kernel set at the top of the cache: kernel 6.19.10-300.fc44.x86_64, the files of 6.19.10-300.fc44.x86_64-fedora-cccccccc, named by 1 sandbox",
+		"MiB)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("listing lacks %q:\n%s", want, text)
+		}
+	}
+	if len(checks) != 7 {
+		t.Fatalf("got %d lines, want one per set, one for the unkeyed set and one drop command:\n%s", len(checks), text)
+	}
+	drop := checks[len(checks)-1].Message
+	if _, cmd, ok := strings.Cut(drop, "rm -rf "); !ok || cmd != unused {
+		t.Errorf("drop line = %q, want it to remove only %s", drop, unused)
 	}
 }

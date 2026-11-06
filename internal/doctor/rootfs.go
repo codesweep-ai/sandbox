@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/codesweep-ai/sandbox/internal/fcconfig"
 	"github.com/codesweep-ai/sandbox/internal/fcdisk"
 )
 
@@ -167,6 +168,96 @@ func baseRootfsSlots(d Deps) []Check {
 	}
 	return checks
 }
+
+// kernelSets is a line per guest kernel set the cache holds, one for the
+// unkeyed set at the top of the cache, then the command that drops the keyed
+// sets no sandbox here boots.
+//
+// The cache keeps one set per kernel build input (SPEC R124b), so a host where
+// several cs-sandbox builds run collects one per kernel any of them pinned.
+// "Boots" is read off each sandbox's run.json, which is what a start feeds to
+// firecracker. A run.json naming the unkeyed paths boots whichever keyed set
+// those names link to, and its next start names that set itself. The unkeyed
+// set is never offered: older builds read it. Neither is this build's own set,
+// nor one with no kver stamp, since unknown is not unused.
+func kernelSets(d Deps) []Check {
+	if d.FCCache == "" {
+		return nil
+	}
+	c := fcdisk.Cache{Dir: d.FCCache}
+	sets := c.KernelSets()
+	top := c.UnkeyedKernelSet()
+	linked := ""
+	for _, k := range sets {
+		if top.SameFiles(k) {
+			linked = k.Dir
+		}
+	}
+	boots, topNamed := map[string]int{}, 0
+	if d.InstDir != "" {
+		runs, _ := filepath.Glob(filepath.Join(d.InstDir, "*", "*", "run.json"))
+		for _, p := range runs {
+			cfg, err := fcconfig.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			dir := filepath.Dir(cfg.BootSource.KernelImagePath)
+			if dir == top.Dir {
+				topNamed++
+				if linked != "" {
+					dir = linked
+				}
+			}
+			boots[dir]++
+		}
+	}
+	var checks []Check
+	var drop []string
+	var dropBytes int64
+	for _, k := range sets {
+		what := "kernel unknown (no stamp), so not offered for removal"
+		if v := k.KVer(); v != "" {
+			what = fmt.Sprintf("kernel %s (%s, pin %s), %s", v, k.Mode(), k.Pin(), booting(boots[k.Dir]))
+			if boots[k.Dir] == 0 && k.Dir != d.KernelSet && k.Dir != linked {
+				drop = append(drop, k.Dir)
+				dropBytes += k.Bytes()
+			}
+		}
+		checks = append(checks, Check{Status: HM, Message: fmt.Sprintf("guest kernel set %s: %s (%s)",
+			filepath.Base(k.Dir), what, mib(k.Bytes()))})
+	}
+	if _, err := os.Stat(top.Kernel()); err == nil {
+		whose := "its own files"
+		if linked != "" {
+			whose = "the files of " + filepath.Base(linked)
+		}
+		kver := top.KVer()
+		if kver == "" {
+			kver = "unknown"
+		}
+		checks = append(checks, Check{Status: HM, Message: fmt.Sprintf(
+			"guest kernel set at the top of the cache: kernel %s, %s, named by %s; older cs-sandbox builds read it, so it is never offered for removal",
+			kver, whose, sandboxes(topNamed))})
+	}
+	if len(drop) > 0 {
+		checks = append(checks, Check{Status: HM, Message: fmt.Sprintf(
+			"%s no sandbox here boots hold %s; the next create that needs one rebuilds it. Drop them with:  rm -rf %s",
+			plural(len(drop), "guest kernel set"), mib(dropBytes), strings.Join(drop, " "))})
+	}
+	return checks
+}
+
+func booting(n int) string {
+	switch n {
+	case 0:
+		return "no sandbox boots it"
+	case 1:
+		return "1 sandbox boots it"
+	}
+	return fmt.Sprintf("%d sandboxes boot it", n)
+}
+
+func mib(b int64) string { return fmt.Sprintf("%.0f MiB", float64(b)/(1<<20)) }
 
 func sandboxes(n int) string {
 	if n == 1 {
