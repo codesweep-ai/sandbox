@@ -277,6 +277,7 @@ func Diagnose(ctx context.Context, engine string, d Deps) *Report {
 		// Before the reflink line, which is about copying this file: whether it
 		// exists at all is the question that decides whether create runs.
 		fg.add(baseRootfsCheck(d))
+		fg.Checks = append(fg.Checks, baseRootfsSlots(d)...)
 		fg.add(reflinkCheck(ctx, d))
 		r.addGroup(fg)
 		// Directly after the engine's own section, so they read as a continuation

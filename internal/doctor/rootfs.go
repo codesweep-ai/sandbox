@@ -1,6 +1,9 @@
 package doctor
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/codesweep-ai/sandbox/internal/fcdisk"
@@ -20,7 +23,7 @@ import (
 // artifact made FROM that image, and a host that had pulled the one without
 // building the other was told it was ready and then failed mid-create.
 //
-// Keyed by image, like the file itself: a host keeps one slot per image variant,
+// Keyed by image, like the file itself: a host keeps one slot per image version,
 // so the shipped image being ready says nothing about the slim one. That is not
 // hypothetical — it is how this was found, on a host that had built the shipped
 // rootfs months ago and had never built the slim one it was about to boot.
@@ -100,4 +103,74 @@ func baseRootfsPath(fcCache, image string) string {
 // figure the warning exists to carry.
 func baseRootfsRealBytes(fcCache, image string) int64 {
 	return fcdisk.Cache{Dir: fcCache}.BaseRootfsBytes(image)
+}
+
+// baseRootfsSlots is a line per base rootfs the cache holds, then the command
+// that drops the ones no sandbox here was made from.
+//
+// The cache keeps one per image version (R124), so a host where several
+// cs-sandbox builds run collects one per version any of them asked for, each a
+// sparse 32 GiB file with gigabytes written into it. Nothing else names them.
+//
+// "Made from" is read off the image id each sandbox's disk records beside it
+// (fcdisk.RootfsImage). A sandbox's disk is a copy, so dropping a slot never
+// breaks one; it costs whoever next creates from that image a rebuild, which is
+// why the slot this report's own image boots from is never offered. A slot with
+// no readable stamp says so and is never offered either: what it holds is
+// unknown, and unknown is not unused.
+func baseRootfsSlots(d Deps) []Check {
+	if d.FCCache == "" {
+		return nil
+	}
+	slots := fcdisk.Cache{Dir: d.FCCache}.BaseRootfsSlots()
+	madeFrom := map[string]int{}
+	if d.InstDir != "" {
+		records, _ := filepath.Glob(filepath.Join(d.InstDir, "*", "*", fcdisk.RootfsImage))
+		for _, rec := range records {
+			if data, err := os.ReadFile(rec); err == nil {
+				madeFrom[strings.TrimSpace(string(data))]++
+			}
+		}
+	}
+	own := ""
+	if d.Image != "" {
+		own = baseRootfsPath(d.FCCache, d.Image)
+	}
+	var checks []Check
+	var drop []string
+	var dropBytes int64
+	for _, s := range slots {
+		image := s.Image
+		if image == "" && s.ImageID != "" {
+			image = "image " + s.ImageID
+		}
+		users := "image unknown (no stamp), so not offered for removal"
+		switch n := madeFrom[s.ImageID]; {
+		case s.ImageID == "":
+		case n > 0:
+			users = image + ", " + sandboxes(n) + " made from it"
+		default:
+			users = image + ", no sandbox made from it"
+			if s.Path != own {
+				stamp := strings.TrimSuffix(s.Path, ".ext4") + ".stamp"
+				drop = append(drop, s.Path, stamp)
+				dropBytes += s.Bytes
+			}
+		}
+		checks = append(checks, Check{Status: HM, Message: fmt.Sprintf("base rootfs %s: %s (%.1f GiB allocated)",
+			filepath.Base(s.Path), users, float64(s.Bytes)/(1<<30))})
+	}
+	if len(drop) > 0 {
+		checks = append(checks, Check{Status: HM, Message: fmt.Sprintf(
+			"%s no sandbox here was made from hold %.1f GiB; the next create from one rebuilds it. Drop them with:  rm -f %s",
+			plural(len(drop)/2, "base rootfs slot"), float64(dropBytes)/(1<<30), strings.Join(drop, " "))})
+	}
+	return checks
+}
+
+func sandboxes(n int) string {
+	if n == 1 {
+		return "1 sandbox"
+	}
+	return fmt.Sprintf("%d sandboxes", n)
 }

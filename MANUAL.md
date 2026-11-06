@@ -415,6 +415,13 @@ is fetched on first use and the tier keys are made on first create; the rootfs c
 `--slim` earns its place. A host that has built the shipped rootfs and never the slim one is ready
 for the first and cannot boot the second. Only a report naming the right image says so.
 
+It then lists every base rootfs in the cache. Each line names the file, the image it was built from,
+what it occupies, and how many sandboxes on this host were made from it. A host where several
+`cs-sandbox` builds run keeps one per image version any of them used. The last line is an `rm -f`
+of the ones no sandbox was made from, leaving out the one this report's own image boots. Dropping
+one breaks no sandbox, because each sandbox's disk is a copy, and the next create from that image
+rebuilds it.
+
 `create` refuses with `holds the base rootfs of … and create will not rebuild another image's disk
 in place` when the file its image keys to was built from a different image. That happens only where
 two image references come to one filename, or where an older `cs-sandbox` wrote the file. The
