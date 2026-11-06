@@ -4,7 +4,7 @@
   "items": [
     {
       "id": "SBX-116",
-      "why": "One base rootfs slot per image repository: any build pinned to another tag rewrites the disk every other build boots from; it stopped three sessions on a shared host on 2026-11-05."
+      "why": "One base rootfs slot per image repository: a build pinned to another tag rewrites the disk every other build boots from. On 2026-11-05 that stopped three sessions on a shared host for an hour."
     },
     {
       "id": "SBX-047",
