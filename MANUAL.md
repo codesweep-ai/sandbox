@@ -988,6 +988,7 @@ without disturbing your real one, which is what the test suite does.
 | `CS_SANDBOX_AGENT_HOME` | Where a login or a key is read from, by `--inherit-agent-login` and by the lender alike. Your home, unless this names another profile tree. |
 | `CS_SANDBOX_RENEWER` | The renewer's working directory: its pidfile, its log, and what it reports to `doctor`. One per instance root. |
 | `CS_SANDBOX_RENEWER_STATE` | Where the renewer keeps the state it shares with `create`, host-wide: which login is being renewed right now, and how long a failing one is left alone. |
+| `CS_SANDBOX_TAP_LOCK` | The lock file every instance root takes before it gives a new group its tap prefix. Taps share one rootless netns per user, so the lock is host-wide: `$XDG_RUNTIME_DIR/cs-sandbox/tap.lock` by default, which no setting above moves. Set it only to isolate a test run. |
 | `CS_SANDBOX_LEND_ADDR` | The address `cs-sandbox lender` listens on when you run one yourself. Default `0.0.0.0:2500`. The group's own lender container is not configured by it. |
 | `CS_SANDBOX_LENDER_BIN` | A Linux `cs-sandbox` for the image's architecture, run by the group's lender container instead of the image's own. Unset or empty, the image's own runs. Set it where the image carries no `cs-sandbox` (a slimmed one) or where you want the lender to be your own build. |
 
