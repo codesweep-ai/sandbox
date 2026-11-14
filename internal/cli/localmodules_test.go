@@ -21,6 +21,8 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	os.Setenv("CS_BUILDS_DIR", dir)
+	// The tap lock is host-wide by design (SBX-123); keep the tests' off the host's.
+	os.Setenv("CS_SANDBOX_TAP_LOCK", filepath.Join(dir, "tap.lock"))
 	os.Unsetenv("CS_BUILD_STORE")
 	code := m.Run()
 	os.RemoveAll(dir)

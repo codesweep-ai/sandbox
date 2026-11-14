@@ -549,11 +549,69 @@ func GuestMAC(ip string) string {
 	return fmt.Sprintf("02:fc:0a:59:00:%02x", n)
 }
 
+// LiveTapPrefixes returns the prefix of every group VM tap in podman's rootless
+// netns, whichever instances root made it: "fd0001" for fd0001201. A root
+// records only its own groups' prefixes, and the netns is one per host user,
+// so a prefix free in one root can be live in another (SBX-123).
+func LiveTapPrefixes(ctx context.Context, r run.Runner) map[string]bool {
+	out := map[string]bool{}
+	for line := range strings.SplitSeq(
+		run.Output(ctx, r, "podman", "unshare", "--rootless-netns", "ip", "-br", "link", "show"), "\n") {
+		name, _, _ := strings.Cut(strings.TrimSpace(line), " ")
+		name, _, _ = strings.Cut(name, "@")
+		if p, ok := groupTapPrefix(name); ok {
+			out[p] = true
+		}
+	}
+	return out
+}
+
+// groupTapPrefix reads an allocated prefix, fd and four hex digits, off a tap
+// name that has an octet after it.
+func groupTapPrefix(name string) (string, bool) {
+	if len(name) < 7 || !strings.HasPrefix(name, "fd") {
+		return "", false
+	}
+	for _, c := range name[2:6] {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return "", false
+		}
+	}
+	if _, err := strconv.Atoi(name[6:]); err != nil {
+		return "", false
+	}
+	return name[:6], true
+}
+
+// tapMaster reads whether a tap exists and which bridge holds it ("" for none).
+func (f Fabric) tapMaster(ctx context.Context, tap string) (master string, exists bool) {
+	out := run.Output(ctx, f.Runner, "podman", "unshare", "--rootless-netns", "ip", "-o", "link", "show", "dev", tap)
+	if out == "" {
+		return "", false
+	}
+	fields := strings.Fields(out)
+	for i, w := range fields {
+		if w == "master" && i+1 < len(fields) {
+			return fields[i+1], true
+		}
+	}
+	return "", true
+}
+
 // TapUp idempotently creates the VM's tap on the bridge, inside podman's netns.
+//
+// A tap of that name on another bridge belongs to another group's VM: interface
+// names are host-global, and two instances roots can hand out one prefix. It is
+// refused, never moved onto this bridge, which would cut the other VM off its
+// network while this one failed to open a tap that VM already holds (SBX-123).
 func (f Fabric) TapUp(ctx context.Context, tap string) error {
 	br := f.Bridge(ctx)
 	if br == "" {
 		return fmt.Errorf("fc: cannot read podman network %q bridge interface", f.Network)
+	}
+	if m, ok := f.tapMaster(ctx, tap); ok && m != "" && m != br {
+		return fmt.Errorf("fc: tap %s is on bridge %s, not this group's %s: another sandbox's VM holds it, so it is left alone. "+
+			"Another instances root gave a group the same tap prefix; stop that sandbox or use one root", tap, m, br)
 	}
 	script := fmt.Sprintf("ip link show %s >/dev/null 2>&1 || ip tuntap add %s mode tap; "+
 		"ip link set %s master %s; ip link set %s up", tap, tap, tap, br, tap)
@@ -561,8 +619,18 @@ func (f Fabric) TapUp(ctx context.Context, tap string) error {
 	return err
 }
 
-// TapDel removes a VM's tap.
+// TapDel removes a VM's tap, unless another bridge holds it. Teardown names the
+// tap by this group's prefix and its VM's octet, and a tap of that name on
+// another bridge is another group's VM (SBX-123). One on no bridge is this
+// group's, left behind when its network was removed underneath it.
 func (f Fabric) TapDel(ctx context.Context, tap string) {
+	m, ok := f.tapMaster(ctx, tap)
+	if !ok {
+		return
+	}
+	if m != "" && m != f.Bridge(ctx) {
+		return
+	}
 	_, _ = f.Runner.Run(ctx, run.Opts{}, "podman", "unshare", "--rootless-netns",
 		"ip", "link", "del", tap)
 }

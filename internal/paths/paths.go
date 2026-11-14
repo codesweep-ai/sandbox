@@ -14,6 +14,7 @@ package paths
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -133,6 +134,23 @@ func RenewerState() string {
 		return d
 	}
 	return filepath.Join(cacheHome(), app, "renewer-state")
+}
+
+// TapLock is the lock file over the host's VM tap names. Every instances root
+// puts its taps in podman's one rootless netns, so a tap prefix is drawn from a
+// pool all roots share, and the lock has to be on that pool's scope, not on
+// one root's (SBX-123). It sits with the netns's own runtime state, in
+// XDG_RUNTIME_DIR, which no per-root CS_SANDBOX_HOME, XDG_CACHE_HOME or
+// XDG_DATA_HOME moves; without it, in the temp dir under the user's uid.
+// CS_SANDBOX_TAP_LOCK overrides it for isolated runs.
+func TapLock() string {
+	if p := os.Getenv("CS_SANDBOX_TAP_LOCK"); p != "" {
+		return p
+	}
+	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
+		return filepath.Join(d, app, "tap.lock")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("%s-%d", app, os.Getuid()), "tap.lock")
 }
 
 // rootKey names an instances root in one path segment: a predictable name for

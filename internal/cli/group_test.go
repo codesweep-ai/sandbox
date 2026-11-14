@@ -104,6 +104,23 @@ func TestTapPrefixIsAllocatedNotHashed(t *testing.T) {
 	}
 }
 
+// TestTapPrefixSkipsAPrefixLiveOnAnotherRoot: a prefix this root has not
+// recorded can still be live, on a group of another instances root, since every
+// root's taps share one netns. Handing it out again gave a private root's group
+// the default root's fd0001, and its create took that root's VM tap (SBX-123).
+func TestTapPrefixSkipsAPrefixLiveOnAnotherRoot(t *testing.T) {
+	r := run.NewFake().OnStdout("ip -br link show",
+		"lo  UNKNOWN 00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP>\nfd0000200  UP  02:fc:0a:59:00:c8 <UP>\nfd0001201  UP  02:fc:0a:59:00:c9 <UP>")
+	app := &App{InstDir: t.TempDir(), Runner: r}
+	p, err := app.allocTapPrefix("fresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p != "fd0002" {
+		t.Errorf("a root with no groups beside live taps fd0000 and fd0001 got %q, want fd0002", p)
+	}
+}
+
 // TestConcurrentGroupsGetDistinctTapPrefixes: two creates for two NEW groups,
 // started at the same moment, must not be handed the same prefix.
 //

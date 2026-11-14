@@ -206,12 +206,16 @@ func (a *App) reserveGroup(group string) (*state.Group, error) {
 			return nil
 		}
 		g = &state.Group{Name: group, Created: time.Now().UTC().Format(time.RFC3339)}
-		prefix, err := a.allocTapPrefix(group)
-		if err != nil {
-			return err
-		}
-		g.TapPrefix = prefix
-		return state.SaveGroup(a.InstDir, g)
+		// The root's lock orders this root's creates; the tap lock orders every
+		// root's, since all of them draw from the netns's one pool (SBX-123).
+		return lock.NewAt(paths.TapLock()).With(func() error {
+			prefix, err := a.allocTapPrefix(group)
+			if err != nil {
+				return err
+			}
+			g.TapPrefix = prefix
+			return state.SaveGroup(a.InstDir, g)
+		})
 	})
 	return g, err
 }
@@ -281,11 +285,24 @@ func (a *App) ensureGateway(ctx context.Context, g *state.Group) error {
 // interface names are host-global, so this is allocated and recorded rather
 // than hashed from the group name: a hash collision between two groups would
 // surface as an interface-name clash a long way from its cause.
+//
+// Unused means recorded by no group of this root and on no tap in the netns.
+// Another instances root's groups are not in this root's records, but their
+// running VMs' taps are in the one netns every root shares. Reading only the
+// records once gave a private root's group the prefix of a live group on the
+// default root, and its create took that VM's tap (SBX-123). A stopped group of
+// another root still holds its prefix unseen; TapUp refuses that one by name
+// when both start.
 func (a *App) allocTapPrefix(group string) (string, error) {
 	taken := map[string]bool{}
 	groups, _ := state.ListGroups(a.InstDir)
 	for _, g := range groups {
 		taken[g.TapPrefix] = true
+	}
+	if a.Runner != nil {
+		for p := range fcnet.LiveTapPrefixes(context.Background(), a.Runner) {
+			taken[p] = true
+		}
 	}
 	for i := range 0x10000 {
 		p := fmt.Sprintf("fd%04x", i)

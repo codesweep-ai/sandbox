@@ -372,3 +372,84 @@ func TestHealthyGatewayIsLeftAlone(t *testing.T) {
 		}
 	}
 }
+
+// The rootless netns as `ip -br link show` lists it on a host where two
+// instances roots each run a group VM: the default root's group fd0000 and a
+// private root's, which was also handed fd0001 (SBX-123).
+const twoRootsLinks = `lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP>
+podman3          UP             c6:70:81:7a:87:95 <BROADCAST,MULTICAST,UP,LOWER_UP>
+veth0@if2        UP             ca:76:94:65:80:53 <BROADCAST,MULTICAST,UP,LOWER_UP>
+fd0000200        UP             02:fc:0a:59:00:c8 <BROADCAST,MULTICAST,UP,LOWER_UP>
+fd0001201        UP             02:fc:0a:59:00:c9 <BROADCAST,MULTICAST,UP,LOWER_UP>
+fdt200           UP             02:fc:0a:59:00:c8 <BROADCAST,MULTICAST,UP,LOWER_UP>
+fd00zz201        UP             02:fc:0a:59:00:c9 <BROADCAST,MULTICAST,UP,LOWER_UP>`
+
+// TestLiveTapPrefixesReadsEveryRootsTaps: the prefixes in use are read off the
+// netns, which every root shares, not off one root's records. The legacy fdt
+// taps carry no allocated prefix, and a name that is not one is skipped.
+func TestLiveTapPrefixesReadsEveryRootsTaps(t *testing.T) {
+	r := run.NewFake().OnStdout("ip -br link show", twoRootsLinks)
+	got := LiveTapPrefixes(context.Background(), r)
+	want := map[string]bool{"fd0000": true, "fd0001": true}
+	if len(got) != len(want) || !got["fd0000"] || !got["fd0001"] {
+		t.Errorf("LiveTapPrefixes = %v, want %v", got, want)
+	}
+}
+
+// A tap of this group's name held by another bridge is another root's VM. The
+// incident this guards: TapUp moved that tap onto its own bridge, cutting the
+// other VM off, and the failed create's teardown then deleted it by name.
+func TestATapOnAnotherBridgeIsNeitherTakenNorDeleted(t *testing.T) {
+	const tap = "fd0001201"
+	held := func(master string) *run.Fake {
+		r := run.NewFake().OnStdout("network inspect", "podman9")
+		switch master {
+		case "absent":
+		case "":
+			r.OnStdout("ip -o link show dev "+tap, "12: "+tap+": <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT")
+		default:
+			r.OnStdout("ip -o link show dev "+tap, "12: "+tap+": <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel master "+master+" state UP mode DEFAULT")
+		}
+		return r
+	}
+	ran := func(r *run.Fake, what string) bool {
+		for _, c := range r.Rendered() {
+			if strings.Contains(c, what) {
+				return true
+			}
+		}
+		return false
+	}
+	ctx := context.Background()
+
+	r := held("podman3")
+	err := Fabric{Runner: r, Network: "cs-sandbox-g", TapPrefix: "fd0001"}.TapUp(ctx, tap)
+	if err == nil || !strings.Contains(err.Error(), "podman3") {
+		t.Errorf("TapUp of a tap on another bridge: err = %v, want a refusal naming podman3", err)
+	}
+	if ran(r, "master podman9") {
+		t.Error("TapUp moved another bridge's tap onto this group's bridge")
+	}
+	for _, m := range []string{"podman9", "", "absent"} {
+		r := held(m)
+		if err := (Fabric{Runner: r, Network: "cs-sandbox-g", TapPrefix: "fd0001"}).TapUp(ctx, tap); err != nil {
+			t.Errorf("TapUp with the tap %q: %v", m, err)
+		}
+		if !ran(r, "master podman9") {
+			t.Errorf("TapUp with the tap %q did not put it on this group's bridge", m)
+		}
+	}
+
+	r = held("podman3")
+	Fabric{Runner: r, Network: "cs-sandbox-g", TapPrefix: "fd0001"}.TapDel(ctx, tap)
+	if ran(r, "link del "+tap) {
+		t.Error("TapDel deleted a tap another bridge holds")
+	}
+	for m, want := range map[string]bool{"podman9": true, "": true, "absent": false} {
+		r := held(m)
+		Fabric{Runner: r, Network: "cs-sandbox-g", TapPrefix: "fd0001"}.TapDel(ctx, tap)
+		if got := ran(r, "link del "+tap); got != want {
+			t.Errorf("TapDel with the tap %q: deleted = %v, want %v", m, got, want)
+		}
+	}
+}
