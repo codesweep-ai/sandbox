@@ -3,22 +3,31 @@
   "title": "Two instances roots hand out the same tap prefix, so a create on one takes and deletes the other's VM tap",
   "type": "defect",
   "severity": "critical",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "session agent and a coordinator session, tracing a live member that lost its network while parallel creates ran on a second instances root, 2026-11-14",
   "opened": "2026-11-14",
-  "resolved": null,
+  "resolved": "2026-11-14",
   "stint": "session agent, 2026-11-14, a coordinator session's ask",
   "evidence": {
-    "commits": [],
-    "integrated": [],
-    "verified": null
+    "commits": [
+      "29ba49b",
+      "ee0e4b6"
+    ],
+    "integrated": [
+      "ee0e4b6"
+    ],
+    "verified": "CI on main ee0e4b6: workflow ci run 43653838435 passed every job, docs surface included. That job had failed on 29ba49b in run 43652272813, SURF-201 for CS_SANDBOX_TAP_LOCK, until ee0e4b6 named it in MANUAL. Workflow publish images run 43655098645 passed, and workflow ledger run 43652272817 passed on 29ba49b. Unit: TestLiveTapPrefixesReadsEveryRootsTaps, TestATapOnAnotherBridgeIsNeitherTakenNorDeleted and TestTapPrefixSkipsAPrefixLiveOnAnotherRoot pass. With each guard removed in turn, its test fails: TapUp gives no refusal, TapDel deletes the foreign tap, and allocation hands out fd0000 beside live fd0000 and fd0001. The whole unit suite passes."
   },
-  "resolution": null,
+  "resolution": "Fixed for running VMs. A new group's prefix skips every prefix live on a tap in the netns, under a lock all instance roots share (CS_SANDBOX_TAP_LOCK, in XDG_RUNTIME_DIR by default). TapUp refuses a tap of its name on another bridge, and TapDel leaves such a tap alone. Still open by design, as the earlier note says: allocation does not see another root's stopped group, or one between its reservation and its first tap. Its start is refused by name instead.",
   "details": "A group's tap prefix comes from `allocTapPrefix` (internal/cli/group_commands.go): the lowest `fd%04x` that no group of THIS instances root records, under this root's create lock. A VM's tap is that prefix plus its address's last octet (`Fabric.TapName`, internal/fcnet/fcnet.go). Every root puts its taps in podman's one rootless netns, so the names share one host-wide space. A second root, set with `CS_SANDBOX_INSTANCES_DIR`, starts again from `fd0000` and hands out prefixes that the default root's live groups already hold. Its comment says interface names are host-global, but the allocation reads one root.\n\nWhat that did on 2026-11-14: eight creates at once on a private root, each in a new group, drew `fd0000` to `fd0007` by that rule. A member of a live group on the default root, prefix `fd0001`, at last octet 201, booted in the same seconds as one of them. The private group's own records went with its destroy, so its prefix and octet are inferred from the rule and the timing, not read. `TapUp` is idempotent: it found `fd0001201` present and ran `ip link set fd0001201 master <its own bridge>`, moving the live VM's tap off its group's bridge. The second firecracker then failed: `microVM \"<name>\" exited before becoming ready`. Its teardown ran `ip link del fd0001201` (`Fabric.TapDel`, called from `Firecracker.Remove` in internal/engine/firecracker.go), which deleted the live VM's tap. That member logged `Failed to write to tap: Os { code: 77 ... File descriptor in bad state }` until it was restarted, and its forwarder `No route to host`. `TapOctets` does guard addresses, but only against taps that exist when a create reads it, and both creates read it first.\n\nThree places act on a name without asking whose it is. `allocTapPrefix` counts only its own root. `TapUp` takes a tap from another bridge. `TapDel` deletes a tap another bridge holds. The same code is in a0df4c5. A private instances root isolates records and disks, not the network, so any create or start on one while another root runs VMs can do this.",
   "notes": [
     {
       "date": "2026-11-14",
       "text": "The fix acts at all three places. `allocTapPrefix` also skips every prefix live on a tap in the netns (`fcnet.LiveTapPrefixes`), under a lock every root shares, `paths.TapLock` in XDG_RUNTIME_DIR. `TapUp` refuses a tap of its name on another bridge, naming that bridge. `TapDel` leaves such a tap alone and still removes one on its own bridge or on none. Each new test fails when its guard is taken out.\n\nTwo cases stay open. A stopped group of another root holds its prefix in that root's records only, so a new group can be handed it while no tap shows. And between a prefix being recorded and its first tap appearing, another root cannot see it. In both, the second VM to start is now refused by name, and neither VM's network is touched. Allocating prefixes from one registry for every root would close both; that changes where group records live, so it is left for its own change."
+    },
+    {
+      "date": "2026-11-14",
+      "text": "Closed on CI's green run on main ee0e4b6. ee0e4b6 adds the variable's MANUAL row, which the surface lint asks of every variable the code reads."
     }
   ],
   "links": [
