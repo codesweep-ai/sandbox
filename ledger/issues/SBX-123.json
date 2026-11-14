@@ -1,0 +1,22 @@
+{
+  "id": "SBX-123",
+  "title": "Two instances roots hand out the same tap prefix, so a create on one takes and deletes the other's VM tap",
+  "type": "defect",
+  "severity": "critical",
+  "status": "open",
+  "foundBy": "session agent and a coordinator session, tracing a live member that lost its network while parallel creates ran on a second instances root, 2026-11-14",
+  "opened": "2026-11-14",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "A group's tap prefix comes from `allocTapPrefix` (internal/cli/group_commands.go): the lowest `fd%04x` that no group of THIS instances root records, under this root's create lock. A VM's tap is that prefix plus its address's last octet (`Fabric.TapName`, internal/fcnet/fcnet.go). Every root puts its taps in podman's one rootless netns, so the names share one host-wide space. A second root, set with `CS_SANDBOX_INSTANCES_DIR`, starts again from `fd0000` and hands out prefixes that the default root's live groups already hold. Its comment says interface names are host-global, but the allocation reads one root.\n\nWhat that did on 2026-11-14: eight creates at once on a private root, each in a new group, drew `fd0000` to `fd0007` by that rule. A member of a live group on the default root, prefix `fd0001`, at last octet 201, booted in the same seconds as one of them. The private group's own records went with its destroy, so its prefix and octet are inferred from the rule and the timing, not read. `TapUp` is idempotent: it found `fd0001201` present and ran `ip link set fd0001201 master <its own bridge>`, moving the live VM's tap off its group's bridge. The second firecracker then failed: `microVM \"<name>\" exited before becoming ready`. Its teardown ran `ip link del fd0001201` (`Fabric.TapDel`, called from `Firecracker.Remove` in internal/engine/firecracker.go), which deleted the live VM's tap. That member logged `Failed to write to tap: Os { code: 77 ... File descriptor in bad state }` until it was restarted, and its forwarder `No route to host`. `TapOctets` does guard addresses, but only against taps that exist when a create reads it, and both creates read it first.\n\nThree places act on a name without asking whose it is. `allocTapPrefix` counts only its own root. `TapUp` takes a tap from another bridge. `TapDel` deletes a tap another bridge holds. The same code is in a0df4c5. A private instances root isolates records and disks, not the network, so any create or start on one while another root runs VMs can do this.",
+  "notes": [],
+  "links": [
+    "SBX-122"
+  ]
+}
