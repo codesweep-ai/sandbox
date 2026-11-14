@@ -16,6 +16,10 @@
 package assets
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -234,8 +238,8 @@ func AgentPins(assetDir string) (map[string]string, error) {
 
 // GuestInitPath returns a host path to the guest init (image/guest/init): the
 // on-disk checkout copy when available, otherwise the embedded copy materialized
-// once into cacheDir (a stable path so its content hash — the base-rootfs stamp
-// key — is identical to the on-disk copy). Returns "" (no error) if neither the
+// into cacheDir under its content's name (contentName), so its content hash —
+// the base-rootfs stamp key — is identical to the on-disk copy's. Returns "" (no error) if neither the
 // checkout nor cacheDir is usable.
 func GuestInitPath(assetDir, cacheDir string) string {
 	if d, ok := onDiskImage(assetDir); ok {
@@ -254,11 +258,54 @@ func GuestInitPath(assetDir, cacheDir string) string {
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return ""
 	}
-	p := filepath.Join(cacheDir, "guest-init")
-	if err := os.WriteFile(p, data, 0o755); err != nil {
+	p := filepath.Join(cacheDir, contentName("guest-init", "", data))
+	if err := materialize(p, data, 0o755); err != nil {
 		return ""
 	}
 	return p
+}
+
+// contentName names a materialized guest file by its bytes: stem, a dash, the
+// first 12 hex digits of their sha256, then ext. Two cs-sandbox versions whose
+// embedded copies differ share one cache, and under one name each create
+// rewrote the other's file, so a create could hash the other version's init
+// into its own base-rootfs stamp (SBX-122). Under its content's name a file
+// only ever holds those bytes.
+func contentName(stem, ext string, data []byte) string {
+	sum := sha256.Sum256(data)
+	return stem + "-" + hex.EncodeToString(sum[:])[:12] + ext
+}
+
+// materialize puts data at p for other processes to read. Every create calls
+// it, and other creates hash the same file at the same time: the guest init's
+// hash is in the base-rootfs stamp and the initramfs source's hash names the
+// kernel set. A file that already holds data is left alone. Otherwise the
+// bytes go to a temporary file beside p, renamed over it, so a reader sees the
+// old file or the new one, never a truncated one. os.WriteFile truncates
+// first, and a reader in that gap hashed an empty file, which rebuilt the base
+// rootfs with an empty init or looked for a kernel set that does not exist.
+func materialize(p string, data []byte, mode os.FileMode) error {
+	if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm() == mode {
+		if cur, err := os.ReadFile(p); err == nil && bytes.Equal(cur, data) {
+			return nil
+		}
+	}
+	f, err := os.CreateTemp(filepath.Dir(p), "."+filepath.Base(p)+".*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, werr := f.Write(data)
+	cerr := f.Close()
+	if err := errors.Join(werr, cerr, os.Chmod(tmp, mode)); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // GuestInitramfsSrcPath returns a host path to the initramfs init source
@@ -286,8 +333,8 @@ func GuestInitramfsSrcPath(assetDir, cacheDir string) string {
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return ""
 	}
-	p := filepath.Join(cacheDir, "guest-initramfs-init.c")
-	if err := os.WriteFile(p, data, 0o644); err != nil {
+	p := filepath.Join(cacheDir, contentName("guest-initramfs-init", ".c", data))
+	if err := materialize(p, data, 0o644); err != nil {
 		return ""
 	}
 	return p

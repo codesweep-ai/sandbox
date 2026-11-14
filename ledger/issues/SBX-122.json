@@ -3,11 +3,11 @@
   "title": "Every create rewrites the guest init and initramfs source in place, so a create beside it can hash an empty file",
   "type": "defect",
   "severity": "high",
-  "status": "open",
+  "status": "in-progress",
   "foundBy": "session agent, from a smoke-tier replay on a cold private cache whose create failed with a missing modules.tar, 2026-11-14",
   "opened": "2026-11-14",
   "resolved": null,
-  "stint": null,
+  "stint": "session agent, 2026-11-14, a coordinator session's ask",
   "evidence": {
     "commits": [],
     "integrated": [],
@@ -15,6 +15,15 @@
   },
   "resolution": null,
   "details": "`GuestInitPath` and `GuestInitramfsSrcPath` (assets.go) write the embedded `image/guest/init` and `image/guest/initramfs-init.c` into the cache as `guest-init` and `guest-initramfs-init.c` on every create, with `os.WriteFile`. That call truncates the file and then writes it. Other creates read the same two files at the same time and hash them. The init's hash is a field of the base-rootfs stamp (`internal/fcdisk/build.go`, `inithash`). The source's hash is in the kernel set's key (`kernelSetKey` through `initramfsStamp`). A reader in the gap hashes an empty file.\n\nTwo failures follow, each reproduced on a private cache with eight creates at once, each in its own group.\n\n1. Kernel set. The key comes out as `<NVR.arch>-fedora-39ab9907` instead of `-9de5f54f` for kernel pin `koji:7.2.5-200.fc44`. That is sha256 of the pin, a bar, and `v1-static-init-` plus the first 12 hex digits of sha256 of nothing. On a cold cache the base-rootfs build then fails with `tar: <cache>/kernels/7.2.5-200.fc44.x86_64-fedora-39ab9907/modules.tar: Cannot open: No such file or directory`. On a warm cache the create starts a kernel build under the stray key. That build compiles the source it reads, which can be the empty file again: `undefined reference to 'main'`. An empty `kernels/<NVR.arch>-fedora-39ab9907/` folder is left behind.\n\n2. Base rootfs. The stamp's init field comes out as `e3b0c44298fc`, the hash of an empty file. The stamp no longer matches, so the create rebuilds the image's slot in place with an empty `/fc-init`. `debugfs -R \"stat /fc-init\"` on the slot reports `Size: 0`. Every later create from that slot fails with `microVM \"<name>\" exited before becoming ready`, until a create reads the whole file and rebuilds the slot again.\n\nThe gap is short. 24 creates in three rounds of eight on a warm cache all passed, and only the first cold-cache create hit it unaided. A helper widened it by truncating and rewriting the same bytes in a loop. Under it, one round of eight lost 5 creates to the kernel key, and the next lost all 8 to the empty init. Every host that runs creates in parallel on one cache is exposed, since the slot and the kernel set are shared there. The base-rootfs half is older than the keyed kernel sets: the same write and the same stamp field are in a0df4c5.\n\nA workaround already in the binary: with `CS_SANDBOX_ASSETS_DIR` naming a clean checkout at the binary's own commit, both paths resolve to the checkout's files, and nothing is written. Three rounds of eight passed 24 of 24, 16 of them with both files under the rewriting helper. No stray kernel set appeared, and the one rebuild was the first round repairing the slot left empty above. `cs-sandbox agent-tools` and `cs-sandbox version` printed the same bytes with and without it. The fix is to write these files only when their bytes differ, through a temporary file renamed over the old one.\n\nNot covered here: the stamps themselves are written in place too (`writeStamp`, `KernelSet.writeStamp`), by a build, while a create beside it may read them.",
-  "notes": [],
-  "links": ["SBX-119", "SBX-120", "SBX-121"]
+  "notes": [
+    {
+      "date": "2026-11-14",
+      "text": "A second way to hash the wrong file, found while writing the fix. `image/guest/init` differs between a0df4c5 (`f2871d91e468`) and d5ea8d3 (`e3f41ca4fe1b`), and both versions use the same cache name. On a cache two versions share, a create of one version can rewrite the file under a create of the other. That create then stamps its slot with the wrong version's init and rebuilds the slot around it. A temporary file and a rename do not stop that, so the fix names each cached copy by its content: `guest-init-<12 hex>` and `guest-initramfs-init-<12 hex>.c`. A copy under its content's name only ever holds those bytes. The old names are left in the cache for the binaries that still read them. The stamps keep their fields, since they hash the bytes, not the path."
+    }
+  ],
+  "links": [
+    "SBX-119",
+    "SBX-120",
+    "SBX-121"
+  ]
 }

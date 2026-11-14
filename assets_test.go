@@ -1,6 +1,7 @@
 package assets
 
 import (
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -92,6 +93,104 @@ func TestGuestInitPathEmbed(t *testing.T) {
 	}
 	if fi.Mode().Perm() != 0o755 {
 		t.Errorf("guest-init mode = %o, want 755", fi.Mode().Perm())
+	}
+}
+
+// Every create materializes the guest init and the initramfs source into the
+// shared cache, while other creates hash the same files: the init's hash is in
+// the base-rootfs stamp, the source's names the kernel set. A file the call
+// truncated in place read as empty to a create beside it, which rebuilt the base
+// rootfs with an empty /fc-init, or looked for a kernel set no build made.
+// Both cases are held for both files.
+func TestMaterializedGuestFilesAreNeverRewrittenInPlace(t *testing.T) {
+	embedded := func(rel string) []byte {
+		b, err := fs.ReadFile(image(), rel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	for _, c := range []struct {
+		name, file, legacy string
+		path               func(assetDir, cacheDir string) string
+		mode               os.FileMode
+	}{
+		{"guest init", contentName("guest-init", "", embedded("guest/init")), "guest-init", GuestInitPath, 0o755},
+		{"initramfs source", contentName("guest-initramfs-init", ".c", embedded("guest/initramfs-init.c")), "guest-initramfs-init.c", GuestInitramfsSrcPath, 0o644},
+	} {
+		t.Run(c.name+": the same bytes are left alone", func(t *testing.T) {
+			cache := t.TempDir()
+			p := c.path("", cache)
+			if p == "" {
+				t.Fatal("not materialized")
+			}
+			past := fixedMtime
+			if err := os.Chtimes(p, past, past); err != nil {
+				t.Fatal(err)
+			}
+			if c.path("", cache) != p {
+				t.Fatal("a second call names another path")
+			}
+			fi, err := os.Stat(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !fi.ModTime().Equal(past) {
+				t.Errorf("%s was written again although it held the same bytes (mtime %v)", c.file, fi.ModTime())
+			}
+		})
+		t.Run(c.name+": other bytes are replaced by a rename", func(t *testing.T) {
+			cache := t.TempDir()
+			p := filepath.Join(cache, c.file)
+			if err := os.WriteFile(p, []byte("stale\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// A reader that opened the old file before the call, as a create
+			// hashing it would have, must read the old bytes whole, not a
+			// truncated or half-written file.
+			old, err := os.Open(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer old.Close()
+			if c.path("", cache) != p {
+				t.Fatal("materialized elsewhere")
+			}
+			b, err := io.ReadAll(old)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(b) != "stale\n" {
+				t.Errorf("a reader of the old file saw %q: the file was rewritten in place", b)
+			}
+			fi, err := os.Stat(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fi.Size() <= int64(len("stale\n")) || fi.Mode().Perm() != c.mode {
+				t.Errorf("%s: size %d mode %o, want the embedded bytes at mode %o", c.file, fi.Size(), fi.Mode().Perm(), c.mode)
+			}
+			left, _ := filepath.Glob(filepath.Join(cache, "."+c.file+".*"))
+			if len(left) != 0 {
+				t.Errorf("temporary files left behind: %v", left)
+			}
+		})
+		t.Run(c.name+": another version's file under the old name is not read or written", func(t *testing.T) {
+			// What a cs-sandbox before SBX-122 leaves in a shared cache, under
+			// the name it rewrites on every create of its own.
+			cache := t.TempDir()
+			legacy := filepath.Join(cache, c.legacy)
+			if err := os.WriteFile(legacy, []byte("another version\n"), c.mode); err != nil {
+				t.Fatal(err)
+			}
+			p := c.path("", cache)
+			if filepath.Base(p) != c.file {
+				t.Fatalf("materialized as %s, want its content's name %s", filepath.Base(p), c.file)
+			}
+			if b, _ := os.ReadFile(legacy); string(b) != "another version\n" {
+				t.Errorf("the other version's %s was rewritten: %q", filepath.Base(legacy), b)
+			}
+		})
 	}
 }
 
