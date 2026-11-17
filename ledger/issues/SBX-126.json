@@ -3,25 +3,32 @@
   "title": "The sandbox image carries no strace, so tracing a failing tool inside a sandbox starts with a package install",
   "type": "improvement",
   "severity": "low",
-  "status": "in-progress",
+  "status": "closed",
   "foundBy": "owner's request, 2026-11-16: \"bundle strace in the sandbox images\", after a gVisor investigation had to install it",
   "opened": "2026-11-16",
-  "resolved": null,
+  "resolved": "2026-11-17",
   "stint": "bundle-strace branch, session agent, 2026-11-16",
   "evidence": {
     "commits": [
-      "2a3ec9b"
+      "2a3ec9b",
+      "dbe4654"
     ],
     "integrated": [],
-    "verified": null
+    "verified": "The base-images run 44145167488 built the tiers at v0.0.0-20261117181205-689c289bc8b4, and dbe4654 pins them. CI run 44167030615 on dbe4654 passed on its second attempt. Publish images run 44172184661 then pushed ghcr.io/codesweep-ai/sandbox:v0.0.0-20261117183515-dbe4654e48f6 for amd64 and arm64. On each architecture, skopeo inspect shows the image's 33 layers beginning with the 25 of sandbox-agents at the pinned tag. Those 25 begin with the 21 of sandbox-base at the same tag. Layer 2 of that base is the dnf transaction that names strace. Streaming its blob from ghcr.io through `tar -tz` lists `usr/bin/strace`, 1735528 bytes on amd64 and 1593304 bytes on arm64, and each blob's sha256 matched its digest."
   },
-  "resolution": null,
+  "resolution": "The full sandbox image carries strace from the tiers dbe4654 pins onward, so tracing a tool in a sandbox no longer starts with an install. The slim image still has none, by design: its package list is what a sandbox needs to boot.",
   "details": "The shipped image has `lsof`, `tcpdump` and `htop`, and no `strace`. Tracing which `mount(2)` a nested podman makes under gVisor needed one, and got it with `sudo dnf install strace`. Inside a gVisor sandbox that install is gone after the next start, because the root filesystem starts fresh there. An agent debugging a tool in a sandbox meets the same gap.\n\nThe package belongs in the base tier's package list in `image/Containerfile.base`. The image pulls that tier at the tag `image/tiers.env` pins. The change therefore reaches an image only once the weekly base build publishes it and somebody pins the result.",
   "notes": [
     {
       "date": "2026-11-16",
       "text": "Commit 2a3ec9b adds `strace` to the base tier's one dnf transaction, beside `lsof`. In a throwaway `registry.fedoraproject.org/fedora:44` container, which is that tier's base, `dnf install --setopt=install_weak_deps=False strace` exited 0, and `strace -V` printed version 7.3. No image carries it yet, so this stays open until a base tier with it is published and `image/tiers.env` pins it. The slim image is unchanged, because its package list is what a sandbox needs to boot."
+    },
+    {
+      "date": "2026-11-17",
+      "text": "The tiers dbe4654 pins are the first with strace. Agent versions did not move with them: Claude Code 2.1.312, Codex 0.165.0 and OpenCode 2.2.5. Local make ci over the pin passed 13 smoke tests and all 6 agent replay cells on the new slim tier. In CI the first attempt on dbe4654 failed in the firecracker smoke job, on the nested-create stall SBX-031 tracks, and a rerun of that job passed."
     }
   ],
-  "links": []
+  "links": [
+    "SBX-031"
+  ]
 }
