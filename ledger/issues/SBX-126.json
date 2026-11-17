@@ -9,12 +9,19 @@
   "resolved": null,
   "stint": "bundle-strace branch, session agent, 2026-11-16",
   "evidence": {
-    "commits": [],
+    "commits": [
+      "2a3ec9b"
+    ],
     "integrated": [],
     "verified": null
   },
   "resolution": null,
   "details": "The shipped image has `lsof`, `tcpdump` and `htop`, and no `strace`. Tracing which `mount(2)` a nested podman makes under gVisor needed one, and got it with `sudo dnf install strace`. Inside a gVisor sandbox that install is gone after the next start, because the root filesystem starts fresh there. An agent debugging a tool in a sandbox meets the same gap.\n\nThe package belongs in the base tier's package list in `image/Containerfile.base`. The image pulls that tier at the tag `image/tiers.env` pins. The change therefore reaches an image only once the weekly base build publishes it and somebody pins the result.",
-  "notes": [],
+  "notes": [
+    {
+      "date": "2026-11-16",
+      "text": "Commit 2a3ec9b adds `strace` to the base tier's one dnf transaction, beside `lsof`. In a throwaway `registry.fedoraproject.org/fedora:44` container, which is that tier's base, `dnf install --setopt=install_weak_deps=False strace` exited 0, and `strace -V` printed version 7.3. No image carries it yet, so this stays open until a base tier with it is published and `image/tiers.env` pins it. The slim image is unchanged, because its package list is what a sandbox needs to boot."
+    }
+  ],
   "links": []
 }
