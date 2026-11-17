@@ -1,0 +1,20 @@
+{
+  "id": "SBX-126",
+  "title": "The sandbox image carries no strace, so tracing a failing tool inside a sandbox starts with a package install",
+  "type": "improvement",
+  "severity": "low",
+  "status": "in-progress",
+  "foundBy": "owner's request, 2026-11-16: \"bundle strace in the sandbox images\", after a gVisor investigation had to install it",
+  "opened": "2026-11-16",
+  "resolved": null,
+  "stint": "bundle-strace branch, session agent, 2026-11-16",
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "The shipped image has `lsof`, `tcpdump` and `htop`, and no `strace`. Tracing which `mount(2)` a nested podman makes under gVisor needed one, and got it with `sudo dnf install strace`. Inside a gVisor sandbox that install is gone after the next start, because the root filesystem starts fresh there. An agent debugging a tool in a sandbox meets the same gap.\n\nThe package belongs in the base tier's package list in `image/Containerfile.base`. The image pulls that tier at the tag `image/tiers.env` pins. The change therefore reaches an image only once the weekly base build publishes it and somebody pins the result.",
+  "notes": [],
+  "links": []
+}
