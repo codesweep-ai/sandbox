@@ -60,7 +60,7 @@ RUN printf '%s\n' \
 # parser pre-build below). Its Recommends name a second Node, which install_weak_deps=False
 # above keeps out.
 RUN dnf update -y && dnf install -y \
-  vim findutils fd procps-ng tar zip unzip patch jq yq which lsof \
+  vim findutils fd procps-ng tar zip unzip patch jq yq which lsof strace \
   iputils dnsutils iproute tcpdump wireshark-cli hostname netstat socat \
   sudo openssl openssh-clients openssh-server nmap telnet curl \
   git gcc gcc-c++ automake make cmake patch \
