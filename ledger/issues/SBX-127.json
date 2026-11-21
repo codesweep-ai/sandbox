@@ -1,0 +1,20 @@
+{
+  "id": "SBX-127",
+  "title": "A create or start from a process pinned to a few CPUs lowers the shared sandbox CPU limit for every sandbox on the host",
+  "type": "defect",
+  "severity": "med",
+  "status": "open",
+  "foundBy": "owner's report, 2026-11-21, after sandboxes on a 32-CPU host ran several times slower than expected",
+  "opened": "2026-11-21",
+  "resolved": null,
+  "stint": null,
+  "evidence": {
+    "commits": [],
+    "integrated": [],
+    "verified": null
+  },
+  "resolution": null,
+  "details": "`ensureSlice` (internal/engine/limits.go) sets `CPUQuota` on `cs-sandbox.slice` from `runtime.NumCPU()`, which is the number of CPUs the calling process may run on, not the number the host has. The slice is one limit shared by every sandbox on the host, and every create and start sets it again. So a caller pinned with `taskset` or a cpuset lowers the limit for all sandboxes, including ones it did not create. On a 32-CPU host, a create from a process pinned to 4 CPUs set `CPUQuota=300%`, where an unpinned create sets `2800%`. Every sandbox then shared about 3 cores while most of the host was idle; `cpu.stat` showed every period throttled. Work that took 71 minutes with the limit at 16 cores took 127 to 141 minutes under it. The last create wins, so the value also flips between callers pinned to different CPU counts.\n\nWorkaround: set `CS_SANDBOX_SLICE_LIMITS=CPUQuota=<N>%` in the caller's environment; `SliceProperties` already honours it.\n\nProposed fix: derive the quota from the host's CPU count, not from the caller's affinity. Two sources that ignore affinity are /sys/devices/system/cpu/online and `unix.Sysconf` for the processor count. Keep `CS_SANDBOX_SLICE_LIMITS` as the override. A unit test can pin the process to one CPU and check that the computed quota is still the host's.",
+  "notes": [],
+  "links": []
+}
