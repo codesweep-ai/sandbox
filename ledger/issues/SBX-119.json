@@ -4,10 +4,10 @@
   "type": "defect",
   "severity": "critical",
   "status": "closed",
-  "foundBy": "user report (host): Rishi Vaish, 2026-11-05, after a second session's create broke every staging on a shared host: \"how do we not have the isolation we need?\"",
+  "foundBy": "owner's report (host), 2026-11-05, after a second session's create broke every staging on a shared host: \"how do we not have the isolation we need?\"",
   "opened": "2026-11-05",
   "resolved": "2026-11-06",
-  "stint": "coordinator session, 2026-11-05, Rishi's word",
+  "stint": "coordinator session, 2026-11-05, the owner's word",
   "evidence": {
     "commits": [
       "0801d66",

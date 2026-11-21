@@ -4,10 +4,10 @@
   "type": "defect",
   "severity": "med",
   "status": "in-progress",
-  "foundBy": "Rishi, 2026-11-06, reviewing SBX-120's hard links: he chose copies, so each name owns its bytes whatever other binaries do",
+  "foundBy": "owner, 2026-11-06, reviewing SBX-120's hard links: the owner chose copies, so each name owns its bytes whatever other binaries do",
   "opened": "2026-11-06",
   "resolved": null,
-  "stint": "coordinator session, 2026-11-06, Rishi's word",
+  "stint": "coordinator session, 2026-11-06, the owner's word",
   "evidence": {
     "commits": [
       "65c28df",
